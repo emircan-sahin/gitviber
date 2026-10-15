@@ -173,10 +173,11 @@ Waiting
                                Until an element shows, the text does, the address matches (part
                                of it; with * or **, all of it, or its path from a leading /), an
                                expression is true, the page has loaded, a download of the
-                               tab's ends (one that ended since the last reply counts; prints its
-                               path, size and type), or the time is up: one of them; 10 s at most
-                               unless --timeout says (120 s at most). A timeout says what was
-                               still not so
+                               tab's ends (one that ended since the previous command on the tab
+                               started counts, even if a reply noted it; each is returned once;
+                               prints its path, size and type), or the time is up: one of them;
+                               10 s at most unless --timeout says (120 s at most). A timeout says
+                               what was still not so
 
 Page tools
   eval <js>                    Runs in the page; prints the result as JSON (undefined, NaN,
@@ -186,8 +187,7 @@ Page tools
                                lines name it); --all every page's kept
   downloads [--clear]          The tab's downloaded files, newest first, with their paths: kept
                                in a folder of the tab's own (its newest 20, a day at most), gone
-                               when it closes; one no wait --download takes is told in the
-                               next reply
+                               when it closes; one that ends is noted in the next reply
   network [--failed] [--filter <text>] [--type fetch|xhr|ws|resource] [--method <m>]
           [--status <404|4xx>] [--clear]
                                What the page and its frames requested and loaded, one line each

@@ -17,7 +17,7 @@ use objc2_web_kit::{
 };
 use std::cell::RefCell;
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 use tauri::AppHandle;
 
 thread_local! {
@@ -218,6 +218,6 @@ impl Saver {
         let d = self.ivars();
         GOING.with_borrow_mut(|g| g.retain(|(w, _)| !std::ptr::eq(&**w, download)));
         let path = d.path.borrow().clone();
-        downloads::state().ended(&d.id, path.as_deref(), outcome);
+        downloads::state().ended(&d.id, path.as_deref(), outcome, Instant::now());
     }
 }

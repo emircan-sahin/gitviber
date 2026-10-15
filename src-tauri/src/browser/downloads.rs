@@ -1,8 +1,9 @@
 //! What an agent's tab downloads (macos/downloads.rs): saved in a folder of the tab's own under
 //! the app's cache, never the repository or ~/Downloads, gone with the tab; `downloads` lists
-//! it and `wait --download` waits for the next. Each is told once, by the pane's next reply
-//! after it ends: a `wait --download` on its tab returns it, any other reply notes it. Apart
-//! from AppKit, so it can be tested.
+//! it and `wait --download` waits for the next. One that ends is noted once, in the pane's
+//! next reply; apart from that, one `wait --download` on its tab may return it, so a click
+//! whose own reply noted it is still followed by a wait that gets it. Apart from AppKit, so it
+//! can be tested.
 
 use super::control::Reply;
 use super::notes;
@@ -187,14 +188,22 @@ impl Outcome {
     }
 }
 
-/// A tab's downloads going, and the ones ended that no reply has told yet.
+/// A download that ended: when, how, and whether a note or a wait told it yet.
+struct Ended {
+    at: Instant,
+    outcome: Outcome,
+    noted: bool,
+    waited: bool,
+}
+
+/// A tab's downloads going and ended lately, and when its last two commands started.
 #[derive(Default)]
 struct Tab {
     busy: HashSet<PathBuf>,
-    ended: Vec<Outcome>,
-    /// A `wait --download` is on it: its ended ones are the wait's, not another reply's.
-    waiting: bool,
-    /// Its pane and name, for the note another reply tells.
+    ended: Vec<Ended>,
+    /// The previous command's start and the current one's.
+    commands: (Option<Instant>, Option<Instant>),
+    /// Its pane and name, for its notes.
     pane: Option<(u32, String)>,
 }
 
@@ -223,44 +232,59 @@ impl Downloads {
         path
     }
 
-    /// One of the tab's ended, held for the next reply to tell: whether a wait is on to take it.
-    /// Nothing for a tab gone meanwhile.
-    pub fn ended(&mut self, id: &str, path: Option<&Path>, outcome: Outcome) -> bool {
+    /// One of the tab's ended at `now`. Nothing for a tab gone meanwhile.
+    pub fn ended(&mut self, id: &str, path: Option<&Path>, outcome: Outcome, now: Instant) {
         let Some(tab) = self.tabs.get_mut(id) else {
-            return false;
+            return;
         };
         if let Some(path) = path {
             tab.busy.remove(path);
         }
-        tab.ended.push(outcome);
-        tab.waiting
+        tab.ended.push(Ended {
+            at: now,
+            outcome,
+            noted: false,
+            waited: false,
+        });
     }
 
-    fn wait_on(&mut self, id: &str) {
-        self.tabs.entry(id.into()).or_default().waiting = true;
+    /// A command on tab `id` starts at `now`; what no note or wait can still tell goes. Kept for
+    /// a tab with no download yet too: the click that starts one comes first.
+    pub fn command(&mut self, id: &str, now: Instant) {
+        let tab = self.tabs.entry(id.into()).or_default();
+        tab.commands = (tab.commands.1, Some(now));
+        let since = tab.commands.0;
+        tab.ended
+            .retain(|e| !e.noted || !e.waited && since.is_none_or(|s| e.at >= s));
     }
 
-    fn take(&mut self, id: &str) -> Option<Outcome> {
+    /// Where a wait on tab `id` starting now looks back to: the previous command's start.
+    fn since(&self, id: &str, now: Instant) -> Instant {
+        let tab = self.tabs.get(id);
+        tab.and_then(|t| t.commands.0.or(t.commands.1))
+            .unwrap_or(now)
+    }
+
+    /// The oldest download of the tab that ended at `since` or later, no wait returned yet.
+    fn take(&mut self, id: &str, since: Instant) -> Option<Outcome> {
         let tab = self.tabs.get_mut(id)?;
-        (!tab.ended.is_empty()).then(|| tab.ended.remove(0))
+        let e = tab.ended.iter_mut().find(|e| !e.waited && e.at >= since)?;
+        // The wait's reply tells it: no note too.
+        e.waited = true;
+        e.noted = true;
+        Some(e.outcome.clone())
     }
 
-    fn stop(&mut self, id: &str) {
-        if let Some(tab) = self.tabs.get_mut(id) {
-            tab.waiting = false;
-        }
-    }
-
-    /// What pane `pty`'s reply tells of its tabs' downloads, as notes: (tab id, name, note).
-    /// Not one a wait is on, which takes its own.
+    /// Pane `pty`'s downloads no reply has noted yet, as notes: (tab id, name, note).
     fn told(&mut self, pty: u32) -> Vec<(String, String, String)> {
         let mut told = vec![];
         for (id, tab) in &mut self.tabs {
-            let Some((_, name)) = tab.pane.as_ref().filter(|p| p.0 == pty && !tab.waiting) else {
+            let Some((_, name)) = tab.pane.as_ref().filter(|p| p.0 == pty) else {
                 continue;
             };
-            for outcome in tab.ended.drain(..) {
-                told.push((id.clone(), name.clone(), outcome.note()));
+            for e in tab.ended.iter_mut().filter(|e| !e.noted) {
+                e.noted = true;
+                told.push((id.clone(), name.clone(), e.outcome.note()));
             }
         }
         told
@@ -299,20 +323,24 @@ pub fn deliver(pty: u32) {
     }
 }
 
-/// `wait --download`: the download of tab `id` that ended since the pane's last reply, else the
-/// next to end.
+/// A command on tab `id` starts, for what a `wait --download` after it looks back to.
+pub fn command(id: &str) {
+    state().command(id, Instant::now());
+}
+
+/// `wait --download`: the oldest download of tab `id` that ended since the previous command on
+/// it started and no wait returned, else the next to end.
 pub fn wait(id: &str, timeout: Duration) -> Res<String> {
-    let until = Instant::now() + timeout;
-    state().wait_on(id);
+    let now = Instant::now();
+    let until = now + timeout;
+    let since = state().since(id, now);
     let outcome = loop {
-        let mut s = state();
-        let outcome = s.take(id);
-        if outcome.is_some() || Instant::now() >= until {
-            // In one hold of the lock: one ending now is this wait's, or held for its reply.
-            s.stop(id);
-            break outcome;
+        if let Some(outcome) = state().take(id, since) {
+            break Some(outcome);
         }
-        drop(s);
+        if Instant::now() >= until {
+            break None;
+        }
         std::thread::sleep(POLL);
     };
     match outcome {
@@ -481,6 +509,7 @@ mod tests {
                 name: "report.pdf".into(),
                 why: "x".into(),
             },
+            Instant::now(),
         );
         assert_eq!(d.claim("c", &folder, "report.pdf"), first);
         std::fs::write(folder.join("data.csv"), b"x").unwrap();
@@ -546,62 +575,80 @@ mod tests {
     }
 
     #[test]
-    fn a_download_is_held_for_the_next_reply_and_a_wait_on_keeps_its_own() {
+    fn a_download_is_noted_once_and_returned_by_one_wait_since_the_previous_command() {
         let mut d = Downloads::default();
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
         d.began("a", Some((1, "t1".into())));
         d.began("b", Some((1, "t2".into())));
         let path = d.claim("a", Path::new("/c"), "a.pdf");
         assert_eq!(d.busy(), HashSet::from([path.clone()]));
-        assert!(!d.ended("a", Some(&path), done("a.pdf")));
+        // click on a, its download ends during it, and the click's reply notes it.
+        d.command("a", at(0));
+        d.ended("a", Some(&path), done("a.pdf"), at(1));
         assert!(d.busy().is_empty());
-        // A wait on b keeps b's from another reply.
-        d.wait_on("b");
-        assert!(d.ended("b", None, done("b.pdf")));
         let told = d.told(1);
         assert_eq!(told.len(), 1);
         assert_eq!((told[0].0.as_str(), told[0].1.as_str()), ("a", "t1"));
         assert!(told[0].2.starts_with("downloaded a.pdf (24 B)"));
-        assert!(d.told(1).is_empty() && d.take("a").is_none(), "told once");
-        assert_eq!(d.take("b"), Some(done("b.pdf")));
-        // Another pane's reply tells none of these.
-        d.stop("b");
-        d.ended("b", None, done("c.pdf"));
-        assert!(d.told(2).is_empty());
-        assert_eq!(d.told(1).len(), 1);
+        assert!(d.told(1).is_empty(), "noted once");
+        assert!(d.told(2).is_empty(), "never another pane's");
+        // The wait after still gets it, once, and it isn't noted again.
+        d.command("a", at(2));
+        assert_eq!(d.take("a", d.since("a", at(2))), Some(done("a.pdf")));
+        assert_eq!(d.take("a", d.since("a", at(2))), None);
+        // Two ended: the oldest first; one a wait returned isn't noted.
+        d.ended("a", None, done("b.pdf"), at(3));
+        d.ended("a", None, done("c.pdf"), at(4));
+        assert_eq!(d.take("a", at(2)), Some(done("b.pdf")));
+        let told = d.told(1);
+        assert_eq!(told.len(), 1);
+        assert!(told[0].2.starts_with("downloaded c.pdf"));
+        // Told both ways, or noted and two commands old: gone.
+        d.command("a", at(5));
+        d.command("a", at(6));
+        assert!(d.tabs["a"].ended.is_empty());
         d.forget("a");
-        assert!(!d.live("a") && !d.ended("a", None, done("e.pdf")));
+        d.ended("a", None, done("e.pdf"), at(7));
+        assert!(!d.live("a"));
     }
 
     #[test]
-    fn click_then_wait_gets_the_download_that_ended_between() {
+    fn click_then_wait_gets_the_download_its_click_already_noted() {
         let (id, pty) = ("tab-click-wait", 9101);
+        // The click starts before its download does.
+        command(id);
         state().began(id, Some((pty, "t1".into())));
-        // The click's reply went before the download ended.
-        assert!(notes::take(pty, Some(id)).is_empty());
-        assert!(!state().ended(id, None, done("a.pdf")));
-        let waited = wait(id, Duration::from_millis(300));
+        state().ended(id, None, done("a.pdf"), Instant::now());
+        // The click's own reply.
         let told = notes::take(pty, Some(id));
+        assert!(told[0].starts_with("→ downloaded a.pdf"), "{told:?}");
+        command(id);
+        let waited = wait(id, Duration::from_millis(300));
+        let after = notes::take(pty, Some(id));
         state().forget(id);
         assert!(waited
             .unwrap()
             .starts_with("Downloaded a.pdf (24 B, application/pdf)"));
-        assert!(told.is_empty(), "told twice: {told:?}");
+        assert!(after.is_empty(), "noted twice: {after:?}");
     }
 
     #[test]
-    fn click_then_another_command_tells_it_and_the_wait_after_has_none() {
+    fn click_then_snapshot_then_wait_finds_none_to_return() {
         let (id, pty) = ("tab-told", 9102);
         state().began(id, Some((pty, "t1".into())));
-        assert!(!state().ended(id, None, done("a.pdf")));
-        // The command between: its reply notes it.
-        let told = notes::take(pty, Some(id));
-        assert_eq!(told.len(), 1);
-        assert!(told[0].starts_with("→ downloaded a.pdf"), "{told:?}");
+        command(id);
+        state().ended(id, None, done("a.pdf"), Instant::now());
+        assert_eq!(notes::take(pty, Some(id)).len(), 1);
+        std::thread::sleep(Duration::from_millis(5));
+        command(id);
+        assert!(notes::take(pty, Some(id)).is_empty());
+        command(id);
         let next = wait(id, Duration::from_millis(300));
         state().forget(id);
         assert!(
             next.unwrap_err().starts_with("Timed out"),
-            "the wait returned the told one"
+            "it returned the click's"
         );
     }
 
@@ -609,16 +656,17 @@ mod tests {
     fn a_wait_tells_the_download_that_ends_while_it_waits() {
         let (id, pty) = ("tab-waits", 9103);
         state().began(id, Some((pty, "t1".into())));
+        command(id);
         let ender = std::thread::spawn(move || {
             std::thread::sleep(POLL);
             let failed = Outcome::Failed {
                 name: "x.zip".into(),
                 why: "cancelled".into(),
             };
-            state().ended(id, None, failed)
+            state().ended(id, None, failed, Instant::now());
         });
         let waited = wait(id, Duration::from_secs(5));
-        assert!(ender.join().unwrap(), "a wait was on");
+        ender.join().unwrap();
         let told = notes::take(pty, Some(id));
         state().forget(id);
         assert_eq!(waited, Err("Download of x.zip failed: cancelled".into()));

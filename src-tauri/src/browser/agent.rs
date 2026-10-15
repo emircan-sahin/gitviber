@@ -159,6 +159,8 @@ fn drive<T>(
 ) -> Res<T> {
     let queue = queue(&id);
     let _turn = take_turn(&queue, STEP)?;
+    // What a `wait --download` after it looks back to.
+    downloads::command(&id);
     let tab = Tab {
         app: app.clone(),
         id,
