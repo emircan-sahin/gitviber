@@ -76,7 +76,7 @@ const DIFF_WAIT = 300;
 // Lines past where a file opens that are colored before it shows.
 const SCREEN = 150;
 
-/** The code view on Monaco (VS Code's editor): a diff editor for changes, a plain one for files. */
+/** The code view on Monaco: a diff editor for changes, a plain one for files. */
 export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView({ pair, path, mode, collapse, wrap, scrollKey, onDisk = true, blame = null, blameColumn = false, onBlameClick, links = null, staging = null, review = null, notes = null, editable = false, github = null }, ref) {
   const s = useSettings();
   const host = useRef<HTMLDivElement>(null);

@@ -19,7 +19,7 @@ const CODE_FONTS = {
   Monaco: "Monaco, ui-monospace, monospace",
   "Courier New": '"Courier New", ui-monospace, monospace',
 } as const;
-/** The code font's weights, as VS Code's editor.fontWeight; bold text goes two steps up from it. */
+/** The code font's weights; bold text goes two steps up from it. */
 export const CODE_FONT_WEIGHTS = { 300: "Light", 400: "Regular", 500: "Medium", 600: "Semibold" } as const;
 export type CodeFontWeight = keyof typeof CODE_FONT_WEIGHTS;
 
@@ -338,7 +338,7 @@ const DEFAULTS: Settings = {
   terminalFont: "Editor",
   customTerminalFont: "",
   terminalFontSize: DEFAULT_TERMINAL_FONT_SIZE,
-  // As Ghostty, iTerm2 and VS Code: at 1.2 a pane had a sixth fewer rows, and Claude Code drops its
+  // 1, not 1.2: at 1.2 a pane had a sixth fewer rows, and Claude Code drops its
   // usage lines, then its header, below ~16 rows.
   terminalLineHeight: 1,
   terminalCursor: "block",
@@ -366,9 +366,9 @@ const DEFAULTS: Settings = {
   notifyAgentDone: true,
   notifyAgentWaiting: true,
   notifyTerminal: true,
-  // Off as in Ghostty and kitty: an update shouldn't start notifying.
+  // Off: an update shouldn't start notifying.
   notifyLongCommand: false,
-  // Ghostty's is 5 s, for a notification alone; here the tab's dot comes with it.
+  // 5 s is enough for a notification alone; here the tab's dot comes with it.
   longCommandSeconds: 10,
   notifyGit: true,
   autoUpdate: true,

@@ -628,7 +628,7 @@ fn recent_branches_on_a_huge_reflog() {
         log.push_str(&entry(&format!("commit: work {i}")));
     }
     log.push_str(&entry("checkout: moving from main to old"));
-    // Within the entries read (GitHub Desktop's 2500); a checkout older than those is forgotten.
+    // Within the entries read (2500); a checkout older than those is forgotten.
     for i in 0..2_000 {
         log.push_str(&entry(&format!("rebase (pick): step {i}")));
     }

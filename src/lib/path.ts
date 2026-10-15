@@ -12,7 +12,7 @@ export const childPath = (dir: string, name: string) => (dir ? `${dir}/${name}` 
 const names = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
 /**
- * The explorer's order, as Finder and VS Code have it: folders first, then file2 before file10.
+ * The explorer's order: folders first, then file2 before file10.
  * Names the collator calls equal (README / readme, file2 / file02) by their code units, not by listing order.
  */
 export const compareEntries = (a: { name: string; isDir: boolean }, b: { name: string; isDir: boolean }) =>
@@ -20,7 +20,7 @@ export const compareEntries = (a: { name: string; isDir: boolean }, b: { name: s
 
 /**
  * For each of `paths` whose name a different path shares, the fewest of its last folders that
- * tell it apart from those ("x", else "a/x"), as VS Code's tabs show them; "" at the root.
+ * tell it apart from those ("x", else "a/x"); "" at the root.
  */
 export function distinctFolders(paths: string[]) {
   const byName = new Map<string, Set<string>>();

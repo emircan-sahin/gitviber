@@ -76,7 +76,7 @@ function WorktreeRootField() {
 
 type RemoteRow = Awaited<ReturnType<typeof api.remoteList>>[number];
 
-/** The repository's remotes: add, rename, repoint or remove one (VS Code's Add / Remove Remote). */
+/** The repository's remotes: add, rename, repoint or remove one. */
 function RemotesField() {
   const [remotes, setRemotes] = useState<RemoteRow[] | null>(null);
   // The remote being edited (its name then), or "" for a new one.
@@ -175,7 +175,7 @@ function RemotesField() {
 
 const who = (i: GitIdentity) => (i.name || i.email ? `${i.name ?? "no name"} <${i.email ?? "no email"}>` : "not set");
 
-/** As GitHub Desktop's repository settings: commit here as someone else than everywhere else. */
+/** Commit here as someone else than everywhere else. */
 function RepoIdentityField() {
   const [loaded, setLoaded] = useState<{ own: GitIdentity; global: GitIdentity } | null>(null);
   const [own, setOwn] = useState(false);

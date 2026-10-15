@@ -20,7 +20,7 @@ export interface Pane {
 }
 
 /**
- * VS Code-style stacked panes, for a fork's own and original lists. Each opens and closes on
+ * Stacked panes, for a fork's own and original lists. Each opens and closes on
  * its own; open ones share the height and resize against each other, and with all closed the
  * headers stack at the top. Collapsed state and sizes are remembered per `id`.
  *
@@ -80,7 +80,7 @@ function PaneHeader({ pane, open, onToggle }: { pane: Pane; open: boolean; onTog
         {pane.badge !== undefined && <CountBadge active={open}>{pane.badge}</CountBadge>}
         <span className="ml-1 min-w-0 truncate font-mono text-[10.5px] text-subtle">{pane.detail}</span>
       </button>
-      {/* Like VS Code's pane actions: out of the way until the header is hovered. */}
+      {/* Out of the way until the header is hovered. */}
       {pane.actions && <div className="flex shrink-0 items-center opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">{pane.actions}</div>}
     </div>
   );

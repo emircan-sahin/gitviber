@@ -84,7 +84,7 @@ pub fn to_file_text(bytes: Vec<u8>) -> FileText {
     }
 }
 
-/// UTF-16 text, known by its byte order mark as editors do (VS Code's detectEncodingByBOM).
+/// UTF-16 text, known by its byte order mark.
 /// NULs left after decoding mean it wasn't: UTF-32LE (FF FE 00 00) or a binary file.
 fn utf16_with_bom(bytes: &[u8]) -> Option<String> {
     let from: fn([u8; 2]) -> u16 = match bytes {

@@ -1,11 +1,11 @@
-// Language detection the way VS Code does it: file name first, then extension, then the
+// Language detection: file name first, then extension, then the
 // first line of content. Pure (no DOM, no React) so it runs under `node --test`.
 import { bundledLanguagesInfo } from "shiki/langs";
 import { basename } from "../path.ts";
 
-/** VS Code's "Ignore" language isn't bundled with Shiki; `ignoreGrammar` defines it. */
+/** The "Ignore" language isn't bundled with Shiki; `ignoreGrammar` defines it. */
 export const IGNORE = "ignore";
-// VS Code's grammar for .gitignore and friends: comments and negations are all it colors.
+// A grammar for .gitignore and friends: comments and negations are all it colors.
 export const ignoreGrammar = {
   name: IGNORE,
   scopeName: "source.ignore",
@@ -18,7 +18,7 @@ export const ignoreGrammar = {
 // Config files that are JSON or YAML depending on what the author chose.
 const JSON_OR_YAML = "json|yaml";
 
-/** Exact file names (lowercase), from VS Code's built-in language contributions. */
+/** Exact file names (lowercase). */
 const NAMES: Record<string, string> = {
   dockerfile: "docker",
   containerfile: "docker",
@@ -368,7 +368,7 @@ function jsonKind(head: string, truncated: boolean): "json" | "jsonc" | undefine
 const LABELS: Record<string, string> = { text: "Plain Text", [IGNORE]: "Ignore" };
 const names = new Map(bundledLanguagesInfo.map((l) => [l.id, l.name]));
 
-/** Human name for a language id, as VS Code shows it in the status bar. */
+/** Human name for a language id. */
 export function languageLabel(lang: string): string {
   return LABELS[lang] ?? names.get(lang) ?? lang;
 }

@@ -13,7 +13,7 @@ test("OSC 133 marks, with their exit code and the extensions other shells add", 
   // No status given.
   assert.deepEqual(parseMark("D"), { kind: "D" });
   assert.deepEqual(parseMark("D;"), { kind: "D" });
-  // Ghostty's continuation-line mark isn't read.
+  // A continuation-line mark isn't read.
   assert.equal(parseMark("P;k=s"), null);
   assert.equal(parseMark(""), null);
 });

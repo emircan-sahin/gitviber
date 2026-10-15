@@ -141,7 +141,7 @@
   color-scheme: light;
 }
 
-/* Named themes, from each one's own VS Code colors (Shiki's copy): surfaces, text, accent, git
+/* Named themes, from each one's own colors (Shiki's copy): surfaces, text, accent, git
    and diff colors. The sidebar and panel steps are derived where a theme has one background.
    Text, accent and status colors are nudged to the same AA floor as above, up to --elevated,
    with muted text kept between the text and subtle; a light theme's chips keep its original
@@ -496,7 +496,7 @@
   }
   body {
     /* No `antialiased`: on macOS it turns off the stem darkening native apps get, so light text on
-       the dark themes rendered a weight thinner than the same font in Finder or VS Code. */
+       the dark themes rendered a weight thinner than the same font in Finder. */
     @apply bg-sidebar text-foreground font-sans select-none;
     font-weight: var(--font-weight-normal);
     font-size: 12px;
@@ -1162,7 +1162,7 @@
   background-color: var(--find-current);
 }
 
-/* Monaco's file view: VS Code-style change bars in the gutter, a wedge where lines were deleted. */
+/* Monaco's file view: change bars in the gutter, a wedge where lines were deleted. */
 .monaco-editor .gv-bar {
   width: 3px !important;
   margin-left: 6px;

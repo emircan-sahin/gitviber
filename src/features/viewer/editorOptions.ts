@@ -69,7 +69,7 @@ export function fileOptions(s: Settings, wrap: boolean, blame: boolean, editable
     ...common(s, wrap),
     readOnly: !editable,
     matchBrackets: editable ? "always" : "never",
-    // Where typing goes, as VS Code shows it; only while typing can go there.
+    // Where typing goes; only while typing can go there.
     renderLineHighlight: editable ? "line" : "none",
     renderLineHighlightOnlyWhenFocus: true,
     lineDecorationsWidth: blame ? `${BLAME_CHARS + 3}ch` : 12,

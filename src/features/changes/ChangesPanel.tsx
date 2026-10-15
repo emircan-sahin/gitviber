@@ -179,7 +179,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   // Nested repos can't be marked viewed, so every path here is stageable.
   const viewedPaths = status.unstaged.filter((file) => !file.nested && viewed({ kind: "unstaged", file })).map((f) => f.path);
 
-  // Untracked files have nothing to restore; like VS Code, discarding one deletes it (to the Trash here).
+  // Untracked files have nothing to restore; discarding one deletes it (to the Trash here).
   // Tracked ones keep a copy of what they were in the Trash, which Undo (and ⌘Z) writes back.
   const discard = async (picked: FileChange[]) => {
     // Submodules: nothing to discard there, or to keep in the Trash.

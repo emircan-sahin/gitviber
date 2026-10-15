@@ -3,7 +3,7 @@ import type { IMarker, Terminal } from "@xterm/xterm";
 /**
  * An OSC 133 mark (shell integration): A a prompt starts, B the typed command does, C its output
  * does, D it ended, with its exit code when the shell gives one. C may say what was typed: fish's
- * `cmdline_url=` (percent-encoded, as kitty's), or our zsh's `cmdline=`, the rest of the mark as
+ * `cmdline_url=` (percent-encoded), or our zsh's `cmdline=`, the rest of the mark as
  * typed with control characters made spaces.
  */
 export function parseMark(data: string): { kind: "A" | "B" | "C" | "D"; exit?: number; command?: string } | null {
@@ -56,7 +56,7 @@ export function formatDuration(ms: number) {
   return h ? pair(h, "h", m, "m") : pair(m, "m", s, "s");
 }
 
-/** The mark's hover, as VS Code words its command decorations. */
+/** The mark's hover. */
 export function endTitle({ ms, exit }: CommandEnd) {
   const took = formatDuration(ms);
   if (exit === undefined) return `Ended after ${took}`;
@@ -120,7 +120,7 @@ interface Command {
 }
 
 /**
- * The commands the shell marks with OSC 133, as VS Code's and Ghostty's terminals read them: a
+ * The commands the shell marks with OSC 133: a
  * marker per prompt, a mark beside it once the command ends (red for a non-zero exit), and the
  * last command's output. Nothing is done per byte: xterm calls in only for the marks.
  */
@@ -166,7 +166,7 @@ export class CommandMarks {
       this.onPrompt();
     } else if (kind === "C" && this.current && !this.current.output) {
       this.current.output = this.term.registerMarker(0);
-      // Timed here, as Ghostty times it: from the command's start to its end, not from the prompt.
+      // Timed here: from the command's start to its end, not from the prompt.
       this.current.started = performance.now();
       this.current.command = command;
       this.commands = this.commands.filter((x) => !x.prompt.isDisposed);
@@ -204,8 +204,8 @@ export class CommandMarks {
   }
 
   /**
-   * The prompt of the command above (-1) or below (1) the top of the view scrolled to the top, as
-   * Ghostty's jump_to_prompt; below the last one, the bottom.
+   * The prompt of the command above (-1) or below (1) the top of the view scrolled to the top; below the
+   * last one, the bottom.
    */
   jump(dir: 1 | -1) {
     const top = this.term.buffer.active.viewportY;

@@ -55,7 +55,7 @@ const isInside = (path: string, dir: string) => path === dir || path.startsWith(
 /** `list` without the entries inside a folder also in it: trashing the folder takes them along. */
 const topmost = (list: Entry[]) => list.filter((e) => !list.some((d) => d !== e && d.isDir && isInside(e.path, d.path)));
 
-/** Lazy tree of the working directory, like VS Code's explorer, annotated with git status. */
+/** Lazy tree of the working directory, annotated with git status. */
 export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathMoved, onShowHistory, webUrl, ref }: Props) {
   const { children, expanded, setExpanded, loadDir, setOpen } = useLazyTree<Entry>({
     list: api.listDir,
@@ -64,7 +64,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     // The root stays expanded, so the tree comes back once the error clears.
     onRootError: (e) => toast("error", "Could not list repository", errorMessage(e)),
   });
-  // Keyboard cursor, separate from the open tab (activeKey) like VS Code's focused item.
+  // Keyboard cursor, separate from the open tab (activeKey).
   const [selected, setSelected] = useState<string | null>(null);
   // Rows picked with ⌘/⇧ (clicks or ⇧-arrows) from `anchor`, as in the Changes panel; null: just `selected`.
   const [picked, setPicked] = useState<{ paths: Set<string>; anchor: string } | null>(null);
@@ -169,7 +169,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   /** Where a ⇧-range starts: the last anchor while its row still shows (a collapsed folder or the filter can hide it). */
   const anchorFor = (fallback: string) => (shows(picked?.anchor) ? picked.anchor : fallback);
 
-  // ⌘-click (Ctrl off macOS) toggles a row, ⇧-click picks the range from the anchor; neither opens it, as in VS Code.
+  // ⌘-click (Ctrl off macOS) toggles a row, ⇧-click picks the range from the anchor; neither opens it.
   // The ⌘ check comes first, as in the Changes panel.
   const click = (e: Entry, ev: React.MouseEvent) => {
     setSelected(e.path);
@@ -271,7 +271,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
       toast("error", "Could not move to Trash", errorMessage(err));
     }
     if (!gone.length) return;
-    // Land on the next row outside the deleted entries, like VS Code.
+    // Land on the next row outside the deleted entries.
     const kept = (r: { entry: Entry }) => !gone.some((e) => isInside(r.entry.path, e.path));
     const i = rows.findIndex((r) => !kept(r));
     const next = rows.slice(i + 1).find(kept) ?? rows.slice(0, i).reverse().find(kept);

@@ -3,7 +3,7 @@
 # (D;status), as in
 # https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md
 # The prompt mark goes at the start of PS1, set as the last precmd hook and taken off again for the
-# other hooks, as Ghostty's zsh integration does, so it lands on the prompt's first line.
+# other hooks, so it lands on the prompt's first line.
 
 builtin typeset -gi _gitviber_ran=0
 builtin typeset -g _gitviber_mark=$'%{\e]133;A\a%}' _gitviber_ps1 _gitviber_marked

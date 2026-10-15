@@ -34,7 +34,7 @@ export async function pasteInto(p: Pane, fallback = "") {
   else if (got.kind === "image") pastePaths(p, [got.path]);
 }
 
-/** Several lines into a program without bracketed paste run one by one as they arrive: asked first, as in VS Code. */
+/** Several lines into a program without bracketed paste run one by one as they arrive: asked first. */
 export async function pasteText(p: Pane, text: string) {
   // Its shell is gone (exited).
   if (p.term.options.disableStdin) return;

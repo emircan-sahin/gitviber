@@ -110,7 +110,7 @@ pub fn cherry_pick(repo: &Path, sha: &str) -> Result<bool, String> {
     cherry_pick_many(repo, &[sha.to_string()])
 }
 
-/// Picks `shas` in that order (oldest first, as GitHub Desktop sends them) onto HEAD, returning
+/// Picks `shas` in that order (oldest first) onto HEAD, returning
 /// true if it stopped on conflicts. One whose changes HEAD already has is left out.
 pub fn cherry_pick_many(repo: &Path, shas: &[String]) -> Result<bool, String> {
     if shas.is_empty() {

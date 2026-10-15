@@ -24,7 +24,7 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
     setTabState(({ tabs: prev }) => {
       const existing = prev.find((t) => t.key === key);
       if (existing) return { tabs: prev.map((t) => (t.key === key ? { ...t, sel, preview: t.preview && !pin } : t)), active: key };
-      // Single click reuses the preview tab (VS Code style); double click keeps it.
+      // Single click reuses the preview tab; double click keeps it.
       const previewAt = prev.findIndex((t) => t.preview);
       const tab = { key, sel, preview: !pin };
       if (previewAt >= 0 && !pin) return { tabs: prev.map((t, i) => (i === previewAt ? tab : t)), active: key };
@@ -105,7 +105,7 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
 
   const pin = useCallback((key: string) => setTabState((st) => ({ ...st, tabs: st.tabs.map((t) => (t.key === key ? { ...t, preview: false } : t)) })), []);
 
-  // A preview tab typed into stays, as in VS Code: opening another file doesn't replace it.
+  // A preview tab typed into stays: opening another file doesn't replace it.
   const edited = useEdited();
   useEffect(() => {
     const typed = (t: Tab) => t.preview && edited.has(editPath(t.sel) ?? "");

@@ -49,7 +49,7 @@ export function needsYou(p: Pane, note?: Note, event?: NotifyEvent) {
 
 /**
  * A command that ran past the setting's threshold and ended out of sight marks its pane, and tells
- * the OS when the app is in the background: Ghostty's notify-on-command-finish. A pane on screen in
+ * the OS when the app is in the background. A pane on screen in
  * the app in front is seen, focused or not. An agent's pane has its own news (agents.ts).
  */
 export function commandEnded(p: Pane, end: CommandEnd) {

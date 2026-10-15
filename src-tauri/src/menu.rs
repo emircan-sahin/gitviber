@@ -65,7 +65,7 @@ const REVEAL: &str = if cfg!(target_os = "macos") {
     "Show in Folder"
 };
 
-/// GitHub Desktop's name for it.
+/// Names where the logs open: Finder on macOS.
 const SHOW_LOGS: &str = if cfg!(target_os = "macos") {
     "Show Logs in Finder"
 } else {

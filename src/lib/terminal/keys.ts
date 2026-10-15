@@ -16,7 +16,7 @@ let leftOptionDown = false;
 let stopWatchingOption = () => {};
 
 /**
- * macOS line editing, as in VS Code's terminal. xterm.js sends ⌥← / ⌥→ / ⌥⌦ as
+ * macOS line editing. xterm.js sends ⌥← / ⌥→ / ⌥⌦ as
  * `ESC[1;3D`-style sequences that neither zsh nor bash binds by default; the readline
  * sequences below work in both. ⌥⌫ is already ESC DEL (delete word).
  */
@@ -31,7 +31,7 @@ const LINE_EDIT: Record<string, string> = {
 
 const JUMP_COMMANDS = ["terminal.prevCommand", "terminal.nextCommand"] as const satisfies readonly CommandId[];
 
-/** ⌘Home/End/PgUp/PgDn, as in Ghostty and VS Code; a full-screen program's keys stay its own. */
+/** ⌘Home/End/PgUp/PgDn; a full-screen program's keys stay its own. */
 const SCROLL_KEYS: Record<string, (term: Terminal) => void> = {
   Home: (t) => t.scrollToTop(),
   End: (t) => t.scrollToBottom(),
@@ -41,7 +41,7 @@ const SCROLL_KEYS: Record<string, (term: Terminal) => void> = {
 
 /**
  * Off macOS only Ctrl+Home/End: Ctrl+PgUp/PgDn switch tabs in other terminals, and xterm pages with
- * Shift+PgUp/PgDn itself, as VS Code does.
+ * Shift+PgUp/PgDn itself.
  */
 function scrollKey(e: KeyboardEvent) {
   const alone = IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey && (e.key === "Home" || e.key === "End");
@@ -92,7 +92,7 @@ export function paneKeys(p: Pane) {
       e.preventDefault();
       return false;
     }
-    // ⌘A selects the terminal's text, as in VS Code, iTerm2 and Ghostty; the webview's own select
+    // ⌘A selects the terminal's text; the webview's own select
     // all only reached xterm's hidden text area.
     if (IS_MAC && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && letter === "a" && !appRunsFromTerminal(e) && !commandIn(TERMINAL_COMMANDS, e)) {
       if (e.type === "keydown") term.selectAll();

@@ -5,7 +5,7 @@ const RANK: Record<Pull["state"], number> = { open: 3, merged: 2, closed: 1 };
 /**
  * The PR a branch's badge shows, out of every cached list: one whose head is that branch of
  * `headRepo` (another fork's same-named branch isn't it). Open beats merged beats closed, then
- * the most recently updated, as cmux's sidebar picks. The same PR may sit in several lists, an
+ * the most recently updated. The same PR may sit in several lists, an
  * older copy still open: the newest copy of each counts. With the branch's `tip` (a short id),
  * a closed or merged PR must end there: a name reused since isn't its branch.
  */

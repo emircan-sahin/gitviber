@@ -70,7 +70,7 @@ test("content sniffing for unknown files", () => {
   assert.equal(languageFor("feed", '<?xml version="1.0"?>\n<rss/>'), "xml");
   assert.equal(languageFor("page", "<!DOCTYPE html>\n<html>"), "html");
   assert.equal(languageFor("config", "---\nkey: value\n"), "yaml");
-  // The name wins over content, as in VS Code.
+  // The name wins over content.
   assert.equal(languageFor("notes.md", "#!/bin/sh\n"), "markdown");
 });
 

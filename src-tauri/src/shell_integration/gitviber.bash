@@ -1,7 +1,7 @@
 # GitViber's shell integration for bash 4.4+. It marks where each prompt starts (OSC 133;A), where
 # a command's output starts (C) and how it ended (D;status), as in
 # https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md
-# Loaded as Ghostty loads its own: bash starts as `bash --login --posix` with ENV naming this file,
+# Loaded through ENV: bash starts as `bash --login --posix` with ENV naming this file,
 # which POSIX mode reads in place of the startup files; this ends POSIX mode and reads those.
 
 builtin unset ENV
