@@ -155,6 +155,7 @@ pub fn agent_close_tab(app: &AppHandle, id: &str) -> Res<String> {
 pub(super) fn forget_tab(id: &str) {
     ROUTES.with_borrow_mut(|r| r.close(id));
     super::downloads::forget(id);
+    super::popups::forget(Some(id));
 }
 
 /// Whether the tab is still there for its agents: live, or parked to load again.
@@ -249,6 +250,7 @@ pub(super) fn routed(id: &str) -> bool {
 pub(super) fn forget_all() {
     ROUTES.with_borrow_mut(Routes::clear);
     super::downloads::forget_all();
+    super::popups::forget(None);
     super::ASKED.with_borrow_mut(HashMap::clear);
 }
 

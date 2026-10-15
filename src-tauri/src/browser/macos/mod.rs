@@ -552,10 +552,14 @@ define_class!(
             action: &WKNavigationAction,
             _features: &WKWindowFeatures,
         ) -> Option<Retained<WKWebView>> {
-            popups::open(self, configuration, action).or_else(|| {
-                unsafe { web.loadRequest(&action.request()) };
-                None
-            })
+            match popups::open(self, configuration, action) {
+                popups::Popup::Tab(popup) => Some(popup),
+                popups::Popup::Blocked => None,
+                popups::Popup::InPlace => {
+                    unsafe { web.loadRequest(&action.request()) };
+                    None
+                }
+            }
         }
 
         #[unsafe(method(webViewDidClose:))]
@@ -881,7 +885,10 @@ pub fn create(
         .unwrap_or_else(|| unsafe { WKWebViewConfiguration::new(mtm) });
     let store = asked(id).store.unwrap_or_else(|| data_store(mtm));
     unsafe {
-        config.setWebsiteDataStore(&store);
+        // A popup keeps WebKit's: it must be the opener's very object, or WebKit raises.
+        if given.is_none() {
+            config.setWebsiteDataStore(&store);
+        }
         // Its own, so none of the app page's scripts (Tauri's IPC) reach this page.
         let content = WKUserContentController::new(mtm);
         page_tools::install(&content, id, agent::routed(id), mtm);

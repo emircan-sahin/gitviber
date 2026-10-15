@@ -26,6 +26,16 @@ pub fn opened(name: &str, url: &str) -> String {
     format!("popup opened as tab {name} ({shown}{more})")
 }
 
+/// No tab could be made (`why`, as Routes says it): the part before its advice.
+pub fn blocked(why: &str) -> String {
+    let why = why.split(": ").next().unwrap_or(why).trim_end_matches('.');
+    let mut chars = why.chars();
+    let why = chars.next().map_or_else(String::new, |first| {
+        first.to_lowercase().chain(chars).collect()
+    });
+    format!("popup blocked: {why}")
+}
+
 pub fn closed(name: &str) -> String {
     format!("tab {name} closed: its page called window.close()")
 }
@@ -58,6 +68,14 @@ mod tests {
         let long = format!("https://login.test/?state={}", "s".repeat(400));
         let said = opened("t1-popup1", &long);
         assert!(said.ends_with("…)") && said.chars().count() < 260);
+        assert_eq!(
+            blocked("This pane has 12 tabs: close one first, `tab close <name>`"),
+            "popup blocked: this pane has 12 tabs"
+        );
+        assert_eq!(
+            blocked("This browser tab is closed."),
+            "popup blocked: this browser tab is closed"
+        );
         assert_eq!(
             closed("t1-popup1"),
             "tab t1-popup1 closed: its page called window.close()"
