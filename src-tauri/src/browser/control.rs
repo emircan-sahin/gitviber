@@ -83,16 +83,16 @@ stopped. Replies end with what happened meanwhile, each line starting with →.
   scroll <up|down|ref|css> [px]
   wait <css> | --text <text> | --load | --download | --ms <n> [--timeout <ms>]
                                Until an element shows, the text does, the page has loaded, a
-                               download ends (one that ended in the minute before counts; prints
-                               its path, size and type), or the time is up; 10 s at most unless
-                               --timeout says (120 s at most)
+                               download of the tab's ends (prints its path, size and type), or
+                               the time is up; 10 s at most unless --timeout says (120 s at most)
   eval <js>                    Runs in the page; prints the result as JSON
   screenshot [path] [--ref <ref|css>]
                                A PNG of the page, or of one element; prints its path
   console [--errors] [--clear] What the page logged
   downloads [--clear]          The tab's downloaded files, newest first, with their paths: kept
                                in a folder of the tab's own (its newest 20, a day at most), gone
-                               when it closes; one that ends is told in the next reply
+                               when it closes; one that ends with no wait on is told in the
+                               next reply instead
   network [--failed] [--filter <text>] [--type fetch|xhr|ws|resource] [--clear]
                                What the page requested and loaded, one line each with an id;
                                the newest 300 requests and 500 other loads
@@ -219,6 +219,8 @@ pub enum Command {
     Press(String),
     Scroll(Scroll, Option<u32>),
     Wait(Wait, Duration),
+    /// Until a download of the tab's ends.
+    WaitDownload(Duration),
     Eval(String),
     Screenshot {
         path: Option<String>,
@@ -283,8 +285,6 @@ pub enum Wait {
     Css(String),
     Text(String),
     Load,
-    /// A download of the tab's to end.
-    Download,
     Ms(u64),
 }
 
@@ -499,13 +499,13 @@ fn scroll(args: &[String]) -> Result<Command, String> {
 }
 
 fn wait(args: &[String]) -> Result<Command, String> {
-    let (mut what, mut timeout, mut css) = (None, WAIT, vec![]);
+    let (mut what, mut timeout, mut css, mut download) = (None, WAIT, vec![], false);
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--text" => what = Some(Wait::Text(value(&mut it, arg)?.clone())),
             "--load" => what = Some(Wait::Load),
-            "--download" => what = Some(Wait::Download),
+            "--download" => download = true,
             "--ms" => what = Some(Wait::Ms(number(value(&mut it, arg)?, arg)?)),
             "--timeout" => {
                 timeout =
@@ -515,9 +515,10 @@ fn wait(args: &[String]) -> Result<Command, String> {
             _ => css.push(arg.as_str()),
         }
     }
-    let what = match (what, css.is_empty()) {
-        (Some(w), true) => w,
-        (None, false) => Wait::Css(css.join(" ")),
+    let what = match (what, css.is_empty(), download) {
+        (None, true, true) => return Ok(Command::WaitDownload(timeout)),
+        (Some(w), true, false) => w,
+        (None, false, false) => Wait::Css(css.join(" ")),
         _ => return Err(
             "Usage: gitviber browser wait <css> | --text <text> | --load | --download | --ms <n>"
                 .into(),
@@ -1125,7 +1126,7 @@ mod tests {
         );
         assert_eq!(
             parse("wait", &args("--download --timeout 60000")),
-            Ok(Command::Wait(Wait::Download, Duration::from_secs(60)))
+            Ok(Command::WaitDownload(Duration::from_secs(60)))
         );
         assert_eq!(parse("downloads", &[]), Ok(Command::Downloads(false)));
         assert_eq!(
@@ -1197,6 +1198,7 @@ mod tests {
             ("wait", "--text"),
             ("wait", "--load .x"),
             ("wait", "--download report.pdf"),
+            ("wait", "--download --load"),
             ("downloads", "--all"),
             ("downloads", "--clear now"),
             ("scroll", "down far"),

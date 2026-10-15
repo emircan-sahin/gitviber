@@ -403,11 +403,12 @@ impl Tab {
                 self.act(json!({ "cmd": "scroll", "to": to, "px": px }))
             }
             Command::Wait(what, timeout) => self.wait(what, timeout),
+            Command::WaitDownload(timeout) => downloads::wait(&self.id, timeout).map(Reply::out),
             Command::Eval(js) => self.eval(&js),
             Command::Screenshot { path, target } => self.screenshot(path, target, cwd),
             Command::Console { errors, clear } => self.console(errors, clear),
             Command::Downloads(clear) => {
-                let cache = self.app.path().app_cache_dir().map_err(|e| e.to_string())?;
+                let cache = downloads::cache(&self.app)?;
                 Ok(downloads::listing(&cache, &self.id, clear, SystemTime::now()))
             }
             Command::Network(ask) => self.network(ask),
@@ -511,9 +512,6 @@ impl Tab {
             std::thread::sleep(Duration::from_millis(ms));
             return Ok(Reply::out(format!("Waited {ms} ms")));
         }
-        if what == Wait::Download {
-            return downloads::wait(&self.id, timeout).map(Reply::out);
-        }
         let until = Instant::now() + timeout;
         let found = |input: Value| match self.script(input) {
             Ok(v) if v["invalid"] == true => Err("That isn't a CSS selector.".to_string()),
@@ -532,7 +530,7 @@ impl Tab {
                     found(json!({ "cmd": "hasText", "text": text }))?,
                     format!("{text:?} to show"),
                 ),
-                Wait::Ms(_) | Wait::Download => (true, String::new()),
+                Wait::Ms(_) => (true, String::new()),
             };
             if done {
                 return Ok(Reply::out(format!("Done waiting for {said}")));

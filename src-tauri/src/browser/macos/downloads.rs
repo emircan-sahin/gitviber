@@ -16,18 +16,14 @@ use objc2_web_kit::{
     WKDownload, WKDownloadDelegate, WKNavigationActionPolicy, WKNavigationResponse,
     WKNavigationResponsePolicy,
 };
-use std::cell::{OnceCell, RefCell};
-use std::collections::HashSet;
+use std::cell::RefCell;
 use std::path::PathBuf;
-use std::time::{Instant, SystemTime};
-use tauri::{AppHandle, Manager};
+use std::time::SystemTime;
+use tauri::AppHandle;
 
 thread_local! {
     /// Each download going, with what saves it: WebKit holds its delegate weakly.
     static GOING: RefCell<Vec<(Retained<WKDownload>, Retained<Saver>)>> = RefCell::default();
-    /// The app's cache folder, once a download needed it, and the tabs with a folder in it.
-    static CACHE: OnceCell<PathBuf> = const { OnceCell::new() };
-    static FOLDERS: RefCell<HashSet<String>> = RefCell::default();
 }
 
 /// A link with `download`: saved for an agent, else left to the system browser.
@@ -69,6 +65,7 @@ pub(super) fn began(delegate: &Delegate, download: &WKDownload) {
         refused: RefCell::default(),
     });
     let saver: Retained<Saver> = unsafe { msg_send![super(saver), init] };
+    downloads::state().began(&d.id, agent::pane_of(&d.id));
     unsafe { download.setDelegate(Some(objc2::runtime::ProtocolObject::from_ref(&*saver))) };
     GOING.with_borrow_mut(|g| g.push((download.retain(), saver)));
 }
@@ -96,19 +93,13 @@ pub(super) fn forget(id: &str) {
         unsafe { download.cancel(None) };
     }
     downloads::state().forget(id);
-    if FOLDERS.with_borrow_mut(|f| f.remove(id)) {
-        if let Some(cache) = CACHE.with(|c| c.get().cloned()) {
-            let _ = std::fs::remove_dir_all(downloads::base(&cache).join(id));
-        }
-    }
+    downloads::remove_folder(id);
 }
 
 /// Every agent tab went (the app page reloaded): theirs too.
 pub(super) fn forget_all() {
-    let ids: Vec<String> = FOLDERS.with_borrow(|f| f.iter().cloned().collect());
-    let going: Vec<String> =
-        GOING.with_borrow(|g| g.iter().map(|(_, s)| s.ivars().id.clone()).collect());
-    for id in ids.into_iter().chain(going) {
+    let ids = downloads::state().ids();
+    for id in ids {
         forget(&id);
     }
 }
@@ -149,7 +140,6 @@ define_class!(
             match self.place(&suggested.to_string()) {
                 Ok(path) => {
                     let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
-                    downloads::state().started(&self.ivars().id, path.clone());
                     *self.ivars().path.borrow_mut() = Some(path);
                     done.call((Retained::as_ptr(&url).cast_mut(),));
                 }
@@ -178,13 +168,21 @@ define_class!(
         #[unsafe(method(download:didFailWithError:resumeData:))]
         fn failed(&self, download: &WKDownload, error: &NSError, _resume: Option<&NSData>) {
             const CANCELLED: isize = -999;
+            // NSURLErrorCannotCreateFile: what's at its path isn't its own.
+            const NOT_MADE: isize = -3000;
             let why = match (self.ivars().refused.take(), error.code()) {
                 (Some(why), _) => why,
                 (None, CANCELLED) => "cancelled".into(),
                 (None, _) => error.localizedDescription().to_string(),
             };
-            // Nothing half written is left to read.
-            if let Some(path) = self.ivars().path.borrow().as_ref() {
+            // Nothing half written is left to read; only a file it made.
+            if let Some(path) = self
+                .ivars()
+                .path
+                .borrow()
+                .as_ref()
+                .filter(|_| error.code() != NOT_MADE)
+            {
                 let _ = std::fs::remove_file(path);
             }
             let outcome = self.failed_as(why);
@@ -197,18 +195,12 @@ impl Saver {
     /// A free path in the tab's folder for the file the server suggests.
     fn place(&self, suggested: &str) -> Result<PathBuf, String> {
         let d = self.ivars();
-        let cache = match CACHE.with(|c| c.get().cloned()) {
-            Some(cache) => cache,
-            None => {
-                let cache = d.app.path().app_cache_dir().map_err(|e| e.to_string())?;
-                CACHE.with(|c| c.get_or_init(|| cache).clone())
-            }
-        };
-        let folder = downloads::tab_folder(&cache, &d.id, SystemTime::now())
+        let cache = downloads::cache(&d.app)?;
+        let live = |id: &str| downloads::state().live(id);
+        let folder = downloads::tab_folder(&cache, &d.id, SystemTime::now(), live)
             .map_err(|e| format!("couldn't make its folder: {e}"))?;
-        FOLDERS.with_borrow_mut(|f| f.insert(d.id.clone()));
         let name = downloads::file_name(suggested);
-        let path = downloads::free_path(&folder, &name, |p| p.exists());
+        let path = downloads::state().claim(&d.id, &folder, &name);
         *d.name.borrow_mut() = path
             .file_name()
             .map_or(name, |n| n.to_string_lossy().into_owned());
@@ -227,8 +219,7 @@ impl Saver {
         let d = self.ivars();
         GOING.with_borrow_mut(|g| g.retain(|(w, _)| !std::ptr::eq(&**w, download)));
         let path = d.path.borrow().clone();
-        let waited =
-            downloads::state().ended(&d.id, path.as_deref(), outcome.clone(), Instant::now());
+        let waited = downloads::state().ended(&d.id, path.as_deref(), outcome.clone());
         if !waited {
             if let Some((pty, name)) = agent::pane_of(&d.id) {
                 notes::note(pty, Some((&d.id, &name)), outcome.note());
