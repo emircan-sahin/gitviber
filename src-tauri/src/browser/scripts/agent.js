@@ -32,6 +32,44 @@ const cut = (s, n = NAME) => {
 };
 const quote = (s) => JSON.stringify(s);
 
+// A same-origin frame's page is read and acted in as part of this one: each element in its own
+// document, with that document's window, viewport and coordinates.
+const docOf = (el) => el.ownerDocument ?? document;
+const viewOf = (el) => docOf(el).defaultView ?? window;
+function styleOf(el) {
+  const view = viewOf(el);
+  return view !== window && view.getComputedStyle ? view.getComputedStyle(el) : getComputedStyle(el);
+}
+
+/** A frame's document, or nothing when it's another origin's (or no frame). */
+function frameDoc(el) {
+  try {
+    return el.contentDocument ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The <iframe>s an element is inside, innermost first. */
+function framesOf(el) {
+  const out = [];
+  for (let view = viewOf(el); view !== window && view.frameElement; view = viewOf(view.frameElement)) out.push(view.frameElement);
+  return out;
+}
+
+/** Point `at` of a frame's viewport in the viewport of the window above it. */
+function above(frame, at) {
+  const r = frame.getBoundingClientRect();
+  const s = styleOf(frame);
+  return { x: at.x + r.x + (frame.clientLeft ?? 0) + (parseFloat(s.paddingLeft) || 0), y: at.y + r.y + (frame.clientTop ?? 0) + (parseFloat(s.paddingTop) || 0) };
+}
+
+/** Point `at` of `el`'s viewport in the top one, where native input and screenshots are. */
+const onTop = (el, at) => framesOf(el).reduce((p, frame) => above(frame, p), at);
+
+/** On a page still shown: an element of a frame that navigated, or was taken out, is stale. */
+const live = (el) => !!el?.isConnected && (docOf(el) === document || !!docOf(el).defaultView);
+
 function roleOf(el) {
   const explicit = el.getAttribute("role")?.trim().split(/\s+/)[0];
   if (explicit) return explicit === "none" || explicit === "presentation" ? null : explicit;
@@ -109,6 +147,21 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
     } else full = true;
   };
   const count = (node) => (node.nodeType === 1 ? 1 + [...node.childNodes].reduce((n, c) => n + count(c), 0) : 0);
+  // A same-origin frame's page goes on in the tree; another origin's can't be read from here.
+  const frame = (el, level, muted) => {
+    const name = nameOf(el, false);
+    const inner = frameDoc(el);
+    if (!inner) {
+      let origin = "of unknown origin";
+      try {
+        origin = new URL(el.getAttribute("src") || "about:blank", docOf(el).baseURI).origin;
+      } catch {}
+      return emit(level, `- iframe${name ? ` ${quote(cut(name))}` : ""} (cross-origin frame ${origin}: not readable from the page)`);
+    }
+    if (!interactive) emit(level, line(el, "iframe", name, null));
+    const body = inner.body ?? inner.documentElement;
+    if (body) visit(body, interactive ? level : level + 1, false, muted);
+  };
   // `muted`: under a title, whose text its name says already.
   const visit = (node, level, pointer, muted) => {
     if (full) return void (omitted += count(node));
@@ -121,8 +174,9 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
     if (node.nodeType !== 1 || SKIP.has(node.localName)) return;
     const el = node;
     if (el.hidden || el.getAttribute("aria-hidden") === "true") return;
-    const style = getComputedStyle(el);
+    const style = styleOf(el);
     if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return;
+    if (el.localName === "iframe") return frame(el, level, muted);
     // A div that takes clicks (React's onClick) shows only as a pointer where its parent has none.
     const role = roleOf(el) ?? ((style.cursor === "pointer" && !pointer) || el.hasAttribute("onclick") ? "clickable" : null);
     let next = level;
@@ -160,7 +214,8 @@ function snapshot({ file = false, ...ask }) {
 /** An element's box in the viewport, CSS px: x, y, width, height. */
 function boxOf(el) {
   const r = rectOf(el);
-  return [r.x, r.y, r.width, r.height].map(Math.round);
+  const at = onTop(el, { x: r.x, y: r.y });
+  return [at.x, at.y, r.width, r.height].map(Math.round);
 }
 
 /** Matches a find shows at most, each with the line before and after it. */
@@ -224,7 +279,7 @@ function get({ what, target, names = [] }) {
       return { out: capped(names[0] === "value" ? masked(el, value) : value, GET_TEXT) };
     }
     case "styles": {
-      const style = getComputedStyle(el);
+      const style = styleOf(el);
       return { out: (names.length ? names : STYLES).map((p) => `${p}: ${style.getPropertyValue(p)}`).join("\n") };
     }
     case "box": {
@@ -252,7 +307,7 @@ function refOf(el) {
 function prune() {
   const gone = [];
   for (const [ref, weak] of state.refs) {
-    if (weak.deref()?.isConnected) continue;
+    if (live(weak.deref())) continue;
     state.refs.delete(ref);
     gone.push(ref);
   }
@@ -265,7 +320,7 @@ function resolve(target) {
   if (ref) {
     const name = `e${ref[1]}`;
     const el = state.refs.get(name)?.deref();
-    if (el?.isConnected) return el;
+    if (live(el)) return el;
     // Past the highest ever given: a ref made up, not one gone stale.
     if (Number(ref[1]) >= state.next) throw new Error(`No ref ${name} on this page: take a new snapshot`);
     throw new Error(`${name} is stale: take a new snapshot`);
@@ -299,7 +354,7 @@ const frame = () =>
 
 /** An element's box in the viewport; a display: contents one has none, so its children's together. */
 function rectOf(el) {
-  if (getComputedStyle(el).display !== "contents") return el.getBoundingClientRect();
+  if (styleOf(el).display !== "contents") return el.getBoundingClientRect();
   const boxes = [...(el.children ?? [])].map(rectOf).filter((r) => r.width && r.height);
   if (!boxes.length) return { x: 0, y: 0, width: 0, height: 0 };
   const x = Math.min(...boxes.map((r) => r.x)), y = Math.min(...boxes.map((r) => r.y));
@@ -309,11 +364,25 @@ function rectOf(el) {
 
 /** Brought into the viewport once, at once, unless it's all there: a smooth scroll asked again each try never lands. */
 function into(el) {
+  const shown = (r, view) => r.x >= 0 && r.y >= 0 && r.x + r.width <= view.innerWidth && r.y + r.height <= view.innerHeight;
   const r = rectOf(el);
-  const shown = r.x >= 0 && r.y >= 0 && r.x + r.width <= window.innerWidth && r.y + r.height <= window.innerHeight;
-  if (shown) return;
-  const target = getComputedStyle(el).display === "contents" ? el.children?.[0] : el;
-  target?.scrollIntoView?.({ block: "center", inline: "center", behavior: "instant" });
+  if (!shown(r, viewOf(el))) {
+    const target = styleOf(el).display === "contents" ? el.children?.[0] : el;
+    target?.scrollIntoView?.({ block: "center", inline: "center", behavior: "instant" });
+  }
+  // Then each window above, as far as the element's box needs and no further.
+  const box = rectOf(el);
+  let at = { x: box.x, y: box.y };
+  for (const frame of framesOf(el)) {
+    const view = viewOf(frame);
+    let p = above(frame, at);
+    if (!shown({ x: p.x, y: p.y, width: box.width, height: box.height }, view)) {
+      const left = p.x + box.width / 2 - view.innerWidth / 2, top = p.y + box.height / 2 - view.innerHeight / 2;
+      view.scrollBy?.({ left, top, behavior: "instant" });
+      p = above(frame, at);
+    }
+    at = p;
+  }
 }
 
 /** How an element reads in an error: <div#consent.banner>. */
@@ -327,8 +396,8 @@ const disabled = (el) => el.matches?.(":disabled") || el.disabled === true || el
 
 /** Why an element can't be acted on now, or nothing: on the page, drawn, and enabled. */
 function unready(el, enabled) {
-  if (!el.isConnected) return "left the page: take a new snapshot";
-  const style = getComputedStyle(el);
+  if (!live(el)) return "left the page: take a new snapshot";
+  const style = styleOf(el);
   if (style.visibility === "hidden" || style.visibility === "collapse") return "isn't visible (visibility: hidden)";
   const contents = style.display === "contents";
   if (!contents && !el.getClientRects().length) return "isn't visible (display: none, here or above)";
@@ -348,8 +417,8 @@ function reaches(el, hit) {
 }
 
 /** The top element at a point, into shadow roots as far as they go. */
-function top(x, y) {
-  let hit = document.elementFromPoint(x, y);
+function top(doc, x, y) {
+  let hit = doc.elementFromPoint(x, y);
   while (hit?.shadowRoot) {
     const inner = hit.shadowRoot.elementFromPoint(x, y);
     if (!inner || inner === hit) break;
@@ -358,9 +427,9 @@ function top(x, y) {
   return hit;
 }
 
-/** Why the top element at `at` isn't `el`, or nothing. */
-function covered(el, at) {
-  const over = top(at.x, at.y);
+/** Why the top element at `at` (in `el`'s viewport) isn't `el`, or nothing. */
+function coveredIn(el, at) {
+  const over = top(docOf(el), at.x, at.y);
   if (over && reaches(el, over)) return null;
   if (!over) return "is outside the viewport";
   if (over.contains?.(el)) return "doesn't take the pointer (pointer-events: none?)";
@@ -368,6 +437,16 @@ function covered(el, at) {
   let cover = over;
   while (cover.parentElement && !cover.parentElement.contains(el)) cover = cover.parentElement;
   return `is covered by ${tagOf(cover)}`;
+}
+
+/** As coveredIn, and each frame `el` is in on top at that point in the window above it. */
+function covered(el, at) {
+  let why = coveredIn(el, at);
+  for (let [p, frames] = [at, framesOf(el)]; !why && frames.length; frames = frames.slice(1)) {
+    p = above(frames[0], p);
+    why = coveredIn(frames[0], p);
+  }
+  return why;
 }
 
 /**
@@ -390,8 +469,9 @@ async function point(el, { enabled = true, hit = true } = {}) {
       if (r.x !== was.x || r.y !== was.y || r.width !== was.width || r.height !== was.height) why = "is still moving";
       else {
         // The middle of what shows of it: a box taller than the viewport is clicked where it shows.
-        const left = Math.max(r.x, 0), right = Math.min(r.x + r.width, window.innerWidth);
-        const high = Math.max(r.y, 0), low = Math.min(r.y + r.height, window.innerHeight);
+        const view = viewOf(el);
+        const left = Math.max(r.x, 0), right = Math.min(r.x + r.width, view.innerWidth);
+        const high = Math.max(r.y, 0), low = Math.min(r.y + r.height, view.innerHeight);
         const at = { x: (left + right) / 2, y: (high + low) / 2 };
         if (right <= left || low <= high) why = "is outside the viewport";
         else if (!hit || !(why = covered(el, at))) return at;
@@ -403,7 +483,7 @@ async function point(el, { enabled = true, hit = true } = {}) {
 
 function mouse(el, types, at) {
   for (const type of types) {
-    const init = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons: type.endsWith("down") ? 1 : 0, ...at };
+    const init = { bubbles: true, cancelable: true, composed: true, view: viewOf(el), button: 0, buttons: type.endsWith("down") ? 1 : 0, ...at };
     el.dispatchEvent(type.startsWith("pointer") ? new PointerEvent(type, { ...init, pointerId: 1, pointerType: "mouse", isPrimary: true }) : new MouseEvent(type, init));
   }
 }
@@ -419,7 +499,7 @@ function setValue(el, value) {
 
 /** Text in at the caret as the editor would put it (input events and all), else set. */
 function insert(el, text) {
-  if (document.execCommand("insertText", false, text)) return;
+  if (docOf(el).execCommand("insertText", false, text)) return;
   if (fieldOf(el)) setValue(el, el.value + text);
 }
 
@@ -507,10 +587,10 @@ async function fill({ target, text, secret = false }) {
   if (kind === "format") setValue(el, text);
   else {
     if (fieldOf(el)) el.select?.();
-    else window.getSelection?.()?.selectAllChildren(el);
+    else viewOf(el).getSelection?.()?.selectAllChildren(el);
     // Typed as the editor types: it holds to a maxlength, and the page's handlers see it. Set
     // only where that does nothing.
-    if (!document.execCommand?.(text ? "insertText" : "delete", false, text)) {
+    if (!docOf(el).execCommand?.(text ? "insertText" : "delete", false, text)) {
       if (fieldOf(el)) setValue(el, text);
       else el.textContent = text;
     }
@@ -566,7 +646,9 @@ function press({ key: chord }) {
     if (!flag) throw new Error(`Not a modifier: ${m} (Meta, Control, Alt, Shift)`);
     mods[flag] = true;
   }
-  const el = document.activeElement ?? document.body;
+  let el = document.activeElement ?? document.body;
+  // Focus inside a same-origin frame: the key goes to what has it there.
+  for (let inner = frameDoc(el); inner?.activeElement; inner = frameDoc(el)) el = inner.activeElement;
   if (keyEvent(el, "keydown", key, mods)) {
     const command = mods.metaKey || mods.ctrlKey;
     if (key === "Enter" && !command) {
@@ -578,10 +660,10 @@ function press({ key: chord }) {
       const next = all[(all.indexOf(el) + (mods.shiftKey ? -1 : 1) + all.length) % all.length];
       next?.focus();
     } else if (key === "Backspace" || key === "Delete") {
-      document.execCommand(key === "Backspace" ? "delete" : "forwardDelete");
+      docOf(el).execCommand(key === "Backspace" ? "delete" : "forwardDelete");
     } else if (command && key.toLowerCase() === "a") {
       if (fieldOf(el)) el.select();
-      else document.execCommand("selectAll");
+      else docOf(el).execCommand("selectAll");
     } else if (key === " " && (el.localName === "button" || el.type === "checkbox" || el.type === "radio")) {
       el.click();
     } else if (key.length === 1 && !command && keyEvent(el, "keypress", key, mods)) {
@@ -651,13 +733,13 @@ function scroll({ to, px }) {
     const by = px ?? Math.round(window.innerHeight * 0.8);
     window.scrollBy({ top: to === "up" ? -by : by, behavior: "instant" });
   } else {
-    resolve(to).scrollIntoView?.({ block: "center", inline: "center", behavior: "instant" });
+    into(resolve(to));
   }
   const most = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
   return { out: `Scrolled to ${Math.round(window.scrollY)} of ${most}` };
 }
 
-const shows = (el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden";
+const shows = (el) => el.getClientRects().length > 0 && styleOf(el).visibility !== "hidden";
 
 /** For wait: whether an element matching `css` shows, and how many match. */
 function exists({ css }) {
@@ -685,6 +767,12 @@ function pageState() {
   return [location.href, document.getElementsByTagName("*").length, Math.round(window.scrollY ?? 0), focused?.localName, value, dialogs()].join("|");
 }
 
+/** The page's document and each same-origin frame's, however deep. */
+function documents(doc = document) {
+  const frames = [...(doc.querySelectorAll?.("iframe") ?? [])].map(frameDoc).filter(Boolean);
+  return [doc, ...frames.flatMap((inner) => documents(inner))];
+}
+
 /** What changes on the page from now, an action's, until `changes` reads it. */
 function watch() {
   state.watch?.observer.disconnect();
@@ -704,7 +792,7 @@ function watch() {
     }
   };
   const observer = new MutationObserver(count);
-  observer.observe(document, { subtree: true, childList: true, characterData: true, attributes: true });
+  for (const doc of documents()) observer.observe(doc, { subtree: true, childList: true, characterData: true, attributes: true });
   state.watch = { observer, seen, count, dialogs: dialogs() };
   return {};
 }
@@ -739,7 +827,8 @@ function view({ target = null, clip = null, refs = false }) {
   if (el) {
     into(el);
     const b = rectOf(el);
-    r = { x: b.x, y: b.y, w: b.width, h: b.height };
+    const at = onTop(el, b);
+    r = { x: at.x, y: at.y, w: b.width, h: b.height };
   }
   const x0 = Math.max(r.x, 0), y0 = Math.max(r.y, 0);
   const x1 = Math.min(r.x + r.w, window.innerWidth), y1 = Math.min(r.y + r.h, window.innerHeight);
@@ -750,10 +839,11 @@ function view({ target = null, clip = null, refs = false }) {
     walk({ interactive: true, most: FILE_LINES, chars: FILE_CHARS });
     for (const [ref, weak] of state.refs) {
       const it = weak.deref();
-      if (!it?.isConnected || !it.getClientRects().length || labels.length === LABELS) continue;
-      const b = it.getBoundingClientRect();
-      if (b.x + b.width <= x0 || b.y + b.height <= y0 || b.x >= x1 || b.y >= y1) continue;
-      labels.push({ ref, x: b.x, y: b.y, w: b.width, h: b.height });
+      if (!live(it) || !it.getClientRects().length || labels.length === LABELS) continue;
+      const b = rectOf(it);
+      const at = onTop(it, b);
+      if (at.x + b.width <= x0 || at.y + b.height <= y0 || at.x >= x1 || at.y >= y1) continue;
+      labels.push({ ref, x: at.x, y: at.y, w: b.width, h: b.height });
     }
   }
   return { rect, labels };
@@ -766,17 +856,17 @@ function wellFormed(_key, value) {
 
 /**
  * Where an action acts, for agent.rs: `target`'s point once it's actionable, or the point `x`,
- * `y` itself; and what's there, for its reply.
+ * `y` itself, in the top viewport even for an element in a frame; and what's there.
  */
 async function aim({ target = null, x = null, y = null }) {
   if (target !== null) {
     const el = resolve(target);
-    return { ...(await point(el)), label: label(el) };
+    return { ...onTop(el, await point(el)), label: label(el) };
   }
   if (!(x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight)) {
     throw new Error(`${x},${y} is outside the ${window.innerWidth}×${window.innerHeight} viewport`);
   }
-  const over = top(x, y);
+  const over = top(document, x, y);
   return { x, y, label: over ? label(over) : "nothing" };
 }
 
