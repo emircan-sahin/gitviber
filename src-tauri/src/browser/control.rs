@@ -54,6 +54,10 @@ fill, select and --synthetic go by the page's script.
                                idle minutes, private or shared, origin and title
   tab close [name]             Close a tab once its running command is done: the one a command
                                would go to, unless named
+  tab release [name]           Give a tab the user took back to the pane's agents: a press or a
+                               key of the user's in a tab takes it, and while it's theirs only
+                               commands that read it run (snapshot, get, find, screenshot,
+                               console, network, url); the tab's own Give back button does too
   --tab <name>                 With any command: the tab it goes to
 
   session save <name> [--force]
@@ -275,6 +279,40 @@ pub enum Command {
     Appearance(Option<bool>),
 }
 
+impl Command {
+    /// Whether it acts on the page, or changes how it shows, rather than reads it: refused on
+    /// a tab the user has. Named one by one, so a new command says which it is.
+    pub fn acts(&self) -> bool {
+        match self {
+            Self::Open(_)
+            | Self::Back
+            | Self::Forward
+            | Self::Reload
+            | Self::Click(_)
+            | Self::Fill(..)
+            | Self::Type { .. }
+            | Self::Select(..)
+            | Self::Hover(_)
+            | Self::Drag(..)
+            | Self::Press { .. }
+            | Self::Upload(..)
+            | Self::Scroll(..)
+            | Self::Eval(_)
+            | Self::Device(_)
+            | Self::Appearance(_) => true,
+            // A held key let go: never left down on a tab the user took.
+            Self::Key(down, _) => *down,
+            Self::Url
+            | Self::Snapshot { .. }
+            | Self::Wait(..)
+            | Self::Screenshot { .. }
+            | Self::Console { .. }
+            | Self::Network(_)
+            | Self::Dialogs(_) => false,
+        }
+    }
+}
+
 /// A command for the pane's tabs or sessions, apart from any one page's (Command).
 #[derive(Debug, PartialEq)]
 pub enum Pane {
@@ -296,6 +334,8 @@ pub enum Tabs {
     },
     List,
     Close(Option<String>),
+    /// Back to its agents from the user.
+    Release(Option<String>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -476,7 +516,7 @@ const MOST_IDLE: u32 = 120;
 
 fn tabs(args: &[String]) -> Result<Tabs, String> {
     let usage = "Usage: gitviber browser tab new [name] [url] [--shared] [--session <name>] \
-                 [--idle <minutes>] | tab list | tab close [name]";
+                 [--idle <minutes>] | tab list | tab close [name] | tab release [name]";
     let (mut shared, mut session, mut idle, mut words) = (false, None, None, vec![]);
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -515,6 +555,8 @@ fn tabs(args: &[String]) -> Result<Tabs, String> {
         ["list"] if !flags => Ok(Tabs::List),
         ["close"] if !flags => Ok(Tabs::Close(None)),
         ["close", name] if !flags => Ok(Tabs::Close(Some(tab_name(name)?))),
+        ["release"] if !flags => Ok(Tabs::Release(None)),
+        ["release", name] if !flags => Ok(Tabs::Release(Some(tab_name(name)?))),
         _ => Err(usage.into()),
     }
 }
@@ -827,6 +869,39 @@ pub struct Named {
     pub used: Instant,
     /// When it closes unused (`unused_after`), unless a command or the user's eye comes first.
     pub closes: Option<Instant>,
+    pub owner: Owner,
+}
+
+/// Who drives a tab: its agents, or the user, who took it with a press or a key of their own
+/// and has it until they give it back. Never back on a timer.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Owner {
+    #[default]
+    Agent,
+    User,
+}
+
+impl std::fmt::Display for Owner {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Agent => "agent",
+            Self::User => "user",
+        })
+    }
+}
+
+/// What a command that acts on a tab the user has says.
+pub fn users_tab(name: &str) -> String {
+    format!(
+        "The user is using tab {name}: read it (snapshot, get, find, screenshot, console, \
+         network, url) or open your own tab"
+    )
+}
+
+/// What a command running as the user took its tab says.
+pub fn interrupted(name: &str) -> String {
+    format!("Interrupted: the user took tab {name}; take a fresh snapshot before trying again")
 }
 
 impl Named {
@@ -927,6 +1002,7 @@ impl Routes {
             idle: new.idle,
             used: now,
             closes: unused_after(new.idle).map(|after| now + after),
+            owner: Owner::Agent,
         });
         Ok(name)
     }
@@ -963,6 +1039,30 @@ impl Routes {
     /// A live pane's agent tab by its id: whether there's one, and what it was opened with.
     pub fn named(&self, id: &str) -> Option<&Named> {
         self.all().find(|t| t.route.id == id)
+    }
+
+    /// The user's own press or key in tab `id`: theirs from now. Its name when it was its
+    /// agents' till now; None for one that was the user's already, or no agent's tab.
+    pub fn take(&mut self, id: &str) -> Option<String> {
+        self.owned(id, Owner::User)
+    }
+
+    /// Tab `id` back to its agents: its name when the user had it.
+    pub fn give_back(&mut self, id: &str) -> Option<String> {
+        self.owned(id, Owner::Agent)
+    }
+
+    fn owned(&mut self, id: &str, owner: Owner) -> Option<String> {
+        let mut tabs = self.panes.values_mut().flat_map(|p| &mut p.tabs);
+        let t = tabs.find(|t| t.route.id == id)?;
+        (std::mem::replace(&mut t.owner, owner) != owner).then(|| t.name.clone())
+    }
+
+    /// Tab `id`'s name while the user has it.
+    pub fn users(&self, id: &str) -> Option<&str> {
+        self.named(id)
+            .filter(|t| t.owner == Owner::User)
+            .map(|t| t.name.as_str())
     }
 
     /// Tab `id` out of its pane.
@@ -1005,6 +1105,7 @@ pub struct Listed {
     pub shared: bool,
     pub origin: String,
     pub title: String,
+    pub owner: Owner,
 }
 
 #[derive(Serialize, Debug, PartialEq, Clone, Copy)]
@@ -1601,6 +1702,84 @@ mod tests {
         assert_eq!(routes.tab(99, None, all), Ok(None));
         routes.clear();
         assert_eq!(routes.tab(2, None, open(&["t2"])), Ok(None));
+    }
+
+    #[test]
+    fn the_user_takes_a_tab_with_a_press_and_gives_it_back_only_when_they_say() {
+        let mut routes = Routes::default();
+        let all = |_: &str| true;
+        let name = routes
+            .add(1, new(Some("docs"), false), route("a"), all)
+            .unwrap();
+        routes.add(1, new(None, true), route("b"), all).unwrap();
+        assert_eq!(routes.users("a"), None);
+        assert_eq!(routes.named("a").unwrap().owner, Owner::Agent);
+        // Theirs once, the change told once.
+        assert_eq!(routes.take("a"), Some(name.clone()));
+        assert_eq!(routes.take("a"), None);
+        assert_eq!(routes.users("a"), Some("docs"));
+        assert_eq!(
+            routes.users("b"),
+            None,
+            "the pane's other tab stays its agents'"
+        );
+        // Still theirs as commands go to it by name.
+        routes.tab(1, Some("docs"), all).unwrap();
+        assert_eq!(routes.list(1, all)[0].owner, Owner::User);
+        assert_eq!(routes.give_back("a"), Some(name));
+        assert_eq!(routes.give_back("a"), None);
+        assert_eq!(routes.users("a"), None);
+        // A tab of no agent's (the user's own) takes nothing.
+        assert_eq!(routes.take("mine"), None);
+        assert_eq!(routes.users("mine"), None);
+        assert!(users_tab("docs").contains("tab docs") && interrupted("docs").contains("tab docs"));
+    }
+
+    #[test]
+    fn commands_that_act_are_told_from_those_that_read() {
+        for (cmd, a) in [
+            ("open", "x.test"),
+            ("back", ""),
+            ("reload", ""),
+            ("click", "e1"),
+            ("dblclick", "e1"),
+            ("rightclick", "e1"),
+            ("hover", "e1"),
+            ("drag", "e1 e2"),
+            ("scroll", "down"),
+            ("type", "e1 hi"),
+            ("fill", "e1 hi"),
+            ("select", "e1 a"),
+            ("press", "Enter"),
+            ("key", "down w"),
+            ("upload", "e1 a.png"),
+            ("eval", "1"),
+            ("device", "off"),
+            ("appearance", "dark"),
+        ] {
+            assert!(parse(cmd, &args(a)).unwrap().acts(), "{cmd}");
+        }
+        for (cmd, a) in [
+            ("url", ""),
+            ("snapshot", "-i"),
+            ("screenshot", ""),
+            ("console", ""),
+            ("network", ""),
+            ("wait", "--ms 5"),
+            ("dialogs", "accept"),
+            ("key", "up w"),
+        ] {
+            assert!(!parse(cmd, &args(a)).unwrap().acts(), "{cmd}");
+        }
+        assert_eq!(
+            parse_pane("tab", &args("release")),
+            Some(Ok(Pane::Tab(Tabs::Release(None))))
+        );
+        assert_eq!(
+            parse_pane("tab", &args("release docs")),
+            Some(Ok(Pane::Tab(Tabs::Release(Some("docs".into())))))
+        );
+        assert!(parse_pane("tab", &args("release a b")).unwrap().is_err());
     }
 
     #[test]

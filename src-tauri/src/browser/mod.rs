@@ -24,22 +24,22 @@ pub use keys::set_app_keys;
 #[cfg(target_os = "macos")]
 pub use macos::{
     agent_appearance, agent_chosen, agent_clear_store, agent_close_tab, agent_cookies,
-    agent_device, agent_dialogs, agent_done, agent_find_tab, agent_js, agent_keys, agent_new_tab,
-    agent_own_store, agent_page, agent_pane_closed, agent_picture, agent_pointer, agent_running,
-    agent_set_cookies, agent_tab, agent_tabs, agent_text, agent_upload, agent_upload_done,
-    appearance, clear_data, close, close_all, close_root, configure, console_clear,
-    console_entries, create, find, focus, go, hide, inspect, navigate, network_log, pick, place,
-    set_agent, snapshot, zoom,
+    agent_device, agent_dialogs, agent_done, agent_find_tab, agent_give_back, agent_js, agent_keys,
+    agent_new_tab, agent_own_store, agent_page, agent_pane_closed, agent_picture, agent_pointer,
+    agent_running, agent_set_cookies, agent_tab, agent_tabs, agent_text, agent_upload,
+    agent_upload_done, agent_users, appearance, clear_data, close, close_all, close_root,
+    configure, console_clear, console_entries, create, find, focus, go, hide, inspect, navigate,
+    network_log, pick, place, set_agent, snapshot, zoom,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
     agent_appearance, agent_chosen, agent_clear_store, agent_close_tab, agent_cookies,
-    agent_device, agent_dialogs, agent_done, agent_find_tab, agent_js, agent_keys, agent_new_tab,
-    agent_own_store, agent_page, agent_pane_closed, agent_picture, agent_pointer, agent_running,
-    agent_set_cookies, agent_tab, agent_tabs, agent_text, agent_upload, agent_upload_done,
-    appearance, clear_data, close, close_all, close_root, configure, console_clear,
-    console_entries, create, find, focus, go, hide, inspect, navigate, network_log, pick, place,
-    set_agent, snapshot, zoom,
+    agent_device, agent_dialogs, agent_done, agent_find_tab, agent_give_back, agent_js, agent_keys,
+    agent_new_tab, agent_own_store, agent_page, agent_pane_closed, agent_picture, agent_pointer,
+    agent_running, agent_set_cookies, agent_tab, agent_tabs, agent_text, agent_upload,
+    agent_upload_done, agent_users, appearance, clear_data, close, close_all, close_root,
+    configure, console_clear, console_entries, create, find, focus, go, hide, inspect, navigate,
+    network_log, pick, place, set_agent, snapshot, zoom,
 };
 pub use sessions::Shelf;
 
@@ -294,6 +294,12 @@ mod other {
         Err(UNSUPPORTED.into())
     }
     pub fn agent_running(_: &str, _: u64, _: bool) {}
+    pub fn agent_give_back(_: &AppHandle, _: &str) -> Res<Option<String>> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_users(_: &str) -> Res<Option<String>> {
+        Err(UNSUPPORTED.into())
+    }
     pub fn agent_pane_closed(_: u32) {}
     pub fn agent_appearance(_: &AppHandle, _: &str, _: Option<bool>) -> Res<()> {
         Err(UNSUPPORTED.into())

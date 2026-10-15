@@ -3,8 +3,8 @@
 //! (`isTrusted`, user activation). Never posted to the window server: the real cursor, the
 //! user's focus and the app's activation stay as they are.
 
-use super::{main_thread, page_tools, view, Delegate, View, WebView, GONE};
-use crate::browser::input::{self, Edit, KeyStep, Keys, Pointer};
+use super::{agent, main_thread, page_tools, view, Delegate, View, WebView, GONE};
+use crate::browser::input::{self, Edit, Half, KeyStep, Keys, Pointer};
 use crate::state::Res;
 use block2::{DynBlock, RcBlock};
 use objc2::encode::{Encoding, RefEncode};
@@ -201,6 +201,10 @@ pub fn agent_pointer(
     done: Box<dyn FnOnce((f64, f64))>,
 ) -> Res<()> {
     let mtm = main_thread()?;
+    // Letting a button go still goes, so a tab the user took isn't left mid-press.
+    if !matches!(what, Pointer::Up { .. }) {
+        agent::yours(id)?;
+    }
     let v = view(id).ok_or(GONE)?;
     let web = &v.web;
     let window = web.window().ok_or("The page isn't drawn now.")?;
@@ -282,6 +286,10 @@ fn mouse(
 /// (`send_event`).
 pub fn agent_keys(id: &str, keys: Keys) -> Res<()> {
     let mtm = main_thread()?;
+    // As a button: a key let go still goes.
+    if !matches!(keys, Keys::Up(_) | Keys::Press(_, Half::Up)) {
+        agent::yours(id)?;
+    }
     drop_resent_keys(mtm);
     let v = view(id).ok_or(GONE)?;
     let window = v.web.window().ok_or("The page isn't drawn now.")?;
@@ -385,6 +393,7 @@ fn insert(web: &WebView, text: &str) {
 /// back from WebKit later than the text after it.
 pub fn agent_text(id: &str, text: &str) -> Res<()> {
     main_thread()?;
+    agent::yours(id)?;
     let v = view(id).ok_or(GONE)?;
     for c in input::as_typed(text).chars() {
         insert(&v.web, c.encode_utf8(&mut [0; 4]));
@@ -396,6 +405,7 @@ pub fn agent_text(id: &str, text: &str) -> Res<()> {
 /// `upload`), the user's never.
 pub fn agent_upload(id: &str, files: Vec<PathBuf>) -> Res<()> {
     main_thread()?;
+    agent::yours(id)?;
     let v = view(id).ok_or(GONE)?;
     v.delegate.ivars().chosen.take();
     *v.delegate.ivars().upload.borrow_mut() = Some(files);

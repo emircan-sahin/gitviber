@@ -12,9 +12,9 @@ mod page_view;
 mod panel;
 
 pub use agent::{
-    agent_appearance, agent_close_tab, agent_device, agent_dialogs, agent_find_tab, agent_js,
-    agent_new_tab, agent_page, agent_pane_closed, agent_picture, agent_running, agent_tab,
-    agent_tabs,
+    agent_appearance, agent_close_tab, agent_device, agent_dialogs, agent_find_tab,
+    agent_give_back, agent_js, agent_new_tab, agent_page, agent_pane_closed, agent_picture,
+    agent_running, agent_tab, agent_tabs, agent_users,
 };
 pub use cookies::{agent_clear_store, agent_cookies, agent_own_store, agent_set_cookies};
 pub use native::{
@@ -396,10 +396,15 @@ define_class!(
 );
 
 impl WebView {
+    /// A press or a key of the user's, not an agent's: an agent's tab is theirs from now.
     fn user_acts(&self, event: &NSEvent) {
-        if !native::ours(event) && self.ivars().guarded.get() {
+        if native::ours(event) {
+            return;
+        }
+        if self.ivars().guarded.get() {
             page_tools::guard_clipboard(self, false);
         }
+        agent::user_took(&self.ivars().id);
     }
 
     fn focused(&self) -> bool {

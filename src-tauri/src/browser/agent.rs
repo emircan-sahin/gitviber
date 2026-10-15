@@ -68,7 +68,19 @@ fn command(app: &AppHandle, req: Request) -> Res<Reply> {
     })?;
     // Made: just made, at the address an open asks for.
     let made = found == Found::Made;
-    drive(app, id, found, |tab| tab.run(cmd, made, &req.cwd))
+    let acts = cmd.acts();
+    drive(app, id, found, |tab| {
+        if !acts {
+            return tab.run(cmd, made, &req.cwd);
+        }
+        tab.yours()?;
+        let reply = tab.run(cmd, made, &req.cwd);
+        // Taken while it ran: whatever it did or didn't do, the page isn't what it saw.
+        match tab.users()? {
+            Some(name) => Err(control::interrupted(&name)),
+            None => reply,
+        }
+    })
 }
 
 /// The pane the request came from (its token says so: server.rs), and its own folder as its
@@ -172,9 +184,22 @@ fn tabs(
             let data = serde_json::to_value(&tabs).map_err(|e| e.to_string())?;
             Ok(Reply::data(tabs_text(&tabs), json!({ "tabs": data })))
         }
+        Tabs::Release(named) => {
+            let name = named.map_or_else(|| target(to), |n| Ok(Some(n)))?;
+            let id = main(app, move |_| super::agent_find_tab(pty, name.as_deref()))?;
+            let given = main(app, move |app| super::agent_give_back(app, &id))?;
+            Ok(Reply::out(match given {
+                Some(name) => format!("Gave tab {name} back to the pane's agents"),
+                None => "The tab is the agents' already".into(),
+            }))
+        }
         Tabs::Close(named) => {
             let name = named.map_or_else(|| target(to), |n| Ok(Some(n)))?;
             let id = main(app, move |_| super::agent_find_tab(pty, name.as_deref()))?;
+            let users = id.clone();
+            if let Some(name) = main(app, move |_| super::agent_users(&users))? {
+                return Err(control::users_tab(&name));
+            }
             // After a command running on it, not through it.
             let queue = queue(&id);
             let _turn = take_turn(&queue, STEP)?;
@@ -218,11 +243,20 @@ fn sessions(
         }
         Sessions::Load(s) => {
             let session = shelf_here()?.load(&s)?;
-            load(app, tab()?, &s, &session).map(Reply::out)
+            let (id, found) = tab()?;
+            drive(app, id, found, |tab| {
+                tab.yours()?;
+                tab.load_session(&s, &session)
+            })
+            .map(Reply::out)
         }
         Sessions::Clear => {
             let (id, found) = tab()?;
-            drive(app, id, found, Tab::clear_session).map(Reply::out)
+            drive(app, id, found, |tab| {
+                tab.yours()?;
+                tab.clear_session()
+            })
+            .map(Reply::out)
         }
     }
 }
@@ -357,6 +391,20 @@ impl Tab {
             super::agent_running(&id, command, true);
             Ok(())
         })
+    }
+
+    /// The tab's name while the user has it.
+    fn users(&self) -> Res<Option<String>> {
+        let id = self.id.clone();
+        main(&self.app, move |_| super::agent_users(&id))
+    }
+
+    /// Refused, at once, on a tab the user has.
+    fn yours(&self) -> Res<()> {
+        match self.users()? {
+            Some(name) => Err(control::users_tab(&name)),
+            None => Ok(()),
+        }
     }
 
     fn run(&self, cmd: Command, made: bool, cwd: &str) -> Res<Reply> {
@@ -1018,8 +1066,8 @@ fn tabs_text(tabs: &[Listed]) -> String {
         let used = ago(Duration::from_secs(t.used_s));
         let page = titled(&t.origin, &t.title, "  ");
         format!(
-            "{}{default}  {}  used {used}  {idle}  {data}  {page}",
-            t.name, t.state
+            "{}{default}  {}  {}  used {used}  {idle}  {data}  {page}",
+            t.name, t.state, t.owner
         )
     });
     lines.collect::<Vec<_>>().join("\n")
@@ -1065,9 +1113,10 @@ fn ago(idle: Duration) -> String {
 mod tests {
     use super::control::TabState;
     use super::*;
+    use crate::browser::control::Owner;
 
     #[test]
-    fn the_tab_list_gives_each_tabs_state_use_idle_data_and_page_on_a_line() {
+    fn the_tab_list_gives_each_tabs_state_owner_use_idle_data_and_page_on_a_line() {
         let tab = |name: &str, state, used_s, idle_min, origin: &str, title: &str| Listed {
             name: name.into(),
             default: name == "t1",
@@ -1077,6 +1126,11 @@ mod tests {
             shared: name == "t3",
             origin: origin.into(),
             title: title.into(),
+            owner: if name == "rv268" {
+                Owner::User
+            } else {
+                Owner::Agent
+            },
         };
         let tabs = [
             tab("t1", TabState::Awake, 5, 10, "http://localhost:3000", "App"),
@@ -1085,9 +1139,9 @@ mod tests {
         ];
         assert_eq!(
             tabs_text(&tabs),
-            "t1 (default)  awake  used 5s ago  idles after 10m  private  http://localhost:3000  App\n\
-             rv268  sleeping  used 2m ago  never idles  private  about:blank\n\
-             t3  parked  used 2h ago  idles after 30m  shared  https://example.test"
+            "t1 (default)  awake  agent  used 5s ago  idles after 10m  private  http://localhost:3000  App\n\
+             rv268  sleeping  user  used 2m ago  never idles  private  about:blank\n\
+             t3  parked  agent  used 2h ago  idles after 30m  shared  https://example.test"
         );
         assert!(tabs_text(&[]).starts_with("No tabs"));
         // --json: the same fields.
@@ -1095,7 +1149,7 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({ "name": "rv268", "default": false, "state": "sleeping", "used_s": 125,
-                "idle_min": 0, "shared": false, "origin": "about:blank", "title": "" })
+                "idle_min": 0, "shared": false, "origin": "about:blank", "title": "", "owner": "user" })
         );
     }
 

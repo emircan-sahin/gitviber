@@ -8,7 +8,7 @@ use super::{
     set_agent, url_text, view, Delegate, View, GONE, VIEWS,
 };
 use crate::browser::control::{
-    origin, AgentScreen, Found, Listed, NewTab, Route, Routes, TabState, IDLE,
+    self, origin, AgentScreen, Found, Listed, NewTab, Route, Routes, TabState, IDLE,
 };
 use crate::browser::picks::Bounds;
 use crate::browser::Step;
@@ -126,6 +126,7 @@ pub fn agent_tabs(pty: u32) -> Res<Vec<Listed>> {
                 shared: t.shared,
                 origin: origin(&url),
                 title,
+                owner: t.owner,
             }
         })
         .collect())
@@ -149,6 +150,52 @@ pub fn agent_close_tab(app: &AppHandle, id: &str) -> Res<String> {
     super::close(id);
     emit(app, "browser-closed", super::Id { id });
     Ok(name)
+}
+
+#[derive(Serialize, Clone)]
+struct Owned<'a> {
+    id: &'a str,
+    user: bool,
+}
+
+/// The user's own press or key in an agent's tab: theirs until they give it back, its agents'
+/// commands that act refused meanwhile (`users`), and the tab's Give back button showing
+/// (`browser-owner`).
+pub(super) fn user_took(id: &str) {
+    if ROUTES.with_borrow_mut(|r| r.take(id)).is_some() {
+        if let Some(app) = APP.with(|a| a.get().cloned()) {
+            emit(&app, "browser-owner", Owned { id, user: true });
+        }
+    }
+}
+
+/// Tab `id` back to its agents from the user (`tab release`, or the tab's button): its name, or
+/// None when it was theirs already.
+pub fn agent_give_back(app: &AppHandle, id: &str) -> Res<Option<String>> {
+    main_thread()?;
+    let name = ROUTES.with_borrow_mut(|r| r.give_back(id));
+    if name.is_some() {
+        emit(app, "browser-owner", Owned { id, user: false });
+    }
+    Ok(name)
+}
+
+/// Tab `id`'s name while the user has it.
+pub fn agent_users(id: &str) -> Res<Option<String>> {
+    main_thread()?;
+    Ok(users(id))
+}
+
+pub(super) fn users(id: &str) -> Option<String> {
+    ROUTES.with_borrow(|r| r.users(id).map(String::from))
+}
+
+/// A step of an agent's command on tab `id`, refused once the user has taken it.
+pub(super) fn yours(id: &str) -> Res<()> {
+    match users(id) {
+        Some(name) => Err(control::interrupted(&name)),
+        None => Ok(()),
+    }
 }
 
 /// The tab closed, by the user or with its worktree: no agent drives it again, even reopened.
@@ -306,7 +353,7 @@ pub fn agent_running(id: &str, command: u64, on: bool) {
     drop(running);
     // A command guards the page's clipboard again, though the user acted on it since
     // (scripts/clipboard.js); it stays guarded after. The panel's key may change with it.
-    if was_idle && !idle && routed(id) {
+    if was_idle && !idle && routed(id) && users(id).is_none() {
         page_tools::guard_clipboard(&v.web, true);
     }
     panel::settle(&v);
