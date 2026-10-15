@@ -129,12 +129,15 @@ fn run(args: Vec<String>) -> i32 {
 
 /// `fill <target> --secret <NAME>`: $NAME's value, read here so the agent never types it.
 fn secret(cmd: &str, args: &[String]) -> Result<Option<String>, String> {
-    match args {
-        [_, flag, name] if cmd == "fill" && flag == "--secret" => std::env::var(name)
-            .map(Some)
-            .map_err(|_| format!("${name} isn't set in this shell: export it first")),
-        _ => Ok(None),
+    if cmd != "fill" {
+        return Ok(None);
     }
+    control::fill_secret(args)?
+        .map(|name| {
+            std::env::var(name)
+                .map_err(|_| format!("${name} isn't set in this shell: export it first"))
+        })
+        .transpose()
 }
 
 fn print(reply: &Reply, json: bool) -> i32 {
@@ -226,6 +229,7 @@ mod tests {
             .contains("$GITVIBER_NO_SUCH_VAR isn't set"));
         assert_eq!(secret("type", &words("e1 --secret HOME")), Ok(None));
         assert_eq!(secret("fill", &words("e1 hello")), Ok(None));
+        assert!(secret("fill", &words("e1 --secret")).is_err());
     }
 
     #[test]

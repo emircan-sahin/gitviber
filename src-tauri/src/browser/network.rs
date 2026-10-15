@@ -3,6 +3,7 @@
 //! latest frames, and the rest it loaded. Only ever read by the agent, never written anywhere.
 
 use super::cut;
+use super::output;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -718,38 +719,6 @@ fn list_json(log: &Log, filter: &Filter) -> Value {
     json!({ "dropped": log.dropped(), "entries": entries })
 }
 
-/// Headers that carry a credential: their values hidden unless --reveal.
-fn secret_header(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    matches!(
-        name.as_str(),
-        "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
-    ) || name.starts_with("x-")
-        && ["token", "key", "secret", "auth"]
-            .iter()
-            .any(|w| name.contains(w))
-}
-
-impl Entry {
-    /// As shown unless --reveal: its credential headers' values hidden (its address's tokens
-    /// go at the reply, with every address's).
-    fn redacted(&self) -> Entry {
-        let hide = |list: &[(String, String)]| {
-            list.iter()
-                .map(|(k, v)| {
-                    let v = if secret_header(k) { "[redacted]" } else { v };
-                    (k.clone(), v.to_string())
-                })
-                .collect()
-        };
-        Entry {
-            request_headers: hide(&self.request_headers),
-            response_headers: hide(&self.response_headers),
-            ..self.clone()
-        }
-    }
-}
-
 /// `network`'s answer as text, and as JSON for `--json`; a list may clear the log after.
 pub fn answer(log: &mut Log, ask: &Ask, now: f64, reveal: bool) -> Result<(String, Value), String> {
     match ask {
@@ -757,17 +726,26 @@ pub fn answer(log: &mut Log, ask: &Ask, now: f64, reveal: bool) -> Result<(Strin
             let e = log.get(*id).ok_or_else(|| {
                 format!("No request #{id}: `gitviber browser network` lists them")
             })?;
-            let e = if reveal { e.clone() } else { e.redacted() };
-            Ok((entry_text(&e, now), json!(e)))
+            Ok(hidden((entry_text(e, now), json!(e)), reveal))
         }
         Ask::List { filter, clear } => {
             let answer = (list_text(log, filter), list_json(log, filter));
             if *clear {
                 log.clear();
             }
-            Ok(answer)
+            Ok(hidden(answer, reveal))
         }
     }
+}
+
+/// Credentials in headers, bodies and addresses hidden unless --reveal: by the same list as
+/// every other reply.
+fn hidden((text, mut data): (String, Value), reveal: bool) -> (String, Value) {
+    if reveal {
+        return (text, data);
+    }
+    output::redact_json(&mut data);
+    (output::redact(&text), data)
 }
 
 #[cfg(test)]
@@ -1375,7 +1353,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "bug: tokens in request and response bodies show unless --reveal, as headers' don't"]
     fn credentials_in_bodies_are_hidden_unless_revealed() {
         let mut log = Log::default();
         assert!(post(

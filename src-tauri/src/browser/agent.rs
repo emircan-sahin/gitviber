@@ -13,8 +13,8 @@ use super::sessions::{self, Session, Shelf};
 use super::{Go, PageState};
 use crate::state::{AppState, Res};
 use serde_json::{json, Value};
-use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, LazyLock, Mutex, MutexGuard, PoisonError, TryLockError};
@@ -29,8 +29,8 @@ const SCRIPT: Duration = Duration::from_secs(30);
 /// How long a page gets to load after open, a click or a key before the reply goes anyway.
 const LOAD: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(100);
-/// How long an action's requests and redraws get to land before its reply says what changed,
-/// as Playwright lets a click's effects settle; a load it starts gets LOAD.
+/// How long an action's requests and redraws get to land before its reply says what changed: a
+/// reply sooner would miss the answer to the request a click sent. A load it starts gets LOAD.
 const SETTLE: Duration = Duration::from_millis(500);
 /// The page still this long counts as done redrawing.
 const QUIET: Duration = Duration::from_millis(100);
@@ -38,6 +38,8 @@ const QUIET: Duration = Duration::from_millis(100);
 const EVAL_MAX: usize = 20_000;
 /// What `eval`'s script gives: `=` and its value however it came, or `!` and what it threw.
 const SERIALIZE: &str = include_str!("scripts/serialize.js");
+/// What `wait --fn`'s script gives.
+const TRUTHY: &str = include_str!("scripts/truthy.js");
 /// The page's storage for a session; in GitViber's world, where the page can't stand in for it.
 const STORAGE_READ: &str = "return JSON.stringify({ origin: location.origin, local: Object.entries(localStorage), session: Object.entries(sessionStorage) });";
 /// Written only on the session's origin; elsewhere, where the page is instead.
@@ -52,21 +54,22 @@ fn command(app: &AppHandle, req: Request) -> Res<Reply> {
     if let Some(op) = control::parse_pane(&req.cmd, &req.args) {
         let op = op?;
         let (pty, root) = pane(app, &req)?;
-        let reply = match op {
-            Pane::Tab(op) => tabs(app, pty, root, req.tab, op, &req.cwd),
-            Pane::Session(op) => sessions(app, pty, root, req.tab, op),
+        // A tab command names pages and their titles; a session's, origins and counts only.
+        let (reply, marked) = match op {
+            Pane::Tab(op) => (tabs(app, pty, root, req.tab, op, &req.cwd), true),
+            Pane::Session(op) => (sessions(app, pty, root, req.tab, op), false),
         };
-        return reply.map(|mut r| {
-            if !req.reveal {
-                for text in [&mut r.out, &mut r.error].into_iter().flatten() {
-                    *text = output::redact_urls(text);
-                }
-                if let Some(data) = &mut r.data {
-                    output::each_string(data, &output::redact_urls);
-                }
-            }
-            r
-        });
+        let nonce = output::nonce().ok_or(NO_NONCE)?;
+        let ctx = output::Ctx {
+            marked,
+            origin: None,
+            nonce: &nonce,
+            reveal: req.reveal,
+            secrets: &secrets(),
+            dialog: None,
+            looped: false,
+        };
+        return Ok(output::finish(reply.unwrap_or_else(Reply::error), &ctx));
     }
     let cmd = control::parse(&req.cmd, &req.args)?;
     let (pty, root) = pane(app, &req)?;
@@ -85,6 +88,13 @@ fn command(app: &AppHandle, req: Request) -> Res<Reply> {
             .secret
             .clone()
             .ok_or("No value came with --secret: run it as `gitviber browser`.")?;
+        if value.chars().count() < output::SHORTEST_SECRET {
+            return Err(format!(
+                "${name} is shorter than {} characters, too short to hide in replies: fill it \
+                 as text if it isn't secret.",
+                output::SHORTEST_SECRET
+            ));
+        }
         remember(&id, |m| {
             m.secrets.retain(|(n, _)| n != name);
             m.secrets.push((name.clone(), value));
@@ -92,9 +102,8 @@ fn command(app: &AppHandle, req: Request) -> Res<Reply> {
     }
     let said = format!("{} {}", req.cmd, req.args.join(" "));
     drive(app, id, found, |tab| {
-        tab.reveal.set(req.reveal);
-        let reply = tab.run(cmd, made, &req.cwd);
-        Ok(tab.finish(reply, &said))
+        let ran = tab.run(cmd, made, &req.cwd, req.reveal);
+        tab.finish(ran, &said, req.reveal)
     })
 }
 
@@ -130,7 +139,6 @@ fn drive<T>(
         app: app.clone(),
         id,
         command: NEXT_COMMAND.fetch_add(1, Ordering::Relaxed),
-        reveal: Cell::new(false),
     };
     tab.start()?;
     if found == Found::Restored {
@@ -189,9 +197,9 @@ fn tabs(
             if let Some(url) = url {
                 let made = saved.is_none();
                 let opened = drive(app, id, Found::Made, |tab| {
-                    tab.run(Command::Open(url), made, cwd)
+                    tab.run(Command::Open(url), made, cwd, false)
                 });
-                more(&mut said, opened.map(|r| r.out.unwrap_or_default()))?;
+                more(&mut said, opened.map(|(r, _)| r.out.unwrap_or_default()))?;
             }
             Ok(Reply::out(said.join("\n")))
         }
@@ -208,7 +216,6 @@ fn tabs(
             let _turn = take_turn(&queue, STEP)?;
             let gone = id.clone();
             let closed = main(app, move |app| super::agent_close_tab(app, &gone))?;
-            memories().remove(&id);
             Ok(Reply::out(format!("Closed tab {closed}")))
         }
     }
@@ -279,14 +286,73 @@ fn now() -> u64 {
 
 static NEXT_COMMAND: AtomicU64 = AtomicU64::new(1);
 
-/// What a tab's commands leave for the next, by tab id; gone when an agent closes the tab.
+/// What a tab's commands leave for the next, by tab id; gone with the tab (control.rs `gone`).
 #[derive(Default)]
 struct Memory {
     /// The highest ref the tab handed out, on any of its pages.
     last_ref: u64,
-    history: output::History,
+    history: History,
     /// Filled with `fill --secret`, by name: hidden from every reply after.
     secrets: Vec<(String, String)>,
+}
+
+/// The tab's last few commands with the page as each left it, for the nudge out of a loop.
+#[derive(Default)]
+struct History(VecDeque<(u64, u64)>);
+
+/// How many commands alike in a row are a loop: all History keeps.
+const LOOP: usize = 3;
+
+impl History {
+    /// `command` (its name and arguments) run, the page then in `state`: whether it's the
+    /// LOOPth alike in a row, the page the same after each.
+    fn again(&mut self, command: &str, state: &str) -> bool {
+        if self.0.len() == LOOP {
+            self.0.pop_front();
+        }
+        self.0.push_back((hash(command), hash(state)));
+        let last = self.0.back().copied();
+        self.0.len() == LOOP && self.0.iter().all(|c| Some(*c) == last)
+    }
+}
+
+fn hash(s: &str) -> u64 {
+    let mut h = DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
+}
+
+/// What a command leaves besides its reply: the page as it left it, for the loop nudge.
+#[derive(Default)]
+struct Meta {
+    state: Option<String>,
+}
+
+/// A reply with no page state to compare.
+fn plain(reply: Reply) -> (Reply, Meta) {
+    (reply, Meta::default())
+}
+
+/// A reply, and the page as the agent read it in it.
+fn read(reply: Reply, state: &str) -> (Reply, Meta) {
+    let state = Some(state.to_string());
+    (reply, Meta { state })
+}
+
+/// No nonce, no reply: page text unmarked, or marked by one the page could guess, is worse.
+const NO_NONCE: &str = "No randomness to mark the page's text with: nothing of it is shown.";
+
+/// Every tab's secrets: what a reply hides, whichever tab it reads.
+fn secrets() -> Vec<(String, String)> {
+    memories()
+        .values()
+        .flat_map(|m| m.secrets.clone())
+        .collect()
+}
+
+/// A tab gone: what its commands kept goes too, its secrets with it.
+pub(super) fn forget(id: &str) {
+    memories().remove(id);
 }
 
 fn memories() -> MutexGuard<'static, HashMap<String, Memory>> {
@@ -377,8 +443,6 @@ struct Tab {
     app: AppHandle,
     id: String,
     command: u64,
-    /// `--reveal`: tokens and credential headers left in its reply.
-    reveal: Cell<bool>,
 }
 
 impl Drop for Tab {
@@ -399,31 +463,27 @@ impl Tab {
         })
     }
 
-    fn run(&self, cmd: Command, made: bool, cwd: &str) -> Res<Reply> {
-        match cmd {
+    fn run(&self, cmd: Command, made: bool, cwd: &str, reveal: bool) -> Res<(Reply, Meta)> {
+        let act = |input: Value| self.acted(|| self.said(input));
+        Ok(match cmd {
             Command::Open(url) => {
                 if !made {
                     let id = self.id.clone();
                     main(&self.app, move |_| super::navigate(&id, &url))?;
                 }
-                self.arrived("Opened")
+                plain(self.arrived("Opened")?)
             }
-            Command::Back => self.go(Go::Back, "Back at"),
-            Command::Forward => self.go(Go::Forward, "Forward at"),
-            Command::Reload => self.go(Go::Reload, "Reloaded"),
+            Command::Back => plain(self.go(Go::Back, "Back at")?),
+            Command::Forward => plain(self.go(Go::Forward, "Forward at")?),
+            Command::Reload => plain(self.go(Go::Reload, "Reloaded")?),
             Command::Url => {
                 let page = self.page()?.0;
-                Ok(Reply::out(titled(&page.url, &page.title, "\n")))
+                plain(Reply::out(titled(&page.url, &page.title, "\n")))
             }
-            Command::Snapshot(snap) => self.snapshot(snap, cwd),
+            Command::Snapshot(snap) => self.snapshot(snap, cwd, reveal)?,
             Command::Find(pattern) => {
-                let found = self.script(json!({ "cmd": "find", "pattern": pattern }))?;
-                let out = found["out"].as_str().unwrap_or_default();
-                Ok(Reply {
-                    state: Some(out.into()),
-                    untrusted: true,
-                    ..Reply::out(out)
-                })
+                let out = self.said(json!({ "cmd": "find", "pattern": pattern }))?;
+                read(Reply::out(&out), &out)
             }
             Command::Get(get) => {
                 let input = json!({ "cmd": "get", "what": get.what, "names": get.names, "target": get.target });
@@ -433,13 +493,9 @@ impl Tab {
                     Some(b) => Reply::data(out, json!({ "box": b })),
                     None => Reply::out(out),
                 };
-                Ok(Reply {
-                    state: Some(out.into()),
-                    untrusted: true,
-                    ..reply
-                })
+                read(reply, out)
             }
-            Command::Click(target) => self.acted(json!({ "cmd": "click", "target": target })),
+            Command::Click(target) => act(json!({ "cmd": "click", "target": target }))?,
             Command::FillSecret(target, name) => {
                 let value = remember(&self.id, |m| {
                     let found = m.secrets.iter().find(|(n, _)| *n == name);
@@ -448,48 +504,44 @@ impl Tab {
                 let value = value.ok_or("No value came with --secret.")?;
                 let input =
                     json!({ "cmd": "fill", "target": target, "text": value, "secret": true });
-                let reply = self.acted(input)?;
-                Ok(Reply {
-                    out: reply
-                        .out
-                        .map(|o| o.replacen('\n', &format!(" from ${name}\n"), 1)),
-                    ..reply
-                })
+                self.acted(|| Ok(format!("{} (from ${name})", self.said(input)?)))?
             }
             Command::Fill(target, text) => {
-                self.acted(json!({ "cmd": "fill", "target": target, "text": text }))
+                act(json!({ "cmd": "fill", "target": target, "text": text }))?
             }
             Command::Type(target, text) => {
-                self.acted(json!({ "cmd": "type", "target": target, "text": text }))
+                act(json!({ "cmd": "type", "target": target, "text": text }))?
             }
             Command::Select(target, values) => {
-                self.acted(json!({ "cmd": "select", "target": target, "values": values }))
+                act(json!({ "cmd": "select", "target": target, "values": values }))?
             }
             Command::Check(target, on) => {
-                self.acted(json!({ "cmd": "check", "target": target, "on": on }))
+                act(json!({ "cmd": "check", "target": target, "on": on }))?
             }
-            Command::Hover(target) => self.acted(json!({ "cmd": "hover", "target": target })),
-            Command::Press(key) => self.acted(json!({ "cmd": "press", "key": key })),
+            Command::Hover(target) => act(json!({ "cmd": "hover", "target": target }))?,
+            Command::Press(key) => act(json!({ "cmd": "press", "key": key }))?,
             Command::Scroll(to, px) => {
                 let to = match to {
                     Scroll::Up => "up".to_string(),
                     Scroll::Down => "down".to_string(),
                     Scroll::To(target) => target,
                 };
-                self.acted(json!({ "cmd": "scroll", "to": to, "px": px }))
+                act(json!({ "cmd": "scroll", "to": to, "px": px }))?
             }
-            Command::Wait(what, timeout) => self.wait(what, timeout),
-            Command::Eval(js) => self.eval(&js),
-            Command::Screenshot(shot) => self.screenshot(shot, cwd),
-            Command::Console { level, all, clear } => self.console(level.as_deref(), all, clear),
-            Command::Network(ask) => self.network(ask),
-            Command::Device(screen) => self.device(screen),
+            Command::Wait(what, timeout) => plain(self.wait(what, timeout)?),
+            Command::Eval(js) => plain(self.eval(&js)?),
+            Command::Screenshot(shot) => plain(self.screenshot(shot, cwd)?),
+            Command::Console { level, all, clear } => {
+                plain(self.console(level.as_deref(), all, clear)?)
+            }
+            Command::Network(ask) => plain(self.network(ask, reveal)?),
+            Command::Device(screen) => plain(self.device(screen)?),
             Command::Appearance(dark) => {
                 let id = self.id.clone();
                 main(&self.app, move |app| {
                     super::agent_appearance(app, &id, dark)
                 })?;
-                Ok(Reply::out(match dark {
+                plain(Reply::out(match dark {
                     Some(true) => "The page is shown dark.",
                     Some(false) => "The page is shown light.",
                     None => "The page is shown as the app is.",
@@ -498,17 +550,18 @@ impl Tab {
             Command::Dialogs(accept) => {
                 let id = self.id.clone();
                 main(&self.app, move |_| super::agent_dialogs(&id, accept))?;
-                Ok(Reply::out(if accept {
+                plain(Reply::out(if accept {
                     "The page's dialogs are accepted while commands run on it."
                 } else {
                     "The page's dialogs are dismissed while commands run on it."
                 }))
             }
-        }
+        })
     }
 
-    /// The page as a tree; with --json the refs gone since too; with -o, in full in a file.
-    fn snapshot(&self, snap: control::Snap, cwd: &str) -> Res<Reply> {
+    /// The page as a tree; with --json the refs gone since too; with -o, in full in a file, as
+    /// a reply would give it.
+    fn snapshot(&self, snap: control::Snap, cwd: &str, reveal: bool) -> Res<(Reply, Meta)> {
         let file = snap
             .file
             .as_deref()
@@ -518,77 +571,53 @@ impl Tab {
             "depth": snap.depth, "boxes": snap.boxes, "file": file.is_some() });
         let found = self.script(input)?;
         let out = found["out"].as_str().unwrap_or_default();
-        let reply = match file {
-            Some(path) => {
-                // The file is read later as page text too: marked, and kept clean, as a reply is.
-                let origin = control::origin(&self.page()?.0.url);
-                let marked = output::untrusted(out, &origin, &output::nonce());
-                std::fs::write(&path, format!("{}\n", self.clean(&marked)))
-                    .map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
-                let lines = out.lines().count();
-                Reply::out(format!("Wrote {} ({lines} lines)", path.display()))
-            }
-            None => Reply {
-                untrusted: true,
-                ..Reply::data(out, json!({ "snapshot": out, "removed": found["removed"] }))
-            },
+        let Some(path) = file else {
+            let data = json!({ "snapshot": out, "removed": found["removed"] });
+            return Ok(read(Reply::data(out, data), out));
         };
-        Ok(Reply {
-            state: Some(out.into()),
-            ..reply
-        })
+        let nonce = output::nonce().ok_or(NO_NONCE)?;
+        let origin = control::origin(&self.page()?.0.url);
+        let ctx = output::Ctx {
+            marked: true,
+            origin: Some(&origin),
+            nonce: &nonce,
+            reveal,
+            secrets: &secrets(),
+            dialog: None,
+            looped: false,
+        };
+        let text = output::finish(Reply::out(out), &ctx)
+            .out
+            .unwrap_or_default();
+        std::fs::write(&path, format!("{text}\n"))
+            .map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
+        let lines = out.lines().count();
+        let wrote = Reply::out(format!("Wrote {} ({lines} lines)", path.display()));
+        Ok(read(wrote, out))
     }
 
-    /// A command's reply (`said`: as typed) as the agent gets it, a failure too: with a nudge
-    /// when it's the same as the last two, the page no different after each.
-    /// Page text marked as such, tokens in addresses hidden unless --reveal, and secrets
-    /// always, all here, once.
-    fn finish(&self, reply: Res<Reply>, said: &str) -> Reply {
-        let mut reply = reply.unwrap_or_else(Reply::error);
-        // Before the marks, whose nonce is new each time.
-        let state = match (&reply.state, &reply.error) {
-            (_, Some(error)) => Some(format!("failed: {error}")),
-            (state, None) => state.clone(),
+    /// A command's reply as the agent gets it, a failure's too (output::finish): marked as the
+    /// page's, cleaned, and with the nudge when it's the same as the last two (`said`: as typed)
+    /// with the page no different after each.
+    fn finish(&self, ran: Res<(Reply, Meta)>, said: &str, reveal: bool) -> Res<Reply> {
+        let (reply, meta) = ran.unwrap_or_else(|e| plain(Reply::error(e)));
+        let state = match &reply.error {
+            Some(error) => Some(format!("failed: {error}")),
+            None => meta.state,
         };
-        if reply.untrusted {
-            let origin = self
-                .page()
-                .map_or_else(|_| String::new(), |p| control::origin(&p.0.url));
-            let nonce = output::nonce();
-            for text in [&mut reply.out, &mut reply.error].into_iter().flatten() {
-                *text = output::untrusted(text, &origin, &nonce);
-            }
-            if let Some(Value::Object(data)) = &mut reply.data {
-                data.insert(
-                    "untrusted".into(),
-                    json!({ "origin": origin, "nonce": nonce }),
-                );
-            }
-        }
-        for text in [&mut reply.out, &mut reply.error].into_iter().flatten() {
-            *text = self.clean(text);
-        }
-        if let Some(data) = &mut reply.data {
-            output::each_string(data, &|s| self.clean(s));
-        }
         let looped = state.is_some_and(|s| remember(&self.id, |m| m.history.again(said, &s)));
-        // Said on every reply while it's open, a failure's too.
-        if let Some(kind) = self.dialog() {
-            let open = dialog_open(kind);
-            let text = reply.error.as_mut().or(reply.out.as_mut());
-            if let Some(text) = text.filter(|t| !t.contains(&open)) {
-                text.push('\n');
-                text.push_str(&open);
-            }
-        }
-        if looped {
-            let text = reply.error.as_mut().or(reply.out.as_mut());
-            if let Some(text) = text {
-                text.push('\n');
-                text.push_str(output::NUDGE);
-            }
-        }
-        reply
+        let nonce = output::nonce().ok_or(NO_NONCE)?;
+        let origin = self.page().ok().map(|p| control::origin(&p.0.url));
+        let ctx = output::Ctx {
+            marked: true,
+            origin: origin.as_deref(),
+            nonce: &nonce,
+            reveal,
+            secrets: &secrets(),
+            dialog: self.dialog(),
+            looped,
+        };
+        Ok(output::finish(reply, &ctx))
     }
 
     /// The alert() or confirm() open on the page, waiting for the user, if one is.
@@ -602,21 +631,9 @@ impl Tab {
     /// Fails at once while a dialog holds the page's scripts, which would wait for it.
     fn unblocked(&self) -> Res<()> {
         match self.dialog() {
-            Some(kind) => Err(dialog_open(kind)),
+            Some(kind) => Err(output::dialog_open(kind)),
             None => Ok(()),
         }
-    }
-
-    /// Text as a reply may give it: tokens in addresses hidden unless --reveal, and the tab's
-    /// secrets by their names only.
-    fn clean(&self, text: &str) -> String {
-        let text = if self.reveal.get() {
-            text.to_string()
-        } else {
-            output::redact_urls(text)
-        };
-        let secrets = remember(&self.id, |m| m.secrets.clone());
-        output::hide_secrets(&text, &secrets)
     }
 
     /// The page, and whether its console is kept.
@@ -650,31 +667,36 @@ impl Tab {
         }
     }
 
-    /// An action, which may change the page or send it somewhere: its changes counted from
-    /// just before it, what it set off waited for, and a line of what changed after it.
-    fn acted(&self, mut input: Value) -> Res<Reply> {
-        let url = self.page()?.0.url;
+    /// agent.js's `out` for `input`.
+    fn said(&self, input: Value) -> Res<String> {
+        let found = self.script(input)?;
+        Ok(found["out"].as_str().unwrap_or_default().to_string())
+    }
+
+    /// An action, whatever acts (the page's events, or native input): what it changes counted
+    /// from just before it, what it sets off waited for, then what `act` did and one line of
+    /// what changed.
+    fn acted(&self, act: impl FnOnce() -> Res<String>) -> Res<(Reply, Meta)> {
+        let before = self.page()?.0;
         let id = self.id.clone();
         let request = main(&self.app, move |_| super::network_log(&id, |l| l.newest()))?;
         let at = super::epoch_ms();
-        input["watch"] = json!(true);
-        let did = self.script(input)?;
-        let did = did["out"].as_str().unwrap_or_default();
-        let (line, state) = self.changed(url, at, request)?;
-        Ok(Reply {
-            state: Some(state),
-            ..Reply::out(format!("{did}\n{line}"))
-        })
+        self.script(json!({ "cmd": "watch" }))?;
+        let did = act()?;
+        let (line, state) = self.changed(&before, at, request)?;
+        Ok(read(Reply::out(format!("{did}\n{line}")), &state))
     }
 
     /// Once an action's loads, requests (past id `request`) and redraws have landed, or SETTLE
-    /// has gone, a load LOAD: what changed since `at` on the page that was at `url`, and the page
-    /// as it is now.
-    fn changed(&self, url: String, at: f64, request: u32) -> Res<(String, String)> {
+    /// has gone, a load LOAD: what changed since `at` on the page as it was `before`, and the
+    /// page as it is now.
+    fn changed(&self, before: &PageState, at: f64, request: u32) -> Res<(String, String)> {
         let until = Instant::now() + SETTLE;
         std::thread::sleep(POLL / 2);
         loop {
-            if self.page()?.0.loading {
+            let page = self.page()?.0;
+            // A load the action started; one going on since before isn't the action's to await.
+            if page.loading && (!before.loading || page.url != before.url) {
                 self.loaded(LOAD)?;
                 break;
             }
@@ -705,11 +727,11 @@ impl Tab {
             attributes: count("attributes"),
             dialogs: seen["dialogs"].as_i64().unwrap_or(0),
             new_page: seen["gone"] == true,
-            url_before: url,
+            url_before: before.url.clone(),
             errors: logged.clone().filter(|e| e.level == "error").count(),
             answered: logged
                 .filter(|e| e.level == "warn")
-                .filter_map(|e| output::answered(&e.msg))
+                .filter_map(|e| output::dialog_note(&e.msg))
                 .collect(),
             requests: self.requests(request)?,
             url: page.url.clone(),
@@ -813,7 +835,7 @@ impl Tab {
             }),
             Wait::Url(glob) => {
                 let url = page()?.url;
-                (!output::url_matches(glob, &url)).then(|| format!("the page is at {url}"))
+                (!control::url_matches(glob, &url)).then(|| format!("the page is at {url}"))
             }
             Wait::Css(css) => match asked(json!({ "cmd": "exists", "css": css }))? {
                 Some(v) if v["found"] == true => None,
@@ -837,9 +859,7 @@ impl Tab {
     fn truthy(&self, js: &str, wait: Duration) -> Res<Option<String>> {
         self.unblocked()?;
         let ms = wait.min(Duration::from_secs(2)).as_millis();
-        let body = format!(
-            "const pending = Symbol();\nlet value;\ntry {{ value = await Promise.race([(async () => ({js}\n))(), new Promise((r) => setTimeout(r, {ms}, pending))]); }} catch (e) {{ return `!${{e}}`; }}\nif (value === pending) return '~';\nif (value) return '+';\ntry {{ return `-${{JSON.stringify(value) ?? String(value)}}`; }} catch {{ return `-${{String(value)}}`; }}"
-        );
+        let body = format!("const ms = {ms};\nconst ask = async () => ({js}\n);\n{TRUTHY}");
         let id = self.id.clone();
         let out = later_for(&self.app, wait + POLL, move |_, done| {
             super::agent_js(&id, true, &body, "", done)
@@ -880,17 +900,11 @@ impl Tab {
             Err(e) if e.contains("SyntaxError") => run(statements),
             other => other,
         }?;
-        let reply = match out.split_at_checked(1) {
-            Some(("=", value)) => Reply::out(super::cut(value, EVAL_MAX)),
-            Some(("!", thrown)) => {
-                Reply::error(format!("The page threw {}", super::cut(thrown, EVAL_MAX)))
-            }
-            _ => return Err("The page's answer wasn't readable.".into()),
-        };
-        Ok(Reply {
-            untrusted: true,
-            ..reply
-        })
+        match out.split_at_checked(1) {
+            Some(("=", value)) => Ok(Reply::out(super::cut(value, EVAL_MAX))),
+            Some(("!", thrown)) => Err(format!("The page threw {}", super::cut(thrown, EVAL_MAX))),
+            _ => Err("The page's answer wasn't readable.".into()),
+        }
     }
 
     /// The viewport, one element or a clip of it as drawn, at 1 px a CSS px unless scaled, the
@@ -905,12 +919,11 @@ impl Tab {
         let found = self.script(input)?;
         let rect: Bounds = serde_json::from_value(found["rect"].clone())
             .map_err(|_| "The page gave no box to take.")?;
-        let (w, h, scale) = marks::picture_size(rect.w, rect.h, shot.scale);
         let labels = found["labels"].as_array().into_iter().flatten();
-        let at = |l: &Value, k: &str| l[k].as_f64().unwrap_or(0.0) * scale;
+        let at = |l: &Value, k: &str| l[k].as_f64().unwrap_or(0.0);
         let picture = marks::Picture {
             rect,
-            size: (w, h),
+            scale: shot.scale,
             labels: labels
                 .map(|l| marks::Label {
                     text: l["ref"].as_str().unwrap_or_default().into(),
@@ -923,17 +936,18 @@ impl Tab {
             jpeg: path.as_deref().is_some_and(control::jpeg),
         };
         let id = self.id.clone();
-        let bytes = later(&self.app, move |_, done| {
+        let taken = later(&self.app, move |_, done| {
             super::agent_picture(&id, picture, done)
         })?
         .ok_or("No picture: WebKit gave none.")?;
+        let ((w, h), scale) = (taken.size, taken.scale);
         let path = match path {
             Some(path) => {
-                std::fs::write(&path, &bytes)
+                std::fs::write(&path, &taken.bytes)
                     .map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
                 path.display().to_string()
             }
-            None => picks::save_png(&self.app, &bytes).ok_or("Couldn't save the picture.")?,
+            None => picks::save_png(&self.app, &taken.bytes).ok_or("Couldn't save the picture.")?,
         };
         let shrunk = if scale < shot.scale {
             ", shrunk to stay within 2000 px"
@@ -957,21 +971,15 @@ impl Tab {
             let id = self.id.clone();
             main(&self.app, move |_| super::console_clear(&id))?;
         }
-        Ok(Reply {
-            untrusted: true,
-            ..Reply::out(control::console_text(&entries, level, all))
-        })
+        Ok(Reply::out(control::console_text(&entries, level, all)))
     }
 
-    fn network(&self, ask: network::Ask) -> Res<Reply> {
-        let (id, now, reveal) = (self.id.clone(), super::epoch_ms(), self.reveal.get());
+    fn network(&self, ask: network::Ask, reveal: bool) -> Res<Reply> {
+        let (id, now) = (self.id.clone(), super::epoch_ms());
         let (text, data) = main(&self.app, move |_| {
             super::network_log(&id, |log| network::answer(log, &ask, now, reveal))
         })??;
-        Ok(Reply {
-            untrusted: true,
-            ..Reply::data(text, data)
-        })
+        Ok(Reply::data(text, data))
     }
 
     fn device(&self, screen: Option<AgentScreen>) -> Res<Reply> {
@@ -1087,10 +1095,6 @@ impl Tab {
         main(&self.app, move |_| super::go(&id, Go::Reload))?;
         self.loaded(LOAD).map(drop)
     }
-}
-
-fn dialog_open(kind: &str) -> String {
-    format!("A {kind}() dialog is open on the page, waiting for the user to answer it: the page's scripts wait too.")
 }
 
 /// On a web page's origin, where logins and storage are.
@@ -1238,6 +1242,36 @@ mod tests {
         assert_eq!(text, "mert  https://app.test  1 cookies  (saved 3h ago)");
         assert!(!text.contains("s3cret") && !text.contains("t0ken"));
         assert!(sessions_text(&[], 0).starts_with("No sessions"));
+    }
+
+    #[test]
+    fn the_third_command_alike_on_an_unchanged_page_is_a_loop() {
+        let mut h = History::default();
+        assert!(!h.again("click e5", "page A"));
+        assert!(!h.again("click e5", "page A"));
+        assert!(h.again("click e5", "page A"));
+        assert!(h.again("click e5", "page A"), "and each after it");
+        // The page changing, or another command, starts over.
+        assert!(!h.again("click e5", "page B"));
+        assert!(!h.again("click e6", "page B"));
+        assert!(!h.again("click e5", "page B"));
+        // A toggle back and forth is no loop.
+        let mut t = History::default();
+        for state in ["open", "closed", "open", "closed"] {
+            assert!(!t.again("click e1", state));
+        }
+        assert_eq!(t.0.len(), LOOP, "no more kept than read");
+    }
+
+    #[test]
+    fn a_tabs_memory_and_its_secrets_go_with_it() {
+        remember("tab-gone", |m| {
+            m.secrets.push(("PW".into(), "hunter22".into()))
+        });
+        assert!(secrets().iter().any(|(n, _)| n == "PW"));
+        // However it went: control.rs's routes call this on each way out.
+        forget("tab-gone");
+        assert!(!memories().contains_key("tab-gone"));
     }
 
     #[test]

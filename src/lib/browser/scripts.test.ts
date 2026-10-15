@@ -28,6 +28,17 @@ test("eval's value comes back as itself: undefined, NaN, Infinity and a BigInt a
   assert.equal(give(loop), "=[object Object]");
 });
 
+test("wait --fn's check says true, what it was, what it threw, or that it hadn't settled", async () => {
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const check = new AsyncFunction("ask", "ms", script("truthy.js")) as (ask: () => Promise<unknown>, ms: number) => Promise<string>;
+  assert.equal(await check(async () => 1, 50), "+");
+  assert.equal(await check(async () => null, 50), "-null");
+  assert.equal(await check(async () => undefined, 50), "-undefined");
+  assert.equal(await check(async () => 0, 50), "-0");
+  assert.equal(await check(async () => { throw new TypeError("x is not defined"); }, 50), "!TypeError: x is not defined");
+  assert.equal(await check(() => new Promise(() => {}), 20), "~");
+});
+
 test("the component walk names React's components nearest first, skips host elements, and untags the element", async () => {
   const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
   const walk = new AsyncFunction("nonce", "document", "CSS", script("components.js"));

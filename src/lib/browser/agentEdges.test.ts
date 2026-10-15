@@ -4,8 +4,7 @@ import { test } from "node:test";
 
 // scripts/agent.js at the edges a real page has: a field's value set the way WebKit sets it (a
 // maxlength holds for typing, not for a script; a datetime-local is normalized), a scroll that
-// may be smooth, elements moved or put back, a page that draws no frames. The `todo` tests say
-// what agent.js should do and doesn't yet.
+// may be smooth, elements moved or put back, a page that draws no frames.
 const source = readFileSync(new URL("../../../src-tauri/src/browser/scripts/agent.js", import.meta.url), "utf8");
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const globals = ["window", "document", "getComputedStyle", "Event", "InputEvent", "MouseEvent", "PointerEvent", "KeyboardEvent", "HTMLInputElement", "HTMLTextAreaElement", "MutationObserver", "location"];
@@ -177,7 +176,7 @@ class Observer {
   }
 }
 
-test("fill holds to a maxlength as typing does, rather than setting past it", { todo: "agent.js fill: `el.value !== text` after execCommand falls back to the value setter, which ignores maxlength" }, async () => {
+test("fill holds to a maxlength as typing does, rather than setting past it", async () => {
   const pin = input("text", { id: "pin", maxLength: 4 });
   const p = page([pin]);
   const reply = await run(p, { cmd: "fill", target: "#pin", text: "123456" });
@@ -186,7 +185,7 @@ test("fill holds to a maxlength as typing does, rather than setting past it", { 
   assert.match(reply.error ?? "", /maxlength 4/);
 });
 
-test("fill takes a datetime-local with seconds, which WebKit normalizes", { todo: "agent.js fill reads back the normalized value (seconds :00 dropped) and calls it not taken" }, async () => {
+test("fill takes a datetime-local with seconds, which WebKit normalizes", async () => {
   // The HTML spec's sanitization: a valid value is kept in its shortest form.
   const normalize = (v: string) => (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?$/.test(v) ? v.replace(/(:00)?(\.0+)?$/, "") : "");
   const when = input("datetime-local", { id: "when", sanitize: normalize });
@@ -197,7 +196,7 @@ test("fill takes a datetime-local with seconds, which WebKit normalizes", { todo
   assert.equal(reply.out, "Filled textbox");
 });
 
-test("type goes into an email or number field, whose selection can't be set", { todo: "agent.js type: setSelectionRange throws InvalidStateError on type=email and type=number" }, async () => {
+test("type goes into an email or number field, whose selection can't be set", async () => {
   for (const kind of ["email", "number"]) {
     const field = input(kind, {
       id: "f",
@@ -212,7 +211,7 @@ test("type goes into an email or number field, whose selection can't be set", { 
   }
 });
 
-test("a click by CSS on an SVG shape lands, though it has no click()", { todo: "agent.js clickAt calls el.click(), which SVGElement lacks" }, async () => {
+test("a click by CSS on an SVG shape lands, though it has no click()", async () => {
   const shape = el("path", {}, [], { id: "close-icon", click: undefined });
   const p = page([el("button", {}, [el("svg", {}, [shape])])]);
   p.hit = shape;
@@ -221,20 +220,20 @@ test("a click by CSS on an SVG shape lands, though it has no click()", { todo: "
   assert.ok(shape.events.includes("click"), "a click event reached it");
 });
 
-test("an element's screenshot box is read after the scroll to it, on a page that scrolls smoothly", { todo: "agent.js center() leaves behavior to CSS scroll-behavior; rect() and view() measure before a smooth scroll moves" }, async () => {
+test("an element's screenshot box is read after the scroll to it, on a page that scrolls smoothly", async () => {
   const far = el("section", {}, ["Pricing"], { id: "pricing", box: { x: 0, y: 3000, width: 600, height: 400 } });
-  // CSS scroll-behavior: smooth, as Bootstrap 5 sets on :root: the scroll lands a while later.
+  // CSS scroll-behavior: smooth, as many sites set on :root: the scroll lands a while later.
   far.scrollIntoView = (o: { behavior?: string }) => {
     const land = () => (far.box = { x: 0, y: 200, width: 600, height: 400 });
     if (o?.behavior === "instant") land();
     else setTimeout(land, 20);
   };
   const p = page([far]);
-  const reply = await run(p, { cmd: "rect", target: "#pricing" });
+  const reply = await run(p, { cmd: "view", target: "#pricing" });
   assert.deepEqual(reply.rect, { x: 0, y: 200, w: 600, h: 400 });
 });
 
-test("a click reaches an element far down a page that scrolls smoothly", { todo: "agent.js point() calls center() each try, and a smooth scrollIntoView restarts each time: 'is still moving' (seen in WKWebView with scroll-behavior: smooth)" }, async () => {
+test("a click reaches an element far down a page that scrolls smoothly", async () => {
   const far = el("button", {}, ["Far"], { id: "far", box: { x: 10, y: 4000, width: 60, height: 20 } });
   // As WKWebView traced it: each smooth scrollIntoView starts the glide over, and a glide begun
   // anew each try closes only part of the way (y 4000 → 548 in 30 tries, aiming at 291).
@@ -253,7 +252,7 @@ test("a click reaches an element far down a page that scrolls smoothly", { todo:
   assert.equal(reply.error, undefined, reply.error);
 });
 
-test("select takes the same option named twice in a <select multiple>", { todo: "agent.js select compares chosen.length (with duplicates) to the options selected" }, async () => {
+test("select takes the same option named twice in a <select multiple>", async () => {
   const option = (value: string) => el("option", { value }, [value.toUpperCase()], { value, selected: false });
   const options = [option("a"), option("b")];
   const multi = el("select", {}, options, { id: "multi", options, multiple: true });
@@ -261,7 +260,7 @@ test("select takes the same option named twice in a <select multiple>", { todo: 
   assert.equal(reply.error, undefined, reply.error);
 });
 
-test("a link inside a heading gets a ref", { todo: "agent.js walk: heading is a LEAF, so nothing inside it is visited (blog titles, card headers)" }, async () => {
+test("a link inside a heading gets a ref", async () => {
   const link = el("a", { href: "/posts/1" }, ["First post"]);
   const p = page([el("h2", {}, [link])]);
   const { out } = await run(p, { cmd: "snapshot" });
@@ -287,7 +286,7 @@ test("an element moved elsewhere keeps its ref; a new one with the same text get
   const again = await run(p, { cmd: "snapshot" });
   assert.match(again.out, /button "Save" \[ref=e2\]/);
   assert.deepEqual(again.removed, ["e1"]);
-  assert.equal((await run(p, { cmd: "rect", target: "e1" })).error, "e1 is stale: take a new snapshot");
+  assert.equal((await run(p, { cmd: "get", what: "box", target: "e1" })).error, "e1 is stale: take a new snapshot");
 });
 
 test("an element taken out and put back (a kept-alive tab panel) has its old ref again", async () => {
@@ -314,8 +313,8 @@ test("a page back from the back-forward cache keeps its refs, and numbers new on
   const back = await run(p, { cmd: "snapshot", floor: 40 });
   assert.match(back.out, /button "Old" \[ref=e1\]/);
   assert.match(back.out, /button "New" \[ref=e41\]/);
-  assert.equal((await run(p, { cmd: "rect", target: "e20", floor: 41 })).error, "e20 is stale: take a new snapshot");
-  assert.equal((await run(p, { cmd: "rect", target: "e42", floor: 41 })).error, "No ref e42 on this page: take a new snapshot");
+  assert.equal((await run(p, { cmd: "get", what: "box", target: "e20", floor: 41 })).error, "e20 is stale: take a new snapshot");
+  assert.equal((await run(p, { cmd: "get", what: "box", target: "e42", floor: 41 })).error, "No ref e42 on this page: take a new snapshot");
 });
 
 test("snapshots again and again spend no numbers on what already has a ref", async () => {

@@ -172,8 +172,11 @@ test("a click lands only on what shows, is enabled, holds still and is on top", 
   assert.equal((await run(p, { cmd: "click", target: "#pay" })).out, 'Clicked button "Pay"');
   assert.deepEqual(pay.events, ["pointerover", "mouseover", "pointermove", "mousemove", "pointerdown", "mousedown", "focus", "pointerup", "mouseup", "click"]);
   // Native input clicks where this says: the middle of its box.
-  const at = await run(p, { cmd: "point", target: "#pay" });
-  assert.deepEqual([at.x, at.y], [60, 35]);
+  const at = await run(p, { cmd: "aim", target: "#pay" });
+  assert.deepEqual([at.x, at.y, at.label], [60, 35, 'button "Pay"']);
+  // A point of its own is taken as it is, named by what's there.
+  assert.deepEqual(await run(p, { cmd: "aim", x: 5, y: 6 }), { x: 5, y: 6, label: 'button "Pay"', last: 0 });
+  assert.match((await run(p, { cmd: "aim", x: 5000, y: 6 })).error, /outside the 1280×800 viewport/);
 
   pay.events.length = 0;
   pay.disabled = true;
@@ -212,6 +215,19 @@ test("a covered element names its cover, and a click inside it or on its label s
   const q = page([label, box]);
   q.hit = label;
   assert.equal((await run(q, { cmd: "check", target: "#remember", on: true })).out, 'Checked checkbox "Remember me"');
+});
+
+test("a display: contents element is acted on through its children's box, and says when none shows", async () => {
+  const icon = el("span", {}, ["★"], { box: { x: 100, y: 40, width: 20, height: 20 } });
+  const text = el("span", {}, ["Star"], { box: { x: 120, y: 40, width: 40, height: 20 } });
+  const star = el("button", {}, [icon, text], { id: "star", style: { display: "contents" }, getClientRects: () => [] });
+  star.children = [icon, text];
+  const bare = el("button", {}, [], { id: "bare", style: { display: "contents" }, getClientRects: () => [], children: [] });
+  const p = page([star, bare]);
+  p.hit = text;
+  const at = await run(p, { cmd: "aim", target: "#star" });
+  assert.deepEqual([at.x, at.y], [130, 50]);
+  assert.equal((await run(p, { cmd: "click", target: "#bare" })).error, "button isn't visible (display: contents, and nothing inside it shows)");
 });
 
 test("an element still moving is no target, and a hover needs no enabled element", async () => {
@@ -263,11 +279,23 @@ test("fill checks a date's or a color's shape, and reads every value back", asyn
   assert.ok(when.events.includes("input") && when.events.includes("change"));
   assert.equal((await run(p, { cmd: "fill", target: "#tint", text: "#FFAA00" })).out, "Filled button");
   assert.equal((await run(p, { cmd: "fill", target: "#pin", text: "123456" })).error, 'textbox didn\'t take "123456": it holds "1234" (maxlength 4)');
-  // A secret is never said back, nor what of it went in.
-  const secret = (await run(p, { cmd: "fill", target: "#pass", text: "hunter22", secret: true })).error;
-  assert.equal(secret, "textbox didn't take the secret: it holds something else");
+  // A secret is never said back, nor what the page made of it.
+  const secret = (await run(p, { cmd: "fill", target: "#pass", text: "hunter22", secret: true })).out;
+  assert.equal(secret, "Filled textbox; the page shows it in its own format");
   assert.equal((await run(p, { cmd: "fill", target: "#bio", text: "Hello" })).out, "Filled textbox");
   assert.equal(name.value, "Hello");
+});
+
+test("a field the page formats as it fills (a phone mask) took the text; one left empty or as it was didn't", async () => {
+  const digits = (v: string) => v.replace(/\D/g, "");
+  const mask = (v: string) => digits(v).replace(/^(\d{3})(\d{3})(\d{4})$/, "($1) $2-$3");
+  const phone = el("input", { type: "tel" }, [], { id: "phone", type: "tel", value: "", accept: mask });
+  const stuck = el("input", {}, [], { id: "stuck", type: "text", value: "old", accept: () => "old" });
+  const empty = el("input", {}, [], { id: "empty", type: "text", value: "", accept: () => "" });
+  const p = page([phone, stuck, empty]);
+  assert.equal((await run(p, { cmd: "fill", target: "#phone", text: "5551234567" })).out, 'Filled textbox; the page shows "(555) 123-4567"');
+  assert.equal((await run(p, { cmd: "fill", target: "#stuck", text: "new" })).error, 'textbox didn\'t take "new": it holds "old"');
+  assert.equal((await run(p, { cmd: "fill", target: "#empty", text: "x" })).error, 'textbox didn\'t take "x": it holds ""');
 });
 
 test("check and uncheck read the state back, and a radio can't be unchecked", async () => {
@@ -315,6 +343,12 @@ test("select reads the choice back, and refuses a disabled option", async () => 
   assert.equal((await run(p, { cmd: "select", target: "#size", values: ["m"] })).error, 'combobox didn\'t keep the choice: it shows "Small"');
 });
 
+/** An action as agent.rs runs one: its watch started first, by itself. */
+async function act(p: ReturnType<typeof page>, input: Record<string, unknown>) {
+  await run(p, { cmd: "watch" });
+  return run(p, input);
+}
+
 test("an action's changes are counted from just before it until the page holds still", async () => {
   const dialog = el("div", { role: "dialog" }, ["Joined"], { style: { display: "none" } });
   const join = el("button", {}, ["Join"], { id: "join" });
@@ -327,7 +361,7 @@ test("an action's changes are counted from just before it until the page holds s
     Observer.fire([{ type: "childList", addedNodes: [{ nodeType: 1 }] }], true);
     p.location.href = "http://localhost:3000/lobby";
   };
-  assert.equal((await run(p, { cmd: "click", target: "#join", watch: true })).out, 'Clicked button "Join"');
+  assert.equal((await act(p, { cmd: "click", target: "#join" })).out, 'Clicked button "Join"');
   const seen = await run(p, { cmd: "changes", quiet: 30, most: 200 });
   assert.deepEqual(
     { added: seen.added, removed: seen.removed, texts: seen.texts, attributes: seen.attributes, dialogs: seen.dialogs },
@@ -343,7 +377,7 @@ test("a page that never holds still is read at the most, and a failed action lea
   const busy = el("button", {}, ["Spin"], { id: "spin" });
   const p = page([busy]);
   p.hit = busy;
-  await run(p, { cmd: "click", target: "#spin", watch: true });
+  await act(p, { cmd: "click", target: "#spin" });
   const timer = setInterval(() => Observer.fire([{ type: "attributes" }]), 5);
   const started = Date.now();
   const seen = await run(p, { cmd: "changes", quiet: 50, most: 120 });
@@ -351,12 +385,12 @@ test("a page that never holds still is read at the most, and a failed action lea
   assert.ok(Date.now() - started < 400, "capped");
   assert.ok(seen.attributes > 0);
   busy.disabled = true;
-  assert.match((await run(p, { cmd: "click", target: "#spin", watch: true })).error, /is disabled/);
+  assert.match((await act(p, { cmd: "click", target: "#spin" })).error, /is disabled/);
   assert.equal(Observer.live, null);
   // A still page's state is the same each time: what the loop nudge compares.
   busy.disabled = false;
-  await run(p, { cmd: "click", target: "#spin", watch: true });
+  await act(p, { cmd: "click", target: "#spin" });
   const a = (await run(p, { cmd: "changes", quiet: 0, most: 0 })).state;
-  await run(p, { cmd: "click", target: "#spin", watch: true });
+  await act(p, { cmd: "click", target: "#spin" });
   assert.equal((await run(p, { cmd: "changes", quiet: 0, most: 0 })).state, a);
 });

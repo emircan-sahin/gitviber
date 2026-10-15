@@ -14,7 +14,9 @@ const LINES = 1500;
 const NAME = 80;
 const INTERACTIVE = new Set(["link", "button", "textbox", "searchbox", "checkbox", "radio", "combobox", "slider", "spinbutton", "switch", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "treeitem", "clickable"]);
 // Named by their text: what's inside says nothing more.
-const LEAF = new Set(["link", "button", "textbox", "searchbox", "checkbox", "radio", "combobox", "slider", "spinbutton", "switch", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "treeitem", "heading", "img", "progressbar", "meter", "iframe"]);
+const LEAF = new Set(["link", "button", "textbox", "searchbox", "checkbox", "radio", "combobox", "slider", "spinbutton", "switch", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "treeitem", "img", "progressbar", "meter", "iframe"]);
+// Named by their text too, but what acts inside them (a title's link) still gets a ref.
+const TITLES = new Set(["heading"]);
 const TAGS = { button: "button", select: "combobox", textarea: "textbox", nav: "navigation", main: "main", header: "banner", footer: "contentinfo", aside: "complementary", form: "form", dialog: "dialog", ul: "list", ol: "list", li: "listitem", table: "table", tr: "row", th: "columnheader", td: "cell", summary: "button", progress: "progressbar", meter: "meter", option: "option", fieldset: "group", details: "group", article: "article", iframe: "iframe" };
 const INPUTS = { checkbox: "checkbox", radio: "radio", range: "slider", number: "spinbutton", search: "searchbox", button: "button", submit: "button", reset: "button", image: "button", file: "button", color: "button", hidden: null };
 const SKIP = new Set(["script", "style", "noscript", "template", "head", "svg", "canvas"]);
@@ -96,7 +98,7 @@ function line(el, role, name, ref) {
  * nothing more is looked at but counted: a huge page costs little more than a big one.
  */
 function walk({ interactive = false, scope = null, depth = null, boxes = false, most = LINES, chars = CHARS }) {
-  const root = scope ? find(scope) : (document.body ?? document.documentElement);
+  const root = scope ? resolve(scope) : (document.body ?? document.documentElement);
   const lines = [];
   let [full, size, omitted] = [false, 0, 0];
   const emit = (level, text) => {
@@ -107,11 +109,12 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
     } else full = true;
   };
   const count = (node) => (node.nodeType === 1 ? 1 + [...node.childNodes].reduce((n, c) => n + count(c), 0) : 0);
-  const visit = (node, level, pointer) => {
+  // `muted`: under a title, whose text its name says already.
+  const visit = (node, level, pointer, muted) => {
     if (full) return void (omitted += count(node));
     if (depth !== null && level > depth) return;
     if (node.nodeType === 3) {
-      const text = interactive ? "" : flat(node.nodeValue);
+      const text = interactive || muted ? "" : flat(node.nodeValue);
       if (text) emit(level, `- text ${quote(cut(text, 200))}`);
       return;
     }
@@ -126,7 +129,7 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
     const leaf = LEAF.has(role) || (role === "clickable" && !el.querySelector(ACTIONABLE));
     if (role) {
       const acts = INTERACTIVE.has(role);
-      const name = nameOf(el, leaf);
+      const name = nameOf(el, leaf || TITLES.has(role));
       if (!interactive || acts) {
         const ref = acts ? refOf(el) : null;
         let text = line(el, role, name, ref);
@@ -137,9 +140,9 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
       if (leaf) return;
     }
     const children = el.shadowRoot ? [...el.shadowRoot.childNodes, ...el.childNodes] : [...el.childNodes];
-    for (const child of children) visit(child, next, pointer || style.cursor === "pointer");
+    for (const child of children) visit(child, next, pointer || style.cursor === "pointer", muted || TITLES.has(role));
   };
-  visit(root, 0, false);
+  visit(root, 0, false, false);
   return { lines, omitted: full ? Math.max(omitted, 1) : 0 };
 }
 
@@ -156,7 +159,7 @@ function snapshot({ file = false, ...ask }) {
 
 /** An element's box in the viewport, CSS px: x, y, width, height. */
 function boxOf(el) {
-  const r = el.getBoundingClientRect();
+  const r = rectOf(el);
   return [r.x, r.y, r.width, r.height].map(Math.round);
 }
 
@@ -203,7 +206,7 @@ const masked = (el, value) => (typeOf(el) === "password" && value ? "•".repeat
 
 /** One thing about an element: its text, HTML, value, an attribute, computed styles or box. */
 function get({ what, target, names = [] }) {
-  const el = find(target);
+  const el = resolve(target);
   switch (what) {
     case "text":
       return { out: capped(el.innerText ?? el.textContent ?? "", GET_TEXT) };
@@ -257,7 +260,7 @@ function prune() {
 }
 
 /** The element a ref (e3, @e3, ref=e3) names, or a CSS selector does. */
-function find(target) {
+function resolve(target) {
   const ref = /^(?:@|ref=)?e(\d+)$/.exec(target);
   if (ref) {
     const name = `e${ref[1]}`;
@@ -282,15 +285,8 @@ const label = (el) => {
   return `${roleOf(el) ?? el.localName}${name ? ` ${quote(cut(name, 40))}` : ""}`;
 };
 
-/** Scrolled into view: where a click on it would land. */
-function center(el) {
-  el.scrollIntoView?.({ block: "center", inline: "center" });
-  const r = el.getBoundingClientRect();
-  return { clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 };
-}
-
-/** Frames an element gets to show, stop moving or come out from under another one. */
-const FRAMES = 30;
+/** How long an element gets to show, stop moving or come out from under another one. */
+const PATIENCE = 1000;
 // A page that draws no frames (out of sight, throttled) still moves on.
 const frame = () =>
   new Promise((done) => {
@@ -300,6 +296,25 @@ const frame = () =>
       done();
     });
   });
+
+/** An element's box in the viewport; a display: contents one has none, so its children's together. */
+function rectOf(el) {
+  if (getComputedStyle(el).display !== "contents") return el.getBoundingClientRect();
+  const boxes = [...(el.children ?? [])].map(rectOf).filter((r) => r.width && r.height);
+  if (!boxes.length) return { x: 0, y: 0, width: 0, height: 0 };
+  const x = Math.min(...boxes.map((r) => r.x)), y = Math.min(...boxes.map((r) => r.y));
+  const right = Math.max(...boxes.map((r) => r.x + r.width)), bottom = Math.max(...boxes.map((r) => r.y + r.height));
+  return { x, y, width: right - x, height: bottom - y };
+}
+
+/** Brought into the viewport once, at once, unless it's all there: a smooth scroll asked again each try never lands. */
+function into(el) {
+  const r = rectOf(el);
+  const shown = r.x >= 0 && r.y >= 0 && r.x + r.width <= window.innerWidth && r.y + r.height <= window.innerHeight;
+  if (shown) return;
+  const target = getComputedStyle(el).display === "contents" ? el.children?.[0] : el;
+  target?.scrollIntoView?.({ block: "center", inline: "center", behavior: "instant" });
+}
 
 /** How an element reads in an error: <div#consent.banner>. */
 function tagOf(el) {
@@ -315,9 +330,10 @@ function unready(el, enabled) {
   if (!el.isConnected) return "left the page: take a new snapshot";
   const style = getComputedStyle(el);
   if (style.visibility === "hidden" || style.visibility === "collapse") return "isn't visible (visibility: hidden)";
-  if (!el.getClientRects().length) return "isn't visible (display: none, here or above)";
-  const r = el.getBoundingClientRect();
-  if (!r.width || !r.height) return "isn't visible (no size)";
+  const contents = style.display === "contents";
+  if (!contents && !el.getClientRects().length) return "isn't visible (display: none, here or above)";
+  const r = rectOf(el);
+  if (!r.width || !r.height) return contents ? "isn't visible (display: contents, and nothing inside it shows)" : "isn't visible (no size)";
   if (enabled && disabled(el)) return "is disabled";
   return null;
 }
@@ -342,47 +358,47 @@ function top(x, y) {
   return hit;
 }
 
+/** Why the top element at `at` isn't `el`, or nothing. */
+function covered(el, at) {
+  const over = top(at.x, at.y);
+  if (over && reaches(el, over)) return null;
+  if (!over) return "is outside the viewport";
+  if (over.contains?.(el)) return "doesn't take the pointer (pointer-events: none?)";
+  // The cover itself, not a line of text in it.
+  let cover = over;
+  while (cover.parentElement && !cover.parentElement.contains(el)) cover = cover.parentElement;
+  return `is covered by ${tagOf(cover)}`;
+}
+
 /**
- * Where a pointer acts on `target` (an element, a ref or CSS), in the viewport's CSS px, once it
- * can, as Playwright checks: on the page, visible, enabled (unless `enabled` is false), still for
- * a frame, and the top element at its middle is it or inside it (unless `hit` is false). Else it
- * throws why, after FRAMES of waiting. Native input (a click --at) takes its point from here too.
+ * Where a pointer acts on `el`, in the viewport's CSS px, once a person could: on the page,
+ * visible, enabled (unless `enabled` is false), still from one frame to the next, and on top at
+ * its middle (unless `hit` is false). Else why not, once PATIENCE is up. Every action, synthetic
+ * or native, takes its point from here.
  */
-async function point(target, { enabled = true, hit = true } = {}) {
-  const el = typeof target === "string" ? find(target) : target;
+async function point(el, { enabled = true, hit = true } = {}) {
+  const until = performance.now() + PATIENCE;
   let why;
-  for (let i = 0; i < FRAMES; i++, await frame()) {
+  for (let scrolled = false; ; await frame()) {
     why = unready(el, enabled);
-    if (why) continue;
-    center(el);
-    const was = el.getBoundingClientRect();
-    await frame();
-    const r = el.getBoundingClientRect();
-    if (r.x !== was.x || r.y !== was.y || r.width !== was.width || r.height !== was.height) {
-      why = "is still moving";
-      continue;
+    if (!why) {
+      if (!scrolled) into(el);
+      scrolled = true;
+      const was = rectOf(el);
+      await frame();
+      const r = rectOf(el);
+      if (r.x !== was.x || r.y !== was.y || r.width !== was.width || r.height !== was.height) why = "is still moving";
+      else {
+        // The middle of what shows of it: a box taller than the viewport is clicked where it shows.
+        const left = Math.max(r.x, 0), right = Math.min(r.x + r.width, window.innerWidth);
+        const high = Math.max(r.y, 0), low = Math.min(r.y + r.height, window.innerHeight);
+        const at = { x: (left + right) / 2, y: (high + low) / 2 };
+        if (right <= left || low <= high) why = "is outside the viewport";
+        else if (!hit || !(why = covered(el, at))) return at;
+      }
     }
-    // The middle of what shows of it: a box taller than the viewport is clicked where it shows.
-    const left = Math.max(r.x, 0), right = Math.min(r.x + r.width, window.innerWidth ?? Infinity);
-    const high = Math.max(r.y, 0), low = Math.min(r.y + r.height, window.innerHeight ?? Infinity);
-    if (right <= left || low <= high) {
-      why = "is outside the viewport";
-      continue;
-    }
-    const at = { x: (left + right) / 2, y: (high + low) / 2 };
-    if (!hit) return at;
-    const over = top(at.x, at.y);
-    if (over && reaches(el, over)) return at;
-    if (!over) why = "is outside the viewport";
-    else if (over.contains?.(el)) why = "doesn't take the pointer (pointer-events: none?)";
-    else {
-      // The cover itself, not a line of text in it.
-      let cover = over;
-      while (cover.parentElement && !cover.parentElement.contains(el)) cover = cover.parentElement;
-      why = `is covered by ${tagOf(cover)}`;
-    }
+    if (performance.now() >= until) throw new Error(`${label(el)} ${why}`);
   }
-  throw new Error(`${label(el)} ${why}`);
 }
 
 function mouse(el, types, at) {
@@ -413,17 +429,19 @@ function clickAt(el, at) {
   mouse(el, ["pointerover", "mouseover", "pointermove", "mousemove", "pointerdown", "mousedown"], where);
   el.focus?.({ preventScroll: true });
   mouse(el, ["pointerup", "mouseup"], where);
-  el.click();
+  // An SVG element has no click() of its own.
+  if (typeof el.click === "function") el.click();
+  else mouse(el, ["click"], where);
 }
 
 async function click({ target }) {
-  const el = find(target);
+  const el = resolve(target);
   clickAt(el, await point(el));
   return { out: `Clicked ${label(el)}` };
 }
 
 const TEXT_TYPES = new Set(["text", "search", "email", "url", "tel", "password", "number"]);
-// What the browser takes for each, as Playwright checks it: anything else it drops for "".
+// What the browser takes for each: anything else it quietly drops for "", which would read as filled.
 const FORMATS = {
   date: [/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD"],
   time: [/^\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?$/, "HH:MM or HH:MM:SS"],
@@ -468,35 +486,43 @@ function writable(el) {
 /** What a field holds now, as fill compares it. */
 const holds = (el) => (el.localName === "input" || el.localName === "textarea" ? el.value : flat(el.innerText ?? el.textContent));
 
+/** Whether a field holds `text`, as its type writes it: a color in lower case, a time without its :00 seconds. */
+function holdsText(el, kind, now, text) {
+  if (kind === "rich") return now === flat(text);
+  const normal = (v) => (kind === "format" ? v.toLowerCase().replace(/:00(\.0+)?$/, "") : v);
+  return normal(now) === normal(text);
+}
+
 async function fill({ target, text, secret = false }) {
-  const el = control(find(target));
+  const el = control(resolve(target));
   const kind = writable(el);
+  const what = secret ? "the secret" : quote(cut(text, 120));
   if (kind === "format" && text) {
     const [shape, hint] = FORMATS[typeOf(el)];
-    if (!shape.test(text)) throw new Error(`Malformed value for ${label(el)} (a ${typeOf(el)} input): ${secret ? "the secret" : quote(text)} isn't ${hint}`);
+    if (!shape.test(text)) throw new Error(`Malformed value for ${label(el)} (a ${typeOf(el)} input): ${what} isn't ${hint}`);
   }
   await point(el, { hit: false });
+  const before = holds(el);
   el.focus?.({ preventScroll: true });
   if (kind === "format") setValue(el, text);
   else {
     if (fieldOf(el)) el.select?.();
     else window.getSelection?.()?.selectAllChildren(el);
-    const done = document.execCommand?.(text ? "insertText" : "delete", false, text);
-    if (fieldOf(el) ? el.value !== text : !done) {
+    // Typed as the editor types: it holds to a maxlength, and the page's handlers see it. Set
+    // only where that does nothing.
+    if (!document.execCommand?.(text ? "insertText" : "delete", false, text)) {
       if (fieldOf(el)) setValue(el, text);
       else el.textContent = text;
     }
   }
   el.dispatchEvent(new Event("change", { bubbles: true }));
-  // Read back: a maxlength, a mask or the page's own handler may have kept something else.
   const now = holds(el);
-  const same = kind === "rich" ? now === flat(text) : kind === "format" && typeOf(el) === "color" ? now.toLowerCase() === text.toLowerCase() : now === text;
-  if (!same) {
-    const long = el.maxLength > 0 && text.length > el.maxLength ? ` (maxlength ${el.maxLength})` : "";
-    const it = secret ? "something else" : quote(cut(now, 120));
-    throw new Error(`${label(el)} didn't take ${secret ? "the secret" : quote(cut(text, 120))}: it holds ${it}${long}`);
-  }
-  return { out: `Filled ${label(el)}` };
+  if (holdsText(el, kind, now, text)) return { out: `Filled ${label(el)}` };
+  const it = secret ? "something else" : quote(cut(now, 120));
+  if (el.maxLength > 0 && text.length > el.maxLength) throw new Error(`${label(el)} didn't take ${what}: it holds ${it} (maxlength ${el.maxLength})`);
+  if ((!now && text) || now === before) throw new Error(`${label(el)} didn't take ${what}: it holds ${it}`);
+  // Anything else is the page's own format of it (a phone mask, thousands separators).
+  return { out: `Filled ${label(el)}; the page shows ${secret ? "it in its own format" : it}` };
 }
 
 const KEYS = { enter: "Enter", return: "Enter", tab: "Tab", esc: "Escape", escape: "Escape", space: " ", backspace: "Backspace", delete: "Delete", up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft", right: "ArrowRight", arrowup: "ArrowUp", arrowdown: "ArrowDown", arrowleft: "ArrowLeft", arrowright: "ArrowRight", home: "Home", end: "End", pageup: "PageUp", pagedown: "PageDown" };
@@ -508,11 +534,14 @@ function keyEvent(el, type, key, mods = {}) {
 }
 
 async function type({ target, text }) {
-  const el = control(find(target));
+  const el = control(resolve(target));
   writable(el);
   await point(el, { hit: false });
   el.focus?.({ preventScroll: true });
-  if (fieldOf(el)) el.setSelectionRange?.(el.value.length, el.value.length);
+  // An email or number field has no selection to set, and says so by throwing.
+  try {
+    if (fieldOf(el)) el.setSelectionRange?.(el.value.length, el.value.length);
+  } catch {}
   for (const ch of text) {
     const go = keyEvent(el, "keydown", ch) && keyEvent(el, "keypress", ch);
     if (go) insert(el, ch);
@@ -564,16 +593,17 @@ function press({ key: chord }) {
 }
 
 async function select({ target, values }) {
-  const el = control(find(target));
+  const el = control(resolve(target));
   if (el.localName !== "select") throw new Error(`${label(el)} isn't a <select>`);
   const options = [...el.options];
   const text = (o) => flat(o.textContent);
-  const chosen = values.map((v) => {
+  const asked = values.map((v) => {
     const o = options.find((o) => o.value === v) ?? options.find((o) => text(o).toLowerCase() === v.toLowerCase());
     if (!o) throw new Error(`No option ${quote(v)} in ${label(el)}: ${cut(options.map((o) => quote(text(o))).join(", "), 300)}`);
     if (o.disabled) throw new Error(`Option ${quote(text(o))} in ${label(el)} is disabled`);
     return o;
   });
+  const chosen = [...new Set(asked)];
   if (chosen.length > 1 && !el.multiple) throw new Error(`${label(el)} takes one option`);
   await point(el, { hit: false });
   for (const o of options) o.selected = chosen.includes(o);
@@ -591,7 +621,7 @@ const TOGGLES = new Set(["checkbox", "radio", "switch", "menuitemcheckbox", "men
 
 /** check (`on`) or uncheck: a click when it isn't so already, and the state read back after. */
 async function check({ target, on }) {
-  const found = find(target);
+  const found = resolve(target);
   const el = TOGGLES.has(roleOf(found)) ? found : control(found);
   const native = el.localName === "input" && (typeOf(el) === "checkbox" || typeOf(el) === "radio");
   const role = native ? typeOf(el) : roleOf(el);
@@ -610,7 +640,7 @@ async function check({ target, on }) {
 }
 
 async function hover({ target }) {
-  const el = find(target);
+  const el = resolve(target);
   const at = await point(el, { enabled: false });
   mouse(el, ["pointerover", "pointerenter", "mouseover", "mouseenter", "pointermove", "mousemove"], { clientX: at.x, clientY: at.y });
   return { out: `Hovered ${label(el)}` };
@@ -621,7 +651,7 @@ function scroll({ to, px }) {
     const by = px ?? Math.round(window.innerHeight * 0.8);
     window.scrollBy({ top: to === "up" ? -by : by, behavior: "instant" });
   } else {
-    center(find(to));
+    resolve(to).scrollIntoView?.({ block: "center", inline: "center", behavior: "instant" });
   }
   const most = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
   return { out: `Scrolled to ${Math.round(window.scrollY)} of ${most}` };
@@ -642,19 +672,18 @@ function exists({ css }) {
 
 const hasText = ({ text }) => ({ found: (document.body?.innerText ?? "").includes(text) });
 
-/** For a screenshot of one element: its box in the viewport, scrolled into view. */
-function rect({ target }) {
-  const el = find(target);
-  center(el);
-  const r = el.getBoundingClientRect();
-  return { rect: { x: r.x, y: r.y, w: r.width, h: r.height } };
-}
-
 const DIALOGS = "dialog[open], [role=dialog], [role=alertdialog], [aria-modal=true]";
 const dialogs = () => [...document.querySelectorAll(DIALOGS)].filter(shows).length;
 
-/** The page as an agent would find it again: the same after an action that did nothing. */
-const pageState = () => `${location.href}|${document.getElementsByTagName("*").length}|${document.body?.textContent.length}|${Math.round(window.scrollY ?? 0)}`;
+/**
+ * The page as an agent would find it again, the same after an action that did nothing: cheap
+ * enough after any flood of changes, as it never reads the page's text.
+ */
+function pageState() {
+  const focused = document.activeElement;
+  const value = typeof focused?.value === "string" ? focused.value.slice(0, 200) : "";
+  return [location.href, document.getElementsByTagName("*").length, Math.round(window.scrollY ?? 0), focused?.localName, value, dialogs()].join("|");
+}
 
 /** What changes on the page from now, an action's, until `changes` reads it. */
 function watch() {
@@ -677,6 +706,7 @@ function watch() {
   const observer = new MutationObserver(count);
   observer.observe(document, { subtree: true, childList: true, characterData: true, attributes: true });
   state.watch = { observer, seen, count, dialogs: dialogs() };
+  return {};
 }
 
 /**
@@ -699,16 +729,16 @@ async function changes({ quiet = 100, most = 500 }) {
 const LABELS = 300;
 
 /**
- * For a screenshot: the part of the viewport it takes, in CSS px (an element's box, scrolled
- * to; `clip`; else all of it), kept to what shows; with `refs`, where each interactive element
- * is in it, from its top left, every one of them given its ref first.
+ * For a screenshot: the part of the viewport it takes, in CSS px (an element's box, brought into
+ * view; `clip`; else all of it), kept to what shows; with `refs`, where each interactive element
+ * shows in it, every one given its ref first.
  */
 function view({ target = null, clip = null, refs = false }) {
   let r = clip ?? { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight };
-  const el = target && find(target);
+  const el = target && resolve(target);
   if (el) {
-    center(el);
-    const b = el.getBoundingClientRect();
+    into(el);
+    const b = rectOf(el);
     r = { x: b.x, y: b.y, w: b.width, h: b.height };
   }
   const x0 = Math.max(r.x, 0), y0 = Math.max(r.y, 0);
@@ -723,7 +753,7 @@ function view({ target = null, clip = null, refs = false }) {
       if (!it?.isConnected || !it.getClientRects().length || labels.length === LABELS) continue;
       const b = it.getBoundingClientRect();
       if (b.x + b.width <= x0 || b.y + b.height <= y0 || b.x >= x1 || b.y >= y1) continue;
-      labels.push({ ref, x: b.x - x0, y: b.y - y0, w: b.width, h: b.height });
+      labels.push({ ref, x: b.x, y: b.y, w: b.width, h: b.height });
     }
   }
   return { rect, labels };
@@ -734,14 +764,25 @@ function wellFormed(_key, value) {
   return typeof value === "string" ? value.toWellFormed() : value;
 }
 
-/** For native input: where a click on `target` lands, once it can. */
-const where = async ({ target }) => await point(target);
+/**
+ * Where an action acts, for agent.rs: `target`'s point once it's actionable, or the point `x`,
+ * `y` itself; and what's there, for its reply.
+ */
+async function aim({ target = null, x = null, y = null }) {
+  if (target !== null) {
+    const el = resolve(target);
+    return { ...(await point(el)), label: label(el) };
+  }
+  if (!(x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight)) {
+    throw new Error(`${x},${y} is outside the ${window.innerWidth}×${window.innerHeight} viewport`);
+  }
+  const over = top(x, y);
+  return { x, y, label: over ? label(over) : "nothing" };
+}
 
-const run = { snapshot, find: search, get, click, fill, type, press, select, check, hover, scroll, exists, hasText, rect, view, point: where, changes };
+const run = { snapshot, find: search, get, aim, click, fill, type, press, select, check, hover, scroll, exists, hasText, view, watch, changes };
 try {
   if (!Object.hasOwn(run, cmd)) throw new Error(`No ${cmd} here`);
-  // An action's changes are counted from just before it.
-  if (a.watch) watch();
   return JSON.stringify({ ...(await run[cmd](a)), last: state.next - 1 }, wellFormed);
 } catch (e) {
   state.watch?.observer.disconnect();
