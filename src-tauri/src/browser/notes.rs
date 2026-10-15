@@ -74,7 +74,7 @@ pub fn tell(reply: Reply, pty: u32, on: Option<&str>) -> Reply {
     with(reply, &told)
 }
 
-/// The notes after the reply's text, or its error's, and in its JSON as `notes`.
+/// The notes after the reply's text, or its error's, and as its `notes` for --json.
 fn with(mut reply: Reply, notes: &[String]) -> Reply {
     if notes.is_empty() {
         return reply;
@@ -89,9 +89,7 @@ fn with(mut reply: Reply, notes: &[String]) -> Reply {
         Some(t) => format!("{t}\n{lines}"),
         None => lines,
     });
-    if let Some(serde_json::Value::Object(data)) = &mut reply.data {
-        data.insert("notes".into(), notes.into());
-    }
+    reply.notes = notes.to_vec();
     reply
 }
 
@@ -160,8 +158,10 @@ mod tests {
         let data = with(Reply::data("t1", json!({ "tabs": [] })), &notes);
         assert_eq!(
             data.data.unwrap(),
-            json!({ "tabs": [], "notes": ["→ a", "→ b"] })
+            json!({ "tabs": [] }),
+            "beside it, not in it"
         );
+        assert_eq!(data.notes, notes);
         assert_eq!(with(Reply::out("same"), &[]), Reply::out("same"));
     }
 
@@ -176,8 +176,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "shape: --json gets `notes` only when the reply's data is an object; any other \
-                reply carries them inside `out` or `error` text alone"]
     fn notes_are_a_json_array_on_every_reply() {
         let notes = ["→ a".to_string()];
         for reply in [Reply::out("Clicked e1"), Reply::error("No tab x")] {

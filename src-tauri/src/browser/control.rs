@@ -41,7 +41,7 @@ time parked to save memory, its next command loading it again. Unused for an hou
 unless the user has it on show. A popup (window.open, a target=_blank link) opens as another tab
 named for its opener (t1-popup1), in the opener's cookies; a popup that closes itself closes its
 tab. A page whose process ends (a crash, memory) loads again; ending again within 30 s, it's left
-stopped. Replies end with what happened meanwhile, each line starting with →.
+stopped. Replies end with what happened meanwhile, each line starting with → (--json: notes).
 
   tab new [name] [url] [--shared] [--session <name>] [--idle <minutes>]
                                Another tab, at url if given; prints its name: the one --tab or
@@ -136,6 +136,9 @@ pub struct Reply {
     /// The exit status when not 0 or 1 (OFF).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<i32>,
+    /// What happened to the pane's tabs meanwhile (notes.rs), also at the end of the text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 impl Reply {
