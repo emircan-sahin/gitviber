@@ -8,7 +8,7 @@ use super::network::{Entry, Kind};
 use serde_json::{json, Value};
 use tauri::Url;
 
-/// What an action set off, from the page (agent.js's `changes`) and the tab's logs.
+/// What an action set off, from the page (scripts/agent/watch.js `changes`) and the tab's logs.
 #[derive(Debug, Default, PartialEq)]
 pub struct Changes {
     pub added: u64,
@@ -760,7 +760,7 @@ mod tests {
         let token = format!("github_pat_{}", "A1b2C3d4E5".repeat(9));
         assert!(token.chars().count() > 80);
         let secrets = [("GH_TOKEN".to_string(), token.clone())];
-        // As agent.js's snapshot line has it: cut(value) keeps 79 characters and an ellipsis.
+        // As the snapshot's line has it (scripts/agent/read.js): cut(value) keeps 79 characters and an ellipsis.
         let shown: String = token.chars().take(79).collect();
         let line = format!("- textbox \"Token\" [ref=e3] value=\"{shown}…\"");
         let out = hide_secrets(&line, &secrets);

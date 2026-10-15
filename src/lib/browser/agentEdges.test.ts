@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { source } from "./agentSource.test.ts";
 
-// scripts/agent.js at the edges a real page has: a field's value set the way WebKit sets it (a
+// scripts/agent/ at the edges a real page has: a field's value set the way WebKit sets it (a
 // maxlength holds for typing, not for a script; a datetime-local is normalized), a scroll that
 // may be smooth, elements moved or put back, a page that draws no frames.
-const source = readFileSync(new URL("../../../src-tauri/src/browser/scripts/agent.js", import.meta.url), "utf8");
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const globals = ["window", "document", "getComputedStyle", "Event", "InputEvent", "MouseEvent", "PointerEvent", "KeyboardEvent", "HTMLInputElement", "HTMLTextAreaElement", "MutationObserver", "location"];
 const agent = new AsyncFunction("input", ...globals, source);

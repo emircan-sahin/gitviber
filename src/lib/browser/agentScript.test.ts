@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { source } from "./agentSource.test.ts";
 
-// scripts/agent.js, what `gitviber browser` runs in a page, against a stand-in one: the tree an
+// scripts/agent/, what `gitviber browser` runs in a page, against a stand-in one: the tree an
 // agent reads, and the refs it acts on.
-const source = readFileSync(new URL("../../../src-tauri/src/browser/scripts/agent.js", import.meta.url), "utf8");
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const agent = new AsyncFunction("input", "window", "document", "getComputedStyle", source);
 
@@ -45,6 +44,12 @@ function el(tag: string, attrs: Record<string, string> = {}, children: (Fake | s
     scrollIntoView: () => {},
     getBoundingClientRect: () => ({ x: 10, y: 20, width: 100, height: 30 }),
     getClientRects: () => [{}],
+    getElementsByTagName: () => {
+      const all: Fake[] = [];
+      const visit = (n: Fake) => n.childNodes.filter((c) => c.nodeType === 1).forEach((c) => (all.push(c), visit(c)));
+      visit(node);
+      return all;
+    },
     ...props,
   };
   return node;
