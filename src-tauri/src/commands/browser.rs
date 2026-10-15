@@ -83,6 +83,13 @@ pub fn browser_configure(
     browser::server::set_enabled(&app, agent_control);
 }
 
+/// An agent's tab the user took, given back to its agents (the tab's button); `browser-owner`
+/// says so.
+#[tauri::command]
+pub fn browser_give_back(app: AppHandle, id: String) -> Res<()> {
+    browser::agent_give_back(&app, &id).map(drop)
+}
+
 /// The element picker on or off; what it picks comes as `browser-picked`.
 #[tauri::command]
 pub fn browser_pick(id: String, on: bool) -> Res<()> {

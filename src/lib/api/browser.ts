@@ -134,6 +134,8 @@ export const browserApi = {
   /** Hidden views kept alive, the minutes until one parks (0: never), agents' tabs drawn out of sight at once, and the console on or off. */
   configure: (liveHidden: number, parkAfterMin: number, agentDrawn: number, console: boolean, agentControl: boolean) =>
     invoke<void>("browser_configure", { liveHidden, parkAfterMin, agentDrawn, console, agentControl }),
+  /** An agent's tab the user took, back to its agents; `browser-owner` says so. */
+  giveBack: (id: string) => invoke<void>("browser_give_back", { id }),
   /** The element picker on or off; its pick comes as `browser-picked`. */
   pick: (id: string, on: boolean) => invoke<void>("browser_pick", { id, on }),
   console: (id: string) => invoke<ConsoleEntry[]>("browser_console", { id }),

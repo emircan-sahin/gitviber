@@ -42,6 +42,11 @@ export function forgetAgentTab(id: string) {
   };
   drop(owners);
   drop(asked);
+  if (taken.get().has(id)) {
+    const left = new Set(taken.get());
+    left.delete(id);
+    taken.set(left);
+  }
   if (shut.get().has(id)) {
     const left = new Set(shut.get());
     left.delete(id);
@@ -51,6 +56,19 @@ export function forgetAgentTab(id: string) {
 
 /** The terminal (pty) whose agent opened tab `id`; undefined for the user's own tabs. */
 export const useAgentPty = (id: string) => owners.use().get(id);
+
+// Agents' tabs the user took with a press or a key of their own (browser/control.rs Owner): their
+// agents only read them until the user gives them back.
+const taken = createStore<ReadonlySet<string>>(new Set());
+listenHere<{ id: string; user: boolean }>("browser-owner", ({ payload: { id, user } }) => {
+  const next = new Set(taken.get());
+  if (user) next.add(id);
+  else next.delete(id);
+  taken.set(next);
+}).catch(() => {});
+
+/** Whether the user has taken agent tab `id` from its agents. */
+export const useTakenFromAgent = (id: string) => taken.use().has(id);
 
 // What agents changed of their tabs' looks, by tab id, until the tab takes it in: a device, or
 // light or dark (null: back to none).
