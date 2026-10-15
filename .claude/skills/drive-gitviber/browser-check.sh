@@ -197,7 +197,8 @@ check_sse() {
 }
 
 check_idle_park() {
-  page idl1 $URL_A/ --idle 1 && page idl2 $URL_A/ --idle 1 || { record idle_park FAIL "tab new: $ERR"; return }
+  # Addresses apart, so the strip's titles tell the two apart.
+  page idl1 "$URL_A/?idl1" --idle 1 && page idl2 "$URL_A/?idl2" --idle 1 || { record idle_park FAIL "tab new: $ERR"; return }
   local t0=$SECONDS
   until_ok 100 '[[ $(state idl1) == sleeping && $(state idl2) == sleeping ]]'
   local ok=$?
@@ -207,10 +208,12 @@ check_idle_park() {
   pass_if "a sleeping tab wakes" '[[ $s == awake ]]' "after a command: $s"
   # What the app has now, to put back: the frontend only sends it again when a setting changes.
   local policy='JSON.parse(localStorage.getItem("gitviber.settings.v2") || "{}")'
-  invoke browser_configure '{ liveHidden: 0, parkAfterMin: 10, console: true, agentControl: true }' >/dev/null
+  local said=$(invoke browser_configure '{ liveHidden: 0, parkAfterMin: 10, console: true, agentControl: true }' 2>&1)
   until_ok 15 '[[ $(state idl2) == parked ]]'
   ok=$?
-  pass_if "park (liveHidden 0)" '(( ok == 0 ))' "sleeping tab: $(state idl2)"
+  # A tab on show never parks: the strip's active tab tells whether idl2 was one.
+  local shown=$(js 'const t = $("[role=tab][aria-selected=true]"); return t ? t.title.split("\n")[0] : "none"' 2>&1)
+  pass_if "park (liveHidden 0)" '(( ok == 0 ))' "sleeping tab: $(state idl2); configure said ${said:-nothing}; active tab: $shown"
   js "const s = $policy; return await window.__TAURI_INTERNALS__.invoke('browser_configure', { liveHidden: s.browserLiveHidden ?? 2,
     parkAfterMin: s.browserParkAfterMin ?? 10, console: s.browserConsole ?? true, agentControl: true })" >/dev/null
   gbx --tab idl2 wait --load
