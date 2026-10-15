@@ -1,29 +1,48 @@
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/segmented";
 import { Switch } from "@/components/ui/switch";
 import { Field, Group } from "@/features/settings/controls";
+import { browserApi, type Skill } from "@/lib/api";
 import { copyText } from "@/lib/app/clipboard";
+import { listenHere } from "@/lib/app/settingsWindow";
 import { clearBrowsingData } from "@/lib/browser/clearData";
+import { skillLines, skillWanted } from "@/lib/browser/skill";
 import { IS_LINUX } from "@/lib/platform";
 import { BROWSER_AGENT_DRAWN, BROWSER_LIVE_HIDDEN, BROWSER_PARK_AFTER, updateSettings, useSettings } from "@/lib/settings";
 
 const minutes = (n: number) => (n === 0 ? "Never" : n < 60 ? `${n} min` : `${n / 60} h`);
 
-// For CLAUDE.md or AGENTS.md: GitViber writes no agent's files itself.
-const AGENT_NOTE = `## Browser
+// What the skill teaches, for the agents without skills: built by browser/skill.rs, as the skill is.
+function useAgentNote(on: boolean) {
+  const [note, setNote] = useState("");
+  useEffect(() => {
+    if (on && !note) void browserApi.agentNote().then(setNote, () => {});
+  }, [on, note]);
+  return note;
+}
 
-You run in a GitViber terminal, which gives you a browser tab of your own: drive it with \`gitviber browser\`.
-
-- \`gitviber browser open localhost:5173\` loads a page and waits for it
-- \`gitviber browser snapshot -i\` lists what you can act on, each with a ref (e1, e2, ...)
-- \`gitviber browser click e2\`, \`fill e3 "some text"\`, \`press Enter\`, \`wait --text "Saved"\`
-- \`gitviber browser screenshot\` saves a PNG and prints its path; \`console --errors\` shows the page's errors
-- \`gitviber browser help\` lists every command
-
-Refs last until the page changes: take a snapshot again after a navigation.`;
+// Where each agent's skill stands. Only the main window writes it (store.ts), and says so after.
+function useSkill(shown: boolean) {
+  const [skill, setSkill] = useState<Skill | null>(null);
+  useEffect(() => {
+    if (!shown) return;
+    let live = true;
+    void browserApi.skillStatus().then((s) => live && setSkill(s), () => {});
+    const unlisten = listenHere<Skill>("browser-skill", ({ payload }) => live && setSkill(payload));
+    return () => {
+      live = false;
+      void unlisten.then((u) => u()).catch(() => {});
+    };
+  }, [shown]);
+  return skill;
+}
 
 export function BrowserSection() {
   const s = useSettings();
+  const note = useAgentNote(s.browserAgentControl && !IS_LINUX);
+  const skillOn = skillWanted(s);
+  const skill = useSkill(s.browserAgentControl && !IS_LINUX);
   if (IS_LINUX) {
     return (
       <Group>
@@ -83,14 +102,31 @@ export function BrowserSection() {
           />
         </Field>
         {s.browserAgentControl && (
+          <Field
+            label="Teach Claude Code and Codex (skill)"
+            hint={
+              <>
+                A skill on when and how to use the browser, rewritten as GitViber updates and deleted when this or agent control is turned off. A file there of your own is never touched.
+                {[...skillLines(skill?.targets ?? [], skillOn), ...(skill?.why ? [skill.why] : [])].map((line) => (
+                  <span key={line} className="mt-0.5 block font-mono text-[11px] break-all">
+                    {line}
+                  </span>
+                ))}
+              </>
+            }
+          >
+            <Switch checked={s.browserAgentSkill} onChange={(v) => updateSettings({ browserAgentSkill: v })} />
+          </Field>
+        )}
+        {s.browserAgentControl && note && (
           <div className="border-b border-border py-3.5 last:border-0">
             <div className="flex items-center gap-2">
-              <div className="flex-1 text-[11.5px] leading-relaxed text-muted-foreground">Agents learn of it from their instructions: add this to the project's CLAUDE.md or AGENTS.md.</div>
-              <Button type="button" variant="outline" size="sm" onClick={() => void copyText(AGENT_NOTE, "Copied", "Paste it into CLAUDE.md or AGENTS.md.")}>
+              <div className="flex-1 text-[11.5px] leading-relaxed text-muted-foreground">Other agents learn of it from their instructions: add this to the project's CLAUDE.md or AGENTS.md.</div>
+              <Button type="button" variant="outline" size="sm" onClick={() => void copyText(note, "Copied", "Paste it into CLAUDE.md or AGENTS.md.")}>
                 Copy
               </Button>
             </div>
-            <pre className="mt-2 max-h-48 overflow-auto rounded-md bg-panel p-2.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-muted-foreground select-text">{AGENT_NOTE}</pre>
+            <pre className="mt-2 max-h-48 overflow-auto rounded-md bg-panel p-2.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-muted-foreground select-text">{note}</pre>
           </div>
         )}
       </Group>

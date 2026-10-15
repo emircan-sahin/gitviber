@@ -136,8 +136,16 @@ taking yours and named so each agent keeps to its own: with `gitviber browser` t
 them as a tree they can act on, click, type, take screenshots and read the console. Each tab signs
 in apart from the others and from you, so two tabs can be two accounts, and a login can be saved as
 a session for another tab to load. A tab no command touched for a while slows down, and one left
-unused for an hour closes, unless it's on show. `gitviber browser help` lists it all, and Settings has a note to paste
-into your `CLAUDE.md` or `AGENTS.md`.
+unused for an hour closes, unless it's on show. `gitviber browser help` lists it all.
+
+So agents know the command is there, and when to use it instead of your own browser, GitViber
+writes a skill for them while agent control is on: `~/.claude/skills/gitviber-browser/SKILL.md`
+for Claude Code and `~/.agents/skills/gitviber-browser/SKILL.md` for Codex, each only if that agent
+is installed (`~/.claude` or `~/.codex` is there). It holds `gitviber browser help` as this version
+prints it, is rewritten when an update changes that (never by an older version), and is deleted
+when you turn agent control or Settings → Browser → Teach Claude Code and Codex off, or uninstall
+that agent. A `gitviber-browser` skill of your own there is never touched. For other agents, Settings has the same text to paste into your `CLAUDE.md` or
+`AGENTS.md`.
 
 ### Browse the code, not just the diff
 
@@ -279,7 +287,8 @@ sessions (`gitviber browser session save`), their cookies and site storage inclu
 the app's data folder, readable by you alone, and never printed or sent anywhere; Clear Browsing
 Data deletes them too. An agent's tab logs the requests its page makes, headers and bodies
 included, in memory only and only in agents' tabs, for its agent to read. What an agent reads of a
-page, picks, console lines or requests included, goes wherever that agent sends it. Letting agents use the browser opens a socket on your Mac only, in a
+page, picks, console lines or requests included, goes wherever that agent sends it. The agents' skill (above) is written only while agent control
+and its setting are on, and only for an agent that's installed. Letting agents use the browser opens a socket on your Mac only, in a
 folder only you can enter, that only GitViber's own terminals have the keys to. Each pane's key
 reaches only that pane's tabs, so an agent that changes which pane it says it's in gets nowhere;
 another program running as you can still read a pane's key from its environment (`ps -E`), as it

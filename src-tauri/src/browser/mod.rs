@@ -21,6 +21,7 @@ pub mod ports;
 mod registry;
 pub mod server;
 mod sessions;
+pub mod skill;
 
 pub use keys::set_app_keys;
 #[cfg(target_os = "macos")]
