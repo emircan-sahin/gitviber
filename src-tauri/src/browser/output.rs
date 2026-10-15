@@ -475,7 +475,7 @@ pub fn hide_secrets(text: &str, secrets: &[(String, String)]) -> String {
             forms.push((format!("{prefix}…"), name.as_str()));
         }
     }
-    forms.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    forms.sort_by_key(|a| std::cmp::Reverse(a.0.len()));
     let mut out = text.to_string();
     for (form, name) in forms {
         out = out.replace(&form, &format!("[secret ${name}]"));
