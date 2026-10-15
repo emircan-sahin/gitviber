@@ -6,7 +6,7 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
-## [0.1.14] - YYYY-MM-DD
+## [0.1.14] - 2026-10-15
 
 ### Added
 
@@ -608,7 +608,8 @@ with `.deb`, `.rpm` and AppImage builds for Linux.
   repository from the welcome screen.
 - Help → Show Logs and Copy Diagnostics for bug reports. No telemetry.
 
-[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.13...HEAD
+[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.14...HEAD
+[0.1.14]: https://github.com/emircan-sahin/gitviber/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/emircan-sahin/gitviber/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/emircan-sahin/gitviber/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/emircan-sahin/gitviber/compare/v0.1.10...v0.1.11
