@@ -20,6 +20,8 @@ export interface Link {
   end: number;
   spec: string;
   kind: LinkKind;
+  /** A terminal path with spaces in it may run on past this link: the longer readings, longest first. */
+  longer?: Link[];
 }
 
 /** A tsconfig `paths` entry, its targets relative to the repo root. */
@@ -139,11 +141,42 @@ export function findLinks(line: string, lang: string, near?: Near): Link[] {
  * may be a commit or an issue (gitRefs), for the repo to say.
  */
 export function findTerminalLinks(line: string, near?: Near): Link[] {
-  return windowed(line, near, (text, _, add) => {
+  const links = windowed(line, near, (text, _, add) => {
     urls(text, add);
     filePaths(text, add, true, true);
     gitRefs(text, add);
   });
+  for (const l of links) {
+    const longer = l.kind === "file" ? spacedPaths(line, l) : [];
+    if (longer.length) l.longer = longer;
+  }
+  return links;
+}
+
+const HAS_EXTENSION = /\.[A-Za-z][\w-]*(?::\d+(?::\d+)?)?$/;
+const MAX_SPACED_WORDS = 6;
+
+/**
+ * An absolute path that stops where its folder or file has a space (`~/Desktop/Ekran Resmi 2026.png`,
+ * a macOS screenshot): the readings that carry on over the next words, up to one ending in an
+ * extension, longest first. Only the disk says whether one is a file, so they're all offered.
+ */
+function spacedPaths(line: string, link: Link): Link[] {
+  if (!/^(?:\/|~\/)/.test(link.spec) || HAS_EXTENSION.test(link.spec) || link.spec.endsWith("/")) return [];
+  const out: Link[] = [];
+  let end = link.end;
+  for (let n = 0; n < MAX_SPACED_WORDS; n++) {
+    const word = / ([^\s]+)/y;
+    word.lastIndex = end;
+    const next = word.exec(line);
+    // A word's path part; what follows it (a `]`, a comma) ends the path.
+    const part = next && /^[\w@.+()\\/-]+(?::\d+(?::\d+)?)?/.exec(next[1]);
+    if (!next || !part) break;
+    end += 1 + part[0].length;
+    if (HAS_EXTENSION.test(part[0])) out.push({ start: link.start, end, spec: line.slice(link.start, end), kind: "file" });
+    if (part[0].length < next[1].length) break;
+  }
+  return out.reverse();
 }
 
 // 7 to 40 hex digits on their own, as git prints them: `[main 59bd0e8]`, `^59bd0e8` (blame), either
@@ -183,19 +216,61 @@ export function githubItem(link: Pick<Link, "spec" | "kind">, repos: readonly st
   return repo ? { number: Number(m[3]), pull: m[2].toLowerCase() === "pull", repo } : null;
 }
 
+const PATH_TAIL = /[\\/][\w@.+:#~-]*$/;
+const PATH_HEAD = /^[\w@.+~/\\][\w@.+:#~/\\-]*/;
+const INDENT_MAX = 8;
+
+/**
+ * Whether `next` carries `prev`'s path on: a program that wraps its own output (Claude Code) cuts a
+ * long path at the last column and goes on a row down, indented under its text, with no soft wrap
+ * for the terminal to know. Returns the indent to leave out, or null. Only a row filled to the edge
+ * and ending in part of a path counts; whether the joined text is a file is the resolver's to say.
+ */
+export function hardWrapIndent(prev: IBufferLine | undefined, next: IBufferLine | undefined, cols: number, cell?: IBufferCell): number | null {
+  if (!prev || !next) return null;
+  const last = prev.getCell(cols - 1, cell);
+  if (!last || (last.getWidth() && !(last.getChars() || " ").trim())) return null;
+  let tail = "";
+  for (let x = cols - 1; x >= 0 && tail.length < 512; x--) {
+    const c = prev.getCell(x, cell);
+    if (!c) return null;
+    if (!c.getWidth()) continue;
+    const chars = c.getChars() || " ";
+    if (!chars.trim()) break;
+    tail = chars + tail;
+  }
+  if (!PATH_TAIL.test(tail)) return null;
+  let indent = 0;
+  let head = "";
+  for (let x = 0; x < cols && head.length < 512; x++) {
+    const c = next.getCell(x, cell);
+    if (!c) break;
+    if (!c.getWidth()) continue;
+    const chars = c.getChars() || " ";
+    if (!chars.trim()) {
+      if (head) break;
+      indent++;
+      continue;
+    }
+    head += chars;
+  }
+  return indent <= INDENT_MAX && PATH_HEAD.test(head) ? indent : null;
+}
+
 /**
  * Rows of terminal cells as one line, and each character's cell (along the rows, `cols` to a row)
  * then the one past the last; `starts[r]` is where row `r` starts in the text. Offsets and cells
  * part at wide characters (two cells) and past U+FFFF (two UTF-16 units).
  */
-export function cellText(rows: (IBufferLine | undefined)[], cols: number, cell?: IBufferCell) {
+export function cellText(rows: (IBufferLine | undefined)[], cols: number, cell?: IBufferCell, skip: number[] = []) {
   let text = "";
   const cells: number[] = [];
   const starts: number[] = [];
   let end = 0;
   rows.forEach((row, r) => {
     starts.push(text.length);
-    for (let x = 0; x < cols; x++) {
+    // `skip[r]`: a continuation's indent, which isn't part of the text it carries on.
+    for (let x = skip[r] ?? 0; x < cols; x++) {
       const c = row?.getCell(x, cell);
       if (!c) break;
       // The second half of a wide character.

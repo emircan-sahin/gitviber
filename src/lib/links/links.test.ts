@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { IBufferLine } from "@xterm/xterm";
 import { test } from "node:test";
-import { cellText, diskCandidates, diskTarget, findLinks, findTerminalLinks, githubItem, hyperlinkTarget, indexCase, indexFiles, join, loadAliases, parseJsonc, resolveLink, resolveTerminalLink, splitPosition } from "./links.ts";
+import { cellText, diskCandidates, diskTarget, findLinks, findTerminalLinks, githubItem, hardWrapIndent, hyperlinkTarget, indexCase, indexFiles, join, loadAliases, parseJsonc, resolveLink, resolveTerminalLink, splitPosition } from "./links.ts";
 
 const specs = (line: string, lang: string) => findLinks(line, lang).map((l) => [line.slice(l.start, l.end), l.kind]);
 
@@ -354,6 +354,61 @@ test("maps terminal text back to cells past wide characters", () => {
   // The emoji's two units share its first cell; the next character starts past its second.
   assert.deepEqual(cells.slice(7, 10), [8, 8, 10]);
   assert.equal(cells.at(-1), 16);
+});
+
+test("an agent's long scratch path in a sentence is one file link, outside the repo", () => {
+  const path = "/private/tmp/claude-501/-Users-me-Documents-GitHub-online-pvp-game/a4a26d65-9872-4ab4/scratchpad/onb-c/s2.png";
+  const [link] = findTerminalLinks(`- 852 genişlik: ${path}`);
+  assert.equal(link.spec, path);
+  const index = indexFiles(["src/a.ts"]);
+  assert.equal(resolveTerminalLink(link, "", index, "/Users/me/repo"), null);
+  assert.deepEqual(diskCandidates(link, "", "/Users/me/repo"), []);
+});
+
+test("an absolute path with spaces is offered in its longer readings", () => {
+  const line = "[Image: source: /Users/me/Desktop/Ekran Resmi 2026-10-15 18.34.46.png] and more.txt";
+  const [first, ...rest] = findTerminalLinks(line).filter((l) => l.start >= 16 && l.kind === "file");
+  assert.equal(first.spec, "/Users/me/Desktop/Ekran");
+  assert.deepEqual(
+    first.longer?.map((l) => l.spec),
+    ["/Users/me/Desktop/Ekran Resmi 2026-10-15 18.34.46.png"],
+  );
+  // The words inside it are links of their own too, for the caller to drop when the long one is a file.
+  assert.ok(rest.some((l) => l.spec === "18.34.46.png"));
+  const folder = findTerminalLinks("/a/My Folder/b.md:12 next words.txt").find((l) => l.start === 0);
+  // Every reading that ends in an extension, longest first: the disk picks.
+  assert.deepEqual(folder?.longer?.map((l) => l.spec), ["/a/My Folder/b.md:12 next words.txt", "/a/My Folder/b.md:12"]);
+  // A path with an extension, a folder, a relative path: nothing to carry on over.
+  for (const plain of ["/a/b.png and c.txt", "/a/b/ and c.txt", "src/a and c.txt"]) assert.equal(findTerminalLinks(plain)[0]?.longer, undefined, plain);
+  // Words that aren't path text end it.
+  assert.equal(findTerminalLinks("/a/b, c.txt")[0]?.longer, undefined);
+});
+
+const chars = (s: string, cols: number) => row([...s].map((c): [string, number] => [c, 1]), cols);
+
+test("a path a program cut at the edge and went on indented is one link", () => {
+  const cols = 20;
+  const [a, b] = [chars("see /tmp/aaaa/bbbb/c", cols), chars("  dd/e.png and more", cols)];
+  assert.equal(hardWrapIndent(a, b, cols), 2);
+  assert.equal(hardWrapIndent(a, chars("dd/e.png", cols), cols), 0);
+  const { text, cells, starts } = cellText([a, b], cols, undefined, [0, 2]);
+  assert.equal(text.slice(0, starts[1] + 8), "see /tmp/aaaa/bbbb/cdd/e.png");
+  const [link] = findTerminalLinks(text);
+  assert.equal(link.spec, "/tmp/aaaa/bbbb/cdd/e.png");
+  // Cells run on past the indent: the link ends in row 2 at its tenth cell (20 + 9).
+  assert.deepEqual([cells[link.start], cells[link.end] - 1], [4, 29]);
+});
+
+test("a hard wrap needs a full row, a path at its end, and a path after the indent", () => {
+  const cols = 20;
+  const full = chars("see /tmp/aaaa/bbbb/c", cols);
+  assert.equal(hardWrapIndent(chars("see /tmp/aaaa/bbbb/", cols), chars("dd/e.png", cols), cols), null, "not at the edge");
+  assert.equal(hardWrapIndent(chars("hello world and more", cols), chars("dd/e.png", cols), cols), null, "no path");
+  assert.equal(hardWrapIndent(chars("some words and a path", cols), chars("dd/e.png", cols), cols), null, "a word");
+  assert.equal(hardWrapIndent(full, chars("- next item", cols), cols), null, "a bullet");
+  assert.equal(hardWrapIndent(full, chars("      ", cols), cols), null, "blank");
+  assert.equal(hardWrapIndent(full, chars("          dd/e.png", cols), cols), null, "too far in");
+  assert.equal(hardWrapIndent(undefined, full, cols), null);
 });
 
 test("resolves OSC 8 hyperlinks: pages, and files in the repo", () => {
