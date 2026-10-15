@@ -138,6 +138,12 @@ in apart from the others and from you, so two tabs can be two accounts, and a lo
 a session for another tab to load. A tab no command touched for a while slows down, and one left
 unused for an hour closes, unless it's on show. `gitviber browser help` lists it all.
 
+An agent's clicks, keys, hover, drag and scroll reach the page as real input, without moving your
+pointer or reaching your keyboard or clipboard. Its tabs keep drawing while GitViber is hidden or
+minimized; Settings → Browser → Agent tabs drawing at once sets how many. Click or type in an
+agent's tab and it's yours: its agent only reads it until you press Give back to agent, or run
+`gitviber browser tab release`.
+
 So agents know the command is there, and when to use it instead of your own browser, GitViber
 writes a skill for them while agent control is on: `~/.claude/skills/gitviber-browser/SKILL.md`
 for Claude Code and `~/.agents/skills/gitviber-browser/SKILL.md` for Codex, each only if that agent
