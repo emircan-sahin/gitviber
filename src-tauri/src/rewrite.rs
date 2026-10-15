@@ -1,4 +1,4 @@
-//! Editing the branch's own history, as GitHub Desktop and lazygit do: reword a commit, squash
+//! Editing the branch's own history: reword a commit, squash
 //! commits into one, drop some, move them, split one, or fold staged changes into one. An
 //! interactive rebase does it from a todo written here, so no editor opens; conflicts stop it as
 //! any rebase's do.
@@ -471,7 +471,7 @@ fn plan<'a>(line: &'a [String], edit: &'a Edit) -> Result<(usize, Vec<Step<'a>>)
     }
 }
 
-/// As GitHub Desktop's squash.ts: picked commits older than `onto` wait for it, newer ones follow
+/// Picked commits older than `onto` wait for it, newer ones follow
 /// it straight away, and the commits they pass over are replayed after the squash.
 fn squash<'a>(
     line: &'a [String],
@@ -512,7 +512,7 @@ fn squash<'a>(
     Ok((oldest, todo))
 }
 
-/// As GitHub Desktop's reorder.ts: the moved commits keep their order, and land just before
+/// The moved commits keep their order, and land just before
 /// `before` (on top without one).
 fn reorder<'a>(
     line: &'a [String],

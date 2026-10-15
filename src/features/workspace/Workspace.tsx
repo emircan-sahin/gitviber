@@ -190,7 +190,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     },
     [sidebars],
   );
-  // Opening a panel focuses it, as in VS Code; closing the one holding focus leaves it to the code view.
+  // Opening a panel focuses it; closing the one holding focus leaves it to the code view.
   const toggle = useCallback(
     (side: Side, name: Panel) => {
       if (sidebars.isCollapsed(side)) return show(side, name);
@@ -281,7 +281,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     setListTab("changes");
   };
 
-  // With focus in the terminal (a pane, its tabs, its find), the tab keys pick its tabs, as in iTerm2.
+  // With focus in the terminal (a pane, its tabs, its find), the tab keys pick its tabs.
   // Where focus is now, not the panel it was last in, which may be hidden since. When that side has
   // no such tab, the key goes on (⌘→ to the code view's text).
   const orTerminal = (code: (() => void) | undefined, terminal: (() => void) | undefined) =>

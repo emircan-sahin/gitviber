@@ -77,7 +77,7 @@ export function TabStrip({ tabs, active, onActivate, onClose, onCloseTabs, onPin
     e.preventDefault();
   };
 
-  // As VS Code: two open files of one name show their folders too.
+  // Two open files of one name show their folders too.
   const folders = distinctFolders(tabs.filter((t) => isFileSelection(t.sel) || t.sel.kind === "vault").map((t) => selectionPath(t.sel)));
 
   return (
@@ -144,7 +144,7 @@ function TabItem({
   onRevealInExplorer: (path: string) => void;
 }) {
   const { props, dragging, guard } = useSortableItem(t.key);
-  // Unsaved edits: a dot where the close button goes, the button on hover (as VS Code).
+  // Unsaved edits: a dot where the close button goes, the button on hover.
   const unsaved = useEdited().has(editPath(t.sel) ?? "");
   const closeKey = useShortcut("tab.close");
   const closeOthersKey = useShortcut("tab.closeOthers");
@@ -228,7 +228,7 @@ function TabItem({
     </div>
   );
   const file = isFileSelection(t.sel);
-  // As VS Code's tab menu, plus to the left.
+  // Close Others, to the Left, to the Right and All, each disabled when it would close nothing.
   const group = (which: TabGroup, label: string, shortcut?: string) => (
     <ContextMenuItem disabled={!closes(which)} onSelect={() => onCloseGroup(which)}>
       {label}

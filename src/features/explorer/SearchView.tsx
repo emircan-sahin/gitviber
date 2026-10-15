@@ -26,7 +26,7 @@ interface Props {
 }
 
 /**
- * Search in files, VS Code's: the worktree's text through `git grep` (grep.rs), matches grouped
+ * Search in files: the worktree's text through `git grep` (grep.rs), matches grouped
  * by file. Picking one opens the file at its line with the match selected.
  */
 export function SearchView({ active, ask, onOpen, onLeave }: Props) {

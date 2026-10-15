@@ -1,10 +1,10 @@
 // The labels link hints (hints.ts) put on links. Pure, so it runs under `node --test`.
 
-/** Vimium's home-row letters: no digits, as Shift+label copies. */
+/** Home-row letters: no digits, as Shift+label copies. */
 export const HINT_ALPHABET = "sadfjklewcmpgh";
 
 /**
- * Kitty's prefix-free labels (hints_generator.go): label i is the i-th in breadth-first order
+ * Prefix-free labels (hints_generator.go): label i is the i-th in breadth-first order
  * (s, a, …, ss, sa, …) after skipping enough short ones that no label starts another, so a label
  * is done the moment it's typed. The first are the shortest: hints.ts gives them to the bottom links.
  */

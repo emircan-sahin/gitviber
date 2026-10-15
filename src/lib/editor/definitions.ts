@@ -1,4 +1,4 @@
-// Go to Definition in the code view, drawn by Monaco as in VS Code: ⌘-click or F12 goes where the
+// Go to Definition in the code view, drawn by Monaco: ⌘-click or F12 goes where the
 // name under it is defined, ⌥F12 peeks, ⇧F12 (or ⌘-click on a definition) lists where it's used,
 // several places show as a list. definitions.rs finds names; an import path or path:line
 // (lib/links/links) goes to the file it names. URLs are Monaco's own links.
@@ -31,7 +31,7 @@ export function followDefinitions(editor: monaco.editor.ICodeEditor, side: () =>
     // Monaco's own F12 keys are off (lib/editor/monaco): these follow the user's bindings.
     editor.onKeyDown((e) => {
       const command = commandIn(Object.keys(ACTIONS) as (keyof typeof ACTIONS)[], e.browserEvent);
-      // A file open for editing keeps ⌘↵ as Insert Line Below, as VS Code has it; F12 still goes.
+      // A file open for editing keeps ⌘↵ as Insert Line Below; F12 still goes.
       if (!command || (e.keyCode === monaco.KeyCode.Enter && !editor.getOption(monaco.editor.EditorOption.readOnly))) return;
       e.preventDefault();
       e.stopPropagation();
@@ -71,7 +71,7 @@ monaco.languages.registerReferenceProvider("*", {
 /** The file an import path or path:line at `pos` names. */
 async function linkAt(model: monaco.editor.ITextModel, pos: monaco.Position, side: LinkSide): Promise<monaco.languages.LocationLink[] | null> {
   const lang = model.getLanguageId() === "plaintext" ? "text" : model.getLanguageId();
-  // Ends included, as VS Code's links: the pointer's column is the caret spot nearest to it.
+  // Ends included: the pointer's column is the caret spot nearest to it.
   const at = { start: pos.column - 1, end: pos.column - 1 };
   const link = findLinks(model.getLineContent(pos.lineNumber), lang, at).find((l) => pos.column >= l.start + 1 && pos.column <= l.end + 1);
   if (!link || link.kind === "url") return null;

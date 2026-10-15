@@ -66,7 +66,7 @@ const optionKey = (o: Option | undefined) => (o ? (o.kind === "create" ? "\0crea
 const LOCAL = "Local";
 const PINNED = "Pinned";
 const RECENT = "Recent";
-/** As GitHub Desktop's recent branches. */
+/** How many recent branches are listed. */
 const RECENT_MAX = 5;
 
 /**

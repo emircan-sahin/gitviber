@@ -54,7 +54,7 @@ export function markFindMatches(e: monaco.editor.IStandaloneDiffEditor, host: HT
 
 const barDecorations = new WeakMap<monaco.editor.ICodeEditor, monaco.editor.IEditorDecorationsCollection>();
 
-/** The file view's VS Code-style change bars, in the gutter and on the scrollbar. */
+/** The file view's change bars, in the gutter and on the scrollbar. */
 export function markBars(e: monaco.editor.ICodeEditor, bars: ReturnType<typeof changeBars>) {
   const css = getComputedStyle(document.documentElement);
   const color = { add: css.getPropertyValue("--added"), mod: css.getPropertyValue("--primary"), del: css.getPropertyValue("--removed") };
@@ -97,8 +97,8 @@ export function changeBars(rows: DiffRow[]) {
 }
 
 /**
- * changeBars for a file being typed into: its `lines` now against `head`'s, redrawn as it changes
- * (as VS Code's are). Monaco's line diff, the diff editor's, cut short on a huge file so typing doesn't wait.
+ * changeBars for a file being typed into: its `lines` now against `head`'s, redrawn as it changes.
+ * Monaco's line diff, the diff editor's, cut short on a huge file so typing doesn't wait.
  */
 export function liveBars(head: string[], lines: string[]) {
   const { changes } = new DefaultLinesDiffComputer().computeDiff(head, lines, { ignoreTrimWhitespace: false, maxComputationTimeMs: 100, computeMoves: false });

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { pastedLines, pathPastes, shellPath } from "./paste.ts";
 
-test("paths are escaped as Ghostty does", () => {
+test("paths are escaped so a shell reads one word", () => {
   assert.equal(shellPath("/Users/me/Ekran Resmi (1).png"), "/Users/me/Ekran\\ Resmi\\ \\(1\\).png");
   assert.equal(shellPath("/tmp/a'b\"c$d&e;f|g*h?i!j#k`l"), "/tmp/a\\'b\\\"c\\$d\\&e\\;f\\|g\\*h\\?i\\!j\\#k\\`l");
   assert.equal(shellPath("/tmp/[x]{y}<z>\\w\tv"), "/tmp/\\[x\\]\\{y\\}\\<z\\>\\\\w\\\tv");

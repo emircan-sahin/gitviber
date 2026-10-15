@@ -1,5 +1,4 @@
-// Which lines staging, unstaging or discarding part of a diff takes, as VS Code's "Stage Selected
-// Ranges": a change the chosen lines touch goes with the chosen ones of its side and all of the
+// Which lines staging, unstaging or discarding part of a diff takes: a change the chosen lines touch goes with the chosen ones of its side and all of the
 // other side's (the lines they replace). Pure, so it runs under `node --test`.
 import type { DiffRow } from "../api";
 

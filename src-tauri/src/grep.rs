@@ -17,7 +17,7 @@ pub struct Query {
     pub match_case: bool,
     pub whole_word: bool,
     pub regex: bool,
-    /// Comma-separated globs, as VS Code's: one without a `/` (`*.ts`, `dist`) matches at any depth.
+    /// Comma-separated globs: one without a `/` (`*.ts`, `dist`) matches at any depth.
     pub include: String,
     pub exclude: String,
 }
@@ -83,7 +83,7 @@ pub fn cancel() {
     LATEST.fetch_add(1, Ordering::SeqCst);
 }
 
-/// VS Code's glob shorthand as git pathspecs: a bare `*.ts` or `dist` anywhere, a folder's
+/// Glob shorthand as git pathspecs: a bare `*.ts` or `dist` anywhere, a folder's
 /// contents too, and `{a,b}` alternatives, which git's globs lack, as one pathspec each.
 fn pathspecs(globs: &str, magic: &str) -> Vec<String> {
     split_outside_braces(globs)

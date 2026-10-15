@@ -16,7 +16,7 @@ let ids = 0;
 /**
  * Draws one diagram as SVG. Mermaid is loaded on the first one, and its settings are global, so
  * diagrams draw one at a time, each with the theme it asked for. `strict` runs no click handlers
- * and sanitizes labels (as GitHub and VS Code's preview do).
+ * and sanitizes labels.
  */
 export function draw(code: string, dark: boolean): Promise<string> {
   const key = `${dark}\0${code}`;

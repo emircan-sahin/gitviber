@@ -4,7 +4,7 @@ import { useDragGuard, useDragSensors } from "@/components/Sortable";
 import type { DropAt } from "./edits";
 
 /**
- * Dragging commits in History, as GitHub Desktop does: onto a commit squashes them into it,
+ * Dragging commits in History: onto a commit squashes them into it,
  * between two moves them there. The rows stay put, as the graph's lines run through them; a
  * line or a ring marks the spot. `drag(sha)`: the commits a drag from that row takes.
  */

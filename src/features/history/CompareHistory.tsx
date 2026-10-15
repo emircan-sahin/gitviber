@@ -16,7 +16,7 @@ import { HistoryPanel } from "./HistoryPanel";
 type ListProps = Omit<ComponentProps<typeof HistoryPanel>, "commits" | "hasMore" | "loadMore">;
 
 /**
- * GitHub Desktop's Compare: what `with` (a full ref) has that HEAD doesn't, and the other way
+ * Compare: what `with` (a full ref) has that HEAD doesn't, and the other way
  * round, each its own list. Read again whenever HEAD's history changes.
  */
 export function CompareHistory({ with: ref, current, ours, onClose, ...props }: ListProps & { with: string; current: string; ours: Commit[]; onClose: () => void }) {

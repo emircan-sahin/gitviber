@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef } from "react";
 
-/** Inline name editor: Enter or blur commits, Escape cancels (VS Code behavior). */
+/** Inline name editor: Enter or blur commits, Escape cancels. */
 export function NameInput({ initial, selectStem, onDone }: { initial: string; selectStem?: boolean; onDone: (name: string | null, refocus: boolean) => void }) {
   const done = useRef(false);
   // Unmounted by its owner (the row or tab went): a blur fired during removal must not commit.

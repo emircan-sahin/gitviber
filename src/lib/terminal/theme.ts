@@ -49,7 +49,7 @@ const ansi = (normal: string, bright: string) => {
   return Object.fromEntries(NAMES.flatMap((name, i) => [[name, n[i]], [`bright${name[0].toUpperCase()}${name.slice(1)}`, b[i]]]));
 };
 
-// Each named theme's own terminal colors (its VS Code theme's terminal.ansi*).
+// Each named theme's own terminal colors (the theme's terminal.ansi*).
 const SOLARIZED = ansi("#073642 #dc322f #859900 #b58900 #268bd2 #d33682 #2aa198 #eee8d5", "#002b36 #cb4b16 #586e75 #657b83 #839496 #6c71c4 #93a1a1 #fdf6e3");
 const ANSI: Partial<Record<Theme, Record<string, string>>> = {
   nord: ansi("#3b4252 #bf616a #a3be8c #ebcb8b #81a1c1 #b48ead #88c0d0 #e5e9f0", "#4c566a #bf616a #a3be8c #ebcb8b #81a1c1 #b48ead #8fbcbb #eceff4"),
@@ -76,7 +76,7 @@ export function terminalOptions(): ITerminalOptions {
     cursorBlink: s.terminalCursorBlink,
     scrollback: s.terminalScrollback,
     screenReaderMode: s.terminalScreenReader,
-    // As VS Code's terminal does: a theme's own dim colors (Solarized Dark's bright black is its
+    // A theme's own dim colors (Solarized Dark's bright black is its
     // background) are lifted until they read, so autosuggestions and dimmed output show.
     minimumContrastRatio: 4.5,
     // Left-only is switched on and off as that ⌥ goes down and up (terminals.ts).

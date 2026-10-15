@@ -50,7 +50,7 @@ export function useHistoryEdits({ commits, head, graph, run }: { commits: Commit
     return ok;
   };
 
-  // As GitHub Desktop squashes: commits picked from elsewhere move to `onto` first, older ones
+  // Squashing: commits picked from elsewhere move to `onto` first, older ones
   // below it and newer ones above, then they become one there. `message`: ask for the message,
   // else the oldest one's stays (fixup).
   const squash = (about: Commit[], onto: string, message: boolean) => {

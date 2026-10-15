@@ -1,5 +1,5 @@
 //! Shell integration: zsh and bash mark each prompt and command with OSC 133, for the terminal's
-//! command marks and jumps. Loaded the way Ghostty loads its own, without a line in the user's
+//! command marks and jumps. Loaded without a line in the user's
 //! dotfiles: zsh through ZDOTDIR, bash 4.4+ in POSIX mode through ENV. fish 4 marks its own prompts.
 
 use std::ffi::OsString;
@@ -28,7 +28,7 @@ pub struct Injection {
 /// For `shell`, with the scripts kept in `dir`; None for any other shell, or if they can't be written there.
 pub fn injection(shell: &Path, dir: &Path) -> Option<Injection> {
     let name = shell.file_name()?.to_str()?;
-    // macOS's own bash is 3.2, without PS0; Ghostty leaves it alone too.
+    // macOS's own bash is 3.2, without PS0, so it is left alone.
     let old_bash = cfg!(target_os = "macos") && shell == Path::new("/bin/bash");
     if name != "zsh" && (name != "bash" || old_bash) {
         return None;

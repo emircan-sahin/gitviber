@@ -1,6 +1,6 @@
 // Desktop notifications, when the user turned them on (Settings → Notifications): a network command
-// that ends while the app is in the background says so, as GitHub Desktop does, and so does a
-// terminal that rings or sends a notification (lib/terminal/needsYou), as Ghostty and iTerm2 do, or
+// that ends while the app is in the background says so, and so does a
+// terminal that rings or sends a notification (lib/terminal/needsYou), or
 // whose agent finishes or asks. notifications.rs posts them, asking macOS first.
 import { api, errorMessage, type NotifyPermission } from "../api";
 import { getSettings, type NotifyEvent, updateSettings } from "../settings";

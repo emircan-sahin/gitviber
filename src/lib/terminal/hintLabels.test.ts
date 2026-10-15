@@ -6,7 +6,7 @@ test("hint labels: one letter while they last, then two, none the start of anoth
   assert.deepEqual(hintLabels(0), []);
   assert.deepEqual(hintLabels(1), ["s"]);
   assert.deepEqual(hintLabels(3, "abc"), ["a", "b", "c"]);
-  // kitty's own example: with 5 from "abc", "a" is skipped so "aa"… can follow.
+  // With 5 from "abc", "a" is skipped so "aa"… can follow.
   assert.deepEqual(hintLabels(5, "abc"), ["b", "c", "aa", "ab", "ac"]);
   assert.deepEqual(hintLabels(HINT_ALPHABET.length), [...HINT_ALPHABET]);
   for (const n of [2, 13, 14, 15, 27, 100, 196, 197, 500]) {
