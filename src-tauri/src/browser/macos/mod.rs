@@ -5,6 +5,7 @@
 
 mod agent;
 mod cookies;
+mod downloads;
 mod page_tools;
 mod page_view;
 mod popups;
@@ -49,10 +50,10 @@ use objc2_foundation::{
     NSURLRequest, NSURLSessionAuthChallengeDisposition as Disposition, NSURL, NSUUID,
 };
 use objc2_web_kit::{
-    WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate,
-    WKNavigationResponse, WKNavigationResponsePolicy, WKNavigationType, WKOpenPanelParameters,
-    WKUIDelegate, WKUserContentController, WKWebView, WKWebViewConfiguration, WKWebsiteDataStore,
-    WKWindowFeatures,
+    WKDownload, WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationActionPolicy,
+    WKNavigationDelegate, WKNavigationResponse, WKNavigationResponsePolicy, WKNavigationType,
+    WKOpenPanelParameters, WKUIDelegate, WKUserContentController, WKWebView,
+    WKWebViewConfiguration, WKWebsiteDataStore, WKWindowFeatures,
 };
 use serde::Serialize;
 use std::cell::{Cell, OnceCell, RefCell};
@@ -429,10 +430,9 @@ define_class!(
             let main = unsafe { action.targetFrame() }.is_none_or(|f| unsafe { f.isMainFrame() });
             let clicked = unsafe { action.navigationType() } == WKNavigationType::LinkActivated;
             let decision = match policy(&url, main, clicked) {
-                // A link with `download`: nothing here saves files.
+                // A link with `download`: only an agent's tab saves files (downloads.rs).
                 Policy::Allow if unsafe { action.shouldPerformDownload() } => {
-                    self.download(&url);
-                    WKNavigationActionPolicy::Cancel
+                    downloads::on_link(self, &url)
                 }
                 Policy::Allow => {
                     if clicked && main {
@@ -457,6 +457,9 @@ define_class!(
             response: &WKNavigationResponse,
             decide: &DynBlock<dyn Fn(WKNavigationResponsePolicy)>,
         ) {
+            if let Some(policy) = downloads::on_response(self, response) {
+                return decide.call((policy,));
+            }
             if unsafe { response.canShowMIMEType() } {
                 return decide.call((WKNavigationResponsePolicy::Allow,));
             }
@@ -464,6 +467,21 @@ define_class!(
                 self.download(&url_text(unsafe { response.response().URL() }));
             }
             decide.call((WKNavigationResponsePolicy::Cancel,));
+        }
+
+        #[unsafe(method(webView:navigationAction:didBecomeDownload:))]
+        fn action_download(&self, _web: &WKWebView, _action: &WKNavigationAction, download: &WKDownload) {
+            downloads::began(self, download);
+        }
+
+        #[unsafe(method(webView:navigationResponse:didBecomeDownload:))]
+        fn response_download(
+            &self,
+            _web: &WKWebView,
+            _response: &WKNavigationResponse,
+            download: &WKDownload,
+        ) {
+            downloads::began(self, download);
         }
 
         #[unsafe(method(webView:didStartProvisionalNavigation:))]

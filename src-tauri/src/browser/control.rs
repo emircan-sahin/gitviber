@@ -80,13 +80,18 @@ tab. Replies end with what happened meanwhile, each line starting with →.
   hover <ref|css>              The mouse over an element (no CSS :hover)
   press <key>                  A key to the focused element: Enter, Tab, Escape, ArrowDown, Meta+a
   scroll <up|down|ref|css> [px]
-  wait <css> | --text <text> | --load | --ms <n> [--timeout <ms>]
-                               Until an element shows, the text does, the page has loaded, or
-                               the time is up; 10 s at most unless --timeout says (120 s at most)
+  wait <css> | --text <text> | --load | --download | --ms <n> [--timeout <ms>]
+                               Until an element shows, the text does, the page has loaded, a
+                               download ends (one that ended in the minute before counts; prints
+                               its path, size and type), or the time is up; 10 s at most unless
+                               --timeout says (120 s at most)
   eval <js>                    Runs in the page; prints the result as JSON
   screenshot [path] [--ref <ref|css>]
                                A PNG of the page, or of one element; prints its path
   console [--errors] [--clear] What the page logged
+  downloads [--clear]          The tab's downloaded files, newest first, with their paths: kept
+                               in a folder of the tab's own (its newest 20, a day at most), gone
+                               when it closes; one that ends is told in the next reply
   network [--failed] [--filter <text>] [--type fetch|xhr|ws|resource] [--clear]
                                What the page requested and loaded, one line each with an id;
                                the newest 300 requests and 500 other loads
@@ -222,6 +227,8 @@ pub enum Command {
         errors: bool,
         clear: bool,
     },
+    /// The tab's downloaded files, or (true) their removal.
+    Downloads(bool),
     Network(network::Ask),
     Device(Option<AgentScreen>),
     /// Whether the page's dialogs are accepted (OK) rather than dismissed.
@@ -275,6 +282,8 @@ pub enum Wait {
     Css(String),
     Text(String),
     Load,
+    /// A download of the tab's to end.
+    Download,
     Ms(u64),
 }
 
@@ -320,6 +329,11 @@ pub fn parse(cmd: &str, args: &[String]) -> Result<Command, String> {
         "eval" => Err("Usage: gitviber browser eval <js>".into()),
         "screenshot" => screenshot(args),
         "console" => console(args),
+        "downloads" => match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+            [] => Ok(Command::Downloads(false)),
+            ["--clear"] => Ok(Command::Downloads(true)),
+            _ => Err("Usage: gitviber browser downloads [--clear]".into()),
+        },
         "network" => network::ask(args).map(Command::Network),
         "device" if args.is_empty() => {
             Err("Usage: gitviber browser device <name|WxH|off>, or device --list".into())
@@ -490,6 +504,7 @@ fn wait(args: &[String]) -> Result<Command, String> {
         match arg.as_str() {
             "--text" => what = Some(Wait::Text(value(&mut it, arg)?.clone())),
             "--load" => what = Some(Wait::Load),
+            "--download" => what = Some(Wait::Download),
             "--ms" => what = Some(Wait::Ms(number(value(&mut it, arg)?, arg)?)),
             "--timeout" => {
                 timeout =
@@ -502,11 +517,10 @@ fn wait(args: &[String]) -> Result<Command, String> {
     let what = match (what, css.is_empty()) {
         (Some(w), true) => w,
         (None, false) => Wait::Css(css.join(" ")),
-        _ => {
-            return Err(
-                "Usage: gitviber browser wait <css> | --text <text> | --load | --ms <n>".into(),
-            )
-        }
+        _ => return Err(
+            "Usage: gitviber browser wait <css> | --text <text> | --load | --download | --ms <n>"
+                .into(),
+        ),
     };
     let what = match what {
         Wait::Ms(ms) => Wait::Ms(ms.min(LONGEST_WAIT.as_millis() as u64)),
@@ -1109,6 +1123,15 @@ mod tests {
             Ok(Command::Wait(Wait::Load, WAIT))
         );
         assert_eq!(
+            parse("wait", &args("--download --timeout 60000")),
+            Ok(Command::Wait(Wait::Download, Duration::from_secs(60)))
+        );
+        assert_eq!(parse("downloads", &[]), Ok(Command::Downloads(false)));
+        assert_eq!(
+            parse("downloads", &args("--clear")),
+            Ok(Command::Downloads(true))
+        );
+        assert_eq!(
             parse("eval", &args("document.title")),
             Ok(Command::Eval("document.title".into()))
         );
@@ -1172,6 +1195,9 @@ mod tests {
             ("wait", ""),
             ("wait", "--text"),
             ("wait", "--load .x"),
+            ("wait", "--download report.pdf"),
+            ("downloads", "--all"),
+            ("downloads", "--clear now"),
             ("scroll", "down far"),
             ("screenshot", "a.png b.png"),
             ("console", "--all"),

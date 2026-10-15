@@ -135,7 +135,9 @@ you do). The agents in a terminal pane get tabs of their own, opened in the back
 taking yours and named so each agent keeps to its own: with `gitviber browser` they open pages, read
 them as a tree they can act on, click, type, take screenshots and read the console. Each tab signs
 in apart from the others and from you, so two tabs can be two accounts, and a login can be saved as
-a session for another tab to load. A tab no command touched for a while slows down, and one left
+a session for another tab to load. A login or payment popup opens as another tab that can still
+post back to the page that opened it, and a download lands in a folder of the tab's own, its path in
+the agent's reply. A tab no command touched for a while slows down, and one left
 unused for an hour closes, unless it's on show. `gitviber browser help` lists it all, and Settings has a note to paste
 into your `CLAUDE.md` or `AGENTS.md`.
 

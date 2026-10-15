@@ -154,6 +154,7 @@ pub fn agent_close_tab(app: &AppHandle, id: &str) -> Res<String> {
 /// The tab closed, by the user or with its worktree: no agent drives it again, even reopened.
 pub(super) fn forget_tab(id: &str) {
     ROUTES.with_borrow_mut(|r| r.close(id));
+    super::downloads::forget(id);
 }
 
 /// Whether the tab is still there for its agents: live, or parked to load again.
@@ -247,6 +248,7 @@ pub(super) fn routed(id: &str) -> bool {
 /// (close_all), so none stays a user's tab with network.js on it.
 pub(super) fn forget_all() {
     ROUTES.with_borrow_mut(Routes::clear);
+    super::downloads::forget_all();
     super::ASKED.with_borrow_mut(HashMap::clear);
 }
 
