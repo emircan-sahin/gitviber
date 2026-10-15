@@ -489,4 +489,42 @@ mod tests {
         assert_eq!(empty.out.unwrap(), "No downloads in this tab.");
         let _ = std::fs::remove_dir_all(&cache);
     }
+
+    #[test]
+    fn a_suggested_absolute_or_dotted_name_still_lands_in_the_folder() {
+        assert_eq!(file_name("/etc/passwd"), "passwd");
+        assert_eq!(file_name("C:\\Windows\\win.ini"), "win.ini");
+        assert_eq!(file_name("reports/"), "download");
+        assert_eq!(file_name("."), "download");
+        assert_eq!(file_name("..."), "download");
+        assert_eq!(file_name("  ..  "), "download");
+        assert_eq!(file_name("a\u{0}"), "a_");
+        for long in ["x".repeat(400), format!("a.{}", "b".repeat(300))] {
+            let name = file_name(&long);
+            assert!(!name.is_empty() && name.len() <= NAME_MAX, "{name}");
+            assert!(!name.contains('/'), "{name}");
+        }
+        // Room left for free_path's " (n)" under the file system's 255 bytes.
+        let taken = free_path(Path::new("/d"), &file_name(&"é".repeat(300)), |_| false);
+        assert!(taken.file_name().unwrap().len() + " (99)".len() <= 255);
+    }
+
+    #[test]
+    #[ignore = "bug: a download told in a note stays in `ended`, so the next `wait --download` \
+                within a minute returns it again instead of the one the agent just started"]
+    fn a_download_already_told_in_a_note_is_not_what_the_next_wait_returns() {
+        let id = "tab-told";
+        let told = Outcome::Done {
+            name: "a.pdf".into(),
+            path: "/c/a.pdf".into(),
+            size: 1,
+            mime: "application/pdf".into(),
+        };
+        // No wait on: macos/downloads.rs `ended` notes it, and the pane's next reply tells it.
+        assert!(!state().ended(id, None, told, Instant::now()));
+        // The agent read that note, clicked a second link and waits for that one.
+        let next = wait(id, Duration::from_millis(300));
+        state().forget(id);
+        assert!(next.is_err(), "the wait returned the told one: {next:?}");
+    }
 }

@@ -164,4 +164,25 @@ mod tests {
         );
         assert_eq!(with(Reply::out("same"), &[]), Reply::out("same"));
     }
+
+    #[test]
+    fn notes_of_one_pane_never_reach_another() {
+        let mut n = Notes::default();
+        n.add(1, Some(("a", "t1")), "one");
+        n.add(2, Some(("a", "t1")), "two");
+        assert_eq!(n.take(2, Some("a")), ["→ two"]);
+        n.forget(1);
+        assert!(n.take(1, Some("a")).is_empty());
+    }
+
+    #[test]
+    #[ignore = "shape: --json gets `notes` only when the reply's data is an object; any other \
+                reply carries them inside `out` or `error` text alone"]
+    fn notes_are_a_json_array_on_every_reply() {
+        let notes = ["→ a".to_string()];
+        for reply in [Reply::out("Clicked e1"), Reply::error("No tab x")] {
+            let json = serde_json::to_value(with(reply, &notes)).unwrap();
+            assert_eq!(json["notes"], json!(["→ a"]), "{json}");
+        }
+    }
 }
