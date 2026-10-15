@@ -10,8 +10,19 @@
 setopt extended_glob
 HERE=${0:a:h}
 
+# zsh reads a script as it runs it: an edit mid-run would land it on another line. So a run goes
+# on in a copy of its own, in its temp folder; BROWSER_CHECK_STATE says it's the copy.
+COPIED=(browser-check.sh browser-check.py browser-check-site.py prelude.js)
+if [[ -z ${BROWSER_CHECK_LIB:-}${BROWSER_CHECK_STATE:-} ]]; then
+  BROWSER_CHECK_STATE=$(mktemp -d "${${TMPDIR:-/tmp}%/}/gitviber-live-check.XXXXXX") || exit 1
+  mkdir $BROWSER_CHECK_STATE/bin && cp $HERE/$^COPIED $BROWSER_CHECK_STATE/bin/ ||
+    { rm -rf $BROWSER_CHECK_STATE; exit 1 }
+  BROWSER_CHECK_STATE=$BROWSER_CHECK_STATE exec zsh $BROWSER_CHECK_STATE/bin/browser-check.sh "$@"
+fi
+
 py() { python3 -I $HERE/browser-check.py "$@" }
-say() { print -r -- "· $*" }
+# To stdout and stderr both, unbuffered (print writes at once), for whoever tails either.
+say() { print -r -- "· $*"; print -ru2 -- "· $*" }
 
 record() { local n=${3:-}; n=${n//$'\n'/ }; print -r -- "$1"$'\t'"$2"$'\t'"${n//$'\t'/ }" >> $RESULTS }
 # A row: PASS when the condition (a command line, evaluated) holds. Take $? into a variable
@@ -441,14 +452,18 @@ check_download() {
 # Sourced by browser-check-test.zsh for the functions alone.
 [[ -n ${BROWSER_CHECK_LIB:-} ]] && return 0
 
-[[ -d ${1:-} ]] || { sed -n '4p' $0; exit 2; }
+STATE=$BROWSER_CHECK_STATE
+[[ -d ${1:-} ]] || { sed -n '4p' $0; rm -rf $STATE; exit 2; }
 WT=${1:a}; shift
 PORT=1437
 if [[ ${1:-} == <-> ]]; then PORT=$1; shift; fi
 ONLY=($@)
-(( PORT != 1420 )) || { print -u2 "Not 1420: that port's storage is the user's own dev run."; exit 2; }
+(( PORT != 1420 )) || { print -u2 "Not 1420: that port's storage is the user's own dev run."; rm -rf $STATE; exit 2; }
 TARGET=$WT/src-tauri/target
-STATE=$(mktemp -d "${${TMPDIR:-/tmp}%/}/gitviber-live-check.XXXXXX") || exit 1
+# browser-check-test.zsh: that the run is the copy, then nothing else.
+if [[ -n ${BROWSER_CHECK_SELF_TEST:-} ]]; then
+  print -r -- "running from $HERE: ${(j: :)${(of)"$(ls $HERE)"}}"; rm -rf $STATE; exit 0
+fi
 ENV_FILE=$STATE/env
 RESULTS=$STATE/results.tsv
 REPO=$STATE/repo

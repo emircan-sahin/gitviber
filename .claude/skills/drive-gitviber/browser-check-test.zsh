@@ -67,6 +67,18 @@ print -r -- "  click <ref|css>   Click an element
   tab release [name]   Give a tab back" > $help
 expect "a check's needs missing from help are named" "$(py missing $help "key down <key>" "--hold" "tab release")" "key down <key>, --hold"
 
+expect "progress goes to stdout" "$(say step 2>/dev/null)" "· step"
+expect "and to stderr" "$(say step 2>&1 >/dev/null)" "· step"
+
+# A run goes on in a copy of its own: an edit to the script mid-run can't move it.
+mkdir -p $T/skill $T/tmp $T/wt && cp $HERE/$^COPIED $T/skill/
+out=$(TMPDIR=$T/tmp BROWSER_CHECK_SELF_TEST=1 zsh $T/skill/browser-check.sh $T/wt 2>&1)
+expect "the run is a copy in its temp folder" "${out//$T\/tmp\/gitviber-live-check.[A-Za-z0-9]##\/bin/<state>/bin}" \
+  "running from <state>/bin: browser-check-site.py browser-check.py browser-check.sh prelude.js"
+expect "it copied once and cleaned up" "$(ls $T/tmp)" ""
+TMPDIR=$T/tmp zsh $T/skill/browser-check.sh >/dev/null 2>&1
+expect "a usage error leaves no temp folder" "$? $(ls $T/tmp)" "2 "
+
 python3 -I $HERE/browser-check-test.py 2>&1 | tail -1 | read py_result
 expect "browser-check.py's tests" "$py_result" "OK"
 
