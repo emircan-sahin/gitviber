@@ -207,8 +207,10 @@ function focus({ target }) {
     // An email or number field has no caret to place: it types at its end anyway.
   }
   if (!el.contains(document.activeElement)) throw new Error(`${label(el)} doesn't take focus: click it, or fill it`);
-  // An <input> is one line: a line break there would submit its form.
-  return { label: label(el), line: document.activeElement?.localName === "input" };
+  // An <input> is one line, a web component's own too: a line break there would submit its form.
+  let active = document.activeElement;
+  while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+  return { label: label(el), line: active?.localName === "input" };
 }
 
 /** What has focus, for a key's reply, and whether it's a <select> a key would open the menu of. */
