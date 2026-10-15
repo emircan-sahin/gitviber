@@ -54,6 +54,62 @@ until_ok() { local secs=$1 i; shift; for (( i = 0; i < secs; i++ )); do eval "$*
 page() { gbx tab new $1 $2 ${@:3} && gbx --tab $1 wait --load }
 close() { local t; for t; do gb tab close $t >/dev/null 2>&1; done }
 
+# ---- agent_e2e: a real Claude Code session in the pane, on the user's account (AGENT_E2E=1).
+
+# The skill files a dev build with GITVIBER_DEV_SKILL=1 may write. A dev build's marker carries
+# the same version as a release, so it can't tell its own file from the user's: each is put
+# back exactly as it was found, and one that wasn't there goes if it's GitViber's.
+SKILL_FILES=("${SKILL_HOME:-$HOME}/.claude/skills/gitviber-browser/SKILL.md" "${SKILL_HOME:-$HOME}/.agents/skills/gitviber-browser/SKILL.md")
+save_skills() {
+  local i f
+  for (( i = 1; i <= $#SKILL_FILES; i++ )); do
+    f=$SKILL_FILES[i]
+    if [[ -e $f || -L $f ]]; then cp -pP $f $STATE/skill-$i.saved; else : > $STATE/skill-$i.absent; fi
+  done
+}
+restore_skills() {
+  local i f
+  for (( i = 1; i <= $#SKILL_FILES; i++ )); do
+    f=$SKILL_FILES[i]
+    if [[ -e $STATE/skill-$i.saved || -L $STATE/skill-$i.saved ]]; then
+      mkdir -p ${f:h} && rm -f $f && cp -pP $STATE/skill-$i.saved $f
+    elif [[ -e $STATE/skill-$i.absent && -f $f ]] && py skill-ours $f; then
+      rm -f $f && rmdir ${f:h} 2>/dev/null
+    fi
+  done
+}
+
+# A line typed into pane `id`'s shell, as if at its prompt.
+type_line() { js "await window.__TAURI_INTERNALS__.invoke('pty_write', { id: $1, data: $(py json-str "$2"$'\r'), binary: false }); return 'typed'" >/dev/null }
+
+check_agent_e2e() {
+  if [[ ${AGENT_E2E:-} != 1 ]]; then
+    record agent_e2e SKIP "opt-in: AGENT_E2E=1 runs a Claude Code session on your account"
+    return
+  fi
+  local id=${pty%%,*}
+  type_line $id "command -v claude > /dev/null 2>&1; echo \$? > ${(qq)STATE}/claude.rc"
+  until_ok 20 '[[ -s $STATE/claude.rc ]]' || { record agent_e2e FAIL "the pane's shell never answered"; return }
+  [[ $(<$STATE/claude.rc) == 0 ]] || { record agent_e2e SKIP "no claude on the pane's PATH"; return }
+  local skill="not written"
+  py skill-ours $SKILL_FILES[1] && skill="written"
+  local run=$(py nonce)
+  local task="Using the browser available in this terminal, open $URL_A/form?run=$run, fill the name field with Ada, choose green, submit, and tell me the HTTP status of the request the form sent. Answer with just the number."
+  # Only gitviber browser runs unasked; the transcript stays the user's alone and goes after.
+  type_line $id "(umask 077; claude -p ${(qq)task} --output-format stream-json --verbose --allowedTools 'Bash(gitviber browser:*)' > ${(qq)STATE}/agent.json 2>&1; echo \$? > ${(qq)STATE}/agent.done)"
+  say "agent_e2e: a Claude Code session works in the pane (5 min at most)"
+  if ! until_ok 300 '[[ -s $STATE/agent.done ]]'; then
+    record agent_e2e FAIL "no answer in 5 min (skill $skill)"
+  else
+    local note ok exited=$(<$STATE/agent.done)
+    note=$(py agent $STATE/agent.json 200); ok=$?
+    pass_if "agent: answer and browser" '(( ok == 0 ))' "$note; skill $skill; claude exit $exited"
+    note=$(py form-submit $STATE/site-a.log $run); ok=$?
+    pass_if "agent: the submit came from its tab" '(( ok == 0 ))' "$note"
+  fi
+  rm -f $STATE/agent.json $STATE/agent.done
+}
+
 # ---- setup steps, as functions so the tests can drive them against a stand-in page.
 
 # The terminal panel: open, closed (its Show button there) or none (no button yet).
@@ -123,6 +179,9 @@ finish() {
   [[ -n $APP_PID ]] && kill $APP_PID 2>/dev/null
   [[ -n $DEV_PID ]] && kill_tree $DEV_PID
   for p in $SERVERS; do kill $p 2>/dev/null; done
+  # After the app is gone, so it can't write the skill again.
+  [[ ${AGENT_E2E:-} == 1 ]] && restore_skills
+  rm -f $STATE/agent.json $STATE/agent.done
   for f in $PICS; do [[ -f $f && $f == *browser-picks/* ]] && rm -f $f; done
   for f in $DOWNLOADS; do [[ -f $f && $f == */gitviber-check.txt ]] && rm -f $f; done
   rm -f $ENV_FILE
@@ -138,7 +197,7 @@ finish() {
 
 CHECKS=(visibility fps isolation sessions unknown_tab device screenshot network sse idle_park tab_close form
   stale_ref covered smooth_scroll fill_honest change_line find_get screenshot_1x untrusted secret frames
-  trusted hover keys clipboard_safe ownership popup download memory)
+  trusted hover keys clipboard_safe ownership popup download agent_e2e memory)
 typeset -A NEEDS=(
   visibility "eval" fps "eval" isolation "eval" sessions "session save|session load|--session"
   unknown_tab "--tab" device "device <name|WxH|off>" screenshot "screenshot" network "network <id>"
@@ -153,6 +212,8 @@ typeset -A NEEDS=(
   ownership "tab release"
   # Popups and downloads.
   popup "named for its opener" download "--download|downloads [--clear]"
+  # Opt-in (AGENT_E2E=1): a Claude Code session on the user's account.
+  agent_e2e "fill|select|network"
 )
 
 check_visibility() {
@@ -582,7 +643,13 @@ mkdir -p $REPO && git -C $REPO init -q -b main && print hi > $REPO/a.txt &&
   git -C $REPO add . && git -C $REPO -c user.name=t -c user.email=t@t commit -qm init
 
 say "starting the dev app on port $PORT (log: $STATE/dev.log; a cold build takes minutes)"
-( cd $WT && CARGO_TARGET_DIR=$TARGET exec pnpm tauri dev --port $PORT ) > $STATE/dev.log 2>&1 &
+# agent_e2e needs the skill written, which a dev build does only when told.
+if [[ ${AGENT_E2E:-} == 1 ]]; then
+  save_skills
+  ( cd $WT && GITVIBER_DEV_SKILL=1 CARGO_TARGET_DIR=$TARGET exec pnpm tauri dev --port $PORT ) > $STATE/dev.log 2>&1 &
+else
+  ( cd $WT && CARGO_TARGET_DIR=$TARGET exec pnpm tauri dev --port $PORT ) > $STATE/dev.log 2>&1 &
+fi
 DEV_PID=$!
 until_ok 1200 'built $STATE/dev.log || ! kill -0 $DEV_PID 2>/dev/null'
 kill -0 $DEV_PID 2>/dev/null && built $STATE/dev.log || { record setup FAIL "the dev app didn't start: see dev.log"; exit 1 }

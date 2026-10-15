@@ -125,6 +125,71 @@ class Parsing(unittest.TestCase):
         self.assertIn("0 MB a tab", check.memory_note(before, before, 0))
 
 
+def stream(*msgs):
+    return "\n".join(json.dumps(m) for m in msgs)
+
+
+def bash(command):
+    return {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": command}}]}}
+
+
+def tool(name):
+    return {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": name, "input": {}}]}}
+
+
+RESULT = {"type": "result", "subtype": "success", "is_error": False, "result": "200", "num_turns": 9}
+
+
+class Agent(unittest.TestCase):
+    def test_skill_version_only_for_a_skill_gitviber_wrote(self):
+        ours = "---\nname: gitviber-browser\ndescription: x\n---\n<!-- managed by GitViber 0.1.14; edits are replaced -->\n# GitViber browser\n"
+        self.assertEqual(check.skill_version(ours), "0.1.14")
+        self.assertIsNone(check.skill_version(ours.replace("0.1.14", "dev")))
+        quoted = "---\nname: gitviber-browser\n---\n# Mine\n<!-- managed by GitViber 0.1.14; edits are replaced -->\n"
+        self.assertIsNone(check.skill_version(quoted))
+        self.assertIsNone(check.skill_version("---\nname: other\n---\n<!-- managed by GitViber 0.1.14; edits are replaced -->\n"))
+
+    def test_browser_commands_skip_flags_and_the_tab_name(self):
+        self.assertEqual(check.browser_commands("gitviber browser --tab t1 open http://a/form && gitviber browser snapshot -i"), ["open", "snapshot"])
+        self.assertEqual(check.browser_commands("gitviber browser --json network | head"), ["network"])
+        self.assertEqual(check.browser_commands("ls"), [])
+
+    def test_a_run_that_used_gitviber_browser_passes(self):
+        run = stream({"type": "system", "subtype": "init"}, bash("gitviber browser open http://127.0.0.1:5/form?run=ab"),
+                     bash("gitviber browser fill '#name' Ada"), bash("gitviber browser select '#color' green"),
+                     bash("gitviber browser click '#send'"), bash("gitviber browser network --filter /api/form"), RESULT)
+        summary = check.agent_summary("not json from stderr\n" + run)
+        ok, note = check.agent_verdict(summary, 200)
+        self.assertTrue(ok, note)
+        self.assertEqual(note, "answered '200'; 5 tool calls, gitviber browser open, fill, select, click, network")
+
+    def test_another_browser_or_a_wrong_answer_fails(self):
+        chrome = check.agent_summary(stream(tool("mcp__claude-in-chrome__navigate"), RESULT))
+        ok, note = check.agent_verdict(chrome, 200)
+        self.assertFalse(ok)
+        self.assertIn("other browser: mcp__claude-in-chrome__navigate", note)
+        self.assertFalse(check.agent_verdict(check.agent_summary(stream(bash("npx playwright test"), RESULT)), 200)[0])
+        wrong = check.agent_summary(stream(bash("gitviber browser open http://a"), {**RESULT, "result": "It returned 500."}))
+        self.assertFalse(check.agent_verdict(wrong, 200)[0])
+        self.assertFalse(check.agent_verdict(check.agent_summary(""), 200)[0])
+        # Tools used, but never gitviber browser: it can't have read the page the way asked.
+        self.assertFalse(check.agent_verdict(check.agent_summary(stream(bash("curl -X POST http://a/api/form"), RESULT)), 200)[0])
+
+    def test_the_summary_keeps_none_of_the_transcript(self):
+        run = stream(bash("gitviber browser fill '#pw' secret-from-the-page"), {**RESULT, "result": "200. The page said: secret-from-the-page, and more"})
+        note = check.agent_verdict(check.agent_summary(run), 200)[1]
+        # The answer cut to 40 characters, and no command's arguments: only its subcommand.
+        self.assertEqual(note, "answered '200. The page said: secret-from-the-page'; 1 tool calls, gitviber browser fill")
+
+    def test_form_submit_from_webkit_only(self):
+        webkit = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"
+        chrome = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36"
+        log = f"sse: client came\nform-submit run=ab name=Ada color=green ua={chrome}\nform-submit run=cd name=Ada color=green ua={webkit}\n"
+        self.assertEqual(check.form_submit(log, "cd"), (True, webkit))
+        self.assertEqual(check.form_submit(log, "ab"), (False, chrome))
+        self.assertEqual(check.form_submit(log, "ef"), (False, None))
+
+
 class Ports(unittest.TestCase):
     def listener(self, family=socket.AF_INET, host="127.0.0.1"):
         s = socket.socket(family)

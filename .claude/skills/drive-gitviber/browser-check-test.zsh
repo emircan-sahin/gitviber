@@ -178,6 +178,67 @@ expect "a check's needs missing from help are named" "$(py missing $help "key do
 )
 (( fails += $? ))
 
+# agent_e2e, without a session: its opt-in, the skill files put back as found, what it types.
+(
+  fails=0
+  sleep() { : }
+  say() { : }
+  home=$T/home
+  SKILL_FILES=("$home/.claude/skills/gitviber-browser/SKILL.md" "$home/.agents/skills/gitviber-browser/SKILL.md")
+  STATE=$T/e2e && mkdir -p $STATE $home/.claude/skills/gitviber-browser
+  : > $RESULTS
+  unset AGENT_E2E
+  check_agent_e2e
+  expect "off unless AGENT_E2E=1" "$(cut -f1,2 $RESULTS)" "agent_e2e	SKIP"
+
+  # The user's own release skill at the first, none at the second.
+  release=$'---\nname: gitviber-browser\ndescription: x\n---\n<!-- managed by GitViber 0.1.13; edits are replaced -->\nrelease'
+  print -r -- $release > $SKILL_FILES[1]
+  save_skills
+  dev=${release/release/dev build}
+  print -r -- $dev > $SKILL_FILES[1]
+  mkdir -p ${SKILL_FILES[2]:h} && print -r -- $dev > $SKILL_FILES[2]
+  restore_skills
+  expect "the user's skill comes back as it was" "$(<$SKILL_FILES[1])" "$release"
+  expect "one the dev build made goes, its folder too" "$([[ -e ${SKILL_FILES[2]:h} ]] && print kept || print gone)" "gone"
+
+  # One of the user's own (no marker) where none was: never removed.
+  rm -f $STATE/skill-*
+  rm -f $SKILL_FILES[2]
+  save_skills
+  mkdir -p ${SKILL_FILES[2]:h} && print -r -- "mine" > $SKILL_FILES[2]
+  restore_skills
+  expect "a skill without the marker stays" "$(<$SKILL_FILES[2])" "mine"
+
+  # A typed line reaches the pane as JSON, ending in a return.
+  js() { print -r -- "$1" > $T/typed; print typed }
+  type_line 3 $'echo "it\'s" > \'/a b\''
+  expect "a typed line" "$(<$T/typed)" \
+    "await window.__TAURI_INTERNALS__.invoke('pty_write', { id: 3, data: \"echo \\\"it's\\\" > '/a b'\\r\", binary: false }); return 'typed'"
+
+  # A whole run against a stand-in pane: claude found, its stream and the site's log as they'd be.
+  AGENT_E2E=1 pty=0 URL_A=http://127.0.0.1:5
+  : > $RESULTS
+  js() {
+    case $1 in
+      *'command -v claude'*) print 0 > $STATE/claude.rc ;;
+      *'claude -p'*)
+        local run=${${1#*form\?run=}%%,*}
+        print -r -- '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gitviber browser open x"}}]}}' > $STATE/agent.json
+        print -r -- '{"type":"result","is_error":false,"result":"200"}' >> $STATE/agent.json
+        print -r -- "form-submit run=$run name=Ada color=green ua=Mozilla/5.0 AppleWebKit/605.1.15 (KHTML, like Gecko)" > $STATE/site-a.log
+        print 0 > $STATE/agent.done ;;
+    esac
+    print typed
+  }
+  check_agent_e2e
+  expect "a run that did it all passes" "$(cut -f1,2 $RESULTS | tr '\t\n' ':,')" \
+    "agent: answer and browser:PASS,agent: the submit came from its tab:PASS,"
+  expect "and leaves no transcript" "$(ls $STATE | command grep -c agent)" "0"
+  exit $fails
+)
+(( fails += $? ))
+
 # The dev log as tauri writes it: cargo's lines in color.
 print -r -- $'     Running DevCommand (`cargo  run --no-default-features --color always --`)\n   Compiling gitviber v0.1.13' > $T/dev.log
 built $T/dev.log
