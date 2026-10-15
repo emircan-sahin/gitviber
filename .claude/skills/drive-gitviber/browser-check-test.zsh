@@ -147,6 +147,37 @@ expect "a check's needs missing from help are named" "$(py missing $help "key do
 )
 (( fails += $? ))
 
+# popup and download against stand-in replies, worded as popups.rs, notes.rs and downloads.rs
+# word them.
+(
+  fails=0
+  sleep() { : }
+  page() { return 0 }
+  close() { : }
+  mkdir -p $T/dl && print -n "gitviber check download" > $T/dl/gitviber-check.txt
+  gbx() {
+    RC=0 ERR=
+    case "$*" in
+      *"click #pop") OUT=$'Clicked button "Open popup" → no visible change\n→ popup opened as tab t1-popup1 (http://127.0.0.1:5/popup)' ;;
+      *"click #closeme") OUT='Clicked button "Close" → no visible change' ;;
+      *" url") OUT=$'http://127.0.0.1:5/act\n→ tab t1-popup1 closed: its page called window.close()' ;;
+      *"wait --download") OUT="Downloaded gitviber-check.txt (24 B, text/plain): $T/dl/gitviber-check.txt" ;;
+      *" downloads") OUT="gitviber-check.txt  24 B  text/plain  $T/dl/gitviber-check.txt" ;;
+      *) OUT= ;;
+    esac
+  }
+  value() { print hi-from-popup }
+  state() { [[ $1 == pp ]] && print awake || print missing }
+  : > $RESULTS
+  check_popup
+  check_download
+  expect "popup and download pass on the real wording" "$(cut -f1,2 $RESULTS | tr '\t\n' ':,')" \
+    "popup opens as a tab:PASS,popup posts to its opener:PASS,window.close() closes its tab:PASS,wait --download:PASS,downloads lists it:PASS,"
+  expect "the download is kept for cleanup" "$DOWNLOADS" "$T/dl/gitviber-check.txt"
+  exit $fails
+)
+(( fails += $? ))
+
 # The dev log as tauri writes it: cargo's lines in color.
 print -r -- $'     Running DevCommand (`cargo  run --no-default-features --color always --`)\n   Compiling gitviber v0.1.13' > $T/dev.log
 built $T/dev.log

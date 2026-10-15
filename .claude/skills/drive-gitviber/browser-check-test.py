@@ -70,6 +70,28 @@ class Parsing(unittest.TestCase):
         self.assertEqual(check.popup_name(out), "t1-popup1")
         self.assertIsNone(check.popup_name("→ no visible change"))
 
+    def test_popup_replies_as_the_code_writes_them(self):
+        # popups.rs and notes.rs on feat/integration-popups.
+        click = 'Clicked button "Open popup" → no visible change\n→ popup opened as tab t1-popup1 (http://127.0.0.1:5/popup)'
+        self.assertEqual(check.popup_name(click), "t1-popup1")
+        closed = "→ tab t1-popup1 closed: its page called window.close()"
+        self.assertTrue(check.closed_note(closed, "t1-popup1"))
+        self.assertTrue(check.closed_note('"ok"\n' + closed + "\n", "t1-popup1"))
+        self.assertFalse(check.closed_note(closed, "t1-popup2"))
+
+    def test_download_reply_as_the_code_writes_it(self):
+        # downloads.rs `wait --download`; a click's note says it in lower case, without the type.
+        out = "Downloaded gitviber-check.txt (24 B, text/plain): /Users/x/Library/Caches/app.gitviber.desktop/browser-downloads/ab/gitviber-check.txt"
+        self.assertEqual(check.download(out), ("gitviber-check.txt", "24 B", "text/plain",
+                         "/Users/x/Library/Caches/app.gitviber.desktop/browser-downloads/ab/gitviber-check.txt"))
+        self.assertEqual(check.download("Downloaded report (2).pdf (24 KB, application/pdf): /c/report (2).pdf"),
+                         ("report (2).pdf", "24 KB", "application/pdf", "/c/report (2).pdf"))
+        self.assertIsNone(check.download("→ tab t2: downloaded report.pdf (24 KB): /c/report.pdf"))
+        self.assertIsNone(check.download("Timed out after 10000 ms waiting for a download"))
+
+    def test_eval_value_without_notes(self):
+        self.assertEqual(check.eval_value('"hi-from-popup"\n→ popup opened as tab t1-popup1 (http://a/popup)'), "hi-from-popup")
+
     def test_file_path(self):
         out = "→ tab t2: downloaded gitviber-check.txt (24 B): /Users/x/Downloads/GitViber/gitviber-check.txt"
         self.assertEqual(check.file_path(out, "gitviber-check.txt"), "/Users/x/Downloads/GitViber/gitviber-check.txt")

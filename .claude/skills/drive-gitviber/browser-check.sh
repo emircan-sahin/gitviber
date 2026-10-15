@@ -152,7 +152,7 @@ typeset -A NEEDS=(
   trusted "--synthetic" hover "CSS :hover applies" keys "key down <key>|--hold" clipboard_safe "--synthetic"
   ownership "tab release"
   # Popups and downloads.
-  popup "window.open" download "wait --download|downloads"
+  popup "named for its opener" download "--download|downloads [--clear]"
 )
 
 check_visibility() {
@@ -517,10 +517,14 @@ check_popup() {
   until_ok 5 '[[ $(value pp window.msg_) == hi-from-popup ]]'
   local ok=$?
   pass_if "popup posts to its opener" '(( ok == 0 ))' "window.msg_: $(value pp window.msg_)"
-  [[ -n $name ]] && gbx --tab $name click '#closeme'
+  # The close is told on the reply of the command that set it off, or the pane's next one.
+  local said
+  [[ -n $name ]] && gbx --tab $name click '#closeme' && said=$OUT
   until_ok 5 '[[ $(state ${name:-none}) == missing ]]'
   ok=$?
-  pass_if "window.close() closes its tab" '(( ok == 0 )) && [[ -n $name ]]' "$name: $(state ${name:-none})"
+  gbx --tab pp url; said+=$'\n'$OUT
+  pass_if "window.close() closes its tab" '(( ok == 0 )) && py closed-note ${name:-none} <<<$said' \
+    "$name: $(state ${name:-none}); ${${(M)${(f)said}:#*closed*}:-no close note}"
   close pp $name
 }
 
@@ -528,9 +532,12 @@ check_download() {
   page dl $URL_A/act || { record download FAIL "tab new: $ERR"; return }
   gbx --tab dl click '#dl'
   gbx --tab dl wait --download
-  local path=$(py file-path gitviber-check.txt <<<$OUT$'\n'$ERR)
-  [[ -n $path ]] && DOWNLOADS+=($path)
-  pass_if "wait --download" '[[ -f $path && $OUT == *B* ]]' "${OUT:-$ERR}"
+  # Downloaded gitviber-check.txt (24 B, text/plain): <path>
+  local -a got=("${(@ps:\t:)$(py download <<<$OUT)}")
+  # Not `path`: zsh ties that one to PATH.
+  local file=${got[4]:-}
+  [[ -n $file ]] && DOWNLOADS+=($file)
+  pass_if "wait --download" '[[ ${got[1]:-} == gitviber-check.txt && -f $file ]]' "${OUT:-$ERR}"
   gbx --tab dl downloads
   pass_if "downloads lists it" '[[ $OUT == *gitviber-check.txt* ]]' "${${OUT:-$ERR}[1,120]}"
   close dl

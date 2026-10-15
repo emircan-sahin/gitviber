@@ -22,9 +22,10 @@ def bridge_value(reply):
 
 
 def eval_value(out):
-    """What `eval` printed, without the page-content markers a newer build puts around it; JSON
-    is decoded, so "visible" comes back as visible and [1, 2] as a list."""
-    text = "\n".join(l for l in out.splitlines() if not PAGE_MARK.match(l)).strip()
+    """What `eval` printed, without the page-content markers a newer build puts around it or
+    the notes (`→ …`) it ends with; JSON is decoded, so "visible" comes back as visible and
+    [1, 2] as a list."""
+    text = "\n".join(l for l in out.splitlines() if not PAGE_MARK.match(l) and not l.startswith("→ ")).strip()
     try:
         return json.loads(text)
     except ValueError:
@@ -73,6 +74,19 @@ def popup_name(out):
     """The tab a reply says a popup opened as: `→ popup opened as tab t1-popup1 (…)`."""
     m = re.search(r"popup opened as tab (\S+)", out)
     return m.group(1) if m else None
+
+
+def closed_note(out, name):
+    """Whether a reply tells that tab `name` closed as its page called window.close():
+    `→ tab t1-popup1 closed: its page called window.close()`."""
+    return f"tab {name} closed: its page called window.close()" in out
+
+
+def download(out):
+    """`wait --download`'s reply as (name, size, type, path):
+    `Downloaded report.pdf (24 KB, application/pdf): /c/report.pdf`."""
+    m = re.search(r"^Downloaded (.+?) \(([^,()]+), ([^()]+)\): (/.*)$", out, re.M)
+    return m.groups() if m else None
 
 
 def file_path(out, name):
@@ -195,6 +209,13 @@ def main(cmd, *args):
         if not found:
             return 1
         print(found)
+    elif cmd == "closed-note":
+        return 0 if closed_note(stdin(), args[0]) else 1
+    elif cmd == "download":
+        found = download(stdin())
+        if not found:
+            return 1
+        print("\t".join(found))
     elif cmd == "shot-expect":
         print(*shot_expect(float(args[0]), float(args[1]), float(args[2]) if len(args) > 2 else 1.0))
     elif cmd == "png":
