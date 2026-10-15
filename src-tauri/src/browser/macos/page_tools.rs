@@ -258,8 +258,8 @@ pub(super) fn clipboard(web: &WebView, ask: &str, done: impl FnOnce(Option<Strin
     };
 }
 
-/// The page's own clipboard calls kept to it while an agent's command runs (`on`), the user's
-/// again after.
+/// The page's own clipboard calls kept to it (`on`: a page's start, an agent's command), or the
+/// user's again (once they press or type in the tab, or it's released to them).
 pub(super) fn guard_clipboard(web: &WebView, on: bool) {
     web.ivars().guarded.set(on);
     clipboard(web, if on { "on" } else { "off" }, |_| {});

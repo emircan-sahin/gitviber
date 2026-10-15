@@ -477,7 +477,7 @@ fn later_for<T: Send + 'static>(
         .map_err(|_| "The page didn't answer in time.".to_string())?
 }
 
-/// What's where a pointer command acts (agent.js `point`).
+/// What's where a pointer command acts (agent.js `aim`).
 #[derive(serde::Deserialize)]
 struct Spot {
     x: f64,

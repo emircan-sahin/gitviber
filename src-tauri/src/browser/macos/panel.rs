@@ -129,7 +129,7 @@ fn outside(size: (f64, f64), screens: impl Iterator<Item = (f64, f64, f64, f64)>
 }
 
 /// The view drawn in its panel at `size`, a spare one or made for it the first time, with the
-/// page its first responder there, active while an agent's command runs on it.
+/// page its first responder there, active as `settle` says.
 pub(super) fn hold(v: &View, size: NSSize) {
     let mtm = v.host.mtm();
     let mut slot = v.delegate.ivars().panel.borrow_mut();
