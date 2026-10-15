@@ -312,7 +312,7 @@ pub fn probe_path(shell: &Path, timeout: Duration) -> Result<OsString, String> {
     }
 }
 
-/// A new session with no controlling terminal, like VS Code's `detached`. An interactive
+/// A new session with no controlling terminal. An interactive
 /// shell started from a terminal (`pnpm tauri dev`) would otherwise take it over, or stop.
 #[cfg(unix)]
 fn detach(cmd: &mut Command) {

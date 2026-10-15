@@ -109,7 +109,7 @@ export function Row({
   sel: Change | BranchChange;
   active: boolean;
   selected: boolean;
-  /** Selected while focus is elsewhere: shown fainter, like VS Code's inactive selection. The open row keeps its color. */
+  /** Selected while focus is elsewhere: shown fainter. The open row keeps its color. */
   dim: boolean;
   tabStop: boolean;
   viewed: boolean;
@@ -218,7 +218,7 @@ export function Row({
 
 /**
  * A folder of the tree view: opens and closes on a click, and its actions (Stage, Discard…)
- * cover every file under it, as VS Code's do.
+ * cover every file under it.
  */
 export function FolderRow({
   rowKey,

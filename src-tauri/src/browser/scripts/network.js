@@ -42,9 +42,12 @@
   // a post with one.
   const whole = (key, v) =>
     typeof v === "string" ? v.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g, (c) => (c.length === 2 ? c : "�")) : v;
+  // A frame's requests go to the page's one log, each saying which frame as it starts.
+  const inFrame = window.top && window.top !== window ? window.location.origin : undefined;
   const post = (updates) => {
     try {
-      handler.postMessage(stringify(updates, whole));
+      const tagged = inFrame ? updates.map((u) => (u.kind ? { ...u, inFrame } : u)) : updates;
+      handler.postMessage(stringify(tagged, whole));
     } catch {
       // A request the page made unsendable is no reason to break its request.
     }

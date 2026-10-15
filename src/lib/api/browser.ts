@@ -90,6 +90,21 @@ export interface ListeningPort {
   loopback: boolean;
 }
 
+/** Where an agent's gitviber-browser skill stands (browser/skill.rs): `path` under `~/`. */
+export interface SkillTarget {
+  agent: string;
+  path: string;
+  /** newer: a newer GitViber's, kept; noAgent: its folder isn't there; theirs: no GitViber marker, left alone. */
+  status: "written" | "absent" | "newer" | "noAgent" | "theirs" | "failed";
+  error?: string;
+}
+
+/** Each agent's skill, and `why` nothing is listed (no HOME) or nothing changes (a dev build). */
+export interface Skill {
+  targets: SkillTarget[];
+  why?: string;
+}
+
 // A tab's view is made and closed in the order asked: a close right after a create, then a
 // reopen (⇧⌘T), must reach the backend as create, close, create, or the reopened tab has none.
 const lifecycle = new Map<string, Promise<unknown>>();
@@ -131,9 +146,17 @@ export const browserApi = {
   inspect: (id: string) => invoke<boolean>("browser_inspect", { id }),
   /** The chords bound to the app's commands: only these leave a page (keys.rs). */
   setAppKeys: (chords: string[]) => invoke<void>("browser_set_app_keys", { chords }),
-  /** Hidden views kept alive, the minutes until one parks (0: never), and the console on or off. */
-  configure: (liveHidden: number, parkAfterMin: number, console: boolean, agentControl: boolean) =>
-    invoke<void>("browser_configure", { liveHidden, parkAfterMin, console, agentControl }),
+  /** Hidden views kept alive, the minutes until one parks (0: never), agents' tabs drawn out of sight at once, and the console on or off. */
+  configure: (liveHidden: number, parkAfterMin: number, agentDrawn: number, console: boolean, agentControl: boolean) =>
+    invoke<void>("browser_configure", { liveHidden, parkAfterMin, agentDrawn, console, agentControl }),
+  /** An agent's tab the user took, back to its agents; `browser-owner` says so. */
+  giveBack: (id: string) => invoke<void>("browser_give_back", { id }),
+  /** Each agent's skill written (`on`) or removed, and where it stands, told to Settings too; main window only. */
+  skill: (on: boolean) => invoke<Skill>("browser_skill", { on }),
+  /** Where each agent's skill stands, changing nothing. */
+  skillStatus: () => invoke<Skill>("browser_skill_status"),
+  /** The skill's text for a CLAUDE.md or AGENTS.md, for agents without skills. */
+  agentNote: () => invoke<string>("browser_agent_note"),
   /** The element picker on or off; its pick comes as `browser-picked`. */
   pick: (id: string, on: boolean) => invoke<void>("browser_pick", { id, on }),
   console: (id: string) => invoke<ConsoleEntry[]>("browser_console", { id }),

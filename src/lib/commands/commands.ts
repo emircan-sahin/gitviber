@@ -1,9 +1,8 @@
 /**
  * Every keyboard command in one place, plus the pure chord logic (no DOM or React, so it
  * runs under node:test). A binding is a canonical chord string such as "shift+cmd+e" or
- * "alt+down": modifiers in ⌃⌥⇧⌘ order, then the key. Defaults follow VS Code where it has
- * an equivalent. When two commands share a chord, the one listed first here wins.
- * Off macOS "cmd" is Ctrl, as VS Code's CtrlCmd, and "ctrl" is the Windows / Super key.
+ * "alt+down": modifiers in ⌃⌥⇧⌘ order, then the key. When two commands share a chord, the one listed first here wins.
+ * Off macOS "cmd" is Ctrl and "ctrl" is the Windows / Super key.
  */
 
 import { IS_MAC, IS_WINDOWS, REVEAL_LABEL } from "../platform.ts";
@@ -41,7 +40,7 @@ export const COMMANDS = [
   { id: "view.toggleExplorer", title: "Toggle Explorer", category: "View", keys: ["alt+cmd+b"] },
   { id: "view.focusGitPanel", title: "Focus Git Panel", category: "View", keys: ["shift+cmd+g"] },
   { id: "view.focusCode", title: "Focus Code View", category: "View", keys: ["cmd+e"] },
-  // GitHub Desktop's Go to Commit Message. Not its ⌘G, macOS's Find Next: ⌃⌘, as fetch, pull and push,
+  // Go to Commit Message. Not ⌘G, macOS's Find Next: ⌃⌘, as fetch, pull and push,
   // which neither macOS, Monaco nor the terminal uses with C. Elsewhere ⌃ is the Super key: unbound.
   { id: "changes.focusMessage", title: "Focus Commit Message", category: "View", keys: ["ctrl+cmd+c"], keysOther: [] },
   // The id is from when it only showed the panel; kept so a user's binding for it still applies.
@@ -92,10 +91,9 @@ export const COMMANDS = [
   { id: "review.sendNotes", title: "Send Review Notes to Terminal", category: "Review", keys: [] },
   { id: "diff.nextChange", title: "Next Change", category: "Diff", keys: ["f7", "alt+down"] },
   { id: "diff.prevChange", title: "Previous Change", category: "Diff", keys: ["shift+f7", "alt+up"] },
-  // The selected lines, else the change at the cursor (which Next / Previous Change put there). VS Code
-  // has ⌘K ⌘⌥S and ⌘K ⌘N: with no two-key chords here, their second key. Its ⌘K ⌘R is Monaco's ⌥⌘R
-  // (Toggle Regex in Find) and ⌘R, Reload Window's until it moved to ⇧⌘R, names a terminal pane, so
-  // discard is ⌘⌫ (the file's) with ⇧. Not from text fields.
+  // The selected lines, else the change at the cursor (which Next / Previous Change put there). With no two-key
+  // chords, stage and unstage are ⌥⌘S and ⌥⌘N. ⌥⌘R is Monaco's (Toggle Regex in Find) and ⌘R, Reload
+  // Window's until it moved to ⇧⌘R, names a terminal pane, so discard is ⌘⌫ (the file's) with ⇧. Not from text fields.
   { id: "diff.stageChange", title: "Stage Change or Selected Lines", category: "Diff", keys: ["alt+cmd+s"], outsideText: true, noRepeat: true },
   { id: "diff.unstageChange", title: "Unstage Change or Selected Lines", category: "Diff", keys: ["alt+cmd+n"], outsideText: true, noRepeat: true },
   { id: "diff.discardChange", title: "Discard Change or Selected Lines", category: "Diff", keys: ["shift+cmd+backspace"], outsideText: true, noRepeat: true },
@@ -121,7 +119,7 @@ export const COMMANDS = [
   { id: "media.zoomIn", title: "Zoom In Image", category: "Editor", keys: ["=", "shift+="], local: "the image view" },
   { id: "media.zoomOut", title: "Zoom Out Image", category: "Editor", keys: ["-"], local: "the image view" },
   { id: "media.fit", title: "Fit Image", category: "Editor", keys: ["0"], local: "the image view" },
-  // ⌃` as in VS Code, ⌘J as its panel toggle. Elsewhere Ctrl+`, as VS Code has it there too.
+  // ⌃` and ⌘J. Elsewhere Ctrl+` and Ctrl+J.
   { id: "terminal.toggle", title: "Toggle Terminal", category: "Terminal", keys: ["cmd+j", "ctrl+`"], keysOther: ["cmd+j", "cmd+`"] },
   { id: "terminal.newInProject", title: "New Terminal in Project…", category: "Terminal", keys: [] },
   // Every agent in a terminal, needing the user first (AgentsMenu).
@@ -133,11 +131,11 @@ export const COMMANDS = [
   { id: "terminal.new", title: "New Terminal", category: "Terminal", keys: ["cmd+t"], keysOther: ["shift+cmd+t"] },
   // The id is from when it only split right; kept so a user's binding for it still applies.
   { id: "terminal.split", title: "Split Terminal Right", category: "Terminal", keys: ["cmd+d"], keysOther: ["shift+cmd+d"], local: "the terminal", noRepeat: true },
-  // ⇧⌘D as in iTerm2, Ghostty and cmux. Elsewhere Ctrl+Shift+D is split right, so down adds Alt.
+  // ⇧⌘D. Elsewhere Ctrl+Shift+D is split right, so down adds Alt.
   { id: "terminal.splitDown", title: "Split Terminal Down", category: "Terminal", keys: ["shift+cmd+d"], keysOther: ["alt+shift+cmd+d"], local: "the terminal", noRepeat: true },
   { id: "terminal.clear", title: "Clear Terminal", category: "Terminal", keys: ["cmd+k"], keysOther: ["shift+cmd+k"], local: "the terminal" },
   { id: "terminal.close", title: "Close Terminal Pane", category: "Terminal", keys: ["cmd+w"], keysOther: ["shift+cmd+w"], local: "the terminal" },
-  // ⇧⌘←/→ page through the panes by their numbers, wrapping; ⌥⌘arrows go by side, as in cmux.
+  // ⇧⌘←/→ page through the panes by their numbers, wrapping; ⌥⌘arrows go by side.
   { id: "terminal.prevPane", title: "Previous Terminal Pane", category: "Terminal", keys: ["shift+cmd+left"], keysOther: ["ctrl+alt+left"], local: "the terminal" },
   { id: "terminal.nextPane", title: "Next Terminal Pane", category: "Terminal", keys: ["shift+cmd+right"], keysOther: ["ctrl+alt+right"], local: "the terminal" },
   // Unbound elsewhere: Ctrl+Shift+arrows select by word in shells (PSReadLine), GNOME takes Ctrl+Alt+Shift+arrows, and Alt+arrows move by word.
@@ -147,7 +145,7 @@ export const COMMANDS = [
   { id: "terminal.focusDown", title: "Focus Terminal Pane Below", category: "Terminal", keys: ["shift+cmd+down", "alt+cmd+down"], keysOther: [], local: "the terminal" },
   // Esc stays the program's (Claude Code, vim). Elsewhere Ctrl+Enter is a program's (kitty keyboard protocol), and Ctrl+Shift+Enter zooms a pane.
   { id: "terminal.toggleMaximize", title: "Maximize Terminal", category: "Terminal", keys: ["cmd+enter"], keysOther: ["alt+shift+cmd+enter"], local: "the terminal", noRepeat: true },
-  // ⇧⌘↵ as in cmux and Ghostty (Ctrl+Shift+Enter on Linux there).
+  // ⇧⌘↵ (Ctrl+Shift+Enter elsewhere).
   { id: "terminal.zoomPane", title: "Zoom Terminal Pane", category: "Terminal", keys: ["shift+cmd+enter"], keysOther: ["shift+cmd+enter"], local: "the terminal", noRepeat: true },
   // Only a split's panes show a name; the tab shows the repo and branch. Unbound elsewhere: Ctrl+R is
   // the shell's history search, and Ctrl+Shift+R reloads.
@@ -158,10 +156,10 @@ export const COMMANDS = [
   { id: "terminal.fontZoomIn", title: "Increase Terminal Font Size", category: "Terminal", keys: ["cmd+=", "shift+cmd+="], local: "the terminal" },
   { id: "terminal.fontZoomOut", title: "Decrease Terminal Font Size", category: "Terminal", keys: ["cmd+-"], local: "the terminal" },
   { id: "terminal.fontZoomReset", title: "Reset Terminal Font Size", category: "Terminal", keys: ["cmd+0"], local: "the terminal" },
-  // The prompts shell integration marks, as in VS Code (Ctrl+↑/↓ elsewhere, "cmd" there); a full-screen program keeps the keys.
+  // The prompts shell integration marks (Ctrl+↑/↓ elsewhere, "cmd" there); a full-screen program keeps the keys.
   { id: "terminal.prevCommand", title: "Scroll to Previous Command", category: "Terminal", keys: ["cmd+up"], local: "the terminal" },
   { id: "terminal.nextCommand", title: "Scroll to Next Command", category: "Terminal", keys: ["cmd+down"], local: "the terminal" },
-  // WezTerm's QuickSelect key, Ctrl+Shift+Space on every platform (kitty's hints are Ctrl+Shift+E, the explorer's here).
+  // Ctrl+Shift+Space on every platform (Ctrl+Shift+E is the explorer's here).
   { id: "terminal.hints", title: "Show Link Hints", category: "Terminal", keys: ["ctrl+shift+space"], keysOther: ["shift+cmd+space"], local: "the terminal", noRepeat: true },
   // A browser tab (features/browser), new each time; in it ⌘L, ⌘R, ⌘[ and ⌘] are a browser's, as typed in its page too.
   { id: "browser.open", title: "Open Browser", category: "Browser", keys: ["shift+cmd+b"] },
@@ -191,12 +189,12 @@ export const COMMANDS = [
   { id: "git.compareBranches", title: "Compare Branches…", category: "Git", keys: [] },
   { id: "git.switchWorktree", title: "Switch Worktree", category: "Git", keys: [] },
   { id: "git.newWorktree", title: "New Worktree", category: "Git", keys: [] },
-  // GitHub Desktop's keys with ⌃ added: ⇧⌘T, ⇧⌘P and ⌘P reopen a tab, open the palette and a file here.
+  // With ⌃ added, as ⇧⌘T, ⇧⌘P and ⌘P reopen a tab, open the palette and a file here.
   // Elsewhere "ctrl" is the Super key, which the OS takes: unbound there.
   { id: "git.fetch", title: "Fetch", category: "Git", keys: ["ctrl+shift+cmd+t"], keysOther: [] },
   { id: "git.pull", title: "Pull", category: "Git", keys: ["ctrl+shift+cmd+p"], keysOther: [] },
   { id: "git.push", title: "Push", category: "Git", keys: ["ctrl+cmd+p"], keysOther: [] },
-  // VS Code's Sync Changes: what the remote has, then what's here.
+  // What the remote has, then what's here.
   { id: "git.sync", title: "Sync (Pull, then Push)", category: "Git", keys: [] },
   // A patch from Copy as Patch, a mail or a chat: previewed first, then applied to the working tree.
   { id: "git.applyPatch", title: "Apply Patch from Clipboard", category: "Git", keys: [] },
@@ -232,7 +230,7 @@ export const COMMANDS = [
   /** Where it listens, for a command only one place handles. */
   local?: string;
   outsideText?: boolean;
-  /** Runs in a file being edited too, where its ⌥ key would type a symbol: VS Code's editor keys win there (runsInEditor). */
+  /** Runs in a file being edited too, where its ⌥ key would type a symbol: the editor's keys win there (runsInEditor). */
   inEditor?: boolean;
   /** Held down, it runs once: each run changes what the next one would act on. */
   noRepeat?: boolean;

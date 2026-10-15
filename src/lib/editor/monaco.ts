@@ -18,7 +18,7 @@ import "monaco-editor/features/contextmenu/register";
 import "monaco-editor/features/gotoSymbol/register";
 import "monaco-editor/features/referenceSearch/register";
 import "monaco-editor/features/links/register";
-// Editing the file view as in VS Code: word and subword moves (⌥←, ⌃⌥←, ⌥⌫), line moves and copies
+// Editing the file view: word and subword moves (⌥←, ⌃⌥←, ⌥⌫), line moves and copies
 // (⌥↑, ⇧⌥↓, ⇧⌘K, ⌘↵, ⌘]), multiple cursors (⌘D, ⌥⌘↓), ⌘L, ⌘U, ⌃T, expand selection, ⌃G, text dragging,
 // comments (⌘/) and the matching bracket (⇧⌘\) by lib/editor/languageConfig's rules. Left out:
 // what needs a language server.
@@ -221,7 +221,7 @@ interface Kept {
   models: { modified: monaco.editor.ITextModel; original: monaco.editor.ITextModel | null; unit: number };
   generation: number;
 }
-// Models of files shown lately, for the same text's next show (as VS Code keeps an open editor's):
+// Models of files shown lately, for the same text's next show:
 // a tab switch remounts the view, and new models each time left hundreds of MB of garbage that
 // WebKit collects late. Bounded by count and by text; the newest always stays.
 const kept: Kept[] = [];

@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 /// How long a pick's picture is kept: an agent reads it within the session it was sent in.
 const KEEP: Duration = Duration::from_secs(24 * 60 * 60);
 /// Room around the element in its picture, in the page's CSS px.
-const MARGIN: f64 = 8.0;
+pub const MARGIN: f64 = 8.0;
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq)]
 pub struct Bounds {
@@ -79,13 +79,13 @@ pub fn read(json: &str) -> Result<Option<Pick>, String> {
     }
 }
 
-/// The part of a view `size` points big to take a picture of: the element at the page's `zoom`,
-/// with a margin, kept inside the view. None when none of it shows.
-pub fn picture_rect(b: Bounds, zoom: f64, size: (f64, f64)) -> Option<Bounds> {
-    let x0 = ((b.x - MARGIN) * zoom).max(0.0);
-    let y0 = ((b.y - MARGIN) * zoom).max(0.0);
-    let x1 = ((b.x + b.w + MARGIN) * zoom).min(size.0);
-    let y1 = ((b.y + b.h + MARGIN) * zoom).min(size.1);
+/// The part of a view `size` points big to take a picture of: `b` (CSS px) at the page's `zoom`,
+/// `margin` CSS px around it, kept inside the view. None when none of it shows.
+pub fn picture_rect(b: Bounds, zoom: f64, size: (f64, f64), margin: f64) -> Option<Bounds> {
+    let x0 = ((b.x - margin) * zoom).max(0.0);
+    let y0 = ((b.y - margin) * zoom).max(0.0);
+    let x1 = ((b.x + b.w + margin) * zoom).min(size.0);
+    let y1 = ((b.y + b.h + margin) * zoom).min(size.1);
     (x1 > x0 && y1 > y0).then_some(Bounds {
         x: x0,
         y: y0,
@@ -133,16 +133,15 @@ pub fn save(folder: &Path, png: &[u8], at: SystemTime) -> std::io::Result<PathBu
 /// A PNG in the app's cache folder for pictures, its path; None when it couldn't be written.
 pub fn save_png(app: &tauri::AppHandle, png: &[u8]) -> Option<String> {
     use tauri::Manager;
-    let path = save(
-        &folder(&app.path().app_cache_dir().ok()?),
-        png,
-        SystemTime::now(),
-    )
-    .ok()?;
+    let folder = folder(&app.path().app_cache_dir().ok()?);
+    let now = SystemTime::now();
+    let path = save(&folder, png, now).ok()?;
+    // An agent can take hundreds in a session: old ones go as new ones come, not only at launch.
+    prune(&folder, now);
     Some(path.to_string_lossy().into_owned())
 }
 
-/// Pictures more than a day old, gone; run as the app starts.
+/// Pictures more than a day old, gone.
 pub fn prune(folder: &Path, now: SystemTime) {
     for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
         let name = entry.file_name();
@@ -200,7 +199,7 @@ mod tests {
             h: 30.0,
         };
         assert_eq!(
-            picture_rect(b, 1.0, (1000.0, 1000.0)),
+            picture_rect(b, 1.0, (1000.0, 1000.0), MARGIN),
             Some(Bounds {
                 x: 2.0,
                 y: 12.0,
@@ -210,7 +209,7 @@ mod tests {
         );
         // Device mode at half size: in the view's points.
         assert_eq!(
-            picture_rect(b, 0.5, (1000.0, 1000.0)),
+            picture_rect(b, 0.5, (1000.0, 1000.0), MARGIN),
             Some(Bounds {
                 x: 1.0,
                 y: 6.0,
@@ -226,7 +225,7 @@ mod tests {
             h: 10.0,
         };
         assert_eq!(
-            picture_rect(corner, 1.0, (100.0, 100.0)),
+            picture_rect(corner, 1.0, (100.0, 100.0), MARGIN),
             Some(Bounds {
                 x: 0.0,
                 y: 0.0,
@@ -243,7 +242,8 @@ mod tests {
                     h: 10.0
                 },
                 1.0,
-                (100.0, 100.0)
+                (100.0, 100.0),
+                MARGIN
             ),
             None
         );
@@ -305,7 +305,10 @@ mod tests {
         assert_eq!(pick.styles.len(), 1);
         assert_eq!(pick.styles["color"].chars().count(), 200);
         // An empty or inside-out box shows nowhere.
-        assert_eq!(picture_rect(pick.bounds, 1.0, (1000.0, 1000.0)), None);
+        assert_eq!(
+            picture_rect(pick.bounds, 1.0, (1000.0, 1000.0), MARGIN),
+            None
+        );
     }
 
     #[test]
@@ -326,7 +329,7 @@ mod tests {
             };
             let zoom = 0.05 + next(3.0);
             let size = (1.0 + next(2000.0), 1.0 + next(2000.0));
-            if let Some(r) = picture_rect(b, zoom, size) {
+            if let Some(r) = picture_rect(b, zoom, size, MARGIN) {
                 assert!(r.x >= 0.0 && r.y >= 0.0 && r.w > 0.0 && r.h > 0.0, "{r:?}");
                 assert!(
                     r.x + r.w <= size.0 + 1e-9 && r.y + r.h <= size.1 + 1e-9,
@@ -345,7 +348,8 @@ mod tests {
                     h: 10.0
                 },
                 0.0,
-                (100.0, 100.0)
+                (100.0, 100.0),
+                MARGIN
             ),
             None
         );

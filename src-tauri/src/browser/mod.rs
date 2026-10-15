@@ -11,36 +11,42 @@ pub mod console;
 pub mod control;
 mod crashes;
 mod downloads;
+mod input;
 mod keys;
 #[cfg(target_os = "macos")]
 mod macos;
+mod marks;
 pub mod network;
 mod notes;
+mod output;
 pub mod picks;
 mod popups;
 pub mod ports;
 mod registry;
 pub mod server;
 mod sessions;
+pub mod skill;
 
 pub use keys::set_app_keys;
 #[cfg(target_os = "macos")]
 pub use macos::{
-    agent_appearance, agent_clear_store, agent_close_tab, agent_cookies, agent_device,
-    agent_dialogs, agent_done, agent_find_tab, agent_js, agent_new_tab, agent_own_store,
-    agent_page, agent_pane_closed, agent_picture, agent_running, agent_set_cookies, agent_tab,
-    agent_tabs, appearance, clear_data, close, close_all, close_root, configure, console_clear,
-    console_entries, create, find, focus, go, hide, inspect, navigate, network_log, pick, place,
-    set_agent, snapshot, zoom,
+    agent_appearance, agent_chosen, agent_clear_store, agent_close_tab, agent_cookies,
+    agent_device, agent_dialog, agent_dialogs, agent_done, agent_find_tab, agent_give_back,
+    agent_js, agent_keys, agent_new_tab, agent_own_store, agent_page, agent_pane_closed,
+    agent_picture, agent_pointer, agent_running, agent_set_cookies, agent_tab, agent_tabs,
+    agent_text, agent_upload, agent_upload_done, agent_users, appearance, clear_data, close,
+    close_all, close_root, configure, console_clear, console_entries, create, find, focus, go,
+    hide, inspect, navigate, network_log, pick, place, set_agent, snapshot, zoom,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
-    agent_appearance, agent_clear_store, agent_close_tab, agent_cookies, agent_device,
-    agent_dialogs, agent_done, agent_find_tab, agent_js, agent_new_tab, agent_own_store,
-    agent_page, agent_pane_closed, agent_picture, agent_running, agent_set_cookies, agent_tab,
-    agent_tabs, appearance, clear_data, close, close_all, close_root, configure, console_clear,
-    console_entries, create, find, focus, go, hide, inspect, navigate, network_log, pick, place,
-    set_agent, snapshot, zoom,
+    agent_appearance, agent_chosen, agent_clear_store, agent_close_tab, agent_cookies,
+    agent_device, agent_dialog, agent_dialogs, agent_done, agent_find_tab, agent_give_back,
+    agent_js, agent_keys, agent_new_tab, agent_own_store, agent_page, agent_pane_closed,
+    agent_picture, agent_pointer, agent_running, agent_set_cookies, agent_tab, agent_tabs,
+    agent_text, agent_upload, agent_upload_done, agent_users, appearance, clear_data, close,
+    close_all, close_root, configure, console_clear, console_entries, create, find, focus, go,
+    hide, inspect, navigate, network_log, pick, place, set_agent, snapshot, zoom,
 };
 pub use sessions::Shelf;
 
@@ -244,8 +250,9 @@ mod other {
     use super::{
         console::Entry,
         control::{AgentScreen, Found, Listed, NewTab},
+        input::{Keys, Pointer},
+        marks::{Picture, Taken},
         network::Log,
-        picks::Bounds,
         sessions::Cookie,
     };
     use super::{Created, Go, Look, PageState, Rect, Screen};
@@ -294,6 +301,12 @@ mod other {
         Err(UNSUPPORTED.into())
     }
     pub fn agent_running(_: &str, _: u64, _: bool) {}
+    pub fn agent_give_back(_: &AppHandle, _: &str) -> Res<Option<String>> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_users(_: &str) -> Res<Option<String>> {
+        Err(UNSUPPORTED.into())
+    }
     pub fn agent_pane_closed(_: u32) {}
     pub fn agent_appearance(_: &AppHandle, _: &str, _: Option<bool>) -> Res<()> {
         Err(UNSUPPORTED.into())
@@ -310,6 +323,9 @@ mod other {
     pub fn agent_dialogs(_: &str, _: bool) -> Res<()> {
         Err(UNSUPPORTED.into())
     }
+    pub fn agent_dialog(_: &str) -> Res<Option<&'static str>> {
+        Ok(None)
+    }
     pub fn agent_js(
         _: &str,
         _: bool,
@@ -322,14 +338,33 @@ mod other {
     pub fn agent_page(_: &str) -> Res<(PageState, bool)> {
         Err(UNSUPPORTED.into())
     }
-    pub fn agent_picture(
-        _: &str,
-        _: Option<Bounds>,
-        _: Box<dyn FnOnce(Option<Vec<u8>>)>,
-    ) -> Res<()> {
+    pub fn agent_picture(_: &str, _: Picture, _: Box<dyn FnOnce(Option<Taken>)>) -> Res<()> {
         Err(UNSUPPORTED.into())
     }
     pub fn agent_device(_: &AppHandle, _: &str, _: Option<AgentScreen>) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_keys(_: &str, _: Keys) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_upload(_: &str, _: Vec<std::path::PathBuf>) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_chosen(_: &str) -> Res<Option<Res<usize>>> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_upload_done(_: &str) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_text(_: &str, _: &str) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_pointer(
+        _: &str,
+        _: Pointer,
+        _: Option<(f64, f64)>,
+        _: Box<dyn FnOnce((f64, f64))>,
+    ) -> Res<()> {
         Err(UNSUPPORTED.into())
     }
 
@@ -353,7 +388,7 @@ mod other {
     pub fn close(_: &str) {}
     pub fn close_root(_: &str) {}
     pub fn close_all() {}
-    pub fn configure(_: u32, _: u32, _: bool) {}
+    pub fn configure(_: u32, _: u32, _: u32, _: bool) {}
     pub fn pick(_: &str, _: bool) -> Res<()> {
         Err(UNSUPPORTED.into())
     }

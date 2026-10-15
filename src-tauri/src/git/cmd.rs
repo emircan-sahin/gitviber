@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 /// The app reads git's messages ("not a git repository", "non-fast-forward", index.lock,
-/// progress phases), so git must speak English whatever LANG says, as in VS Code. UTF-8
+/// progress phases), so git must speak English whatever LANG says. UTF-8
 /// keeps non-ASCII paths and messages intact. LANGUAGE would outrank both for gettext.
 pub(crate) fn in_english(cmd: &mut Command) -> &mut Command {
     cmd.env("LC_ALL", "en_US.UTF-8")

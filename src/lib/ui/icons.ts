@@ -1,4 +1,4 @@
-// File and folder icons from Material Icon Theme (MIT), resolved the way VS Code does.
+// File and folder icons from Material Icon Theme (MIT).
 import {
   file as defaultFile,
   folder as defaultFolder,

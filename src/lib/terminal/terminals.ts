@@ -277,7 +277,7 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
   // ⌥-drag selects past a program that reads the mouse, which Claude Code's "option+click to native
   // select" counts on. Forcing it always would cost ⌥-drag's block selection where none reads it.
   if (IS_MAC) host.addEventListener("mousedown", () => (term.options.macOptionClickForcesSelection = term.modes.mouseTrackingMode !== "none"), true);
-  // XTVERSION names this app, as Ghostty and iTerm2 name themselves. Answered as xterm.js, Claude
+  // XTVERSION names this app. Answered as xterm.js, Claude
   // Code took the pane for VS Code's terminal: 3 rows a report once the wheel slowed, and its
   // workarounds for VS Code's glyph atlas.
   term.parser.registerCsiHandler({ prefix: ">", final: "q" }, (params) => {
@@ -320,8 +320,7 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
 }
 
 /**
- * A pinch (a trackpad's arrives as ctrl+wheel) or Ctrl+wheel sizes the font, as in iTerm2 and
- * Windows Terminal, rather than scrolling or zooming the page. A pinch sends many small deltas, a
+ * A pinch (a trackpad's arrives as ctrl+wheel) or Ctrl+wheel sizes the font, rather than scrolling or zooming the page. A pinch sends many small deltas, a
  * mouse notch one big one: either way about a point per notch.
  */
 let pinched = 0;
@@ -428,14 +427,14 @@ function runAtPrompt(p: Pane, command: string, integrated: boolean) {
   const type = () => {
     if (sent || !panes.has(p.id)) return;
     sent = true;
-    // Whatever was typed before the prompt is on its line: ⌃U clears it first. VS Code sends ⌃C
-    // before a command when the line may hold text; ⌃U does it without a new prompt.
+    // Whatever was typed before the prompt is on its line: ⌃U clears it first, where ⌃C
+    // would draw a new prompt.
     send(p, `\x15${command}`);
   };
   void p.marks.ready.then(type);
   window.setTimeout(type, RUN_WAIT);
 }
-/** How long a command waits for the first prompt, as VS Code's shell integration timeout: past it, typing ahead is no worse. */
+/** How long a command waits for the first prompt: past it, typing ahead is no worse. */
 const RUN_WAIT = 5000;
 
 /** A shell gone within a second (a broken rc file or login shell) leaves its pane up to be read, for ⌘W to close. */
@@ -514,8 +513,8 @@ export function openTerminal(cwd: string, run?: string) {
 }
 
 /**
- * Where a pane's shell is now, asked of its process as VS Code's inherited split folder is (on a
- * split, a save, or a prompt shell integration marks); else where it was last seen.
+ * Where a pane's shell is now, asked of its process (on a split,
+ * a save, or a prompt shell integration marks); else where it was last seen.
  */
 export async function shellDir(p: Pane) {
   if (p.pty !== null) p.dir = (await pty.cwd(p.pty).catch(() => null)) ?? p.dir;
@@ -651,7 +650,7 @@ export function renameGroup(id: number, name: string) {
 export async function clearFocused() {
   const p = panes.get(activeGroup()?.focused ?? -1);
   if (!p) return;
-  // A running program (Claude Code, vim) is left alone, as in cmux: it redraws relative to the rows
+  // A running program (Claude Code, vim) is left alone: it redraws relative to the rows
   // it drew, and clear() pulls the cursor's row to the top under it, so half its screen went missing.
   if (p.term.buffer.active.type === "alternate") return;
   const busy = p.pty !== null && (await pty.busy([p.pty]).catch(() => 0)) > 0;

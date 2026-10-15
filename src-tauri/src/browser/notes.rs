@@ -68,14 +68,14 @@ pub fn forget(pty: u32) {
     notes().forget(pty);
 }
 
-/// `reply` from tab `on` of pane `pty`, with what the pane hasn't been told yet.
-pub fn tell(reply: Reply, pty: u32, on: Option<&str>) -> Reply {
-    let told = notes().take(pty, on);
-    with(reply, &told)
+/// What pane `pty` hasn't been told yet, as a reply from tab `on` tells it; for output::finish
+/// to mark and clean with the rest.
+pub fn take(pty: u32, on: Option<&str>) -> Vec<String> {
+    notes().take(pty, on)
 }
 
 /// The notes after the reply's text, or its error's, and as its `notes` for --json.
-fn with(mut reply: Reply, notes: &[String]) -> Reply {
+pub fn with(mut reply: Reply, notes: &[String]) -> Reply {
     if notes.is_empty() {
         return reply;
     }
@@ -182,5 +182,39 @@ mod tests {
             let json = serde_json::to_value(with(reply, &notes)).unwrap();
             assert_eq!(json["notes"], json!(["→ a"]), "{json}");
         }
+    }
+
+    /// Told through output::finish, as agent.rs tells them: inside the page-content marks, and
+    /// cleaned of tokens and secrets like any page text.
+    #[test]
+    fn notes_are_marked_and_cleaned_as_the_reply_is() {
+        use crate::browser::output::{finish, Ctx};
+        let notes = [
+            "→ popup opened as tab t1-popup1 (https://login.test/cb?token=t0k3n)".to_string(),
+            "→ tab t2: downloaded hunter2-made-up.txt".to_string(),
+        ];
+        let secrets = [("PASSWORD".to_string(), "hunter2-made-up".to_string())];
+        let ctx = Ctx {
+            marked: true,
+            origin: None,
+            nonce: "n0nce",
+            reveal: false,
+            secrets: &secrets,
+            dialog: None,
+            looped: false,
+        };
+        let done = finish(with(Reply::out("Clicked e1"), &notes), &ctx);
+        let hidden = |s: &str| !s.contains("t0k3n") && !s.contains("hunter2-made-up");
+        assert!(
+            done.notes.len() == 2 && done.notes.iter().all(|n| hidden(n)),
+            "{done:?}"
+        );
+        let out = done.out.unwrap();
+        let end = out.find("--- end page content").unwrap();
+        assert!(out.find("popup opened").unwrap() < end, "{out}");
+        assert!(
+            !out.contains("t0k3n") && !out.contains("hunter2-made-up"),
+            "{out}"
+        );
     }
 }

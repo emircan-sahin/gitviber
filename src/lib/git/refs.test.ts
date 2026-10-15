@@ -22,7 +22,7 @@ test("a typed ref name becomes one git takes", () => {
     ["topic/", "topic-"],
     ["--+-force", "force"],
     ["ünïcode-ok", "ünïcode-ok"],
-    // What GitHub Desktop's own rule lets through and git refuses.
+    // A leading dot or dash, which git refuses.
     ["-.hidden", "hidden"],
     ["~.x", "x"],
     ["-/a", "a"],

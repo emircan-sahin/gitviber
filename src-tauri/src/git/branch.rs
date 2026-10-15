@@ -147,7 +147,7 @@ pub fn merged_upstream(repo: &Path) -> Vec<String> {
 }
 
 /// The branches this worktree's HEAD most recently moved to, newest first, from its reflog's
-/// checkouts (as GitHub Desktop reads them). A name may no longer be a branch, or be a commit
+/// checkouts. A name may no longer be a branch, or be a commit
 /// the checkout detached at: the picker keeps only the branches it lists.
 pub fn recent_branches(repo: &Path, limit: usize) -> Result<Vec<String>, String> {
     // Bounded: a reflog can run to many thousands of entries. 128: no commit yet.
@@ -236,7 +236,7 @@ pub fn delete_merged(repo: &Path, merged: &[String], upstream: &[String]) -> Res
 /// Local branches (or just `only`) whose upstream is gone, as a host deletes a pull request's
 /// branch on merge, and whose changes are all in the default branch anyway. Gone alone proves
 /// nothing: the branch may never have been pushed, or deleted unmerged, so it's the content
-/// that decides, as GitHub Desktop and git-trim do.
+/// that decides.
 pub(super) fn landed(repo: &Path, only: Option<&str>) -> Vec<(String, String)> {
     let pattern = only.map_or("refs/heads".into(), |b| format!("refs/heads/{b}"));
     let raw = run_text(

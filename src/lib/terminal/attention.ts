@@ -11,12 +11,12 @@ const MAX_TEXT = 1000;
 // Claude Code's iterm2 channel starts its message with blank lines.
 const cut = (s: string) => s.trim().slice(0, MAX_TEXT);
 
-/** OSC 9: iTerm2's notification, its text the body. ConEmu's `9;<1-12>` commands aren't one (`9;4` is the progress bar), as in Ghostty. */
+/** OSC 9: a notification, its text the body. ConEmu's `9;<1-12>` commands aren't one (`9;4` is the progress bar). */
 export function osc9Note(data: string): Note | null {
   return /^(?:[1-9]|1[0-2])(?:;|$)/.test(data) ? null : { body: cut(data) };
 }
 
-/** OSC 777: rxvt's `notify;<title>;<body>`, as Ghostty and foot take it; its other commands aren't one. */
+/** OSC 777: rxvt's `notify;<title>;<body>`; its other commands aren't one. */
 export function osc777Note(data: string): Note | null {
   const m = /^notify;([^;]*)(?:;([\s\S]*))?$/.exec(data);
   return m ? { title: cut(m[1]), body: cut(m[2] ?? "") } : null;

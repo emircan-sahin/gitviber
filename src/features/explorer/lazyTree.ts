@@ -20,7 +20,7 @@ function unchanged<E extends TreeEntry>(shown: E[] | undefined, listed: E[], sam
 }
 
 /**
- * A tree listed folder by folder as they open, like VS Code's explorer: the explorer's files
+ * A tree listed folder by folder as they open: the explorer's files
  * and an Obsidian vault's. Every open folder is listed again when `revision` moves; a folder
  * gone since (agents and sync tools delete them) closes quietly. `onRootError`: the top
  * couldn't be listed, which stays open so the tree comes back once it can.
@@ -102,7 +102,7 @@ export function treeRows<E extends TreeEntry>(children: Record<string, E[]>, exp
 export type TreeKey<E> = { move: number } | { open: string } | { close: string } | { select: string } | { activate: E; pin: boolean; focusCode: boolean };
 
 /**
- * The tree keys, as in VS Code's explorer: ↑ ↓ Home End PgUp PgDn move, → opens a folder (then
+ * The tree keys: ↑ ↓ Home End PgUp PgDn move, → opens a folder (then
  * steps into it) or a file (and moves to its code), ← closes a folder or goes to its parent, ↵
  * opens for good. `cur`: the keyboard's row (-1: none); `row`: its element, for a page's size.
  * `isOpen`: the folder shows its entries; `closable`: it may be closed (a filter holds some open).

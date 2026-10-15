@@ -7,17 +7,25 @@ mod agent;
 mod cookies;
 mod crashes;
 mod downloads;
+mod memory;
+mod native;
 mod page_tools;
 mod page_view;
+mod panel;
 mod popups;
 
 pub use agent::{
-    agent_appearance, agent_close_tab, agent_device, agent_dialogs, agent_find_tab, agent_js,
-    agent_new_tab, agent_page, agent_pane_closed, agent_picture, agent_running, agent_tab,
-    agent_tabs,
+    agent_appearance, agent_close_tab, agent_device, agent_dialogs, agent_find_tab,
+    agent_give_back, agent_js, agent_new_tab, agent_page, agent_pane_closed, agent_running,
+    agent_tab, agent_tabs, agent_users,
 };
 pub use cookies::{agent_clear_store, agent_cookies, agent_own_store, agent_set_cookies};
-pub use page_tools::{console_clear, console_entries, network_log, pick};
+pub use native::{
+    agent_chosen, agent_keys, agent_pointer, agent_text, agent_upload, agent_upload_done,
+};
+pub use page_tools::{
+    agent_dialog, agent_picture, console_clear, console_entries, network_log, pick,
+};
 pub use page_view::{appearance, find, zoom};
 
 use super::console::Log;
@@ -32,10 +40,10 @@ use crate::state::Res;
 use block2::{DynBlock, RcBlock};
 use objc2::encode::{Encoding, RefEncode};
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{AnyObject, Bool, NSObject, ProtocolObject};
+use objc2::runtime::{AnyObject, Bool, NSObject, ProtocolObject, Sel};
 use objc2::{
     available, define_class, msg_send, sel, ClassType, DefinedClass, MainThreadMarker,
-    MainThreadOnly,
+    MainThreadOnly, Message,
 };
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAutoresizingMaskOptions, NSBitmapImageFileType,
@@ -48,7 +56,8 @@ use objc2_foundation::{
     NSKeyValueChangeKey, NSKeyValueObservingOptions, NSNumber, NSObjectNSDelayedPerforming,
     NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
     NSURLAuthenticationChallenge, NSURLAuthenticationMethodServerTrust, NSURLCredential,
-    NSURLRequest, NSURLSessionAuthChallengeDisposition as Disposition, NSURL, NSUUID,
+    NSURLRequest, NSURLSessionAuthChallengeDisposition as Disposition, NSUndoManager, NSURL,
+    NSUUID,
 };
 use objc2_web_kit::{
     WKDownload, WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationActionPolicy,
@@ -261,12 +270,24 @@ fn can_set_dpr(web: &WKWebView) -> bool {
 struct WebIvars {
     id: String,
     app: AppHandle,
+    /// Native menus to drop as they open: an agent's right clicks' (native.rs). Its command's
+    /// end clears them, so a page that opened none doesn't eat the user's next one.
+    menus: Cell<u32>,
+    /// The keys its agents hold down, from one command to the next.
+    held: RefCell<super::input::Held>,
+    /// Its own undo, apart from the window's: the app page's edits are out of an agent's ⌘Z.
+    undo: Retained<NSUndoManager>,
+    /// What an agent's tab's clipboard script answers to (scripts/clipboard.js), and only
+    /// that: the page can't switch it.
+    clipboard: String,
+    /// The script keeps the page's clipboard calls to the page (on until the user acts here).
+    guarded: Cell<bool>,
 }
 
 define_class!(
     /// The page's view: the app's chords go to the app (see keys.rs), and taking focus says so.
-    // SAFETY: WKWebView allows subclassing; WebView only overrides two NSResponder methods,
-    // calling super, and its ivars need no Drop of their own.
+    // SAFETY: WKWebView allows subclassing; WebView overrides NSResponder and NSView methods,
+    // calling super where WebKit has its own, and its ivars need no Drop of their own.
     #[unsafe(super(WKWebView))]
     #[name = "GitViberBrowserWebView"]
     #[ivars = WebIvars]
@@ -290,10 +311,89 @@ define_class!(
             }
         }
 
+        /// An agent's right click fires the page's contextmenu, but no menu: one with no items
+        /// doesn't show, and a menu would hold the main thread until dismissed. None at all in
+        /// a panel, where no one would see it to dismiss it.
+        #[unsafe(method(willOpenMenu:withEvent:))]
+        fn will_open_menu(&self, menu: &AnyObject, event: &NSEvent) {
+            let _: () = unsafe { msg_send![super(self), willOpenMenu: menu, withEvent: event] };
+            let menus = &self.ivars().menus;
+            if menus.get() > 0 || panel::in_panel(self) {
+                menus.set(menus.get().saturating_sub(1));
+                let _: () = unsafe { msg_send![menu, removeAllItems] };
+            }
+        }
+
+        /// An AppKit drag from an agent's press would follow the real mouse: it ends at once.
+        #[unsafe(method_id(beginDraggingSessionWithItems:event:source:))]
+        fn begin_dragging(
+            &self,
+            items: &AnyObject,
+            event: &NSEvent,
+            source: &AnyObject,
+        ) -> Retained<AnyObject> {
+            let refused = native::ours(event)
+                .then(|| native::refuse_drag(self, event))
+                .flatten();
+            refused.unwrap_or_else(|| unsafe {
+                msg_send![super(self), beginDraggingSessionWithItems: items, event: event, source: source]
+            })
+        }
+
+        #[unsafe(method(undoManager))]
+        fn undo_manager(&self) -> *mut NSUndoManager {
+            Retained::as_ptr(&self.ivars().undo).cast_mut()
+        }
+
+        /// The user's own press or key here, not an agent's: the page's clipboard calls are
+        /// theirs again (scripts/clipboard.js), as a Copy button they click must work.
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            self.user_acts(event);
+            let _: () = unsafe { msg_send![super(self), mouseDown: event] };
+        }
+
+        #[unsafe(method(rightMouseDown:))]
+        fn right_mouse_down(&self, event: &NSEvent) {
+            self.user_acts(event);
+            let _: () = unsafe { msg_send![super(self), rightMouseDown: event] };
+        }
+
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &NSEvent) {
+            self.user_acts(event);
+            let _: () = unsafe { msg_send![super(self), keyDown: event] };
+        }
+
+        /// The Edit menu's Undo and Redo, for the page with the window's focus: its history is
+        /// its own (`undoManager`), not the window's.
+        #[unsafe(method(undo:))]
+        fn undo(&self, _sender: Option<&AnyObject>) {
+            self.ivars().undo.undo();
+        }
+
+        #[unsafe(method(redo:))]
+        fn redo(&self, _sender: Option<&AnyObject>) {
+            self.ivars().undo.redo();
+        }
+
+        #[unsafe(method(validateUserInterfaceItem:))]
+        fn validate(&self, item: &AnyObject) -> Bool {
+            let action: Option<Sel> = unsafe { msg_send![item, action] };
+            let undo = &self.ivars().undo;
+            match action {
+                Some(a) if a == sel!(undo:) => Bool::new(undo.canUndo()),
+                Some(a) if a == sel!(redo:) => Bool::new(undo.canRedo()),
+                _ => unsafe { msg_send![super(self), validateUserInterfaceItem: item] },
+            }
+        }
+
+        /// Said to the app page, but not in its panel, where the page takes focus for its agents,
+        /// not from the app page.
         #[unsafe(method(becomeFirstResponder))]
         fn become_first_responder(&self) -> Bool {
             let took: Bool = unsafe { msg_send![super(self), becomeFirstResponder] };
-            if took.as_bool() {
+            if took.as_bool() && !panel::in_panel(self) {
                 emit(&self.ivars().app, "browser-focus", Id { id: &self.ivars().id });
             }
             took
@@ -302,6 +402,17 @@ define_class!(
 );
 
 impl WebView {
+    /// A press or a key of the user's, not an agent's: an agent's tab is theirs from now.
+    fn user_acts(&self, event: &NSEvent) {
+        if native::ours(event) {
+            return;
+        }
+        if self.ivars().guarded.get() {
+            page_tools::guard_clipboard(self, false);
+        }
+        agent::user_took(&self.ivars().id);
+    }
+
     fn focused(&self) -> bool {
         let responder = self.window().and_then(|w| w.firstResponder());
         responder.is_some_and(|r| std::ptr::eq(Retained::as_ptr(&r).cast(), self))
@@ -339,6 +450,8 @@ struct DelegateIvars {
     failed: RefCell<Option<Failed>>,
     /// When the last few alert() and confirm() showed.
     dialogs: RefCell<Vec<Instant>>,
+    /// The alert() or confirm() on show now, waiting for the user: the page's scripts wait too.
+    asking: Cell<Option<&'static str>>,
     /// The page has loaded something since the view was made: a parked page's picture can go.
     committed: Cell<bool>,
     /// The hide's park timer pending (gvParkDue:), its argument, to cancel it by.
@@ -362,6 +475,16 @@ struct DelegateIvars {
     running: RefCell<HashSet<u64>>,
     /// The page's own zoom (page_view.rs), outside device mode.
     zoom: Cell<f64>,
+    /// Where it draws while an agent's and out of its tab's sight (panel.rs).
+    panel: RefCell<Option<Retained<panel::Panel>>>,
+    /// A password field of its page has focus (page_tools.rs SECRET), for its panel's key.
+    secret: Cell<bool>,
+    /// Where an agent's pointer last was, in CSS px (native.rs).
+    pointer: Cell<Option<(f64, f64)>>,
+    /// The files an agent's `upload` gives the next file chooser, and how many it took, or why
+    /// none (native.rs).
+    upload: RefCell<Option<Vec<std::path::PathBuf>>>,
+    chosen: RefCell<Option<Res<usize>>>,
 }
 
 define_class!(
@@ -400,6 +523,31 @@ define_class!(
         #[unsafe(method(gvIdleDue))]
         fn idle_due(&self) {
             agent::idle(&self.ivars().id);
+        }
+
+        /// Tab past the page's last control: focus goes on to the window's next view, as WebKit
+        /// would send it, but not while an agent's keys go in, from a page without the window's
+        /// focus, or out of a panel: the user's focus stays where it is. Private: WebKit asks,
+        /// where it still does.
+        #[unsafe(method(_webView:takeFocus:))]
+        fn take_focus(&self, _web: &WKWebView, direction: isize) {
+            let Some(web) = self.ivars().web.load() else {
+                return;
+            };
+            let agents = !self.ivars().running.borrow().is_empty();
+            let mine = web.focused() && !agents && !panel::in_panel(&web);
+            let Some(window) = web.window().filter(|_| mine) else {
+                return;
+            };
+            // _WKFocusDirectionForward.
+            if direction == 1 {
+                match last_key_view(&web) {
+                    Some(last) => window.selectKeyViewFollowingView(&last),
+                    None => window.selectKeyViewFollowingView(&web),
+                }
+            } else {
+                window.selectKeyViewPrecedingView(&web);
+            }
         }
 
         /// webViewWebContentProcessDidTerminate: with why (WebKit's private delegate method,
@@ -504,6 +652,11 @@ define_class!(
             self.ivars().failed.take();
             self.ivars().committed.set(true);
             page_tools::loaded(self, &url_text(unsafe { web.URL() }));
+            // An agent's page loads guarded (scripts/clipboard.js); one released to the user
+            // is let go at once.
+            if let Some(web) = self.ivars().web.load() {
+                page_tools::guard_clipboard(&web, agent::routed(&self.ivars().id));
+            }
             self.changed();
         }
 
@@ -579,7 +732,12 @@ define_class!(
                 return done.call(());
             }
             let done = done.copy();
-            sheet(web, message, frame, false, move |_| done.call(()));
+            self.ivars().asking.set(Some("alert"));
+            let this = self.retain();
+            sheet(web, message, frame, false, move |_| {
+                this.ivars().asking.set(None);
+                done.call(());
+            });
         }
 
         #[unsafe(method(webView:runJavaScriptConfirmPanelWithMessage:initiatedByFrame:completionHandler:))]
@@ -597,7 +755,12 @@ define_class!(
                 return done.call((Bool::NO,));
             }
             let done = done.copy();
-            sheet(web, message, frame, true, move |ok| done.call((Bool::new(ok),)));
+            self.ivars().asking.set(Some("confirm"));
+            let this = self.retain();
+            sheet(web, message, frame, true, move |ok| {
+                this.ivars().asking.set(None);
+                done.call((Bool::new(ok),));
+            });
         }
 
         /// prompt() answers as if cancelled (an agent's accepted, with its default text): a text
@@ -618,7 +781,9 @@ define_class!(
             done.call((std::ptr::null_mut(),));
         }
 
-        /// An <input type=file>: the open panel, as a sheet on the app's window.
+        /// An <input type=file>: the files an agent's `upload` gives, else the open panel, as a
+        /// sheet on the app's window, for a page on show only: one in a panel or a hidden tab
+        /// would wait on a sheet no one sees.
         #[unsafe(method(webView:runOpenPanelWithParameters:initiatedByFrame:completionHandler:))]
         fn open_panel(
             &self,
@@ -627,7 +792,14 @@ define_class!(
             _frame: &WKFrameInfo,
             done: &DynBlock<dyn Fn(*mut NSArray<NSURL>)>,
         ) {
-            let Some(window) = web.window() else {
+            // Only while the agent's `upload` runs: a chooser after it is the page's own doing.
+            let running = !self.ivars().running.borrow().is_empty();
+            if let Some(files) = self.ivars().upload.take().filter(|_| running) {
+                let many = unsafe { parameters.allowsMultipleSelection() };
+                return native::choose(self, files, many, done);
+            }
+            let shown = VIEWS.with_borrow(|r| r.shown(&self.ivars().id));
+            let Some(window) = web.window().filter(|_| shown && !panel::in_panel(web)) else {
                 return done.call((std::ptr::null_mut(),));
             };
             let panel = NSOpenPanel::openPanel(self.mtm());
@@ -647,6 +819,15 @@ define_class!(
     }
 );
 
+/// The last view of the web view's own key view loop, after which the window's next key view
+/// comes, as WebKit finds it (private, where it still has it).
+fn last_key_view(web: &WebView) -> Option<Retained<NSView>> {
+    if !web.respondsToSelector(sel!(_findLastViewInKeyViewLoop)) {
+        return None;
+    }
+    unsafe { msg_send![web, _findLastViewInKeyViewLoop] }
+}
+
 impl Delegate {
     fn new(mtm: MainThreadMarker, id: &str, app: AppHandle, web: &WebView) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(DelegateIvars {
@@ -658,6 +839,7 @@ impl Delegate {
             going: RefCell::default(),
             failed: RefCell::default(),
             dialogs: RefCell::default(),
+            asking: Cell::new(None),
             committed: Cell::new(false),
             timer: RefCell::default(),
             hidden_at: Cell::new(None),
@@ -669,6 +851,11 @@ impl Delegate {
             crashes: RefCell::default(),
             running: RefCell::default(),
             zoom: Cell::new(1.0),
+            panel: RefCell::default(),
+            secret: Cell::new(false),
+            pointer: Cell::new(None),
+            upload: RefCell::default(),
+            chosen: RefCell::default(),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -698,7 +885,9 @@ impl Delegate {
     /// A dialog only from the page on show in its tab (a toast over it doesn't count), and only
     /// a few at a time; the rest answer at once.
     fn may_ask(&self, web: &WKWebView) -> bool {
-        if web.window().is_none() || !VIEWS.with_borrow(|r| r.shown(&self.ivars().id)) {
+        // Covered and awake, the page is in its panel: a sheet there would wait forever.
+        let shown = VIEWS.with_borrow(|r| r.shown(&self.ivars().id));
+        if web.window().is_none() || !shown || panel::in_panel(web) {
             return false;
         }
         let now = Instant::now();
@@ -819,6 +1008,21 @@ fn data_store(mtm: MainThreadMarker) -> Retained<WKWebsiteDataStore> {
     }
 }
 
+/// The main window's content view, where the hosts lie over the app page.
+fn content_view(app: &AppHandle) -> Option<Retained<NSView>> {
+    window_content(&app.get_webview_window("main")?).ok()
+}
+
+fn window_content(window: &tauri::WebviewWindow) -> Res<Retained<NSView>> {
+    let ns_window = window
+        .ns_window()
+        .map_err(|e| e.to_string())?
+        .cast::<NSWindow>();
+    unsafe { ns_window.as_ref() }
+        .and_then(|w| w.contentView())
+        .ok_or_else(|| "The window isn't ready.".into())
+}
+
 /// The app page's own web view, beside the hosts in the window's content view.
 fn app_page(host: &NSView) -> Option<Retained<NSView>> {
     let parent = unsafe { host.superview() }?;
@@ -869,15 +1073,12 @@ pub fn create(
         Some(page) => page,
         None => web_page(url)?,
     };
-    let ns_window = window
-        .ns_window()
-        .map_err(|e| e.to_string())?
-        .cast::<NSWindow>();
-    let content = unsafe { ns_window.as_ref() }
-        .and_then(|w| w.contentView())
-        .ok_or("The window isn't ready.")?;
+    let content = window_content(window)?;
+    memory::watch();
     let parked = VIEWS.with_borrow_mut(|r| r.unpark(id));
 
+    let clipboard = NSUUID::new().UUIDString().to_string();
+    let agent = agent::routed(id);
     // A popup's comes from WebKit with its opener (popups.rs), and WebKit loads its page.
     let given = popups::given();
     let config = given
@@ -891,10 +1092,15 @@ pub fn create(
         }
         // Its own, so none of the app page's scripts (Tauri's IPC) reach this page.
         let content = WKUserContentController::new(mtm);
-        page_tools::install(&content, id, agent::routed(id), mtm);
+        page_tools::install(&content, id, agent.then_some(&*clipboard), mtm);
         config.setUserContentController(&content);
         let preferences = config.preferences();
         preferences.setJavaScriptCanOpenWindowsAutomatically(false);
+        if agent && !page_tools::no_async_clipboard(&preferences) {
+            eprintln!(
+                "browser: an agent's tab keeps WebKit's async clipboard; its script guards it"
+            );
+        }
         // Inspect Element in the page's menu; private, so only where WebKit still has it.
         if preferences.respondsToSelector(sel!(_setDeveloperExtrasEnabled:)) {
             let _: () = msg_send![&*preferences, _setDeveloperExtrasEnabled: Bool::YES];
@@ -903,6 +1109,11 @@ pub fn create(
     let web = WebView::alloc(mtm).set_ivars(WebIvars {
         id: id.into(),
         app: window.app_handle().clone(),
+        menus: Cell::new(0),
+        held: RefCell::default(),
+        undo: NSUndoManager::new(mtm),
+        clipboard,
+        guarded: Cell::new(agent),
     });
     let web: Retained<WebView> =
         unsafe { msg_send![super(web), initWithFrame: NSRect::ZERO, configuration: &*config] };
@@ -976,6 +1187,7 @@ pub fn place(id: &str, rect: Rect, screen: Option<Screen>) -> Res<()> {
     let screen = screen.map(Screen::check).transpose()?;
     let rect = screen.map_or(rect, |s| s.fit(rect));
     let v = view(id).ok_or(GONE)?;
+    panel::release(&v);
     let page = app_page(&v.host).ok_or(GONE)?;
     let parent = unsafe { v.host.superview() }.ok_or(GONE)?;
     // From the page's top left, in its own coordinates whichever way up they run.
@@ -1047,7 +1259,7 @@ pub fn set_agent(id: &str, ua: Option<&str>) -> Res<()> {
 
 /// Hidden, WebKit slows its timers and animation frames. Out of its tab's sight (not just
 /// `aside` for something drawn over it), it parks past the cap or once its timer is up; an
-/// agent's awake tab is drawn off-screen instead (agent.rs).
+/// agent's awake tab is drawn in its panel instead (panel.rs).
 pub fn hide(id: &str, aside: bool) {
     let (Ok(_), Some(v)) = (main_thread(), view(id)) else {
         return;
@@ -1055,7 +1267,11 @@ pub fn hide(id: &str, aside: bool) {
     release_focus(&v);
     if aside {
         let step = VIEWS.with_borrow_mut(|r| r.cover(id));
+        let offscreen = step == Step::Offscreen;
         apply(&v, step);
+        if offscreen {
+            agent::sleep_past_cap("");
+        }
         return;
     }
     // Its picture while it still shows: hidden, WebKit may never give one. It parks with it.
@@ -1063,12 +1279,16 @@ pub fn hide(id: &str, aside: bool) {
     take_snapshot(&v.web, move |shot| {
         VIEWS.with_borrow_mut(|r| r.set_picture(&picture_of, shot));
     });
-    // Hidden in the registry too, or off-screen for an agent's awake view.
+    // Hidden in the registry too, or off-screen for an agent's awake view, one more in a panel.
     let step = VIEWS.with_borrow_mut(|r| r.hide(id));
+    let offscreen = step.is_none();
     apply(
         &v,
         step.map_or(Step::Offscreen, |(since, over)| Step::Hide(since, over)),
     );
+    if offscreen {
+        agent::sleep_past_cap("");
+    }
 }
 
 /// The host where the registry moved its view.
@@ -1079,8 +1299,12 @@ fn apply(v: &View, step: Step) {
             stop_timer(v);
             agent::offscreen(v);
         }
-        Step::Cover => v.host.setHidden(true),
+        Step::Cover => {
+            panel::release(v);
+            v.host.setHidden(true);
+        }
         Step::Hide(since, over) => {
+            panel::release(v);
             v.host.setHidden(true);
             v.delegate.ivars().hidden_at.set(Some(Instant::now()));
             start_timer(v, since, Duration::ZERO);
@@ -1123,8 +1347,9 @@ fn stop_timer(v: &View) {
     }
 }
 
-/// How many hidden views stay alive, and after how many minutes one parks (0: never).
-pub fn configure(live_hidden: u32, park_after_min: u32, console: bool) {
+/// How many hidden views stay alive, after how many minutes one parks (0: never), and how many
+/// agents' tabs draw out of sight at once: past a lower cap, the longest unused sleep at once.
+pub fn configure(live_hidden: u32, park_after_min: u32, agent_drawn: u32, console: bool) {
     if main_thread().is_err() {
         return;
     }
@@ -1143,6 +1368,10 @@ pub fn configure(live_hidden: u32, park_after_min: u32, console: bool) {
     for (id, since) in VIEWS.with_borrow_mut(|r| r.set_live_hidden(live_hidden)) {
         begin_park(&id, since);
     }
+    // Settings bound it too (BROWSER_AGENT_DRAWN).
+    let agent_drawn = usize::try_from(agent_drawn.clamp(1, 24)).unwrap_or(24);
+    VIEWS.with_borrow_mut(|r| r.set_awake_drawn(agent_drawn));
+    agent::sleep_past_cap("");
 }
 
 /// Parks a hidden view at once, with the picture taken as it hid (or none): never waiting on
@@ -1213,7 +1442,12 @@ fn destroy(v: View) {
         v.web.setUIDelegate(None);
     }
     release_focus(&v);
+    // Out of its panel only once it's let go of being key there (a password field's secure input).
+    panel::resign(&v);
     v.host.removeFromSuperview();
+    if let Some(panel) = v.delegate.ivars().panel.take() {
+        panel::spare(panel);
+    }
     #[cfg(debug_assertions)]
     log_process(&v.web, "closed");
 }
@@ -1423,6 +1657,12 @@ mod tests {
             if class.instance_method(sel).is_some() {
                 class.verify_sel::<(Bool,), ()>(sel).unwrap();
             }
+        }
+        let last = sel!(_findLastViewInKeyViewLoop);
+        if WKWebView::class().instance_method(last).is_some() {
+            WKWebView::class()
+                .verify_sel::<(), *mut NSView>(last)
+                .unwrap();
         }
         NSURLCredential::class()
             .metaclass()

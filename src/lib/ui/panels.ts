@@ -1,5 +1,5 @@
 /**
- * Keyboard focus across the workspace's panels, as in VS Code: each is an element marked
+ * Keyboard focus across the workspace's panels: each is an element marked
  * `data-panel`. Focusing one lands on its list's current row, the code view's editor, or the
  * active terminal, else on the panel itself (it takes focus, so F6 and Esc still know where it is).
  */

@@ -167,8 +167,8 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
   // Unknown until the push target has the branch; then a push is due.
   const pushAhead = status?.push ? (status.push.branch ? status.push.ahead : null) : (status?.ahead ?? 0);
 
-  // Changes that the other branch's files would overwrite: git refuses, and GitHub Desktop's way
-  // out is to leave them here in a stash (Stashes in Changes brings them back).
+  // Changes that the other branch's files would overwrite: git refuses, so they are left
+  // here in a stash (Stashes in Changes brings them back).
   const switching = (to: string, fn: () => Promise<void>) => async () => {
     try {
       await fn();

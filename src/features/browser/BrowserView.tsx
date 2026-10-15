@@ -1,4 +1,4 @@
-import { Crosshair, type LucideIcon, Moon, Sun, SunMoon, TabletSmartphone } from "lucide-react";
+import { Bot, Crosshair, type LucideIcon, Moon, Sun, SunMoon, TabletSmartphone } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
@@ -6,6 +6,7 @@ import { browserApi, type BrowserGo, type BrowserPick, errorMessage, github } fr
 import { failed, toast } from "@/lib/app/toast";
 import { formatErrors, type ShownAs } from "@/lib/browser/format";
 import { onBrowserKey, setBrowserState, useBrowserState, useLogged, useParks } from "@/lib/browser/store";
+import { useTakenFromAgent } from "@/lib/browser/agentTabs";
 import { RESPONSIVE } from "@/lib/browser/devices";
 import { type Scheme, zoomLabel } from "@/lib/browser/look";
 import { BLANK, isFrameable, pageLabel } from "@/lib/browser/url";
@@ -252,6 +253,7 @@ function NativePage(props: Props) {
         field={field}
         tools={
           <>
+            <GiveBack id={id} />
             <ToolToggle tool={PICK} on={picking} onToggle={togglePick} />
             {capture && <ConsoleBadge id={id} open={consoleOpen} onToggle={() => setConsoleOpen((o) => !o)} />}
             {!choice && look.zoom !== 1 && <ZoomChip zoom={look.zoom} onReset={() => look.zoomBy(0)} />}
@@ -394,6 +396,19 @@ function SchemeToggle({ scheme, onCycle }: { scheme: Scheme | undefined; onCycle
     <Tip label={label}>
       <Button type="button" variant="ghost" size="icon-sm" aria-label={label} onClick={onCycle} className={scheme ? "bg-active text-foreground" : undefined}>
         <Icon />
+      </Button>
+    </Tip>
+  );
+}
+
+/** On an agent's tab the user took by pressing or typing in it: back to its agents, whose commands act on it again. */
+function GiveBack({ id }: { id: string }) {
+  if (!useTakenFromAgent(id)) return null;
+  return (
+    <Tip label="Its agents only read the page while it's yours">
+      <Button type="button" variant="ghost" size="sm" className="h-6 gap-1 px-1.5" onClick={() => void browserApi.giveBack(id).catch(failed("Could not give the tab back"))}>
+        <Bot />
+        Give back to agent
       </Button>
     </Tip>
   );

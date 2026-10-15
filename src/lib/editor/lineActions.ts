@@ -1,4 +1,4 @@
-// Staging part of a file from its diff, as in VS Code: hovering a change shows Stage and Discard
+// Staging part of a file from its diff: hovering a change shows Stage and Discard
 // (Unstage on the staged side), and the context menu and the Diff commands' keys stage, unstage or
 // discard the selected lines, or the change at the cursor. lib/git/lineStaging says which lines;
 // lines.rs writes them. A commit's diff reverts lines in the working tree instead (revert.rs), and

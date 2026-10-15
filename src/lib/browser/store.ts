@@ -4,6 +4,7 @@ import { failed, toast } from "../app/toast";
 import { bindingsFor, COMMANDS } from "../commands/commands";
 import { getSettings, subscribeSettings } from "../settings";
 import { createStore } from "../store";
+import { skillWanted } from "./skill";
 import { onAgentFinished } from "../terminal/agents";
 
 // What the browser tabs' native views report (browser/macos/), and the keys they hand back.
@@ -35,18 +36,30 @@ listenHere<{ id: string }>("browser-parked", ({ payload: { id } }) => {
 export const useParks = (id: string) => parks.use().get(id) ?? 0;
 
 
-// Settings → Browser: how many pages out of sight stay alive, for how long, and whether they
-// keep a console.
+// Settings → Browser: how many pages out of sight stay alive, for how long, how many agents' tabs
+// draw at once, and whether they keep a console.
 let sentPolicy = "";
 function sendPolicy() {
-  const { browserLiveHidden, browserParkAfterMin, browserConsole, browserAgentControl } = getSettings();
-  const key = `${browserLiveHidden} ${browserParkAfterMin} ${browserConsole} ${browserAgentControl}`;
+  const { browserLiveHidden, browserParkAfterMin, browserAgentDrawn, browserConsole, browserAgentControl } = getSettings();
+  const key = `${browserLiveHidden} ${browserParkAfterMin} ${browserAgentDrawn} ${browserConsole} ${browserAgentControl}`;
   if (key === sentPolicy) return;
   sentPolicy = key;
-  void browserApi.configure(browserLiveHidden, browserParkAfterMin, browserConsole, browserAgentControl).catch(() => {});
+  void browserApi.configure(browserLiveHidden, browserParkAfterMin, browserAgentDrawn, browserConsole, browserAgentControl).catch(() => {});
 }
 subscribeSettings(sendPolicy);
 sendPolicy();
+
+// The agents' skill, written from this window alone (Settings only reads it), and at launch: a new
+// version's HELP replaces the one an older one wrote.
+let sentSkill: boolean | null = null;
+function sendSkill() {
+  const on = skillWanted(getSettings());
+  if (on === sentSkill) return;
+  sentSkill = on;
+  void browserApi.skill(on).catch(() => {});
+}
+subscribeSettings(sendSkill);
+sendSkill();
 
 // An agent done with its turn: its worktree's pages show what it changed (Settings → Browser).
 // Agents in one worktree often finish together: one reload for them.

@@ -9,7 +9,7 @@ import { OpenInMenuItem } from "@/features/workspace/OpenIn";
 import { diffInTool, mergeInTool, mergingInTool, toolCanOpen, toolName, useExternalTools } from "@/lib/git/externalTools";
 import { type Change, files, keptByRestore, paths } from "./changeList";
 
-/** The row's right-click menu, modeled on VS Code's Source Control view. `rows`: what its git actions cover. */
+/** The row's right-click menu. `rows`: what its git actions cover. */
 export function ChangeRowMenu({
   sel,
   rows,

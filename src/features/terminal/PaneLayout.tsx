@@ -69,7 +69,7 @@ export function LayoutView({ group, node, focused, dim, path = [] }: { group: Te
     return () => sized.disconnect();
   }, [sizes]);
   if (typeof node === "number") {
-    // A pane in a split gets a header, as in cmux: what runs in each, and which one has the keys.
+    // A pane in a split gets a header: what runs in each, and which one has the keys.
     // Numbered by where it's drawn, as ⇧⌘←/→ step through them.
     const order = panesInOrder(group);
     const at = order.findIndex((p) => p.id === node);

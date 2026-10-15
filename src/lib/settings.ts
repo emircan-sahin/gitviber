@@ -19,7 +19,7 @@ const CODE_FONTS = {
   Monaco: "Monaco, ui-monospace, monospace",
   "Courier New": '"Courier New", ui-monospace, monospace',
 } as const;
-/** The code font's weights, as VS Code's editor.fontWeight; bold text goes two steps up from it. */
+/** The code font's weights; bold text goes two steps up from it. */
 export const CODE_FONT_WEIGHTS = { 300: "Light", 400: "Regular", 500: "Medium", 600: "Semibold" } as const;
 export type CodeFontWeight = keyof typeof CODE_FONT_WEIGHTS;
 
@@ -171,6 +171,8 @@ export const TERMINAL_LINE_HEIGHTS = [1, 1.1, 1.2, 1.3];
 export const BROWSER_LIVE_HIDDEN = [0, 1, 2, 3, 4];
 /** Minutes a browser tab's page stays alive out of sight; 0 is until the cap parks it. */
 export const BROWSER_PARK_AFTER = [0, 5, 10, 30, 60];
+/** Agents' tabs drawing out of sight at once, each like an open page; past it the longest unused sleeps. */
+export const BROWSER_AGENT_DRAWN = [4, 8, 12, 16, 24];
 
 export interface Settings {
   codeFont: CodeFont;
@@ -231,12 +233,16 @@ export interface Settings {
   browserLiveHidden: number;
   /** One of BROWSER_PARK_AFTER. */
   browserParkAfterMin: number;
+  /** One of BROWSER_AGENT_DRAWN. */
+  browserAgentDrawn: number;
   /** A worktree's browser pages load again when an agent there finishes, unless their dev server reloads them itself. */
   browserReloadOnAgentDone: boolean;
   /** Browser tabs keep what their pages log as errors and warnings, for the console badge. */
   browserConsole: boolean;
   /** Agents in the terminals may drive a browser tab of their pane's with `gitviber browser`. */
   browserAgentControl: boolean;
+  /** While agent control is on, Claude Code and Codex get a skill on `gitviber browser` (browser/skill.rs). */
+  browserAgentSkill: boolean;
   /** The last Code / Preview choice on an SVG; the next one opens the same way. Set from the viewer, not the dialog. */
   svgPreview: boolean;
   /** The last mode picked on a changed image (an SVG preview's too). Set from the viewer, not the dialog. */
@@ -338,7 +344,7 @@ const DEFAULTS: Settings = {
   terminalFont: "Editor",
   customTerminalFont: "",
   terminalFontSize: DEFAULT_TERMINAL_FONT_SIZE,
-  // As Ghostty, iTerm2 and VS Code: at 1.2 a pane had a sixth fewer rows, and Claude Code drops its
+  // 1, not 1.2: at 1.2 a pane had a sixth fewer rows, and Claude Code drops its
   // usage lines, then its header, below ~16 rows.
   terminalLineHeight: 1,
   terminalCursor: "block",
@@ -350,9 +356,12 @@ const DEFAULTS: Settings = {
   hiddenVaults: [],
   browserLiveHidden: 2,
   browserParkAfterMin: 10,
+  browserAgentDrawn: 12,
   browserReloadOnAgentDone: false,
   browserConsole: true,
   browserAgentControl: false,
+  // On, as agent control is the opt-in: an agent that doesn't know the command never uses it.
+  browserAgentSkill: true,
   svgPreview: false,
   imageCompare: "side",
   blame: false,
@@ -366,9 +375,9 @@ const DEFAULTS: Settings = {
   notifyAgentDone: true,
   notifyAgentWaiting: true,
   notifyTerminal: true,
-  // Off as in Ghostty and kitty: an update shouldn't start notifying.
+  // Off: an update shouldn't start notifying.
   notifyLongCommand: false,
-  // Ghostty's is 5 s, for a notification alone; here the tab's dot comes with it.
+  // 5 s is enough for a notification alone; here the tab's dot comes with it.
   longCommandSeconds: 10,
   notifyGit: true,
   autoUpdate: true,
@@ -455,9 +464,11 @@ function load(): Settings {
     s.hiddenVaults = Array.isArray(s.hiddenVaults) ? s.hiddenVaults.filter((p: unknown) => typeof p === "string") : [];
     if (!BROWSER_LIVE_HIDDEN.includes(s.browserLiveHidden)) s.browserLiveHidden = DEFAULTS.browserLiveHidden;
     if (!BROWSER_PARK_AFTER.includes(s.browserParkAfterMin)) s.browserParkAfterMin = DEFAULTS.browserParkAfterMin;
+    if (!BROWSER_AGENT_DRAWN.includes(s.browserAgentDrawn)) s.browserAgentDrawn = DEFAULTS.browserAgentDrawn;
     if (typeof s.browserReloadOnAgentDone !== "boolean") s.browserReloadOnAgentDone = DEFAULTS.browserReloadOnAgentDone;
     if (typeof s.browserConsole !== "boolean") s.browserConsole = DEFAULTS.browserConsole;
     if (typeof s.browserAgentControl !== "boolean") s.browserAgentControl = DEFAULTS.browserAgentControl;
+    if (typeof s.browserAgentSkill !== "boolean") s.browserAgentSkill = DEFAULTS.browserAgentSkill;
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
     if (!["side", "swipe", "onion"].includes(s.imageCompare)) s.imageCompare = DEFAULTS.imageCompare;
     if (typeof s.blame !== "boolean") s.blame = DEFAULTS.blame;

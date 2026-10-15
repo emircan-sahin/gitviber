@@ -9,7 +9,7 @@ export const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 /** refs/heads/main → main, refs/remotes/origin/main → origin/main. */
 export const shortRef = (ref: string) => ref.replace(/^refs\/(heads|remotes|tags)\//, "");
 
-// GitHub Desktop's sanitize-ref-name.ts, plus what it lets through that git refuses: control
+// What git refuses in a branch name: control
 // characters and space, DEL, ~ ^ : ? * [ \ | " < >, "@{", "..", a component starting with a dot,
 // a trailing dot or "/", a component ending in ".lock"; then "//", a leading - + . or /, and HEAD.
 const INVALID_REF = /[\x00-\x20\x7F~^:?*[\\|"<>]+|@{|\.\.+|(?<=^|\/)\.|\.$|\.lock(?=\/|$)|\/$/g;
@@ -80,7 +80,7 @@ export function worktreeBranch(typed: string, branches: BranchRow[], fold = FOLD
 }
 
 /**
- * Where a new worktree starts: the branch checked out here, as GitHub Desktop and VS Code have it.
+ * Where a new worktree starts: the branch checked out here.
  * Detached, the default branch, as git/branch.rs's default_branch finds it: local if there is one.
  */
 export function worktreeBase(branches: Pick<Branch, "name" | "remote" | "current" | "remoteDefault">[]) {
