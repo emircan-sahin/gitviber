@@ -69,6 +69,30 @@ What already failed, so don't retry it:
 - The native menu is scriptable with System Events on the app's pid (`click menu item …`),
   which covers Help and Git menu items, and the clipboard reads back with `pbpaste`.
 
+## Browser live check (agents' tabs)
+
+One script for what agents' browser tabs do in a real dev build, DOM and CLI only: no mouse, no
+keys to the screen, no window brought forward (the dev window still opens). A run takes 3–4
+minutes after the build. The user runs it; it launches the app, so the gate above applies.
+
+```zsh
+.claude/skills/drive-gitviber/browser-check.sh <worktree> [port] [check...]
+```
+
+- It runs `pnpm tauri dev --port <port>` in `<worktree>` (port 1437 by default, never 1420) with
+  that worktree's own target dir. It finds the app by its path, turns agent control on in that
+  port's localStorage, opens a scratch repo and a terminal, and reads the pane's `GITVIBER_*`
+  environment into a 0600 file. `gb` then runs `gitviber browser` as that pane's agent.
+- The test pages are served on two free ports by `browser-check-site.py`.
+- It prints a PASS/FAIL/SKIP/INFO table and exits 1 on any FAIL. Logs stay in the printed folder
+  when something failed, or with `KEEP=1`.
+- Each check is a `check_<name>` function in `CHECKS`, with what it needs from
+  `gitviber browser help` in `NEEDS`. A check whose commands aren't there yet is skipped, so a
+  branch can add checks for its new commands.
+- Cleanup always runs: test sessions deleted, its screenshots removed, the port's localStorage
+  cleared, the app, `tauri dev` and the servers killed, the env file removed.
+- Its parsing and table are tested without an app: `zsh .claude/skills/drive-gitviber/browser-check-test.zsh`.
+
 ## Cleanup (always)
 
 - Undo any setting you changed. Dev localStorage (localhost:1420) carries over to the
