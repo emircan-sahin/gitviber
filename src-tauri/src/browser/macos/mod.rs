@@ -308,7 +308,6 @@ define_class!(
             }
         }
 
-        /// Not in its panel, where the page takes focus for its agents, not from the app page.
         /// An agent's right click fires the page's contextmenu, but no menu: one with no items
         /// doesn't show, and a menu would hold the main thread until dismissed. None at all in
         /// a panel, where no one would see it to dismiss it.
@@ -386,6 +385,8 @@ define_class!(
             }
         }
 
+        /// Said to the app page, but not in its panel, where the page takes focus for its agents,
+        /// not from the app page.
         #[unsafe(method(becomeFirstResponder))]
         fn become_first_responder(&self) -> Bool {
             let took: Bool = unsafe { msg_send![super(self), becomeFirstResponder] };
