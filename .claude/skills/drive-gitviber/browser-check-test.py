@@ -58,6 +58,29 @@ class Parsing(unittest.TestCase):
         self.assertEqual(check.picture_path("Saved /tmp/a b/shot.jpg (800x600, 41 KB)"), "/tmp/a b/shot.jpg")
         self.assertIsNone(check.picture_path("Couldn't save the picture."))
 
+    def test_snapshot_ref(self):
+        out = '- main\n  - button "Log in" [ref=e3]\n  - link "Sign in" [ref=e12]\n  - heading "anon"'
+        self.assertEqual(check.snapshot_ref(out, '"Sign in"'), "e12")
+        self.assertEqual(check.snapshot_ref(out, "Log in"), "e3")
+        self.assertIsNone(check.snapshot_ref(out, "anon"))
+
+    def test_popup_name(self):
+        out = "Clicked button \"Open popup\"\n→ popup opened as tab t1-popup1 (http://127.0.0.1:5/popup)"
+        self.assertEqual(check.popup_name(out), "t1-popup1")
+        self.assertIsNone(check.popup_name("→ no visible change"))
+
+    def test_file_path(self):
+        out = "→ tab t2: downloaded gitviber-check.txt (24 B): /Users/x/Downloads/GitViber/gitviber-check.txt"
+        self.assertEqual(check.file_path(out, "gitviber-check.txt"), "/Users/x/Downloads/GitViber/gitviber-check.txt")
+        self.assertIsNone(check.file_path("/a/gitviber-check.txt.part", "gitviber-check.txt"))
+        self.assertIsNone(check.file_path("downloaded gitviber-check.txt", "gitviber-check.txt"))
+
+    def test_shot_expect(self):
+        self.assertEqual(check.shot_expect(1280, 800), (1280, 800))
+        self.assertEqual(check.shot_expect(1280, 800, 0.5), (640, 400))
+        self.assertEqual(check.shot_expect(1280, 800, 2), (2000, 1250))
+        self.assertEqual(check.shot_expect(3000, 1000), (2000, 667))
+
     def test_png_size(self):
         self.assertEqual(check.png_size(png(2560, 1600)), (2560, 1600))
         self.assertIsNone(check.png_size(b"GIF89a" + b"\0" * 20))

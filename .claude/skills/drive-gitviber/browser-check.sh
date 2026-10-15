@@ -56,6 +56,7 @@ finish() {
   [[ -n $DEV_PID ]] && kill_tree $DEV_PID
   for p in $SERVERS; do kill $p 2>/dev/null; done
   for f in $PICS; do [[ -f $f && $f == *browser-picks/* ]] && rm -f $f; done
+  for f in $DOWNLOADS; do [[ -f $f && $f == */gitviber-check.txt ]] && rm -f $f; done
   rm -f $ENV_FILE
   print
   py table $RESULTS; local rc=$?
@@ -67,12 +68,23 @@ finish() {
 # `gitviber browser help` it uses; a check whose needs aren't there is skipped, so a branch can
 # add its own here before the commands land.
 
-CHECKS=(visibility fps isolation sessions unknown_tab device screenshot network sse idle_park tab_close form memory)
+CHECKS=(visibility fps isolation sessions unknown_tab device screenshot network sse idle_park tab_close form
+  stale_ref covered smooth_scroll fill_honest change_line find_get screenshot_1x untrusted secret frames
+  trusted hover keys clipboard_safe ownership popup download memory)
 typeset -A NEEDS=(
   visibility "eval" fps "eval" isolation "eval" sessions "session save|session load|--session"
   unknown_tab "--tab" device "device <name|WxH|off>" screenshot "screenshot" network "network <id>"
   sse "network" idle_park "--idle" tab_close "tab close" form "fill|select|click|wait"
   memory "tab list"
+  # Acting as a person could, stable refs, the change line, reading in parts, honest output.
+  stale_ref "fails as stale" covered "covered by" smooth_scroll "covered by" fill_honest "check | uncheck"
+  change_line "→ no visible change" find_get "find <|get styles|-o <file>" screenshot_1x "--clip|--scale|--refs"
+  untrusted "--reveal" secret "--secret" frames "iframe"
+  # Native input.
+  trusted "--synthetic" hover "CSS :hover applies" keys "key down <key>|--hold" clipboard_safe "--synthetic"
+  ownership "tab release"
+  # Popups and downloads.
+  popup "window.open" download "wait --download|downloads"
 )
 
 check_visibility() {
@@ -224,6 +236,206 @@ check_memory() {
   for (( i = 1; i <= n; i++ )); do close mem$i; done
 }
 
+# ---- checks for commands newer builds add; NEEDS skips each where help doesn't have it.
+
+ref_of() { gb --tab $1 snapshot -i | py snapshot-ref $2 }
+
+check_stale_ref() {
+  page st $URL_A/act || { record stale_ref FAIL "tab new: $ERR"; return }
+  local boom=$(ref_of st '"Boom"') noop=$(ref_of st '"Nothing"')
+  value st "document.getElementById('boom').remove(), 'gone'" >/dev/null
+  gbx --tab st click ${boom:-e0}
+  pass_if "stale ref fails" '(( RC == 1 )) && [[ $ERR == *stale* ]]' "click $boom: $ERR"
+  local again=$(ref_of st '"Nothing"')
+  pass_if "other refs keep their numbers" '[[ -n $noop && $again == $noop ]]' "Nothing: $noop, then $again"
+  close st
+}
+
+check_covered() {
+  page cv $URL_A/covered || { record covered FAIL "tab new: $ERR"; return }
+  gbx --tab cv click '#under'
+  pass_if "click: covered" '(( RC != 0 )) && [[ $ERR == *"covered by <div#veil"* ]]' "$ERR"
+  gbx --tab cv click '#off'
+  pass_if "click: disabled fieldset" '(( RC != 0 )) && [[ $ERR == *"is disabled"* ]]' "$ERR"
+  close cv
+}
+
+check_smooth_scroll() {
+  page sm $URL_A/smooth || { record smooth_scroll FAIL "tab new: $ERR"; return }
+  gbx --tab sm click '#far'
+  local title=$(value sm document.title)
+  pass_if "click 4000 px down, smooth scrolling" '(( RC == 0 )) && [[ $title == "far clicked" ]]' "${ERR:-$title}"
+  close sm
+}
+
+check_fill_honest() {
+  page fl $URL_A/fill || { record fill_honest FAIL "tab new: $ERR"; return }
+  gbx --tab fl fill '#short' abcdefgh
+  pass_if "fill: maxlength" '(( RC != 0 )) && [[ $ERR == *maxlength* ]] || [[ $OUT == *abcd* && $OUT != *abcde* ]]' "$OUT$ERR"
+  gbx --tab fl fill '#cb' yes
+  pass_if "fill: a checkbox points to check" '(( RC != 0 )) && [[ $ERR == *"use check"* ]]' "$ERR"
+  gbx --tab fl fill '#phone' 5551234567
+  pass_if "fill: a masked field" '(( RC == 0 )) && [[ $OUT == *"(555) 123-4567"* ]]' "$OUT$ERR"
+  gbx --tab fl check '#cb'; local on=$(gb --tab fl get value '#cb' | py eval-value)
+  gbx --tab fl uncheck '#cb'; local off=$(gb --tab fl get value '#cb' | py eval-value)
+  pass_if "check, uncheck" '[[ $on == checked && $off == unchecked ]]' "$on, then $off"
+  close fl
+}
+
+check_change_line() {
+  page cl $URL_A/act || { record change_line FAIL "tab new: $ERR"; return }
+  gbx --tab cl click '#boom'
+  pass_if "change line names a 500" '[[ $OUT == *"→"*500* ]]' "${${(M)${(f)OUT}:#→*}:-$OUT$ERR}"
+  gbx --tab cl click '#noop'; gbx --tab cl click '#noop'; gbx --tab cl click '#noop'
+  pass_if "third no-op gets the nudge" '[[ $OUT$ERR == *"same command"* ]]' "$OUT$ERR"
+  close cl
+}
+
+check_find_get() {
+  page fg $URL_A/act || { record find_get FAIL "tab new: $ERR"; return }
+  gbx --tab fg find '/sign.?in/i'
+  pass_if "find /regex/i" '(( RC == 0 )) && [[ $OUT == *"Sign in"* ]]' "${${OUT:-$ERR}[1,100]}"
+  gbx --tab fg get styles color '#who'
+  pass_if "get styles color" '[[ $OUT == *"rgb(0, 128, 0)"* ]]' "${${OUT:-$ERR}[1,100]}"
+  gbx --tab fg get box '#who'
+  pass_if "get box" '(( RC == 0 )) && [[ $OUT == *[0-9]* ]]' "${${OUT:-$ERR}[1,100]}"
+  local ref=$(ref_of fg '"Open popup"')
+  gbx --tab fg snapshot --ref ${ref:-e0}
+  pass_if "snapshot --ref" '[[ $OUT == *"Open popup"* && $OUT != *Boom* ]]' "$ref: ${${OUT:-$ERR}[1,100]}"
+  gbx --tab fg snapshot -o $STATE/snapshot.txt
+  pass_if "snapshot -o" '[[ -s $STATE/snapshot.txt ]]' "${${OUT:-$ERR}[1,100]}"
+  close fg
+}
+
+check_screenshot_1x() {
+  page s1x $URL_A/ || { record screenshot_1x FAIL "tab new: $ERR"; return }
+  local css=$(value s1x '[innerWidth, innerHeight]') size want
+  local w=${${css#\[}%%,*} h=${${css%\]}##*, }
+  gbx --tab s1x screenshot $STATE/one.png
+  size=$(py png $STATE/one.png 2>/dev/null) want=$(py shot-expect $w $h)
+  pass_if "screenshot: 1 px a CSS px" '[[ -n $size && $size == $want ]]' "css ${w}x$h, png ${size:-none: $ERR}"
+  gbx --tab s1x screenshot $STATE/half.png --scale 0.5
+  size=$(py png $STATE/half.png 2>/dev/null) want=$(py shot-expect $w $h 0.5)
+  pass_if "screenshot --scale 0.5" '[[ -n $size && $size == $want ]]' "png ${size:-none: $ERR}, want $want"
+  gbx --tab s1x screenshot $STATE/clip.png --clip 0,0,200,100
+  size=$(py png $STATE/clip.png 2>/dev/null)
+  pass_if "screenshot --clip" '[[ $size == "200 100" ]]' "png ${size:-none: $ERR}"
+  gbx --tab s1x screenshot $STATE/refs.png --refs
+  local plain=$(stat -f %z $STATE/one.png 2>/dev/null) labelled=$(stat -f %z $STATE/refs.png 2>/dev/null)
+  pass_if "screenshot --refs" '(( ${labelled:-0} > ${plain:-0} ))' "${plain:-?} bytes, with refs ${labelled:-none: $ERR}"
+  close s1x
+}
+
+check_untrusted() {
+  page ut "$URL_A/?code=abc123&access_token=tok456" || { record untrusted FAIL "tab new: $ERR"; return }
+  gbx --tab ut eval document.title
+  pass_if "page text marked untrusted" '[[ $OUT == *"page content (untrusted)"*nonce=* ]]' "${${(f)OUT}[1]}"
+  gbx --tab ut url
+  pass_if "tokens hidden in url" '[[ $OUT != *abc123* && $OUT != *tok456* ]]' "$OUT"
+  gbx --reveal --tab ut url
+  pass_if "--reveal shows them" '[[ $OUT == *abc123* && $OUT == *tok456* ]]' "$OUT"
+  close ut
+}
+
+check_secret() {
+  page sc $URL_A/form || { record secret FAIL "tab new: $ERR"; return }
+  export LIVE_CHECK_PW=correct-horse-42
+  gbx --tab sc fill '#pw' --secret LIVE_CHECK_PW
+  gbx --tab sc eval "document.getElementById('pw').value"
+  unset LIVE_CHECK_PW
+  pass_if "fill --secret, never shown" '[[ $OUT == *"[secret \$LIVE_CHECK_PW]"* && $OUT != *correct-horse* ]]' "$OUT$ERR"
+  close sc
+}
+
+check_frames() {
+  page fr "$URL_A/frames?other=$SB" || { record frames FAIL "tab new: $ERR"; return }
+  gbx --tab fr snapshot -i
+  local snap=$OUT ref=$(py snapshot-ref '"Inner"' <<<$OUT)
+  pass_if "snapshot: a frame nested" '[[ -n $ref ]]' "${${snap:-$ERR}[1,120]}"
+  gbx --tab fr click ${ref:-e0}
+  pass_if "click in a frame" '(( RC == 0 ))' "${OUT:-$ERR}"
+  gbx --tab fr click "$(py snapshot-ref '"Oops"' <<<$snap)"
+  gbx --tab fr console
+  pass_if "console: a frame's error" '[[ $OUT == *"(frame"* && $OUT == *"inner oops"* ]]' "${${OUT:-$ERR}[1,120]}"
+  pass_if "cross-origin frame's hint" '[[ $snap == *"127.0.0.1:$SB"* ]]' "${${(M)${(f)snap}:#*$SB*}:-none}"
+  close fr
+}
+
+check_trusted() {
+  page tr $URL_A/native || { record trusted FAIL "tab new: $ERR"; return }
+  gbx --tab tr click '#trust'
+  local t=$(value tr document.title)
+  pass_if "click is trusted" '[[ $t == true ]]' "isTrusted: $t $ERR"
+  close tr
+}
+
+check_hover() {
+  page hv $URL_A/native || { record hover FAIL "tab new: $ERR"; return }
+  local style="getComputedStyle(document.getElementById('hov')).color"
+  local before=$(value hv $style)
+  gbx --tab hv hover '#hov'
+  local after=$(value hv $style)
+  pass_if "hover applies :hover" '[[ $before != $after && $after == "rgb(255, 0, 0)" ]]' "$before, then $after $ERR"
+  close hv
+}
+
+check_keys() {
+  page ky $URL_A/native || { record keys FAIL "tab new: $ERR"; return }
+  gbx --tab ky key down Shift; gbx --tab ky click '#lnk'; gbx --tab ky key up Shift
+  local t=$(value ky document.title)
+  pass_if "key down Shift + click" '[[ $t == shift:true ]]' "$t $ERR"
+  gbx --tab ky press w --hold 300
+  local gap=$(value ky window.keyGap_)
+  pass_if "press --hold 300" '(( ${gap:-0} >= 250 ))' "keydown to keyup: ${gap:-none} ms $ERR"
+  gbx --tab ky type '#txt' $'one\ntwo'
+  pass_if "type: line break into <input> refused" '(( RC != 0 ))' "$ERR"
+  close ky
+}
+
+check_clipboard_safe() {
+  page cb $URL_A/native || { record clipboard_safe FAIL "tab new: $ERR"; return }
+  # Read only: the check never writes the user's clipboard, so a failure leaves the page's text there.
+  local before=$(pbpaste 2>/dev/null)
+  gbx --tab cb click '#copy'
+  sleep 1
+  local after=$(pbpaste 2>/dev/null)
+  local note="unchanged"
+  [[ $after == "$before" ]] || note="your clipboard now holds the page's text"
+  pass_if "page can't write your clipboard" '[[ $after == "$before" ]]' "$note"
+  close cb
+}
+
+check_ownership() {
+  record ownership SKIP "manual: a tab is taken by the user's own click or key"
+}
+
+check_popup() {
+  page pp $URL_A/act || { record popup FAIL "tab new: $ERR"; return }
+  gbx --tab pp click '#pop'
+  local name=$(py popup-name <<<$OUT)
+  pass_if "popup opens as a tab" '[[ -n $name ]]' "${${(M)${(f)OUT}:#*popup*}:-$OUT$ERR}"
+  until_ok 5 '[[ $(value pp window.msg_) == hi-from-popup ]]'
+  local ok=$?
+  pass_if "popup posts to its opener" '(( ok == 0 ))' "window.msg_: $(value pp window.msg_)"
+  [[ -n $name ]] && gbx --tab $name click '#closeme'
+  until_ok 5 '[[ $(state ${name:-none}) == missing ]]'
+  ok=$?
+  pass_if "window.close() closes its tab" '(( ok == 0 )) && [[ -n $name ]]' "$name: $(state ${name:-none})"
+  close pp $name
+}
+
+check_download() {
+  page dl $URL_A/act || { record download FAIL "tab new: $ERR"; return }
+  gbx --tab dl click '#dl'
+  gbx --tab dl wait --download
+  local path=$(py file-path gitviber-check.txt <<<$OUT$'\n'$ERR)
+  [[ -n $path ]] && DOWNLOADS+=($path)
+  pass_if "wait --download" '[[ -f $path && $OUT == *B* ]]' "${OUT:-$ERR}"
+  gbx --tab dl downloads
+  pass_if "downloads lists it" '[[ $OUT == *gitviber-check.txt* ]]' "${${OUT:-$ERR}[1,120]}"
+  close dl
+}
+
 # ---- setup
 
 # Sourced by browser-check-test.zsh for the functions alone.
@@ -241,7 +453,7 @@ ENV_FILE=$STATE/env
 RESULTS=$STATE/results.tsv
 REPO=$STATE/repo
 touch $RESULTS
-typeset -a PICS SESSIONS SERVERS
+typeset -a PICS SESSIONS SERVERS DOWNLOADS
 DEV_PID= APP_PID=
 trap finish EXIT
 trap 'exit 130' INT TERM

@@ -60,6 +60,34 @@ def picture_path(out):
     return m.group(1) if m else None
 
 
+def snapshot_ref(out, text):
+    """The ref of the first snapshot line that names `text`: `button "Log in" [ref=e3]` gives e3."""
+    for line in out.splitlines():
+        m = re.search(r"\[ref=(e\d+)\]", line)
+        if m and text in line:
+            return m.group(1)
+    return None
+
+
+def popup_name(out):
+    """The tab a reply says a popup opened as: `→ popup opened as tab t1-popup1 (…)`."""
+    m = re.search(r"popup opened as tab (\S+)", out)
+    return m.group(1) if m else None
+
+
+def file_path(out, name):
+    """The first absolute path in a reply that ends with the file's name."""
+    m = re.search(r"(/[^\n]*?/" + re.escape(name) + r")(?![\w.-])", out)
+    return m.group(1) if m else None
+
+
+def shot_expect(w, h, scale=1.0, cap=2000):
+    """A screenshot's pixels for a CSS size: w×h × scale, its longest side `cap` at most."""
+    w, h = w * scale, h * scale
+    k = min(1.0, cap / max(w, h))
+    return round(w * k), round(h * k)
+
+
 def png_size(data):
     """A PNG's width and height from its IHDR."""
     if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
@@ -149,6 +177,15 @@ def main(cmd, *args):
         if not found:
             return 1
         print(found)
+    elif cmd in ("snapshot-ref", "popup-name", "file-path"):
+        text = stdin()
+        found = {"snapshot-ref": lambda: snapshot_ref(text, args[0]), "popup-name": lambda: popup_name(text),
+                 "file-path": lambda: file_path(text, args[0])}[cmd]()
+        if not found:
+            return 1
+        print(found)
+    elif cmd == "shot-expect":
+        print(*shot_expect(float(args[0]), float(args[1]), float(args[2]) if len(args) > 2 else 1.0))
     elif cmd == "png":
         with open(args[0], "rb") as f:
             size = png_size(f.read(24))

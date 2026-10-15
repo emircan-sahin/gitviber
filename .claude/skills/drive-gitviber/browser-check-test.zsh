@@ -59,6 +59,14 @@ start=$SECONDS
 until_ok 1 'false'
 expect "until_ok gives up false" "$?" "1"
 
+lacking=()
+for c in $CHECKS; do (( ${+functions[check_$c]} )) && [[ -n ${NEEDS[$c]} ]] || lacking+=$c; done
+expect "every check has its function and its needs" "${lacking[*]}" ""
+help=$T/help.txt
+print -r -- "  click <ref|css>   Click an element
+  tab release [name]   Give a tab back" > $help
+expect "a check's needs missing from help are named" "$(py missing $help "key down <key>" "--hold" "tab release")" "key down <key>, --hold"
+
 python3 -I $HERE/browser-check-test.py 2>&1 | tail -1 | read py_result
 expect "browser-check.py's tests" "$py_result" "OK"
 

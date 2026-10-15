@@ -88,7 +88,9 @@ minutes after the build. The user runs it; it launches the app, so the gate abov
   when something failed, or with `KEEP=1`.
 - Each check is a `check_<name>` function in `CHECKS`, with what it needs from
   `gitviber browser help` in `NEEDS`. A check whose commands aren't there yet is skipped, so a
-  branch can add checks for its new commands.
+  branch can add checks for its new commands. The checks for acting as a person could, the
+  change line, reading in parts and honest output, native input, and popups and downloads are
+  already there, and skip themselves on builds without those commands.
 - Cleanup always runs: test sessions deleted, its screenshots removed, the port's localStorage
   cleared, the app, `tauri dev` and the servers killed, the env file removed.
 - Its parsing and table are tested without an app: `zsh .claude/skills/drive-gitviber/browser-check-test.zsh`.
