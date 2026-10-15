@@ -67,6 +67,16 @@ print -r -- "  click <ref|css>   Click an element
   tab release [name]   Give a tab back" > $help
 expect "a check's needs missing from help are named" "$(py missing $help "key down <key>" "--hold" "tab release")" "key down <key>, --hold"
 
+# The dev log as tauri writes it: cargo's lines in color.
+print -r -- $'     Running DevCommand (`cargo  run --no-default-features --color always --`)\n   Compiling gitviber v0.1.13' > $T/dev.log
+built $T/dev.log
+expect "not built while cargo compiles" "$?" "1"
+print -r -- $'\e[1m\e[32m    Finished\e[0m `dev` profile\n\e[1m\e[32m     Running\e[0m `/x/target/debug/gitviber`' >> $T/dev.log
+built $T/dev.log
+expect "built once the colored Running line comes" "$?" "0"
+grep -q "Running \`" $T/dev.log
+expect "which a plain grep misses" "$?" "1"
+
 expect "progress goes to stdout" "$(say step 2>/dev/null)" "· step"
 expect "and to stderr" "$(say step 2>&1 >/dev/null)" "· step"
 

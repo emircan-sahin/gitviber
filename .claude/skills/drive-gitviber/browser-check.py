@@ -145,7 +145,18 @@ def bridge(port, script):
 
 
 def port_free(port):
+    """Nothing listens on the port, on 127.0.0.1 or ::1 (a dev server may take either). Sockets
+    a closed run left in TIME_WAIT don't count: SO_REUSEADDR lets a bind past them."""
+    for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+        try:
+            with socket.socket(family) as c:
+                c.settimeout(1)
+                if c.connect_ex((host, port)) == 0:
+                    return False
+        except OSError:
+            pass
     with socket.socket() as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind(("127.0.0.1", port))
             return True

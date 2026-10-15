@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import pathlib
+import socket
 import struct
 import sys
 import unittest
@@ -100,6 +101,39 @@ class Parsing(unittest.TestCase):
         self.assertEqual(before, {10: 1000})
         self.assertEqual(check.memory_note(before, after, 2), "2 awake tabs: 2 new WebContent processes, +202 MB RSS in all (101 MB a tab)")
         self.assertIn("0 MB a tab", check.memory_note(before, before, 0))
+
+
+class Ports(unittest.TestCase):
+    def listener(self, family=socket.AF_INET, host="127.0.0.1"):
+        s = socket.socket(family)
+        s.bind((host, 0))
+        s.listen()
+        self.addCleanup(s.close)
+        return s
+
+    def test_a_listening_port_is_taken(self):
+        self.assertFalse(check.port_free(self.listener().getsockname()[1]))
+
+    def test_a_port_listened_on_over_ipv6_only_is_taken(self):
+        try:
+            s = self.listener(socket.AF_INET6, "::1")
+        except OSError:
+            self.skipTest("no IPv6 loopback")
+        self.assertFalse(check.port_free(s.getsockname()[1]))
+
+    def test_a_port_left_in_time_wait_is_free(self):
+        server = self.listener()
+        port = server.getsockname()[1]
+        client = socket.create_connection(("127.0.0.1", port))
+        conn, _ = server.accept()
+        # The side that closes first keeps the port in TIME_WAIT: here the server's.
+        conn.close()
+        server.close()
+        client.close()
+        with socket.socket() as plain:
+            with self.assertRaises(OSError, msg="no TIME_WAIT to test against"):
+                plain.bind(("127.0.0.1", port))
+        self.assertTrue(check.port_free(port))
 
 
 class Table(unittest.TestCase):

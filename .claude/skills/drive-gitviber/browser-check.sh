@@ -54,6 +54,10 @@ until_ok() { local secs=$1 i; shift; for (( i = 0; i < secs; i++ )); do eval "$*
 page() { gbx tab new $1 $2 ${@:3} && gbx --tab $1 wait --load }
 close() { local t; for t; do gb tab close $t >/dev/null 2>&1; done }
 
+# Built once cargo says it runs the app. tauri runs cargo with --color always, so the line is
+# ESC[1mESC[32m     RunningESC[0m `…/debug/gitviber`: matched across the escape codes.
+built() { grep -aqE 'Running.*/debug/gitviber`' $1 }
+
 kill_tree() { local p; for p in $(pgrep -P $1); do kill_tree $p; done; kill $1 2>/dev/null }
 
 finish() {
@@ -488,11 +492,14 @@ mkdir -p $REPO && git -C $REPO init -q -b main && print hi > $REPO/a.txt &&
 say "starting the dev app on port $PORT (log: $STATE/dev.log; a cold build takes minutes)"
 ( cd $WT && CARGO_TARGET_DIR=$TARGET exec pnpm tauri dev --port $PORT ) > $STATE/dev.log 2>&1 &
 DEV_PID=$!
-until_ok 1200 'grep -q "Running \`" $STATE/dev.log || ! kill -0 $DEV_PID 2>/dev/null'
-kill -0 $DEV_PID 2>/dev/null && grep -q 'Running `' $STATE/dev.log || { record setup FAIL "the dev app didn't start: see dev.log"; exit 1 }
-# This worktree's build only, by its path: the installed app has the same bundle id.
-until_ok 120 'APP_PID=$(pgrep -f "^$TARGET/debug/(gitviber|GitViber Dev\\.app/)" | head -1); [[ -n $APP_PID ]] && js "return 1" >/dev/null 2>&1'
-[[ -n $APP_PID ]] || { record setup FAIL "no app process from $TARGET"; exit 1 }
+until_ok 1200 'built $STATE/dev.log || ! kill -0 $DEV_PID 2>/dev/null'
+kill -0 $DEV_PID 2>/dev/null && built $STATE/dev.log || { record setup FAIL "the dev app didn't start: see dev.log"; exit 1 }
+say "built; waiting for the app's dev bridge"
+# This worktree's app by its path, as the installed one has the same bundle id.
+until_ok 120 '{ APP_PID=$(pgrep -f "^$TARGET/debug/(gitviber|GitViber Dev\\.app/)" | head -1)
+  [[ -n $APP_PID ]] && js "return 1" >/dev/null 2>&1 } || ! kill -0 $DEV_PID 2>/dev/null'
+[[ -n $APP_PID ]] && js "return 1" >/dev/null 2>&1 ||
+  { record setup FAIL "no app from $TARGET answered on the dev bridge"; exit 1 }
 say "app pid $APP_PID"
 
 js 'const k = "gitviber.settings.v2"; const s = JSON.parse(localStorage.getItem(k) || "{}");
