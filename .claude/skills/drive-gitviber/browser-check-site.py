@@ -8,6 +8,7 @@ look for (an SSE stream the client left) to stdout.
   /sse    an event a half second, for five minutes
   /act    a button whose fetch gets a 500, one that does nothing, a "Sign in" link, a popup
           opener that keeps what the popup posts (window.msg_), and a download link
+  /audio  a button that plays a tone through WebAudio, and one that stops it
   /covered, /smooth, /fill, /native, /frames?other=<port>, /inner, /popup: one page per check
   /file   a text file served as an attachment"""
 import json
@@ -62,6 +63,21 @@ def page(title, body, head=""):
 
 
 PAGES = {
+    "/audio": page("audio", """
+<button id="play" onclick="play()">Play</button><button id="stop" onclick="stop()">Stop</button>
+<script>
+let ctx, osc;
+window.audio_ = 'idle';
+function play() {
+  ctx = ctx || new AudioContext();
+  ctx.resume();
+  osc = ctx.createOscillator();
+  const g = ctx.createGain(); g.gain.value = 0.2;
+  osc.connect(g); g.connect(ctx.destination); osc.start();
+  window.audio_ = 'playing';
+}
+function stop() { osc && osc.stop(); osc = null; window.audio_ = 'stopped'; }
+</script>"""),
     "/act": page("act", """
 <h1 id="who" style="color: rgb(0, 128, 0)">Act</h1>
 <button id="boom" onclick="fetch('/api/x')">Boom</button>

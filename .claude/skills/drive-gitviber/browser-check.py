@@ -42,6 +42,15 @@ def tab_state(listing, name):
     return next((t.get("state", "?") for t in tabs if t.get("name") == name), "missing")
 
 
+def tab_audio(listing, name):
+    """Whether a tab's `audio` in `--json tab list`'s reply is true: "true", "false" or "missing"."""
+    try:
+        tabs = json.loads(listing)["data"]["tabs"]
+    except (ValueError, KeyError, TypeError):
+        return "missing"
+    return next((str(bool(t.get("audio"))).lower() for t in tabs if t.get("name") == name), "missing")
+
+
 def network_id(listing, kind, part, status):
     """The id of the first request in `--json network`'s reply of that kind, with `part` in its
     URL and that status; None if there's none."""
@@ -276,6 +285,8 @@ def main(cmd, *args):
         print(v if isinstance(v, str) else json.dumps(v))
     elif cmd == "tab-state":
         print(tab_state(stdin(), args[0]))
+    elif cmd == "tab-audio":
+        print(tab_audio(stdin(), args[0]))
     elif cmd == "net-id":
         found = network_id(stdin(), args[0], args[1], int(args[2]))
         if found is None:
