@@ -173,6 +173,8 @@ fn add_scripts(content: &WKUserContentController, agent: Option<&str>, mtm: Main
     }
 }
 
+/// `main_frame`: the page's frame alone; else every frame too (a frame's errors and requests,
+/// a payment form's or an embedded login's, are often what went wrong).
 fn add_script(
     content: &WKUserContentController,
     source: &str,

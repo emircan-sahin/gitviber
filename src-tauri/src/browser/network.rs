@@ -120,6 +120,9 @@ pub struct Entry {
     /// For a resource, its initiator type (script, img, css, navigation, ...).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub initiator: Option<String>,
+    /// The origin of the frame that made it, when not the page itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_frame: Option<String>,
     /// Milliseconds since the epoch.
     pub start: f64,
     /// None while it runs, or a body that streams on.
@@ -158,6 +161,7 @@ struct Update {
     url: Option<String>,
     to: Option<String>,
     initiator: Option<String>,
+    in_frame: Option<String>,
     start: Option<f64>,
     duration: Option<f64>,
     status: Option<u16>,
@@ -331,6 +335,9 @@ fn merge(e: &mut Entry, u: Update) {
     }
     if let Some(i) = u.initiator {
         e.initiator = Some(line(&i, WORD));
+    }
+    if let Some(f) = u.in_frame {
+        e.in_frame = Some(line(&f, URL));
     }
     if let Some(s) = u.start {
         e.start = s;
@@ -557,14 +564,16 @@ fn bytes_text(n: f64) -> String {
 }
 
 fn list_line(e: &Entry) -> String {
+    let frame = e.in_frame.as_ref().map(|f| format!("  (frame {f})"));
     format!(
-        "{:>4}  {:<7} {:>7} {:>8} {:>9}  {}",
+        "{:>4}  {:<7} {:>7} {:>8} {:>9}  {}{}",
         e.id,
         e.what(),
         e.state(),
         e.took(),
         e.amount(),
-        cut(&e.url, LIST_URL)
+        cut(&e.url, LIST_URL),
+        frame.unwrap_or_default()
     )
 }
 
@@ -636,6 +645,9 @@ pub fn entry_text(e: &Entry, now: f64) -> String {
     )];
     if let Some(to) = &e.to {
         out.push(format!("Redirected to {to}"));
+    }
+    if let Some(frame) = &e.in_frame {
+        out.push(format!("From a frame of {frame}"));
     }
     out.push(match (&e.close, &e.error, e.status) {
         (Some(c), _, _) => format!(
@@ -711,7 +723,7 @@ fn list_json(log: &Log, filter: &Filter) -> Value {
         .map(|e| {
             json!({
                 "id": e.id, "kind": e.kind, "method": e.method, "initiator": e.initiator,
-                "url": e.url, "status": e.status, "error": e.error, "start": e.start,
+                "url": e.url, "inFrame": e.in_frame, "status": e.status, "error": e.error, "start": e.start,
                 "duration": e.duration, "size": e.size, "frameCount": e.frame_count,
             })
         })
@@ -819,6 +831,27 @@ mod tests {
         ] {
             assert!(ask(&words(bad)).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_frames_request_says_which_frame() {
+        let mut log = Log::default();
+        assert!(post(
+            &mut log,
+            json!([{ "key": "f", "kind": "fetch", "method": "GET", "url": "https://ads.example.test/bid",
+                "start": 0.0, "inFrame": "https://ads.example.test\u{1b}[2J" }])
+        ));
+        let e = log.get(1).unwrap();
+        let listed = list_line(e);
+        assert!(listed.contains("https://ads.example.test/bid  (frame https://ads.example.test"));
+        assert!(
+            !listed.contains('\u{1b}'),
+            "a page's tag is cleaned as its other text"
+        );
+        assert!(entry_text(e, 0.0).contains("From a frame of https://ads.example.test"));
+        // The page's own say nothing of a frame.
+        fetch(&mut log, "p", "http://localhost/api", 0.0);
+        assert!(!list_line(log.get(2).unwrap()).contains("frame"));
     }
 
     #[test]

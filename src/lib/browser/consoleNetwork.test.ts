@@ -124,3 +124,21 @@ test("a token in a failed request's query isn't logged for the agent", async () 
   await settle();
   assert.equal(q.sent[0].msg, "[network] GET https://api.other.test/v1/x?… → 500");
 });
+
+test("a frame's lines say which frame; the page's own say nothing", async () => {
+  const run = (top: unknown) => {
+    const sent: { msg: string; frame?: string }[] = [];
+    const window: Record<string, unknown> = {
+      webkit: { messageHandlers: { gvConsole: { postMessage: (s: string) => void sent.push(JSON.parse(s)) } } },
+      addEventListener: () => {},
+    };
+    window.top = top ?? window;
+    const pageConsole = { error: (..._: unknown[]) => {}, warn: (..._: unknown[]) => {} };
+    new Function("window", "console", "location", source)(window, pageConsole, { href: "https://pay.example.test/form", origin: "https://pay.example.test" });
+    pageConsole.error("card declined");
+    return sent;
+  };
+  const framed = run({});
+  assert.equal(framed[0].frame, "https://pay.example.test");
+  assert.equal(run(null)[0].frame, undefined);
+});

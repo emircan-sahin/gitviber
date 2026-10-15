@@ -89,8 +89,10 @@ Reading
                                an earlier snapshot (its path and line count printed). Past 1500
                                lines or 25 000 characters it stops and says how many elements it
                                left out. Refs (also @e1 or ref=e1) stay with their element; one
-                               whose element left, or from another page, fails as stale. --json:
-                               also the refs gone since
+                               whose element left, or from another page or a frame that moved
+                               on, fails as stale. A frame of the page's origin reads as part of
+                               it, its refs acted on as any; another origin's frame is named
+                               only. --json: also the refs gone since
   find <text|/regex/>          The tree's lines with the text (any case) or matching the regex,
                                each with the line before and after it; 30 at most
   get text|html|value|box <ref|css>
@@ -173,11 +175,13 @@ Page tools
   eval <js>                    Runs in the page; prints the result as JSON (undefined, NaN,
                                Infinity and 12n as themselves)
   console [--level error|warn] [--all] [--clear]
-                               What the page logged since it loaded; --all every page's kept
+                               What the page and its frames logged since it loaded (a frame's
+                               lines name it); --all every page's kept
   network [--failed] [--filter <text>] [--type fetch|xhr|ws|resource] [--method <m>]
           [--status <404|4xx>] [--clear]
-                               What the page requested and loaded, one line each with an id;
-                               the newest 300 requests and 500 other loads
+                               What the page and its frames requested and loaded, one line each
+                               with an id (a frame's naming it); the newest 300 requests and 500
+                               other loads
   network <id>                 One in full: headers, bodies, WebSocket frames
   device <name|WxH|off>        Show the page as a device; `device --list` names them
   appearance light|dark|auto   The page's prefers-color-scheme; auto is the app's
@@ -1614,7 +1618,12 @@ pub fn console_text(entries: &[Entry], level: Option<&str>, all: bool) -> String
         match e.level.as_str() {
             "load" => out.push(format!("-- {}", flat(&e.url))),
             l @ ("error" | "warn") if level.is_none_or(|want| want == l) => {
-                out.push(format!("[{l}] {}", flat(&e.msg)))
+                let frame = e.frame.as_deref().map(|f| format!("(frame {}) ", flat(f)));
+                out.push(format!(
+                    "[{l}] {}{}",
+                    frame.unwrap_or_default(),
+                    flat(&e.msg)
+                ))
             }
             _ => continue,
         }
@@ -2233,6 +2242,126 @@ mod tests {
         assert!(users_tab("docs").contains("tab docs") && interrupted("docs").contains("tab docs"));
     }
 
+    /// Every command and flag the help names parses, and the help names each: a merge or a
+    /// rewrite of it that drops one fails here.
+    #[test]
+    fn every_command_and_flag_the_help_names_parses() {
+        let pages = [
+            ("open", "localhost:3000"),
+            ("back", ""),
+            ("forward", ""),
+            ("reload", ""),
+            ("url", ""),
+            ("snapshot", "-i -s e1 -d 3 --boxes -o tree.txt"),
+            ("snapshot", "--ref e1"),
+            ("find", "/Join|Leave/"),
+            ("get", "text e1"),
+            ("get", "html e1"),
+            ("get", "value e1"),
+            ("get", "box e1"),
+            ("get", "attr href e1"),
+            ("get", "styles color e1"),
+            ("screenshot", "shot.jpg -s e1 --scale 0.5 --refs"),
+            ("screenshot", "--clip 0,0,100,50"),
+            ("click", "e1 --synthetic"),
+            ("click", "412,300"),
+            ("dblclick", "e1"),
+            ("rightclick", "1,2"),
+            ("hover", "e1"),
+            ("drag", "e1 400,300"),
+            ("scroll", "down 300"),
+            ("scroll", "e1"),
+            ("type", "--synthetic e1 hello"),
+            ("press", "Meta+a --hold 50"),
+            ("press", "Enter --synthetic"),
+            ("key", "down Shift"),
+            ("key", "up Shift"),
+            ("upload", "e1 a.png"),
+            ("fill", "e1 text"),
+            ("fill", "e1 --secret PASSWORD"),
+            ("select", "e1 red"),
+            ("check", "e1"),
+            ("uncheck", "e1"),
+            ("wait", ".done --timeout 500"),
+            ("wait", "--text Saved"),
+            ("wait", "--url /lobby"),
+            ("wait", "--fn document.title"),
+            ("wait", "--load"),
+            ("wait", "--ms 5"),
+            ("eval", "1"),
+            ("console", "--level error --all --clear"),
+            (
+                "network",
+                "--failed --filter api --type fetch --method POST --status 4xx --clear",
+            ),
+            ("network", "3"),
+            ("device", "390x844"),
+            ("appearance", "auto"),
+            ("dialogs", "accept"),
+        ];
+        for (cmd, a) in pages {
+            assert!(
+                parse(cmd, &args(a)).is_ok(),
+                "{cmd} {a}: {:?}",
+                parse(cmd, &args(a))
+            );
+            let named = [
+                format!("  {cmd} "),
+                format!("| {cmd} "),
+                format!("  {cmd}\n"),
+            ];
+            assert!(
+                named.iter().any(|n| HELP.contains(n)),
+                "the help names {cmd}"
+            );
+        }
+        let panes = [
+            ("tab", "new docs localhost:3000 --shared --idle 30"),
+            ("tab", "new --session login"),
+            ("tab", "list"),
+            ("tab", "close docs"),
+            ("tab", "release docs"),
+            ("session", "save login --force"),
+            ("session", "load login"),
+            ("session", "clear"),
+            ("session", "list"),
+            ("session", "delete login"),
+        ];
+        for (cmd, a) in panes {
+            assert!(
+                matches!(parse_pane(cmd, &args(a)), Some(Ok(_))),
+                "{cmd} {a}"
+            );
+        }
+        for flag in [
+            "--synthetic",
+            "--hold",
+            "--secret",
+            "--boxes",
+            "--scale",
+            "--clip",
+            "--refs",
+            "--url",
+            "--fn",
+            "--level",
+            "--all",
+            "--method",
+            "--status",
+            "--shared",
+            "--session",
+            "--idle",
+            "--force",
+            "--timeout",
+            "--tab",
+            "--json",
+            "--reveal",
+        ] {
+            assert!(HELP.contains(flag), "the help names {flag}");
+        }
+        assert!(HELP.contains("12\n                               tabs a pane at most"));
+        assert!(HELP.contains("--- page content\n(untrusted)"));
+    }
+
     #[test]
     fn commands_that_act_are_told_from_those_that_read() {
         for (cmd, a) in [
@@ -2576,6 +2705,7 @@ mod tests {
             stack: stack.into(),
             url: "http://localhost:5173/".into(),
             ts: 0.0,
+            frame: None,
         };
         let entries = [
             e("load", "", ""),
@@ -2608,6 +2738,15 @@ mod tests {
             "Nothing logged since this page loaded: --all for earlier pages."
         );
         assert!(console_text(&entries[..4], None, false).contains("careful"));
+        // A frame's line says which.
+        let framed = Entry {
+            frame: Some("https://ads.example.test".into()),
+            ..e("error", "blocked", "")
+        };
+        assert_eq!(
+            console_text(&[framed], None, true),
+            "[error] (frame https://ads.example.test) blocked"
+        );
     }
 
     #[test]
@@ -2830,6 +2969,7 @@ mod tests {
             },
             url: url.into(),
             ts: 0.0,
+            frame: None,
         };
         let text = console_text(
             &[
