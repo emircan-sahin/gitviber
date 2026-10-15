@@ -54,6 +54,59 @@ until_ok() { local secs=$1 i; shift; for (( i = 0; i < secs; i++ )); do eval "$*
 page() { gbx tab new $1 $2 ${@:3} && gbx --tab $1 wait --load }
 close() { local t; for t; do gb tab close $t >/dev/null 2>&1; done }
 
+# ---- setup steps, as functions so the tests can drive them against a stand-in page.
+
+# The terminal panel: open, closed (its Show button there) or none (no button yet).
+terminal_state() {
+  js 'return $("[aria-label^=\"Hide terminal\"]") ? "open" : $("[aria-label^=\"Show terminal\"]") ? "closed" : "none"' 2>/dev/null
+}
+
+# The repo's terminal open: its button waited for, and if it never comes, once more after a reload.
+open_terminal() {
+  local round
+  for round in 1 2; do
+    if until_ok 45 '[[ $(terminal_state) == (open|closed) ]]'; then
+      [[ $(terminal_state) == open ]] || js 'press($("[aria-label^=\"Show terminal\"]")); return true' >/dev/null
+      return 0
+    fi
+    (( round == 1 )) || break
+    say "no terminal button after 45 s: reloading the page"
+    js 'setTimeout(() => location.reload(), 100); return true' >/dev/null 2>&1
+    sleep 2
+    until_ok 30 '[[ $(js "return document.readyState" 2>/dev/null) == complete ]]'
+    invoke open_dropped "{ paths: [\"$REPO\"] }" >/dev/null 2>&1
+  done
+  return 1
+}
+
+# The pane's shell writes its environment where only this user can read it. Sent again every few
+# seconds: a write that comes while the user's profile still runs can be lost before the prompt
+# reads input. ACCEPTED: the pty ids that took the last one.
+send_env() {
+  js "const data = \"(umask 077; env | grep '^GITVIBER_' > '$ENV_FILE')\\r\";
+    const took = [];
+    for (let id = 0; id <= 5; id++) {
+      try { await window.__TAURI_INTERNALS__.invoke('pty_write', { id, data, binary: false }); took.push(id); } catch {}
+    }
+    return took.join(',') || 'none';" 2>/dev/null
+}
+env_came() { grep -q "^GITVIBER_BROWSER_SOCKET=" $ENV_FILE 2>/dev/null }
+wait_env() {
+  local i
+  ACCEPTED=none
+  for (( i = 0; i < 15; i++ )); do
+    ACCEPTED=$(send_env) || ACCEPTED=none
+    until_ok 2 env_came && return 0
+  done
+  return 1
+}
+
+# Why setup stopped, with what the page shows.
+setup_note() {
+  local xterms=$(js 'return $$(".xterm").length' 2>/dev/null) title=$(js 'return document.title' 2>/dev/null)
+  print -r -- "$1 (xterm elements: ${xterms:-?}, pty ids that took the write: ${ACCEPTED:-none}, title: ${title:-?})"
+}
+
 # Built once cargo says it runs the app. tauri runs cargo with --color always, so the line is
 # ESC[1mESC[32m     RunningESC[0m `…/debug/gitviber`: matched across the escape codes.
 built() { grep -aqE 'Running.*/debug/gitviber`' $1 }
@@ -539,17 +592,9 @@ js 'const k = "gitviber.settings.v2"; const s = JSON.parse(localStorage.getItem(
 sleep 2
 until_ok 30 '[[ $(js "return document.readyState" 2>/dev/null) == complete ]]'
 invoke open_dropped "{ paths: [\"$REPO\"] }" >/dev/null
-js 'press(await waitFor(() => $("[aria-label^=\"Show terminal\"]"), 15000)); return true' >/dev/null ||
-  { record setup FAIL "no terminal button"; exit 1 }
-# The pane's shell writes its environment where only this user can read it.
-pty=$(js "const data = \"(umask 077; env | grep '^GITVIBER_' > '$ENV_FILE')\\r\";
-  return await waitFor(async () => {
-    for (let id = 0; id <= 5; id++) {
-      try { await window.__TAURI_INTERNALS__.invoke('pty_write', { id, data, binary: false }); return String(id); } catch {}
-    }
-  }, 15000);")
-until_ok 15 'grep -q "^GITVIBER_BROWSER_SOCKET=" $ENV_FILE 2>/dev/null' ||
-  { record setup FAIL "the terminal's environment never came (pty ${pty:-none})"; exit 1 }
+open_terminal || { record setup FAIL "$(setup_note "no terminal button, even after a reload")"; exit 1 }
+wait_env || { record setup FAIL "$(setup_note "the terminal's environment never came")"; exit 1 }
+pty=$ACCEPTED
 say "terminal pty $pty; pages on $URL_A and $URL_B"
 
 gb help > $STATE/help.txt 2>&1 || { record setup FAIL "gitviber browser help: $(<$STATE/help.txt)"; exit 1 }

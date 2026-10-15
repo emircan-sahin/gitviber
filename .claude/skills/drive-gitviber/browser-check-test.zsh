@@ -92,6 +92,61 @@ expect "a check's needs missing from help are named" "$(py missing $help "key do
 )
 (( fails += $? ))
 
+# Setup's waits against a stand-in page, in a subshell as it stands in for js and sleep. The page
+# keeps its counts in files: setup reads it through $(…), whose own changes would be lost.
+(
+  fails=0
+  sleep() { : }
+  say() { : }
+  P=$T/page && mkdir -p $P
+  count() { print -r -- $(( $(cat $P/$1 2>/dev/null || print 0) + ${2:-0} )) }
+  bump() { count $1 1 > $P/$1.new && mv $P/$1.new $P/$1 }
+  reset() { rm -f $P/*(N); ENV_FILE=$T/env-setup; rm -f $ENV_FILE }
+  # Its terminal button shows once `shows_after` reads have passed, and only after a reload when
+  # `needs_reload`; the shell writes its environment on the `env_on`th send (0: never).
+  shows_after=0 needs_reload=0 env_on=3 panel=closed
+  js() {
+    case $1 in
+      *'Hide terminal'*)
+        bump reads
+        if (( $(count reads) > shows_after && (!needs_reload || $(count reloaded)) )); then print $panel; else print none; fi ;;
+      *location.reload*) bump reloaded; print true ;;
+      *readyState*) print complete ;;
+      *press\(*) bump pressed; print true ;;
+      *pty_write*)
+        bump sends
+        (( env_on && $(count sends) >= env_on )) && print GITVIBER_BROWSER_SOCKET=/s > $ENV_FILE
+        print 0 ;;
+      *'.xterm'*) print 1 ;;
+      *document.title*) print GitViber ;;
+      *) print true ;;
+    esac
+  }
+  reset; shows_after=5
+  open_terminal
+  expect "the terminal button waited for, then pressed" "$? $(count reloaded) $(count pressed)" "0 0 1"
+  reset; needs_reload=1
+  open_terminal
+  expect "no button: a reload, then pressed" "$? $(count reloaded) $(count pressed)" "0 1 1"
+  reset; needs_reload=0 shows_after=0 panel=open
+  open_terminal
+  expect "an open terminal isn't pressed again" "$? $(count pressed)" "0 0"
+  reset; shows_after=1000
+  open_terminal
+  expect "never a button: setup stops" "$?" "1"
+
+  reset
+  wait_env
+  expect "the environment sent again until it comes" "$? $(count sends) $ACCEPTED" "0 3 0"
+  reset; env_on=0
+  wait_env
+  expect "never comes: setup stops after 15 sends" "$? $(count sends)" "1 15"
+  expect "and says what the page shows" "$(setup_note "the terminal's environment never came")" \
+    "the terminal's environment never came (xterm elements: 1, pty ids that took the write: 0, title: GitViber)"
+  exit $fails
+)
+(( fails += $? ))
+
 # The dev log as tauri writes it: cargo's lines in color.
 print -r -- $'     Running DevCommand (`cargo  run --no-default-features --color always --`)\n   Compiling gitviber v0.1.13' > $T/dev.log
 built $T/dev.log
