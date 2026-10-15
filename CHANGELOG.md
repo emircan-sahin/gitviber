@@ -18,6 +18,8 @@ on GitHub are its section below.
 - **Agents use real mouse and keyboard input.** Clicks, hovers, drags, scrolls and keys reach the page as a person's would, trusted and with CSS `:hover`, without moving your pointer or touching your keyboard: `dblclick`, `rightclick`, `drag`, `key down` / `key up`, `press --hold`, and `type` that your keyboard layout doesn't change. An agent's keys and clipboard never reach your terminal or your clipboard.
 - **Take a tab from the agent.** Press or type in an agent's tab and it's yours: commands that would act on it stop and say so, those that only read it still run, and Give back to agent in its address bar, or `gitviber browser tab release`, hands it back. `tab list` shows each tab's owner.
 - **Agents upload files.** `upload` clicks the page's file input or its own upload button and answers the chooser that opens with the files named, which must be there.
+- **Popups open as tabs of their own.** `window.open` and `target=_blank` in an agent's tab open a tab of the same pane, named for its opener (`t1-popup1`), in the opener's cookies and keeping `window.opener`, so sign-in and payment windows that talk back to the page work. Only a popup closes itself with `window.close()`; one past the 12 tabs a pane may open is blocked, its opener staying where it was, and the agent is told why. Each reply ends with what happened to the pane's tabs meanwhile, one `→` line each.
+- **Agents get the files a page downloads.** An agent's tab saves its downloads in a folder of its own, two of one name keeping both: `wait --download` waits for one and prints its path, size and type, `downloads` lists the tab's files, and each download is told once, to that wait or in the pane's next reply.
 - **Agents read a page in parts.** An element keeps its ref across snapshots, and a ref whose element left fails as stale instead of reaching another one. `find` searches the page for a text or a pattern, `get` reads one element's text, HTML, value, attribute, styles or box, and `snapshot` takes one element's part, each ref's box, or writes it all to a file.
 - **Agents work inside a page's frames.** `snapshot`, `find`, `get` and every action go on into a frame of the page's origin, whose elements take refs as any others; a frame of another origin is named with its origin, as one the agent can't read. `console` and `network` include the frames' lines and requests, each naming the frame it came from.
 - **Screenshots at the page's own size.** One pixel per CSS pixel unless `--scale` says otherwise, 2000 px on the longest side at most, of the viewport, one element or a `--clip` of it, as PNG or JPEG; `--refs` draws each control's ref on the picture.
@@ -36,12 +38,7 @@ on GitHub are its section below.
 - **A browser tab its agent closed doesn't come back with `⇧⌘T`,** and one you reopen is yours, not the agent's.
 - **A command on a tab that closed to save memory waits for its page to load again,** instead of finding it empty.
 - **Agents' clicks and typing work on more pages:** fields with a maximum length or a date format of their own, web components' fields, SVG, links inside headings and elements drawn with `display: contents`.
-
-<!-- pending: move these into Added if feat/popups-downloads lands in time.
-
-- **Popups open as tabs of their own.** `window.open` and `target=_blank` in an agent's tab open a tab of the same pane that keeps its opener, so sign-in and payment windows that talk back to the page work, and a page that closes itself closes its tab.
-- **Agents get the files a page downloads.** An agent's tab saves its downloads in a folder of its own: `wait --download` waits for one and prints its path, size and type, and `downloads` lists them.
--->
+- **A page that keeps crashing stops,** on its third crash in five minutes, with why, instead of reloading again and again; an agent's commands there say so, and `reload` or `open` tries again.
 
 ## [0.1.13] - 2026-10-09
 
