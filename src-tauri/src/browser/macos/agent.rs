@@ -10,7 +10,6 @@ use super::{
 use crate::browser::control::{
     self, origin, AgentScreen, Found, Listed, NewTab, Route, Routes, TabState, IDLE,
 };
-use crate::browser::picks::Bounds;
 use crate::browser::Step;
 use crate::browser::{epoch_ms, Look, PageState};
 use crate::state::{AppState, Res};
@@ -584,20 +583,6 @@ pub fn agent_page(id: &str) -> Res<(PageState, bool)> {
     main_thread()?;
     let v = view(id).ok_or(GONE)?;
     Ok((v.delegate.state(&v.web), page_tools::capturing()))
-}
-
-/// A PNG of the page as it shows, or of `rect` in it (CSS px, from the viewport's top left).
-pub fn agent_picture(
-    id: &str,
-    rect: Option<Bounds>,
-    done: Box<dyn FnOnce(Option<Vec<u8>>)>,
-) -> Res<()> {
-    main_thread()?;
-    let v = view(id).ok_or(GONE)?;
-    page_tools::picture(&v.web, rect, true, move |image| {
-        done(image.as_deref().and_then(page_tools::png))
-    });
-    Ok(())
 }
 
 #[derive(Serialize, Clone)]

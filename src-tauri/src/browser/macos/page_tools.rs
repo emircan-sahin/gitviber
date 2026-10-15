@@ -5,6 +5,7 @@
 
 use super::{emit, main_thread, url_text, view, Delegate, View, WebView, GONE};
 use crate::browser::console::{Counts, Entry};
+use crate::browser::marks::{picture_size, place_tag, Label, Picture, Taken};
 use crate::browser::network;
 use crate::browser::picks::{self, Bounds, Pick};
 use crate::browser::{cut, epoch_ms};
@@ -13,12 +14,18 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObject, ProtocolObject};
 use objc2::{
-    define_class, msg_send, sel, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message,
+    define_class, msg_send, sel, AllocAnyThread, ClassType, DefinedClass, MainThreadMarker,
+    MainThreadOnly, Message,
 };
-use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
+use objc2_app_kit::{
+    NSBitmapImageFileType, NSBitmapImageRep, NSColor, NSCompositingOperation,
+    NSDeviceRGBColorSpace, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
+    NSFrameRectWithWidth, NSGraphicsContext, NSImage, NSImageCompressionFactor,
+    NSImageInterpolation, NSRectFill, NSStringDrawing,
+};
 use objc2_foundation::{
-    ns_string, NSArray, NSDictionary, NSError, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
-    NSUUID,
+    ns_string, NSArray, NSDictionary, NSError, NSNumber, NSObjectProtocol, NSPoint, NSRect, NSSize,
+    NSString, NSTimer, NSUUID,
 };
 use objc2_web_kit::{
     WKContentWorld, WKPreferences, WKScriptMessage, WKScriptMessageHandler,
@@ -27,6 +34,8 @@ use objc2_web_kit::{
 };
 use serde::Serialize;
 use std::cell::Cell;
+use std::ptr::NonNull;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -309,6 +318,13 @@ pub(super) fn loaded(delegate: &Delegate, url: &str) {
     }
 }
 
+/// The alert() or confirm() open on the tab's page, waiting for the user, if one is.
+pub fn agent_dialog(id: &str) -> Res<Option<&'static str>> {
+    main_thread()?;
+    let v = view(id).ok_or(GONE)?;
+    Ok(v.delegate.ivars().asking.get())
+}
+
 pub fn console_entries(id: &str) -> Res<Vec<Entry>> {
     main_thread()?;
     let v = view(id).ok_or(GONE)?;
@@ -481,14 +497,29 @@ pub(super) fn picture(
     after_updates: bool,
     done: impl FnOnce(Option<Retained<NSImage>>) + 'static,
 ) {
-    let config = unsafe { WKSnapshotConfiguration::new(web.mtm()) };
-    unsafe { config.setAfterScreenUpdates(after_updates) };
+    let mut points = None;
     if let Some(rect) = rect {
         let size = web.bounds().size;
         let zoom = unsafe { web.pageZoom() };
-        let Some(r) = picks::picture_rect(rect, zoom, (size.width, size.height)) else {
+        let Some(r) = picks::picture_rect(rect, zoom, (size.width, size.height), picks::MARGIN)
+        else {
             return done(None);
         };
+        points = Some(r);
+    }
+    snap(web, points, after_updates, done);
+}
+
+/// The view as drawn, or `rect` of it (its points).
+fn snap(
+    web: &WKWebView,
+    rect: Option<Bounds>,
+    after_updates: bool,
+    done: impl FnOnce(Option<Retained<NSImage>>) + 'static,
+) {
+    let config = unsafe { WKSnapshotConfiguration::new(web.mtm()) };
+    unsafe { config.setAfterScreenUpdates(after_updates) };
+    if let Some(r) = rect {
         unsafe { config.setRect(NSRect::new(NSPoint::new(r.x, r.y), NSSize::new(r.w, r.h))) };
     }
     let done = Cell::new(Some(done));
@@ -499,6 +530,136 @@ pub(super) fn picture(
         }
     });
     unsafe { web.takeSnapshotWithConfiguration_completionHandler(Some(&config), &block) };
+}
+
+/// How long an agent's picture waits for the next screen update before it takes the page as
+/// drawn: a view that isn't drawing may never get one.
+const UPDATE_WAIT: f64 = 2.0;
+
+type Shot = Box<dyn FnOnce(Option<Retained<NSImage>>)>;
+
+/// An agent's screenshot: `rect` of the viewport, kept inside the view, after the next screen
+/// update or as drawn once UPDATE_WAIT has gone; redrawn at exactly what was taken times its
+/// scale in pixels whatever the screen's (a Retina view gives twice that), its labels drawn on.
+pub fn agent_picture(id: &str, picture: Picture, done: Box<dyn FnOnce(Option<Taken>)>) -> Res<()> {
+    main_thread()?;
+    let v = view(id).ok_or(GONE)?;
+    let zoom = unsafe { v.web.pageZoom() };
+    let size = v.web.bounds().size;
+    let Some(points) = picks::picture_rect(picture.rect, zoom, (size.width, size.height), 0.0)
+    else {
+        done(None);
+        return Ok(());
+    };
+    // The size and the labels' places come from what was taken, not from what was asked.
+    let (x, y) = (points.x / zoom, points.y / zoom);
+    let (w, h, scale) = picture_size(points.w / zoom, points.h / zoom, picture.scale);
+    let labels: Vec<Label> = picture
+        .labels
+        .into_iter()
+        .map(|l| Label {
+            x: (l.x - x) * scale,
+            y: (l.y - y) * scale,
+            w: l.w * scale,
+            h: l.h * scale,
+            ..l
+        })
+        .collect();
+    let jpeg = picture.jpeg;
+    let shot: Shot = Box::new(move |image| {
+        let bytes = image
+            .as_deref()
+            .and_then(|i| redrawn(i, (w, h), &labels, jpeg));
+        done(bytes.map(|bytes| Taken {
+            bytes,
+            size: (w, h),
+            scale,
+        }))
+    });
+    let first = Rc::new(Cell::new(Some(shot)));
+    let now = first.clone();
+    snap(&v.web, Some(points), true, move |image| {
+        if let Some(shot) = now.take() {
+            shot(image);
+        }
+    });
+    let web = v.web.clone();
+    let late = RcBlock::new(move |_: NonNull<NSTimer>| {
+        if let Some(shot) = first.take() {
+            snap(&web, Some(points), false, shot);
+        }
+    });
+    unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(UPDATE_WAIT, false, &late) };
+    Ok(())
+}
+
+/// `image` drawn into a bitmap `size` pixels big, each label's box outlined and its ref on a tag,
+/// then encoded.
+fn redrawn(image: &NSImage, size: (u32, u32), labels: &[Label], jpeg: bool) -> Option<Vec<u8>> {
+    let (w, h) = (f64::from(size.0), f64::from(size.1));
+    let rep = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            size.0 as isize,
+            size.1 as isize,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            0,
+            0,
+        )
+    }?;
+    let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
+    NSGraphicsContext::saveGraphicsState_class();
+    NSGraphicsContext::setCurrentContext(Some(&context));
+    context.setImageInterpolation(NSImageInterpolation::High);
+    let all = NSRect::new(NSPoint::ZERO, NSSize::new(w, h));
+    image.drawInRect_fromRect_operation_fraction(
+        all,
+        NSRect::ZERO,
+        NSCompositingOperation::Copy,
+        1.0,
+    );
+    if !labels.is_empty() {
+        // AppKit's y goes up from the bottom; a label's goes down from the top.
+        let rect = |x: f64, y: f64, rw: f64, rh: f64| {
+            NSRect::new(NSPoint::new(x, h - y - rh), NSSize::new(rw, rh))
+        };
+        let mark = NSColor::colorWithSRGBRed_green_blue_alpha(0.9, 0.0, 0.49, 1.0);
+        let font = NSFont::boldSystemFontOfSize(11.0);
+        let ink = NSColor::whiteColor();
+        let keys = unsafe { [NSFontAttributeName, NSForegroundColorAttributeName] };
+        let values: [&AnyObject; 2] = [font.as_ref(), ink.as_ref()];
+        let attributes = NSDictionary::<NSString, AnyObject>::from_slices(&keys, &values);
+        for l in labels {
+            mark.set();
+            NSFrameRectWithWidth(rect(l.x, l.y, l.w, l.h), 2.0);
+            let text = NSString::from_str(&l.text);
+            let measured = unsafe { text.sizeWithAttributes(Some(&attributes)) };
+            let tag = (measured.width + 4.0, measured.height);
+            let (tx, ty) = place_tag((l.x, l.y), tag, (w, h));
+            NSRectFill(rect(tx, ty, tag.0, tag.1));
+            let at = NSPoint::new(tx + 2.0, h - ty - tag.1);
+            unsafe { text.drawAtPoint_withAttributes(at, Some(&attributes)) };
+        }
+    }
+    context.flushGraphics();
+    NSGraphicsContext::restoreGraphicsState_class();
+    let (kind, properties) = if jpeg {
+        let quality = NSNumber::new_f64(0.85);
+        let key = unsafe { NSImageCompressionFactor };
+        (
+            NSBitmapImageFileType::JPEG,
+            NSDictionary::<NSString, AnyObject>::from_slices(&[key], &[&*quality]),
+        )
+    } else {
+        (NSBitmapImageFileType::PNG, NSDictionary::new())
+    };
+    let data = unsafe { rep.representationUsingType_properties(kind, &properties) }?;
+    Some(data.to_vec())
 }
 
 pub(super) fn png(image: &NSImage) -> Option<Vec<u8>> {
