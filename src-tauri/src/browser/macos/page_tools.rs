@@ -157,24 +157,45 @@ pub(super) fn install(
 }
 
 /// network.js in an agent's tab, whatever the console switch says (an agent asks for its
-/// network itself), clipboard.js in each of its frames, answering to `agent`'s key only, and
-/// SECRET; console.js while the console is on.
+/// network itself), clipboard.js answering to `agent`'s key only, and SECRET; console.js while
+/// the console is on. Each in every frame: a frame's errors and requests (a payment form's, an
+/// embedded login's) are often what went wrong, and reach the tab's one log tagged with it.
 fn add_scripts(content: &WKUserContentController, agent: Option<&str>, mtm: MainThreadMarker) {
-    let page = unsafe { WKContentWorld::pageWorld(mtm) };
-    if let Some(key) = agent {
-        add_script(content, NETWORK, true, &page, mtm);
-        let key = serde_json::to_string(key).unwrap_or_default();
-        let clipboard = CLIPBOARD.replacen("__GV_KEY__", &key, 1);
-        add_script(content, &clipboard, false, &page, mtm);
-        add_script(content, SECRET, false, &ours(mtm), mtm);
-    }
-    if CAPTURE.get() {
-        add_script(content, CONSOLE, true, &page, mtm);
+    for (source, main_frame, world) in scripts(agent, CAPTURE.get()) {
+        let world = match world {
+            World::Page => unsafe { WKContentWorld::pageWorld(mtm) },
+            World::Ours => ours(mtm),
+        };
+        add_script(content, &source, main_frame, &world, mtm);
     }
 }
 
-/// `main_frame`: the page's frame alone; else every frame too (a frame's errors and requests,
-/// a payment form's or an embedded login's, are often what went wrong).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum World {
+    Page,
+    Ours,
+}
+
+/// The scripts `add_scripts` puts in: source, main frame only, and world.
+fn scripts(agent: Option<&str>, console: bool) -> Vec<(String, bool, World)> {
+    let mut out = vec![];
+    if let Some(key) = agent {
+        out.push((NETWORK.to_string(), false, World::Page));
+        let key = serde_json::to_string(key).unwrap_or_default();
+        out.push((
+            CLIPBOARD.replacen("__GV_KEY__", &key, 1),
+            false,
+            World::Page,
+        ));
+        out.push((SECRET.to_string(), false, World::Ours));
+    }
+    if console {
+        out.push((CONSOLE.to_string(), false, World::Page));
+    }
+    out
+}
+
+/// `main_frame`: the page's frame alone; else every frame too.
 fn add_script(
     content: &WKUserContentController,
     source: &str,
@@ -700,6 +721,29 @@ mod tests {
                 .verify_sel::<(&AnyObject,), Bool>(sel!(_isEnabledForFeature:))
                 .unwrap();
         }
+    }
+
+    /// Every script goes in every frame, so a frame's errors and requests reach the tab's log;
+    /// network.js and the clipboard and focus scripts in an agent's tab only.
+    #[test]
+    fn each_script_goes_in_every_frame_of_the_tabs_it_belongs_to() {
+        let has = |all: &[(String, bool, World)], source: &str| {
+            all.iter().find(|s| s.0 == source).map(|s| (s.1, s.2))
+        };
+        let agents = scripts(Some("made-up-key"), true);
+        assert_eq!(has(&agents, CONSOLE), Some((false, World::Page)));
+        assert_eq!(has(&agents, NETWORK), Some((false, World::Page)));
+        assert_eq!(has(&agents, SECRET), Some((false, World::Ours)));
+        assert!(agents.iter().any(|s| s.0.contains("made-up-key") && !s.1));
+        assert!(
+            agents.iter().all(|s| !s.1),
+            "no script for the main frame only"
+        );
+        let users = scripts(None, true);
+        assert_eq!(users.len(), 1);
+        assert_eq!(has(&users, CONSOLE), Some((false, World::Page)));
+        assert!(scripts(None, false).is_empty());
+        assert_eq!(scripts(Some("k"), false).len(), 3);
     }
 
     /// The tab's key goes in once, as a JSON string, and nothing else answers for it.
