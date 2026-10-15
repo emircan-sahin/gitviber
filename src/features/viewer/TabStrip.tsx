@@ -17,7 +17,7 @@ import { browserApi, github } from "@/lib/api";
 import { failed } from "@/lib/app/toast";
 import { pageHost, pageLabel } from "@/lib/browser/url";
 import { useBrowserState } from "@/lib/browser/store";
-import { agentTabTitle, useAgentPty } from "@/lib/browser/agentTabs";
+import { agentTabTitle, shownTabTitle, useAgentPty, useShownPty } from "@/lib/browser/agentTabs";
 import { type Tab, type TabGroup, tabGroup } from "./tabs";
 
 interface Props {
@@ -150,6 +150,7 @@ function TabItem({
   const closeKey = useShortcut("tab.close");
   const closeOthersKey = useShortcut("tab.closeOthers");
   const agentPty = useAgentPty(t.sel.kind === "browser" ? t.sel.id : "");
+  const shownPty = useShownPty(t.sel.kind === "browser" ? t.sel.id : "");
   const el = useRef<HTMLDivElement | null>(null);
   // Runs before the node leaves the page, while it can still say whether it had focus.
   useLayoutEffect(
@@ -167,7 +168,7 @@ function TabItem({
       }}
       role="tab"
       aria-selected={isActive}
-      title={agentPty === undefined ? selectionPath(t.sel) : agentTabTitle(agentPty, selectionPath(t.sel))}
+      title={agentPty !== undefined ? agentTabTitle(agentPty, selectionPath(t.sel)) : shownPty !== undefined ? shownTabTitle(shownPty, selectionPath(t.sel)) : selectionPath(t.sel)}
       tabIndex={tabStop ? 0 : -1}
       onClick={guard(() => onActivate(t.key))}
       onDoubleClick={() => onPin(t.key)}

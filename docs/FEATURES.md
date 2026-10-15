@@ -209,6 +209,18 @@ own, opened in the background without taking yours. `gitviber browser help` list
 - **Several tabs per agent.** `tab new <name> [url]` opens another, and `--tab <name>` sends a
   command to one, so agents sharing a pane never switch tabs under each other. A terminal pane may
   open 12.
+- **Open a page for you.** When you ask an agent to open a page so you can try it, it runs `tab new
+  <url> --show`: the page opens as your active tab, in a private session apart from your logins
+  (sign in there if you need to), and is yours from the start; only Give back to agent hands it
+  over. It is yours alone: no agent command reaches it, reading included, but `tab list`; its
+  downloads are refused and the popups it opens are yours too. Three at a time a pane, three
+  seconds apart. It works with Let agents use the browser off, and nothing else does then.
+- **Hide their tabs.** Settings → Browser → Show agents' tabs, off, leaves agent tabs out of the
+  tab strip. They keep running and agents' commands still work on them; a tab you took stays in
+  the strip, and turning it on brings the rest back.
+- **Muted for you.** Settings → Browser → Mute agents' tabs (on by default): agent tabs make no
+  sound for you; the page still plays and `audio: playing` (in `tab list` and `url`) shows it.
+  Tabs you open or take over are never muted.
 
 **Keeps working, stays light**
 

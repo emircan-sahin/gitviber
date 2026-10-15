@@ -60,15 +60,21 @@ pub(super) fn open(
     // Left when `create` failed before taking it.
     GIVEN.take();
     let opener_tab = Some((d.id.as_str(), opener_name.as_str()));
+    // Nothing of a page opened for the user is told to its agents.
+    let told = !agent::strict(&d.id);
     let view = made.and_then(|(id, name)| {
         POPUPS.with_borrow_mut(|p| p.insert(id.clone()));
-        notes::note(pty, opener_tab, popups::opened(&name, &url));
+        if told {
+            notes::note(pty, opener_tab, popups::opened(&name, &url));
+        }
         view(&id).ok_or_else(|| GONE.to_string())
     });
     match view {
         Ok(v) => Popup::Tab(Retained::into_super(v.web)),
         Err(why) => {
-            notes::note(pty, opener_tab, popups::blocked(&why));
+            if told {
+                notes::note(pty, opener_tab, popups::blocked(&why));
+            }
             Popup::Blocked
         }
     }
@@ -84,7 +90,9 @@ pub(super) fn closed(delegate: &Delegate) {
     let Some((pty, name)) = agent::pane_of(&d.id) else {
         return;
     };
-    notes::note(pty, None, popups::closed(&name));
+    if !agent::strict(&d.id) {
+        notes::note(pty, None, popups::closed(&name));
+    }
     crate::browser::agent::close_soon(&d.app, d.id.clone());
 }
 

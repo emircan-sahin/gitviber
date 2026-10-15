@@ -23,7 +23,9 @@ pub const TAB_ENV: &str = "GITVIBER_BROWSER_TAB";
 
 /// The CLI's exit status when control is off.
 pub const OFF: i32 = 2;
-pub const OFF_TEXT: &str = "Browser control is off (Settings → Browser).";
+pub const OFF_TEXT: &str =
+    "Browser control is off (Settings → Browser). Only `tab new --show <url>` \
+                            works then: it opens a page for the user.";
 /// The CLI's exit status outside GitViber's terminals, or with GitViber gone.
 pub const NOT_HERE: i32 = 3;
 
@@ -57,9 +59,15 @@ Tabs
                                it sleeps, 0 never while the pane is open (120 at most); it closes
                                unused after an hour, or six times its idle time, if longer. 12
                                tabs a pane at most
+  tab new [name] <url> --show  A page for the user to see and try, only when they ask to see it
+                               (open it in the browser), never for your own testing: it opens as
+                               their active tab, in a private session like yours (they sign in
+                               there if they need to), and is theirs alone: nothing reaches it but
+                               tab list, and only they give it back. 3 open a pane at most, 3 s
+                               apart. The one command that works while control is off
   tab list                     The pane's tabs: name, awake, sleeping or parked, its owner (agent
-                               or user), last command, idle minutes, private or shared, origin
-                               and title
+                               or user), last command, idle minutes, private or shared, audio:
+                               playing while its page makes sound (muted or not), origin and title
   tab close [name]             Close a tab once its running command is done: the one a command
                                would go to, unless named
   tab release [name]           Give a tab the user took back to the pane's agents: while it's
@@ -82,7 +90,7 @@ Sessions
 Pages
   open <url>                   Load a page (http or https; localhost:3000 works) and wait for it
   back | forward | reload      Through its history, waiting for the page
-  url                          The page's address and title
+  url                          The page's address and title, and audio: playing while it makes sound
 
 Reading
   snapshot [-i] [-s <ref|css>] [-d <n>] [--boxes] [-o <file>]
@@ -438,6 +446,11 @@ pub enum Tabs {
         /// Minutes it may go without a command before it sleeps; 0 never.
         idle: Option<u32>,
     },
+    /// A page for the user to see and try (`--show`): their tab from the start.
+    Show {
+        name: Option<String>,
+        url: String,
+    },
     List,
     Close(Option<String>),
     /// Back to its agents from the user.
@@ -676,12 +689,15 @@ const MOST_IDLE: u32 = 120;
 
 fn tabs(args: &[String]) -> Result<Tabs, String> {
     let usage = "Usage: gitviber browser tab new [name] [url] [--shared] [--session <name>] \
-                 [--idle <minutes>] | tab list | tab close [name] | tab release [name]";
-    let (mut shared, mut session, mut idle, mut words) = (false, None, None, vec![]);
+                 [--idle <minutes>] | tab new [name] <url> --show | tab list | tab close [name] \
+                 | tab release [name]";
+    let (mut shared, mut session, mut idle, mut show, mut words) =
+        (false, None, None, false, vec![]);
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--shared" => shared = true,
+            "--show" => show = true,
             "--session" => session = Some(session_name(value(&mut it, "--session")?)?),
             "--idle" => {
                 let minutes = number(value(&mut it, "--idle")?, "--idle")?;
@@ -706,6 +722,25 @@ fn tabs(args: &[String]) -> Result<Tabs, String> {
         })
     };
     let flags = shared || session.is_some() || idle.is_some();
+    if show {
+        if flags {
+            return Err(
+                "--show opens a page for the user: not with --shared, --session or --idle".into(),
+            );
+        }
+        let shown = |name: Option<&str>, url: &str| {
+            Ok(Tabs::Show {
+                name: name.map(tab_name).transpose()?,
+                url: shown_url(url)?,
+            })
+        };
+        return match words[..] {
+            ["new", one] if tab_name(one).is_ok() => Err("--show needs the page to show".into()),
+            ["new", url] => shown(None, url),
+            ["new", name, url] => shown(Some(name), url),
+            _ => Err(usage.into()),
+        };
+    }
     match words[..] {
         ["new"] => new(None, None),
         // One word is a name when it could be one; an address has a dot, colon or slash.
@@ -1123,6 +1158,38 @@ pub fn web_url(typed: &str) -> Result<String, String> {
     Ok(url.to_string())
 }
 
+/// The longest address a page for the user may have.
+const MOST_SHOWN_URL: usize = 2048;
+
+/// An address to show the user: as `web_url` takes it, but with no login in it and no port 0,
+/// which only dress up the host the page is really on (as the address bar refuses them too).
+pub fn shown_url(typed: &str) -> Result<String, String> {
+    if typed.chars().count() > MOST_SHOWN_URL {
+        return Err(format!(
+            "A page for the user has an address of {MOST_SHOWN_URL} characters at most"
+        ));
+    }
+    let full = web_url(typed)?;
+    let url = Url::parse(&full).map_err(|_| format!("Not a web address: {typed}"))?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(format!(
+            "A page for the user can't have a login in its address: {typed}"
+        ));
+    }
+    if url.port() == Some(0) {
+        return Err(format!("Port 0 isn't a port a page is served on: {typed}"));
+    }
+    Ok(full)
+}
+
+/// Whether a request does what control being off still allows: showing the user a page.
+pub fn allowed_when_off(cmd: &str, args: &[String]) -> bool {
+    matches!(
+        parse_pane(cmd, args),
+        Some(Ok(Pane::Tab(Tabs::Show { .. })))
+    )
+}
+
 /// Whether a screenshot's path asks for a JPEG (.jpg, .jpeg) rather than a PNG.
 pub fn jpeg(path: &Path) -> bool {
     path.extension()
@@ -1243,6 +1310,8 @@ struct PaneTabs {
     tabs: Vec<Named>,
     /// Names given (t1, t2, ...) so far.
     named: u32,
+    /// When the last page was shown the user (`may_show`).
+    shown_at: Option<Instant>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1259,6 +1328,9 @@ pub struct Named {
     /// When it closes unused (`unused_after`), unless a command or the user's eye comes first.
     pub closes: Option<Instant>,
     pub owner: Owner,
+    /// Opened for the user (`tab new --show`), or from such a tab: while the user has it, no
+    /// command of its agents reaches it, `tab list` aside.
+    pub shown: bool,
 }
 
 /// Who drives a tab: its agents, or the user, who took it with a press or a key of their own
@@ -1278,6 +1350,14 @@ impl std::fmt::Display for Owner {
             Self::User => "user",
         })
     }
+}
+
+/// What any command but `tab list` says of a tab opened for the user.
+pub fn shown_tab(name: &str) -> String {
+    format!(
+        "Tab {name} was opened for the user and is theirs: no command reaches it but `tab list`, \
+         until they give it back with its Give back to agent button"
+    )
 }
 
 /// What a command that acts on a tab the user has says.
@@ -1312,6 +1392,10 @@ pub const IDLE: Duration = Duration::from_secs(10 * 60);
 const UNUSED: Duration = Duration::from_secs(60 * 60);
 /// The tabs a pane's agents may have open at once, parked ones too: each is a web process.
 pub const MOST_TABS: usize = 12;
+/// The pages a pane's agents may have open for the user at once.
+pub const MOST_SHOWN: usize = 3;
+/// The least between two pages a pane shows the user.
+pub const SHOW_GAP: Duration = Duration::from_secs(3);
 
 /// When a tab that sleeps after `idle` closes unused; never for one that never sleeps.
 pub fn unused_after(idle: Duration) -> Option<Duration> {
@@ -1325,6 +1409,8 @@ pub struct NewTab<'a> {
     pub default: bool,
     pub shared: bool,
     pub idle: Duration,
+    /// Opened for the user (`tab new --show`): theirs from the start, as a tab they took.
+    pub show: bool,
 }
 
 impl Routes {
@@ -1399,9 +1485,46 @@ impl Routes {
             idle: new.idle,
             used: now,
             closes: unused_after(new.idle).map(|after| now + after),
-            owner: Owner::Agent,
+            owner: if new.show { Owner::User } else { Owner::Agent },
+            shown: new.show,
         });
         Ok(name)
+    }
+
+    /// Whether the pane may show the user a page at `now`: not past MOST_SHOWN open, nor within
+    /// SHOW_GAP of the last. Nothing of the user's is ever closed to make room.
+    pub fn may_show(
+        &mut self,
+        pty: u32,
+        open: impl Fn(&str) -> bool,
+        now: Instant,
+    ) -> Result<(), String> {
+        let pane = self.pane(pty, open);
+        if pane.tabs.iter().filter(|t| t.shown).count() >= MOST_SHOWN {
+            return Err(format!(
+                "This pane has {MOST_SHOWN} pages open for the user, the most it may: they \
+                 close them, or give them back"
+            ));
+        }
+        if let Some(wait) = pane
+            .shown_at
+            .and_then(|at| SHOW_GAP.checked_sub(now.saturating_duration_since(at)))
+            .filter(|wait| !wait.is_zero())
+        {
+            return Err(format!(
+                "A page was shown the user just now: wait {} s before another",
+                wait.as_secs() + 1
+            ));
+        }
+        pane.shown_at = Some(now);
+        Ok(())
+    }
+
+    /// Tab `id`'s name while it is the user's alone: opened for them, and not given back.
+    pub fn strict(&self, id: &str) -> Option<&str> {
+        self.named(id)
+            .filter(|t| t.shown && t.owner == Owner::User)
+            .map(|t| t.name.as_str())
     }
 
     fn all(&self) -> impl Iterator<Item = &Named> {
@@ -1452,6 +1575,8 @@ impl Routes {
     fn owned(&mut self, id: &str, owner: Owner) -> Option<String> {
         let mut tabs = self.panes.values_mut().flat_map(|p| &mut p.tabs);
         let t = tabs.find(|t| t.route.id == id)?;
+        // Given back, it is an agent's tab like any other, whatever it was opened as.
+        t.shown &= owner == Owner::User;
         (std::mem::replace(&mut t.owner, owner) != owner).then(|| t.name.clone())
     }
 
@@ -1521,6 +1646,8 @@ pub struct Listed {
     /// Minutes it may go without a command before it sleeps; 0 never.
     pub idle_min: u64,
     pub shared: bool,
+    /// The page is playing sound, whether or not Settings mute it.
+    pub audio: bool,
     pub origin: String,
     pub title: String,
     pub owner: Owner,
@@ -2233,6 +2360,7 @@ mod tests {
             default,
             shared: false,
             idle: IDLE,
+            show: false,
         }
     }
 
@@ -2583,6 +2711,7 @@ mod tests {
             default: false,
             shared: false,
             idle,
+            show: false,
         };
         let start = Instant::now();
         assert_eq!(r.due(), None);
@@ -2617,6 +2746,143 @@ mod tests {
         r.release(1);
         assert_eq!(r.due(), None);
         r.postpone("nope", later);
+    }
+
+    #[test]
+    fn a_page_for_the_user_needs_a_page_and_nothing_of_the_agents_own_tab() {
+        let pane = |s: &str| parse_pane("tab", &args(s)).expect("a pane's command");
+        let shown = |name: Option<&str>, url: &str| {
+            Ok(Pane::Tab(Tabs::Show {
+                name: name.map(Into::into),
+                url: url.into(),
+            }))
+        };
+        assert_eq!(
+            pane("new --show localhost:3000"),
+            shown(None, "http://localhost:3000/")
+        );
+        assert_eq!(
+            pane("new s1 localhost:3000/a --show"),
+            shown(Some("s1"), "http://localhost:3000/a")
+        );
+        assert_eq!(
+            pane("new --show example.test"),
+            shown(None, "https://example.test/")
+        );
+        for bad in [
+            "new --show",
+            "new s1 --show",
+            "new a b c --show",
+            "new --show --shared localhost:3000",
+            "new --show --session a localhost:3000",
+            "new --show --idle 5 localhost:3000",
+            "new --show file:///etc/passwd",
+            "new --show javascript:alert(1)",
+            "new --show localhost:0",
+            "new --show localhost:3000@evil.example",
+            "new --show http://user:pw@localhost:3000",
+            "list --show",
+            "close --show",
+        ] {
+            assert!(pane(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn with_control_off_only_a_page_for_the_user_gets_through() {
+        let off = |cmd: &str, s: &str| allowed_when_off(cmd, &args(s));
+        assert!(off("tab", "new --show localhost:3000"));
+        assert!(off("tab", "new s1 example.test --show"));
+        // Everything else says control is off, a malformed --show included.
+        assert!(!off("tab", "new localhost:3000"));
+        assert!(!off("tab", "new"));
+        assert!(!off("tab", "new --show"));
+        assert!(!off("tab", "new --show --shared localhost:3000"));
+        assert!(!off("tab", "list"));
+        assert!(!off("tab", "close --show"));
+        assert!(!off("open", "localhost:3000 --show"));
+        assert!(!off("eval", "1 --show"));
+        assert!(!off("session", "list --show"));
+        assert!(!off("url", ""));
+        assert!(!off("", ""));
+    }
+
+    #[test]
+    fn a_tab_opened_for_the_user_is_theirs_from_the_start() {
+        let mut r = Routes::default();
+        let show = NewTab {
+            show: true,
+            idle: Duration::ZERO,
+            ..new(Some("s1"), false)
+        };
+        assert_eq!(r.add(1, show, route("a"), |_| true).unwrap(), "s1");
+        assert_eq!(r.users("a"), Some("s1"));
+        assert_eq!(
+            r.strict("a"),
+            Some("s1"),
+            "no command of the agents' reaches it"
+        );
+        assert_eq!(r.due(), None, "it never closes unused");
+        // Given back, it is an agent's tab like any other, and the user taking it again is
+        // only the usual take-over.
+        assert_eq!(r.give_back("a"), Some("s1".into()));
+        assert_eq!((r.users("a"), r.strict("a")), (None, None));
+        assert_eq!(r.take("a"), Some("s1".into()));
+        assert_eq!((r.users("a"), r.strict("a")), (Some("s1"), None));
+        r.add(1, new(Some("t9"), false), route("b"), |_| true)
+            .unwrap();
+        assert_eq!((r.users("b"), r.strict("b")), (None, None));
+        // An ordinary tab the user took stays readable.
+        r.take("b");
+        assert_eq!((r.users("b"), r.strict("b")), (Some("t9"), None));
+    }
+
+    #[test]
+    fn a_pane_shows_the_user_three_pages_at_most_and_not_in_quick_succession() {
+        let mut r = Routes::default();
+        let shown = |name| NewTab {
+            show: true,
+            ..new(Some(name), false)
+        };
+        let start = Instant::now();
+        let later = |s| start + Duration::from_secs(s);
+        assert!(r.may_show(1, |_| true, start).is_ok());
+        let wait = r.may_show(1, |_| true, later(2)).unwrap_err();
+        assert!(wait.contains("wait 2 s"), "{wait}");
+        assert!(r.may_show(1, |_| true, later(3)).is_ok());
+        // Another pane has its own pace.
+        assert!(r.may_show(2, |_| true, later(3)).is_ok());
+        for (i, name) in ["a", "b", "c"].into_iter().enumerate() {
+            r.add(1, shown(name), route(name), |_| true).unwrap();
+            assert_eq!(r.strict(name), Some(name), "{i}");
+        }
+        let full = r.may_show(1, |_| true, later(60)).unwrap_err();
+        assert!(full.contains("3 pages open for the user"), "{full}");
+        assert_eq!(
+            r.list(1, |_| true).len(),
+            3,
+            "none of theirs closed to make room"
+        );
+        // One given back, or closed, makes room; ordinary tabs never count.
+        r.give_back("a");
+        assert!(r.may_show(1, |_| true, later(60)).is_ok());
+        r.add(1, new(Some("t5"), false), route("t5"), |_| true)
+            .unwrap();
+        assert!(
+            r.may_show(1, |_| true, later(120)).is_ok(),
+            "t5 isn't shown"
+        );
+        r.add(1, shown("d"), route("d"), |_| true).unwrap();
+        assert!(r.may_show(1, |_| true, later(180)).is_err());
+        r.close("b");
+        assert!(r.may_show(1, |_| true, later(180)).is_ok());
+    }
+
+    #[test]
+    fn an_address_shown_the_user_is_short() {
+        assert!(shown_url(&format!("example.test/{}", "a".repeat(2000))).is_ok());
+        let long = shown_url(&format!("example.test/{}", "a".repeat(2048)));
+        assert!(long.unwrap_err().contains("2048"));
     }
 
     #[test]

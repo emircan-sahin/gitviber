@@ -241,6 +241,10 @@ export interface Settings {
   browserConsole: boolean;
   /** Agents in the terminals may drive a browser tab of their pane's with `gitviber browser`. */
   browserAgentControl: boolean;
+  /** Tabs agents opened are in the tab strip; off, they run on out of sight (one the user took stays). */
+  browserShowAgentTabs: boolean;
+  /** Agents' tabs make no sound; their pages play on as if they did. */
+  browserMuteAgentTabs: boolean;
   /** While agent control is on, Claude Code and Codex get a skill on `gitviber browser` (browser/skill.rs). */
   browserAgentSkill: boolean;
   /** The last Code / Preview choice on an SVG; the next one opens the same way. Set from the viewer, not the dialog. */
@@ -360,6 +364,8 @@ const DEFAULTS: Settings = {
   browserReloadOnAgentDone: false,
   browserConsole: true,
   browserAgentControl: false,
+  browserShowAgentTabs: true,
+  browserMuteAgentTabs: true,
   // On, as agent control is the opt-in: an agent that doesn't know the command never uses it.
   browserAgentSkill: true,
   svgPreview: false,
@@ -468,6 +474,8 @@ function load(): Settings {
     if (typeof s.browserReloadOnAgentDone !== "boolean") s.browserReloadOnAgentDone = DEFAULTS.browserReloadOnAgentDone;
     if (typeof s.browserConsole !== "boolean") s.browserConsole = DEFAULTS.browserConsole;
     if (typeof s.browserAgentControl !== "boolean") s.browserAgentControl = DEFAULTS.browserAgentControl;
+    if (typeof s.browserShowAgentTabs !== "boolean") s.browserShowAgentTabs = DEFAULTS.browserShowAgentTabs;
+    if (typeof s.browserMuteAgentTabs !== "boolean") s.browserMuteAgentTabs = DEFAULTS.browserMuteAgentTabs;
     if (typeof s.browserAgentSkill !== "boolean") s.browserAgentSkill = DEFAULTS.browserAgentSkill;
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
     if (!["side", "swipe", "onion"].includes(s.imageCompare)) s.imageCompare = DEFAULTS.imageCompare;

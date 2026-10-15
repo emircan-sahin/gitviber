@@ -146,8 +146,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   // the tabs are, below: a change there renders this again before anything is drawn.
   const [branchOnShow, setBranchOnShow] = useState(false);
   const branchReview = useBranchReview(review, repo.revision, reviewing || branchOnShow);
-  const { tabs, activeKey, setActiveKey, open: openTab, add, update, closeTabs, discardTabs, close, closeAround, reopen, canReopen, moveTab, goTab, stepTab, pin, onPathMoved } = useTabs(saved, status, branchReview.review && branchReview.rows);
-  useAgentTabs(root, tabs, add, update, discardTabs);
+  const { tabs, allTabs, activeKey, setActiveKey, open: openTab, add, update, closeTabs, discardTabs, close, closeAround, reopen, canReopen, moveTab, goTab, stepTab, pin, onPathMoved } = useTabs(saved, status, branchReview.review && branchReview.rows);
   const branchTab = activeKey === selectionKey({ kind: "changes", list: "branch" });
   if (branchTab !== branchOnShow) setBranchOnShow(branchTab);
   // A file opened while the terminal covers the code view (⌘P, a path clicked in the terminal) comes into view.
@@ -158,9 +157,12 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     },
     [openTab],
   );
+  // A page an agent opened for the user stays as a tab of theirs and comes up, the focus where it was.
+  const showForUser = useCallback((sel: Selection) => open(sel, true), [open]);
+  useAgentTabs(root, allTabs, add, showForUser, update, discardTabs);
   const { viewedMap, viewed, setViewed, toggleViewed } = useViewed(saved, status, repo.refresh, branchReview.review);
   useNoteCheck(repo.revision);
-  useEffect(() => saveWorkspace(root, { tabs, active: activeKey, listTab, viewed: [...viewedMap], review }), [root, tabs, activeKey, listTab, viewedMap, review]);
+  useEffect(() => saveWorkspace(root, { tabs: allTabs, active: activeKey, listTab, viewed: [...viewedMap], review }), [root, allTabs, activeKey, listTab, viewedMap, review]);
   // Git work on the left, files on the right; both collapse to give code the room.
   const sidebars = usePanelSizes("gitviber-sides-v1", "horizontal", SIDES, { flexMin: VIEWER_MIN, legacy: OLD_SIDES });
   const bottom = usePanelSizes("gitviber-bottom-v1", "vertical", BOTTOM, { flexMin: EDITOR_MIN, legacy: OLD_BOTTOM });

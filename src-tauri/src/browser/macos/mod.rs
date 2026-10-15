@@ -16,8 +16,8 @@ mod popups;
 
 pub use agent::{
     agent_appearance, agent_close_tab, agent_device, agent_dialogs, agent_find_tab,
-    agent_give_back, agent_js, agent_new_tab, agent_page, agent_pane_closed, agent_running,
-    agent_tab, agent_tabs, agent_users,
+    agent_give_back, agent_js, agent_new_tab, agent_page, agent_pane_closed, agent_playing,
+    agent_running, agent_shown, agent_tab, agent_tabs, agent_users,
 };
 pub use cookies::{agent_clear_store, agent_cookies, agent_own_store, agent_set_cookies};
 pub use native::{
@@ -1124,6 +1124,7 @@ pub fn create(
         NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
     );
     let delegate = Delegate::new(mtm, id, window.app_handle().clone(), &web);
+    agent::mute_new(&web, id);
     unsafe {
         web.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         web.setUIDelegate(Some(ProtocolObject::from_ref(&*delegate)));
@@ -1349,7 +1350,14 @@ fn stop_timer(v: &View) {
 
 /// How many hidden views stay alive, after how many minutes one parks (0: never), and how many
 /// agents' tabs draw out of sight at once: past a lower cap, the longest unused sleep at once.
-pub fn configure(live_hidden: u32, park_after_min: u32, agent_drawn: u32, console: bool) {
+/// Agents' tabs are muted or not as well.
+pub fn configure(
+    live_hidden: u32,
+    park_after_min: u32,
+    agent_drawn: u32,
+    console: bool,
+    agent_muted: bool,
+) {
     if main_thread().is_err() {
         return;
     }
@@ -1372,6 +1380,7 @@ pub fn configure(live_hidden: u32, park_after_min: u32, agent_drawn: u32, consol
     let agent_drawn = usize::try_from(agent_drawn.clamp(1, 24)).unwrap_or(24);
     VIEWS.with_borrow_mut(|r| r.set_awake_drawn(agent_drawn));
     agent::sleep_past_cap("");
+    agent::set_muted(agent_muted);
 }
 
 /// Parks a hidden view at once, with the picture taken as it hid (or none): never waiting on

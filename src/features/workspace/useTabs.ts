@@ -1,7 +1,8 @@
 import { arrayMove } from "@dnd-kit/sortable";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { browserApi, type RepoStatus } from "@/lib/api";
-import { forgetAgentTab } from "@/lib/browser/agentTabs";
+import { nearShown, shownIndexToAll, shownTabs } from "@/lib/browser/agentShown";
+import { forgetAgentTab, useHiddenAgentTabs } from "@/lib/browser/agentTabs";
 import { forgetBrowser } from "@/lib/browser/store";
 import { newerCopy, useGitHubCacheVersion } from "@/lib/github/githubCache";
 import { editPath, type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
@@ -16,7 +17,17 @@ import { moveEdits, settleEdits, useEdited } from "@/lib/editor/edits";
 export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoStatus | null, review: BranchChange[] | null) {
   // Tabs and the active key change together, so they live in one state (no nested updates).
   const [tabState, setTabState] = useState<{ tabs: Tab[]; active: string | null }>(() => ({ tabs: saved?.tabs ?? [], active: saved?.active ?? null }));
-  const { tabs, active: activeKey } = tabState;
+  const { tabs: allTabs, active: activeKey } = tabState;
+  // Agent tabs the strip leaves out (Settings) stay in allTabs: they keep running, and an agent's
+  // commands on them still close them and change them. What the user walks is the shown ones.
+  const hidden = useHiddenAgentTabs();
+  const hiddenNow = useRef(hidden);
+  hiddenNow.current = hidden;
+  const tabs = shownTabs(allTabs, hidden);
+  // The active tab going out of the strip hands over to its neighbour, as a closed one does.
+  if (activeKey && tabs !== allTabs && !tabs.some((t) => t.key === activeKey) && allTabs.some((t) => t.key === activeKey)) {
+    setTabState((st) => ({ ...st, active: nearShown(st.tabs, hidden, activeKey) }));
+  }
   const setActiveKey = useCallback((key: string | null) => setTabState((t) => ({ ...t, active: key })), []);
 
   const open = useCallback((sel: Selection, pin = false) => {
@@ -40,8 +51,8 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
 
   // Closed tabs, the latest last, where they were: ⇧⌘T brings them back as browsers do.
   const [closed, setClosed] = useState<{ sel: Selection; index: number }[]>([]);
-  const tabsNow = useRef(tabs);
-  tabsNow.current = tabs;
+  const tabsNow = useRef(allTabs);
+  tabsNow.current = allTabs;
   // `reopen`: onto ⇧⌘T's list; not a tab its agent closed, whose page can't come back as it was.
   const dropTabs = useCallback((keys: string[], reopen = true) => {
     const gone = new Set(keys);
@@ -59,10 +70,8 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
     setTabState(({ tabs: prev, active }) => {
       const next = prev.filter((t) => !gone.has(t.key));
       if (!active || !gone.has(active)) return { tabs: next, active };
-      // The next open tab to the right, else to the left.
-      const i = prev.findIndex((t) => t.key === active);
-      const near = prev.slice(i + 1).find((t) => !gone.has(t.key)) ?? prev.slice(0, i).reverse().find((t) => !gone.has(t.key));
-      return { tabs: next, active: near?.key ?? null };
+      // The next shown tab to the right, else to the left.
+      return { tabs: next, active: nearShown(prev, hiddenNow.current, active, gone) };
     });
   }, []);
   // Files with unsaved edits ask first: save, drop the edits, or keep the tabs.
@@ -93,7 +102,15 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
     }));
   };
 
-  const moveTab = useCallback((from: number, to: number) => setTabState((st) => ({ ...st, tabs: arrayMove(st.tabs, from, to) })), []);
+  // `from` and `to` count the shown tabs; hidden ones keep their places among the rest.
+  const moveTab = useCallback(
+    (from: number, to: number) =>
+      setTabState((st) => {
+        const [a, b] = [shownIndexToAll(st.tabs, hiddenNow.current, from), shownIndexToAll(st.tabs, hiddenNow.current, to)];
+        return a < 0 || b < 0 ? st : { ...st, tabs: arrayMove(st.tabs, a, b) };
+      }),
+    [],
+  );
 
   // ⌘1–⌘9 and next/previous (wrapping), as in browsers.
   const goTab = (i: number) => (tabs[i] ? () => setActiveKey(tabs[i].key) : undefined);
@@ -198,5 +215,5 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
     });
   }, [gitHubVersion]);
 
-  return { tabs, activeKey, setActiveKey, open, add, update, closeTabs, discardTabs, close, closeAround, reopen, canReopen: closed.length > 0, moveTab, goTab, stepTab, pin, onPathMoved };
+  return { tabs, allTabs, activeKey, setActiveKey, open, add, update, closeTabs, discardTabs, close, closeAround, reopen, canReopen: closed.length > 0, moveTab, goTab, stepTab, pin, onPathMoved };
 }
