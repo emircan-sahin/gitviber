@@ -24,6 +24,9 @@ pub struct Entry {
     pub url: String,
     /// Milliseconds since the epoch.
     pub ts: f64,
+    /// The origin of the frame that logged it, when not the page itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<String>,
 }
 
 /// What the badge shows: since the panel was last cleared.
@@ -63,6 +66,7 @@ impl Log {
         entry.msg = cut(&entry.msg, MAX_TEXT);
         entry.stack = cut(&entry.stack, MAX_TEXT);
         entry.url = cut(&entry.url, MAX_TEXT);
+        entry.frame = entry.frame.map(|f| cut(&f, MAX_TEXT));
         self.push(entry);
         true
     }
@@ -76,6 +80,7 @@ impl Log {
             stack: String::new(),
             url: cut(url, MAX_TEXT),
             ts,
+            frame: None,
         });
     }
 
@@ -87,6 +92,7 @@ impl Log {
             stack: String::new(),
             url: cut(url, MAX_TEXT),
             ts,
+            frame: None,
         });
     }
 

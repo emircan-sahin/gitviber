@@ -3,6 +3,7 @@
 //! latest frames, and the rest it loaded. Only ever read by the agent, never written anywhere.
 
 use super::cut;
+use super::output;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -119,6 +120,9 @@ pub struct Entry {
     /// For a resource, its initiator type (script, img, css, navigation, ...).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub initiator: Option<String>,
+    /// The origin of the frame that made it, when not the page itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_frame: Option<String>,
     /// Milliseconds since the epoch.
     pub start: f64,
     /// None while it runs, or a body that streams on.
@@ -157,6 +161,7 @@ struct Update {
     url: Option<String>,
     to: Option<String>,
     initiator: Option<String>,
+    in_frame: Option<String>,
     start: Option<f64>,
     duration: Option<f64>,
     status: Option<u16>,
@@ -303,6 +308,11 @@ impl Log {
             .find(|e| e.id == id)
     }
 
+    /// The highest id given so far: an entry past it is newer.
+    pub fn newest(&self) -> u32 {
+        self.next
+    }
+
     pub fn dropped(&self) -> u64 {
         self.dropped
     }
@@ -325,6 +335,9 @@ fn merge(e: &mut Entry, u: Update) {
     }
     if let Some(i) = u.initiator {
         e.initiator = Some(line(&i, WORD));
+    }
+    if let Some(f) = u.in_frame {
+        e.in_frame = Some(line(&f, URL));
     }
     if let Some(s) = u.start {
         e.start = s;
@@ -379,6 +392,43 @@ pub struct Filter {
     /// Part of the address, any case.
     pub text: Option<String>,
     pub kind: Option<Kind>,
+    /// GET, POST, ...: uppercase.
+    pub method: Option<String>,
+    /// A status (404), or its hundred (4 for 4xx).
+    pub status: Option<Status>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Status {
+    Is(u16),
+    Class(u16),
+}
+
+impl Status {
+    fn parse(s: &str) -> Option<Status> {
+        let lower = s.to_ascii_lowercase();
+        match lower.strip_suffix("xx") {
+            Some(d) if d.len() == 1 => d
+                .parse()
+                .ok()
+                .filter(|d| (1..=5).contains(d))
+                .map(Status::Class),
+            Some(_) => None,
+            None => s
+                .parse()
+                .ok()
+                .filter(|n| (100..600).contains(n))
+                .map(Status::Is),
+        }
+    }
+
+    fn holds(self, status: Option<u16>) -> bool {
+        match (self, status) {
+            (Status::Is(want), Some(s)) => s == want,
+            (Status::Class(c), Some(s)) => s / 100 == c,
+            (_, None) => false,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -402,6 +452,13 @@ pub fn ask(args: &[String]) -> Result<Ask, String> {
             "--failed" => filter.failed = true,
             "--clear" => clear = true,
             "--filter" => filter.text = Some(value()?.to_lowercase()),
+            "--method" => filter.method = Some(value()?.to_ascii_uppercase()),
+            "--status" => {
+                let s = value()?;
+                filter.status = Some(Status::parse(s).ok_or_else(|| {
+                    format!("--status is a status (404) or a class (4xx), not {s:?}")
+                })?);
+            }
             "--type" => {
                 let kind = value()?;
                 filter.kind = Some(Kind::parse(kind).ok_or_else(|| {
@@ -417,7 +474,7 @@ pub fn ask(args: &[String]) -> Result<Ask, String> {
 impl Entry {
     /// A status past 399, a request that got no answer, or a socket that closed badly; not one
     /// the page aborted itself.
-    fn failed(&self) -> bool {
+    pub fn failed(&self) -> bool {
         self.status.is_some_and(|s| s >= 400)
             || self.error.as_deref().is_some_and(|e| e != "aborted")
             || self.close.as_ref().is_some_and(|c| !c.clean)
@@ -426,6 +483,8 @@ impl Entry {
     fn shown(&self, f: &Filter) -> bool {
         (!f.failed || self.failed())
             && f.kind.is_none_or(|k| k == self.kind)
+            && f.method.as_ref().is_none_or(|m| *m == self.method)
+            && f.status.is_none_or(|s| s.holds(self.status))
             && f.text
                 .as_ref()
                 .is_none_or(|t| self.url.to_lowercase().contains(t.as_str()))
@@ -443,7 +502,8 @@ impl Entry {
         }
     }
 
-    fn state(&self) -> String {
+    /// Its status as the list shows it: 200, failed, open, … while it runs.
+    pub fn state(&self) -> String {
         if let Some(c) = &self.close {
             return c.code.to_string();
         }
@@ -504,14 +564,16 @@ fn bytes_text(n: f64) -> String {
 }
 
 fn list_line(e: &Entry) -> String {
+    let frame = e.in_frame.as_ref().map(|f| format!("  (frame {f})"));
     format!(
-        "{:>4}  {:<7} {:>7} {:>8} {:>9}  {}",
+        "{:>4}  {:<7} {:>7} {:>8} {:>9}  {}{}",
         e.id,
         e.what(),
         e.state(),
         e.took(),
         e.amount(),
-        cut(&e.url, LIST_URL)
+        cut(&e.url, LIST_URL),
+        frame.unwrap_or_default()
     )
 }
 
@@ -583,6 +645,9 @@ pub fn entry_text(e: &Entry, now: f64) -> String {
     )];
     if let Some(to) = &e.to {
         out.push(format!("Redirected to {to}"));
+    }
+    if let Some(frame) = &e.in_frame {
+        out.push(format!("From a frame of {frame}"));
     }
     out.push(match (&e.close, &e.error, e.status) {
         (Some(c), _, _) => format!(
@@ -658,7 +723,7 @@ fn list_json(log: &Log, filter: &Filter) -> Value {
         .map(|e| {
             json!({
                 "id": e.id, "kind": e.kind, "method": e.method, "initiator": e.initiator,
-                "url": e.url, "status": e.status, "error": e.error, "start": e.start,
+                "url": e.url, "inFrame": e.in_frame, "status": e.status, "error": e.error, "start": e.start,
                 "duration": e.duration, "size": e.size, "frameCount": e.frame_count,
             })
         })
@@ -667,22 +732,32 @@ fn list_json(log: &Log, filter: &Filter) -> Value {
 }
 
 /// `network`'s answer as text, and as JSON for `--json`; a list may clear the log after.
-pub fn answer(log: &mut Log, ask: &Ask, now: f64) -> Result<(String, Value), String> {
+pub fn answer(log: &mut Log, ask: &Ask, now: f64, reveal: bool) -> Result<(String, Value), String> {
     match ask {
         Ask::One(id) => {
             let e = log.get(*id).ok_or_else(|| {
                 format!("No request #{id}: `gitviber browser network` lists them")
             })?;
-            Ok((entry_text(e, now), json!(e)))
+            Ok(hidden((entry_text(e, now), json!(e)), reveal))
         }
         Ask::List { filter, clear } => {
             let answer = (list_text(log, filter), list_json(log, filter));
             if *clear {
                 log.clear();
             }
-            Ok(answer)
+            Ok(hidden(answer, reveal))
         }
     }
+}
+
+/// Credentials in headers, bodies and addresses hidden unless --reveal: by the same list as
+/// every other reply.
+fn hidden((text, mut data): (String, Value), reveal: bool) -> (String, Value) {
+    if reveal {
+        return (text, data);
+    }
+    output::redact_json(&mut data);
+    (output::redact(&text), data)
 }
 
 #[cfg(test)]
@@ -723,13 +798,31 @@ mod tests {
                     failed: true,
                     text: Some("/api/".into()),
                     kind: Some(Kind::Xhr),
+                    ..Filter::default()
                 },
                 clear: true
+            })
+        );
+        assert_eq!(
+            ask(&words("--method post --status 5XX")),
+            Ok(Ask::List {
+                filter: Filter {
+                    method: Some("POST".into()),
+                    status: Some(Status::Class(5)),
+                    ..Filter::default()
+                },
+                clear: false
             })
         );
         for bad in [
             "--type",
             "--type http",
+            "--method",
+            "--status",
+            "--status 6xx",
+            "--status 4x",
+            "--status 99",
+            "--status ok",
             "--filter",
             "--all",
             "12 --clear",
@@ -738,6 +831,67 @@ mod tests {
         ] {
             assert!(ask(&words(bad)).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_frames_request_says_which_frame() {
+        let mut log = Log::default();
+        assert!(post(
+            &mut log,
+            json!([{ "key": "f", "kind": "fetch", "method": "GET", "url": "https://ads.example.test/bid",
+                "start": 0.0, "inFrame": "https://ads.example.test\u{1b}[2J" }])
+        ));
+        let e = log.get(1).unwrap();
+        let listed = list_line(e);
+        assert!(listed.contains("https://ads.example.test/bid  (frame https://ads.example.test"));
+        assert!(
+            !listed.contains('\u{1b}'),
+            "a page's tag is cleaned as its other text"
+        );
+        assert!(entry_text(e, 0.0).contains("From a frame of https://ads.example.test"));
+        // The page's own say nothing of a frame.
+        fetch(&mut log, "p", "http://localhost/api", 0.0);
+        assert!(!list_line(log.get(2).unwrap()).contains("frame"));
+    }
+
+    #[test]
+    fn the_list_narrows_by_method_and_status() {
+        let mut log = Log::default();
+        for (key, method, status) in [
+            ("a", "GET", 200),
+            ("b", "POST", 500),
+            ("c", "POST", 201),
+            ("d", "GET", 404),
+        ] {
+            assert!(post(
+                &mut log,
+                json!([{ "key": key, "kind": "fetch", "method": method, "url": format!("http://localhost/{key}"),
+                    "start": 0.0, "status": status }])
+            ));
+        }
+        let shown = |f: Filter| {
+            let text = list_text(&log, &f);
+            text.lines()
+                .map(|l| l.rsplit('/').next().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        let post_only = Filter {
+            method: Some("POST".into()),
+            ..Filter::default()
+        };
+        assert_eq!(shown(post_only), ["b", "c"]);
+        let class = |c| Filter {
+            status: Some(Status::Class(c)),
+            ..Filter::default()
+        };
+        assert_eq!(shown(class(4)), ["d"]);
+        assert_eq!(shown(class(2)), ["a", "c"]);
+        let get_404 = Filter {
+            method: Some("GET".into()),
+            status: Some(Status::Is(404)),
+            ..Filter::default()
+        };
+        assert_eq!(shown(get_404), ["d"]);
     }
 
     #[test]
@@ -1051,14 +1205,14 @@ mod tests {
     fn one_entry_or_the_list_answers_with_json_beside_the_text_and_clear_empties_it() {
         let mut log = Log::default();
         fetch(&mut log, "a", "http://localhost/api", 0.0);
-        let (text, data) = answer(&mut log, &Ask::One(1), 10.0).unwrap();
+        let (text, data) = answer(&mut log, &Ask::One(1), 10.0, true).unwrap();
         assert_eq!(
             (data["id"].clone(), data["kind"].clone()),
             (json!(1), json!("fetch"))
         );
         assert!(data.get("key").is_none(), "the page's own key stays inside");
         assert!(text.starts_with("#1 GET http://localhost/api (fetch)\nWaiting for an answer"));
-        assert!(answer(&mut log, &Ask::One(2), 0.0)
+        assert!(answer(&mut log, &Ask::One(2), 0.0, true)
             .unwrap_err()
             .contains("No request #2"));
         let (text, data) = answer(
@@ -1068,12 +1222,35 @@ mod tests {
                 clear: true,
             },
             0.0,
+            false,
         )
         .unwrap();
         assert_eq!(data["entries"].as_array().unwrap().len(), 1);
         assert_eq!(data["entries"][0]["frameCount"], 0);
         assert!(text.contains("http://localhost/api"));
         assert!(log.entries().is_empty());
+    }
+
+    #[test]
+    fn credential_headers_are_hidden_unless_revealed() {
+        let mut log = Log::default();
+        assert!(post(
+            &mut log,
+            json!([{ "key": "a", "kind": "fetch", "method": "GET", "url": "http://localhost/api", "start": 0.0,
+                "requestHeaders": [["Authorization", "Bearer t0ken"], ["X-Api-Key", "k3y"], ["Accept", "*/*"]],
+                "responseHeaders": [["Set-Cookie", "sid=s3ss"], ["Content-Type", "text/plain"]] }])
+        ));
+        let (text, data) = answer(&mut log, &Ask::One(1), 0.0, false).unwrap();
+        for hidden in ["t0ken", "k3y", "s3ss"] {
+            assert!(
+                !text.contains(hidden) && !data.to_string().contains(hidden),
+                "{hidden}"
+            );
+        }
+        assert!(text.contains("  Authorization: [redacted]") && text.contains("  Accept: */*"));
+        assert!(text.contains("  Content-Type: text/plain"));
+        let (shown, _) = answer(&mut log, &Ask::One(1), 0.0, true).unwrap();
+        assert!(shown.contains("Bearer t0ken") && shown.contains("sid=s3ss"));
     }
 
     #[test]
@@ -1206,5 +1383,24 @@ mod tests {
             r#"[{"key":"b","kind":"fetch","method":"GET","url":"http://localhost/\u202egnp.exe","start":0}]"#
         ));
         assert_eq!(log.get(2).unwrap().url, "http://localhost/\u{FFFD}gnp.exe");
+    }
+
+    #[test]
+    fn credentials_in_bodies_are_hidden_unless_revealed() {
+        let mut log = Log::default();
+        assert!(post(
+            &mut log,
+            json!([{ "key": "a", "kind": "fetch", "method": "POST", "url": "http://localhost/oauth/token", "start": 0.0,
+                "status": 200,
+                "requestBody": { "text": "grant_type=authorization_code&code=c0de&client_secret=s3cr3t", "size": 60.0 },
+                "responseBody": { "text": "{\"access_token\":\"t0k3n\",\"refresh_token\":\"r3fr3sh\"}", "type": "application/json", "size": 50.0 } }])
+        ));
+        let (text, data) = answer(&mut log, &Ask::One(1), 10.0, false).unwrap();
+        for hidden in ["c0de", "s3cr3t", "t0k3n", "r3fr3sh"] {
+            assert!(
+                !text.contains(hidden) && !data.to_string().contains(hidden),
+                "{hidden}: {text}"
+            );
+        }
     }
 }

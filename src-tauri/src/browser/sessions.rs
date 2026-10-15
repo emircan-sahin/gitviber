@@ -76,21 +76,7 @@ impl Shelf {
         let failed = |e: std::io::Error| format!("Couldn't save the session: {e}");
         private_dirs(&self.dir).map_err(failed)?;
         let json = serde_json::to_string(session).map_err(|e| e.to_string())?;
-        // Its own: two saves at once each write theirs whole.
-        let part = self.dir.join(format!(
-            ".{}.part",
-            crate::local_socket::random_hex(8).ok_or("Couldn't save the session.")?
-        ));
-        let file = self.file(name);
-        let placed = crate::scratch::write_private(&part, &json).and_then(|()| {
-            if force {
-                std::fs::rename(&part, &file)
-            } else {
-                // A link fails where a file is already, which a check before it wouldn't.
-                std::fs::hard_link(&part, &file)
-            }
-        });
-        let _ = std::fs::remove_file(&part);
+        let placed = crate::scratch::place_private(&self.file(name), &json, force);
         match placed {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(format!(
                 "A session {name} is saved already: `session save {name} --force` replaces it"

@@ -34,9 +34,11 @@
       return e === TOO_LONG ? "[too large to show]" : String(v);
     }
   };
+  // A frame's lines go to the page's one log, saying which frame.
+  const frame = window.top && window.top !== window ? location.origin : undefined;
   const post = (line) => {
     try {
-      handler.postMessage(JSON.stringify({ ...line, url: location.href, ts: Date.now() }));
+      handler.postMessage(JSON.stringify({ ...line, url: location.href, ts: Date.now(), frame }));
     } catch {
       // A message the page made unsendable is no reason to break its console.
     }

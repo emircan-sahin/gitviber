@@ -67,7 +67,7 @@ class FakeSocket extends EventTarget {
 }
 
 /** A page with network.js run on it: `answer` is its own fetch. */
-function page(answer: (input: unknown, init?: any) => Promise<Response> = async () => new Response("")) {
+function page(answer: (input: unknown, init?: any) => Promise<Response> = async () => new Response(""), own: Rec = {}) {
   const posts: Rec[][] = [];
   const timers: (() => void)[] = [];
   let observed: ((list: { getEntries: () => unknown[] }) => void) | null = null;
@@ -84,6 +84,7 @@ function page(answer: (input: unknown, init?: any) => Promise<Response> = async 
     fetch: answer,
     XMLHttpRequest: class extends FakeXhr {},
     WebSocket: class extends FakeSocket {},
+    ...own,
   };
   const run = new Function("window", "document", "PerformanceObserver", "setTimeout", source);
   run(window, { baseURI: "http://localhost:5173/app/" }, Observer, (fn: () => void) => timers.push(fn));
@@ -371,4 +372,17 @@ test("with the console on too, as the app adds them, both see a failed request",
   await settle();
   assert.equal(lines[0].msg, "[network] GET /api/boom → 500");
   assert.equal(p.entries()[0].status, 500);
+});
+
+test("a frame's requests say which frame, each as it starts; the page's own say nothing", async () => {
+  const framed = page(async () => new Response("ok"), { top: {}, location: { origin: "https://pay.example.test" } });
+  await framed.window.fetch("/charge", { method: "POST", body: "x" });
+  await settle();
+  const starts = framed.posts.flat().filter((u) => u.kind);
+  assert.ok(starts.length > 0 && starts.every((u) => u.inFrame === "https://pay.example.test"));
+  assert.ok(framed.posts.flat().filter((u) => !u.kind).every((u) => !("inFrame" in u)), "updates carry no tag");
+  const own = page(async () => new Response("ok"));
+  await own.window.fetch("/x");
+  await settle();
+  assert.ok(own.posts.flat().every((u) => !("inFrame" in u)));
 });
