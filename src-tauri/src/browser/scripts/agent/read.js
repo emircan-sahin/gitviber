@@ -96,7 +96,8 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
       size += at.length + 1;
     } else full = true;
   };
-  const count = (node) => (node.nodeType === 1 ? 1 + [...node.childNodes].reduce((n, c) => n + count(c), 0) : 0);
+  // An element and all its own, counted by the engine rather than walked a node at a time.
+  const count = (node) => (node.nodeType === 1 ? node.getElementsByTagName("*").length + 1 : 0);
   // A same-origin frame's page goes on in the tree; another origin's can't be read from here.
   const frame = (el, level, muted) => {
     const name = nameOf(el, false);
@@ -174,7 +175,7 @@ function boxOf(el) {
 const MATCHES = 30;
 
 /** The tree's lines that have `pattern` (any case), or match it as /regex/flags. */
-function search({ pattern }) {
+function find({ pattern }) {
   const re = /^\/(.+)\/([a-z]*)$/.exec(pattern);
   let test;
   if (re) {

@@ -44,6 +44,12 @@ function el(tag: string, attrs: Record<string, string> = {}, children: (Fake | s
     scrollIntoView: () => {},
     getBoundingClientRect: () => ({ x: 10, y: 20, width: 100, height: 30 }),
     getClientRects: () => [{}],
+    getElementsByTagName: () => {
+      const all: Fake[] = [];
+      const visit = (n: Fake) => n.childNodes.filter((c) => c.nodeType === 1).forEach((c) => (all.push(c), visit(c)));
+      visit(node);
+      return all;
+    },
     ...props,
   };
   return node;
