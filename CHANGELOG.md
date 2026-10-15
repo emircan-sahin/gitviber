@@ -6,6 +6,19 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-10-15
+
+### Added
+
+- **Open a page for yourself from an agent.** `gitviber browser tab new <url> --show` opens the page as a tab of yours: in the strip, active, in a private session apart from your logins. It works even with agent control off, and the agent can do nothing to such a tab but list it until you press Give back to agent. A pane may show three at a time, three seconds apart.
+- **Hide agents' tabs.** Settings → Browser → Agents → Show agents' tabs takes them out of the tab strip; they keep running and answering their agents, and a tab you took stays where it is.
+- **Mute agents' tabs.** Settings → Browser → Agents → Mute agents' tabs keeps their pages quiet while they keep playing, so an agent's page that needs sound still works; `tab list` and `url` say `audio: playing` while a page makes sound. Tabs you open or take are never muted.
+- **⌘-click opens more of what a terminal prints.** A file outside the repo (an absolute or `~` path) opens read-only in a tab and a folder outside it in the file manager, a bare name under a line naming its folder opens from there, a localhost link opens in a browser tab, and a folder in the repo opens in the explorer.
+
+### Fixed
+
+- **A path a program wrapped itself is one link.** Claude Code cuts a long path at the last column and goes on a row down; such rows are read as one line, and an absolute path that stops at a space in a folder or file name (a macOS screenshot) is offered in its longer readings.
+
 ## [0.1.14] - 2026-10-15
 
 ### Added
