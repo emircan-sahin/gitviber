@@ -104,8 +104,7 @@ fn stand_in_for_buttons() {
     unsafe { method.set_implementation(std::mem::transmute::<PressedButtons, Imp>(ours)) };
 }
 
-/// Our buttons stand in for the real mouse's while this lives, and not a moment longer, even
-/// should WebKit panic out of the event.
+/// Our buttons stand in for the real mouse's while this lives, and not a moment longer.
 struct Holding;
 
 impl Holding {
@@ -218,9 +217,9 @@ pub fn agent_pointer(
         _ => mouse(what, location, flags, window.windowNumber())
             .ok_or("AppKit made no mouse event.")?,
     };
-    // A press is what WebKit starts a drag from (`refuse_drag`).
+    // A press is what WebKit starts a drag from (`refuse_drag`), and isn't the user's.
     if matches!(what, Pointer::Down { .. }) {
-        remember(&event, Some(web), None);
+        remember(&event, None, None);
     }
     v.delegate.ivars().pointer.set(Some(at));
     let holding = Holding::buttons(what.buttons());
@@ -356,12 +355,8 @@ fn edit_page(web: &WebView, edit: Edit) {
         Edit::SelectAll => {
             let _: () = unsafe { msg_send![web, selectAll: None::<&AnyObject>] };
         }
-        Edit::Undo => {
-            let _: () = unsafe { msg_send![&**undo, undo] };
-        }
-        Edit::Redo => {
-            let _: () = unsafe { msg_send![&**undo, redo] };
-        }
+        Edit::Undo => undo.undo(),
+        Edit::Redo => undo.redo(),
         Edit::Copy => page_tools::clipboard(web, "copy", |_| {}),
         Edit::Cut => page_tools::clipboard(web, "cut", |_| {}),
         // A paste event with the text, which the page may take; else the text goes in as typed.

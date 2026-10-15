@@ -1,14 +1,15 @@
-// An agent's tab: while an agent's command runs, the page's own clipboard calls
-// (navigator.clipboard, execCommand's copy, cut and paste) keep to the page instead of reaching
-// the user's clipboard. A native click gives the page the user activation they need, and what a
-// page wrote there would be the user's next paste into a terminal. Between commands the page's
-// calls are its own again, so the user's Copy buttons work. Runs in the page's world at document
-// start, in every frame, before the page's scripts can keep WebKit's own; only GitViber knows
-// its key, so only it switches the guard (macos/page_tools.rs). A frame's guard is always on: only
-// the main frame's is switched.
+// An agent's tab: the page's own clipboard calls (execCommand's copy, cut and paste, and
+// navigator.clipboard where WebKit still has it on) keep to the page instead of reaching the
+// user's clipboard. A native click gives the page user activation that outlasts the command,
+// and what a page wrote there would be the user's next paste into a terminal. So the guard is
+// on from the page's start until the user acts in the tab (a press or a key of their own) or it
+// becomes theirs, and on again with an agent's next command. Runs in the page's world at
+// document start, in every frame, before the page's scripts can keep WebKit's own; only
+// GitViber knows its key, so only it switches the guard (macos/page_tools.rs), in the main
+// frame: a frame's guard stays on, and each frame keeps the text it copied.
 (() => {
   const key = __GV_KEY__;
-  let on = window !== top;
+  let on = true;
   let kept = "";
   const proto = window.Clipboard?.prototype;
   const own = { writeText: proto?.writeText, readText: proto?.readText, write: proto?.write, read: proto?.read };
@@ -65,7 +66,7 @@
   Object.defineProperty(window, "__gvClipboard", {
     value: (asked, ask) => {
       if (asked !== key) return null;
-      if (ask === "on" || ask === "off") on = ask === "on" || window !== top;
+      if (ask === "on" || ask === "off") on = ask === "on";
       else if (ask === "copy" || ask === "cut") copy(document, ask);
       else if (ask === "paste") return paste();
       return null;

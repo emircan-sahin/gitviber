@@ -104,6 +104,7 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = [
   "NSURLResponse",
   "NSURLSession",
   "NSUUID",
+  "NSUndoManager",
   "NSValue",
 ] }
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = [

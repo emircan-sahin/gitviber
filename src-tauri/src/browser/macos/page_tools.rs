@@ -11,15 +11,19 @@ use crate::browser::{cut, epoch_ms};
 use crate::state::Res;
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
-use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly, Message};
+use objc2::runtime::{AnyObject, Bool, NSObject, ProtocolObject};
+use objc2::{
+    define_class, msg_send, sel, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message,
+};
 use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
 use objc2_foundation::{
-    ns_string, NSDictionary, NSError, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSUUID,
+    ns_string, NSArray, NSDictionary, NSError, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+    NSUUID,
 };
 use objc2_web_kit::{
-    WKContentWorld, WKScriptMessage, WKScriptMessageHandler, WKSnapshotConfiguration,
-    WKUserContentController, WKUserScript, WKUserScriptInjectionTime, WKWebView,
+    WKContentWorld, WKPreferences, WKScriptMessage, WKScriptMessageHandler,
+    WKSnapshotConfiguration, WKUserContentController, WKUserScript, WKUserScriptInjectionTime,
+    WKWebView,
 };
 use serde::Serialize;
 use std::cell::Cell;
@@ -33,6 +37,18 @@ const CONSOLE: &str = include_str!("../scripts/console.js");
 const NETWORK: &str = include_str!("../scripts/network.js");
 const COMPONENTS: &str = include_str!("../scripts/components.js");
 const CLIPBOARD: &str = include_str!("../scripts/clipboard.js");
+/// In GitViber's world, in every frame of an agent's tab: whether a password field has focus,
+/// for its panel (panel.rs `settle`). The page can't post to it.
+const SECRET: &str = r#"(() => {
+  const post = () => {
+    let el = document.activeElement;
+    while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement;
+    const secret = el?.localName === "input" && el.type === "password";
+    window.webkit?.messageHandlers?.gvSecret?.postMessage(secret ? "1" : "0");
+  };
+  addEventListener("focusin", post, true);
+  addEventListener("focusout", () => setTimeout(post), true);
+})();"#;
 
 thread_local! {
     /// Settings → Browser's console switch: off, pages load without console.js.
@@ -82,6 +98,10 @@ define_class!(
                     v.delegate.ivars().network.borrow_mut().add(&text);
                 }
                 "gvPick" => picked(&v, &text),
+                "gvSecret" => {
+                    v.delegate.ivars().secret.set(text == "1");
+                    super::panel::settle(&v);
+                }
                 _ => {}
             }
         }
@@ -115,27 +135,30 @@ pub(super) fn install(
                 &page,
                 ns_string!("gvNetwork"),
             );
+            content.addScriptMessageHandler_contentWorld_name(
+                handler,
+                &ours(mtm),
+                ns_string!("gvSecret"),
+            );
         }
     }
     add_scripts(content, agent, mtm);
 }
 
 /// network.js in an agent's tab, whatever the console switch says (an agent asks for its
-/// network itself), and clipboard.js in each of its frames, answering to `agent`'s key only;
-/// console.js while the console is on.
+/// network itself), clipboard.js in each of its frames, answering to `agent`'s key only, and
+/// SECRET; console.js while the console is on.
 fn add_scripts(content: &WKUserContentController, agent: Option<&str>, mtm: MainThreadMarker) {
+    let page = unsafe { WKContentWorld::pageWorld(mtm) };
     if let Some(key) = agent {
-        add_script(content, NETWORK, true, mtm);
+        add_script(content, NETWORK, true, &page, mtm);
         let key = serde_json::to_string(key).unwrap_or_default();
-        add_script(
-            content,
-            &CLIPBOARD.replacen("__GV_KEY__", &key, 1),
-            false,
-            mtm,
-        );
+        let clipboard = CLIPBOARD.replacen("__GV_KEY__", &key, 1);
+        add_script(content, &clipboard, false, &page, mtm);
+        add_script(content, SECRET, false, &ours(mtm), mtm);
     }
     if CAPTURE.get() {
-        add_script(content, CONSOLE, true, mtm);
+        add_script(content, CONSOLE, true, &page, mtm);
     }
 }
 
@@ -143,6 +166,7 @@ fn add_script(
     content: &WKUserContentController,
     source: &str,
     main_frame: bool,
+    world: &WKContentWorld,
     mtm: MainThreadMarker,
 ) {
     unsafe {
@@ -151,7 +175,7 @@ fn add_script(
             &NSString::from_str(source),
             WKUserScriptInjectionTime::AtDocumentStart,
             main_frame,
-            &WKContentWorld::pageWorld(mtm),
+            world,
         );
         content.addUserScript(&script);
     }
@@ -224,8 +248,33 @@ pub(super) fn clipboard(web: &WebView, ask: &str, done: impl FnOnce(Option<Strin
 /// The page's own clipboard calls kept to it while an agent's command runs (`on`), the user's
 /// again after.
 pub(super) fn guard_clipboard(web: &WebView, on: bool) {
-    if super::agent::routed(&web.ivars().id) || !on {
-        clipboard(web, if on { "on" } else { "off" }, |_| {});
+    web.ivars().guarded.set(on);
+    clipboard(web, if on { "on" } else { "off" }, |_| {});
+}
+
+/// WebKit's async Clipboard API off for the page (`navigator.clipboard`), in every document of
+/// it, about:blank frames too: a native click's user activation outlasts the command that
+/// gave it. Private, so only where WebKit has the feature; whether it's off, read back.
+pub(super) fn no_async_clipboard(preferences: &WKPreferences) -> bool {
+    let class = WKPreferences::class();
+    let can = class.metaclass().responds_to(sel!(_features))
+        && preferences.respondsToSelector(sel!(_setEnabled:forFeature:))
+        && preferences.respondsToSelector(sel!(_isEnabledForFeature:));
+    if !can {
+        return false;
+    }
+    let features: Option<Retained<NSArray<AnyObject>>> = unsafe { msg_send![class, _features] };
+    let named = |f: &AnyObject| {
+        let key: Option<Retained<NSString>> = unsafe { msg_send![f, key] };
+        key.is_some_and(|k| k.to_string() == "AsyncClipboardAPIEnabled")
+    };
+    let Some(feature) = features.and_then(|all| all.iter().find(|f| named(f))) else {
+        return false;
+    };
+    unsafe {
+        let _: () = msg_send![preferences, _setEnabled: Bool::NO, forFeature: &*feature];
+        let on: Bool = msg_send![preferences, _isEnabledForFeature: &*feature];
+        !on.as_bool()
     }
 }
 
@@ -468,6 +517,24 @@ mod tests {
     #[test]
     fn the_message_handler_matches_its_protocol() {
         let _ = Messages::class();
+    }
+
+    /// The private feature switches `no_async_clipboard` uses, checked where WebKit has them.
+    #[test]
+    fn the_feature_switches_match_their_declarations() {
+        let class = WKPreferences::class();
+        if class.metaclass().responds_to(sel!(_features)) {
+            class
+                .metaclass()
+                .verify_sel::<(), *mut AnyObject>(sel!(_features))
+                .unwrap();
+            class
+                .verify_sel::<(Bool, &AnyObject), ()>(sel!(_setEnabled:forFeature:))
+                .unwrap();
+            class
+                .verify_sel::<(&AnyObject,), Bool>(sel!(_isEnabledForFeature:))
+                .unwrap();
+        }
     }
 
     /// The tab's key goes in once, as a JSON string, and nothing else answers for it.

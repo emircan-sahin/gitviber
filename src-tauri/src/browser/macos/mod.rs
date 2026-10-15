@@ -35,7 +35,7 @@ use crate::state::Res;
 use block2::{DynBlock, RcBlock};
 use objc2::encode::{Encoding, RefEncode};
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{AnyClass, AnyObject, Bool, NSObject, ProtocolObject, Sel};
+use objc2::runtime::{AnyObject, Bool, NSObject, ProtocolObject, Sel};
 use objc2::{
     available, define_class, msg_send, sel, ClassType, DefinedClass, MainThreadMarker,
     MainThreadOnly,
@@ -51,7 +51,8 @@ use objc2_foundation::{
     NSKeyValueChangeKey, NSKeyValueObservingOptions, NSNumber, NSObjectNSDelayedPerforming,
     NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
     NSURLAuthenticationChallenge, NSURLAuthenticationMethodServerTrust, NSURLCredential,
-    NSURLRequest, NSURLSessionAuthChallengeDisposition as Disposition, NSURL, NSUUID,
+    NSURLRequest, NSURLSessionAuthChallengeDisposition as Disposition, NSUndoManager, NSURL,
+    NSUUID,
 };
 use objc2_web_kit::{
     WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate,
@@ -269,18 +270,19 @@ struct WebIvars {
     menus: Cell<u32>,
     /// The keys its agents hold down, from one command to the next.
     held: RefCell<super::input::Held>,
-    /// Its own undo: an agent's ⌘Z can't reach the app page's edits, and the page's history
-    /// is one whichever window it's in.
-    undo: Retained<AnyObject>,
+    /// Its own undo, apart from the window's: the app page's edits are out of an agent's ⌘Z.
+    undo: Retained<NSUndoManager>,
     /// What an agent's tab's clipboard script answers to (scripts/clipboard.js), and only
     /// that: the page can't switch it.
     clipboard: String,
+    /// The script keeps the page's clipboard calls to the page (on until the user acts here).
+    guarded: Cell<bool>,
 }
 
 define_class!(
     /// The page's view: the app's chords go to the app (see keys.rs), and taking focus says so.
-    // SAFETY: WKWebView allows subclassing; WebView only overrides two NSResponder methods,
-    // calling super, and its ivars need no Drop of their own.
+    // SAFETY: WKWebView allows subclassing; WebView overrides NSResponder and NSView methods,
+    // calling super where WebKit has its own, and its ivars need no Drop of their own.
     #[unsafe(super(WKWebView))]
     #[name = "GitViberBrowserWebView"]
     #[ivars = WebIvars]
@@ -335,29 +337,49 @@ define_class!(
         }
 
         #[unsafe(method(undoManager))]
-        fn undo_manager(&self) -> *mut AnyObject {
+        fn undo_manager(&self) -> *mut NSUndoManager {
             Retained::as_ptr(&self.ivars().undo).cast_mut()
+        }
+
+        /// The user's own press or key here, not an agent's: the page's clipboard calls are
+        /// theirs again (scripts/clipboard.js), as a Copy button they click must work.
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            self.user_acts(event);
+            let _: () = unsafe { msg_send![super(self), mouseDown: event] };
+        }
+
+        #[unsafe(method(rightMouseDown:))]
+        fn right_mouse_down(&self, event: &NSEvent) {
+            self.user_acts(event);
+            let _: () = unsafe { msg_send![super(self), rightMouseDown: event] };
+        }
+
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &NSEvent) {
+            self.user_acts(event);
+            let _: () = unsafe { msg_send![super(self), keyDown: event] };
         }
 
         /// The Edit menu's Undo and Redo, for the page with the window's focus: its history is
         /// its own (`undoManager`), not the window's.
         #[unsafe(method(undo:))]
         fn undo(&self, _sender: Option<&AnyObject>) {
-            let _: () = unsafe { msg_send![&*self.ivars().undo, undo] };
+            self.ivars().undo.undo();
         }
 
         #[unsafe(method(redo:))]
         fn redo(&self, _sender: Option<&AnyObject>) {
-            let _: () = unsafe { msg_send![&*self.ivars().undo, redo] };
+            self.ivars().undo.redo();
         }
 
         #[unsafe(method(validateUserInterfaceItem:))]
         fn validate(&self, item: &AnyObject) -> Bool {
             let action: Option<Sel> = unsafe { msg_send![item, action] };
-            let undo = &*self.ivars().undo;
+            let undo = &self.ivars().undo;
             match action {
-                Some(a) if a == sel!(undo:) => unsafe { msg_send![undo, canUndo] },
-                Some(a) if a == sel!(redo:) => unsafe { msg_send![undo, canRedo] },
+                Some(a) if a == sel!(undo:) => Bool::new(undo.canUndo()),
+                Some(a) if a == sel!(redo:) => Bool::new(undo.canRedo()),
                 _ => unsafe { msg_send![super(self), validateUserInterfaceItem: item] },
             }
         }
@@ -374,6 +396,12 @@ define_class!(
 );
 
 impl WebView {
+    fn user_acts(&self, event: &NSEvent) {
+        if !native::ours(event) && self.ivars().guarded.get() {
+            page_tools::guard_clipboard(self, false);
+        }
+    }
+
     fn focused(&self) -> bool {
         let responder = self.window().and_then(|w| w.firstResponder());
         responder.is_some_and(|r| std::ptr::eq(Retained::as_ptr(&r).cast(), self))
@@ -436,6 +464,8 @@ struct DelegateIvars {
     zoom: Cell<f64>,
     /// Where it draws while an agent's and out of its tab's sight (panel.rs).
     panel: RefCell<Option<Retained<panel::Panel>>>,
+    /// A password field of its page has focus (page_tools.rs SECRET), for its panel's key.
+    secret: Cell<bool>,
     /// Where an agent's pointer last was, in CSS px (native.rs).
     pointer: Cell<Option<(f64, f64)>>,
     /// The files an agent's `upload` gives the next file chooser, and how many it took, or why
@@ -585,12 +615,10 @@ define_class!(
             self.ivars().failed.take();
             self.ivars().committed.set(true);
             page_tools::loaded(self, &url_text(unsafe { web.URL() }));
-            // A page loads with its own clipboard calls the user's, as an agent's command
-            // running on it says otherwise.
-            if !self.ivars().running.borrow().is_empty() {
-                if let Some(web) = self.ivars().web.load() {
-                    page_tools::guard_clipboard(&web, true);
-                }
+            // An agent's page loads guarded (scripts/clipboard.js); one released to the user
+            // is let go at once.
+            if let Some(web) = self.ivars().web.load() {
+                page_tools::guard_clipboard(&web, agent::routed(&self.ivars().id));
             }
             self.changed();
         }
@@ -768,6 +796,7 @@ impl Delegate {
             running: RefCell::default(),
             zoom: Cell::new(1.0),
             panel: RefCell::default(),
+            secret: Cell::new(false),
             pointer: Cell::new(None),
             upload: RefCell::default(),
             chosen: RefCell::default(),
@@ -993,16 +1022,22 @@ pub fn create(
     let parked = VIEWS.with_borrow_mut(|r| r.unpark(id));
 
     let clipboard = NSUUID::new().UUIDString().to_string();
+    let agent = agent::routed(id);
     let config = unsafe { WKWebViewConfiguration::new(mtm) };
     let store = asked(id).store.unwrap_or_else(|| data_store(mtm));
     unsafe {
         config.setWebsiteDataStore(&store);
         // Its own, so none of the app page's scripts (Tauri's IPC) reach this page.
         let content = WKUserContentController::new(mtm);
-        page_tools::install(&content, id, agent::routed(id).then_some(&*clipboard), mtm);
+        page_tools::install(&content, id, agent.then_some(&*clipboard), mtm);
         config.setUserContentController(&content);
         let preferences = config.preferences();
         preferences.setJavaScriptCanOpenWindowsAutomatically(false);
+        if agent && !page_tools::no_async_clipboard(&preferences) {
+            eprintln!(
+                "browser: an agent's tab keeps WebKit's async clipboard; its script guards it"
+            );
+        }
         // Inspect Element in the page's menu; private, so only where WebKit still has it.
         if preferences.respondsToSelector(sel!(_setDeveloperExtrasEnabled:)) {
             let _: () = msg_send![&*preferences, _setDeveloperExtrasEnabled: Bool::YES];
@@ -1013,8 +1048,9 @@ pub fn create(
         app: window.app_handle().clone(),
         menus: Cell::new(0),
         held: RefCell::default(),
-        undo: unsafe { msg_send![AnyClass::get(c"NSUndoManager").ok_or(GONE)?, new] },
+        undo: NSUndoManager::new(mtm),
         clipboard,
+        guarded: Cell::new(agent),
     });
     let web: Retained<WebView> =
         unsafe { msg_send![super(web), initWithFrame: NSRect::ZERO, configuration: &*config] };
@@ -1337,6 +1373,8 @@ fn destroy(v: View) {
         v.web.setUIDelegate(None);
     }
     release_focus(&v);
+    // Out of its panel only once it's let go of being key there (a password field's secure input).
+    panel::resign(&v);
     v.host.removeFromSuperview();
     if let Some(panel) = v.delegate.ivars().panel.take() {
         panel::spare(panel);

@@ -1,11 +1,10 @@
 //! Where an agent's awake tab draws while out of its tab's sight: a panel of its own outside
 //! every screen. WebKit stops a page whose window isn't visible (the main window minimized, the
 //! app hidden), and takes one in a window that isn't key as inactive (no :hover); the panel is
-//! neither while an agent's command runs, and never key in fact, so it takes no keys or focus
-//! from the user. One per tab, as each has its own size (`device WxH`) and its own first
-//! responder: two pages sharing a window couldn't both be focused. A window's backing store at
-//! 2x is about 16 MB for a 1280×800 page, so a released panel or two are kept to be used again
-//! rather than made anew each time a tab goes out of sight.
+//! neither, and never key in fact, so it takes no keys or focus from the user. One per tab, as
+//! each has its own size (`device WxH`) and its own first responder: two pages sharing a window
+//! couldn't both be focused. A released panel or two are kept to be used again rather than
+//! made anew each time a tab goes out of sight.
 
 use super::{content_view, View};
 use objc2::rc::Retained;
@@ -23,20 +22,21 @@ use std::cell::{Cell, RefCell};
 const MARGIN: f64 = 10_000.0;
 /// Released panels kept to be used again.
 const SPARE: usize = 2;
+/// _NSBackingStoreUnbuffered: rendering checked off every screen, page and rAF at full rate.
+const UNBUFFERED: usize = 3;
 
 thread_local! {
     static SPARES: RefCell<Vec<Retained<Panel>>> = RefCell::default();
 }
 
 pub(super) struct PanelIvars {
-    /// Whether it reports itself key: while an agent's command runs on its page.
+    /// Whether it reports itself key (`settle`).
     key: Cell<bool>,
 }
 
 define_class!(
-    /// Reports itself key without becoming key while an agent's command runs, as
-    /// WebKitTestRunner's window does: WebKit draws the page as active (hover, focus) while
-    /// AppKit's key window stays the user's.
+    /// Reports itself key without becoming key: WebKit then draws the page as active (hover,
+    /// focus), while AppKit's key window, and with it the user's keys, stay where they are.
     // SAFETY: NSPanel has no subclassing requirements, and Panel has no Drop.
     #[unsafe(super(NSPanel))]
     #[name = "GitViberBrowserPanel"]
@@ -78,8 +78,11 @@ impl Panel {
             key: Cell::new(false),
         });
         let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
+        // No buffer of its own (unbuffered, private to AppKit), its device made as it's ordered
+        // in: the page draws in its own layers, which a window this far out never shows.
+        let backing = NSBackingStoreType(UNBUFFERED);
         let this: Retained<Self> = unsafe {
-            msg_send![super(this), initWithContentRect: frame(mtm, size), styleMask: style, backing: NSBackingStoreType::Buffered, defer: false]
+            msg_send![super(this), initWithContentRect: frame(mtm, size), styleMask: style, backing: backing, defer: true]
         };
         unsafe { this.setReleasedWhenClosed(false) };
         this.setHasShadow(false);
@@ -161,14 +164,26 @@ pub(super) fn hold(v: &View, size: NSSize) {
     if !v.web.focused() {
         panel.makeFirstResponder(Some(&v.web));
     }
-    activate(v, !v.delegate.ivars().running.borrow().is_empty());
+    settle(v);
 }
 
-/// Its page active, as in the key window, only while an agent's command runs: a page with
-/// focus in a password field would otherwise hold the system's secure input, which takes the
-/// input methods of every app, the user's terminal too. WebKit hears it as the window becoming
-/// or ceasing to be key.
-pub(super) fn activate(v: &View, on: bool) {
+/// Its page active, as in the key window, unless a password field has focus with no agent's
+/// command running: WebKit turns on secure keyboard entry for a focused password field in the
+/// key window, and macOS holds it for the whole system while it's on. Kept active otherwise, so
+/// the page sees no blur and focus at every command's edge.
+pub(super) fn settle(v: &View) {
+    let d = v.delegate.ivars();
+    let idle = d.running.borrow().is_empty();
+    key(v, !(d.secret.get() && idle));
+}
+
+/// Its page no longer active: before it leaves its panel, so no secure input stays on.
+pub(super) fn resign(v: &View) {
+    key(v, false);
+}
+
+/// WebKit hears it as the window becoming or ceasing to be key; only a change is posted.
+fn key(v: &View, on: bool) {
     let Some(panel) = v.delegate.ivars().panel.borrow().clone() else {
         return;
     };
@@ -199,6 +214,7 @@ pub(super) fn spare(panel: Retained<Panel>) {
 
 /// The view back in the main window, hidden there until it's placed, and its panel spared.
 pub(super) fn release(v: &View) {
+    resign(v);
     let Some(panel) = v.delegate.ivars().panel.take() else {
         return;
     };

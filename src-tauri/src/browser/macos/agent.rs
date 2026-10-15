@@ -304,11 +304,12 @@ pub fn agent_running(id: &str, command: u64, on: bool) {
     }
     let idle = running.is_empty();
     drop(running);
-    // The page's clipboard and its panel's key, for the length of an agent's commands.
-    if idle != was_idle {
-        page_tools::guard_clipboard(&v.web, !idle);
-        panel::activate(&v, !idle);
+    // A command guards the page's clipboard again, though the user acted on it since
+    // (scripts/clipboard.js); it stays guarded after. The panel's key may change with it.
+    if was_idle && !idle && routed(id) {
+        page_tools::guard_clipboard(&v.web, true);
     }
+    panel::settle(&v);
     if idle {
         v.web.ivars().menus.set(0);
         restart_idle(&v);
