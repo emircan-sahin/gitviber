@@ -93,6 +93,11 @@ minutes after the build. The user runs it; it launches the app, so the gate abov
   already there, and skip themselves on builds without those commands.
 - Cleanup always runs: test sessions deleted, its screenshots removed, the port's localStorage
   cleared, the app, `tauri dev` and the servers killed, the env file removed.
+- `AGENT_E2E=1` adds `agent_e2e`: a real Claude Code session (`claude -p`, on your account) in
+  the pane fills the test form through `gitviber browser`. It passes when the answer has the
+  request's status, the site saw the submit from a WebKit tab rather than Chrome, and the run used
+  no other browser; only a one-line summary is kept. The dev app writes the skill for it
+  (`GITVIBER_DEV_SKILL=1`), and each skill file is put back as it was found afterwards.
 - Its parsing and table are tested without an app: `zsh .claude/skills/drive-gitviber/browser-check-test.zsh`.
 
 ## Cleanup (always)
