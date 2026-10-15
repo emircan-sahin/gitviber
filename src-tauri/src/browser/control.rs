@@ -40,7 +40,8 @@ when it closes, unless --shared. A tab no command touched for 10 minutes sleeps:
 time parked to save memory, its next command loading it again. Unused for an hour, it closes,
 unless the user has it on show. A popup (window.open, a target=_blank link) opens as another tab
 named for its opener (t1-popup1), in the opener's cookies; a popup that closes itself closes its
-tab. Replies end with what happened meanwhile, each line starting with →.
+tab. A page whose process ends (a crash, memory) loads again; ending again within 30 s, it's left
+stopped. Replies end with what happened meanwhile, each line starting with →.
 
   tab new [name] [url] [--shared] [--session <name>] [--idle <minutes>]
                                Another tab, at url if given; prints its name: the one --tab or

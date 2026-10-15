@@ -359,7 +359,7 @@ fn sweep() {
     let now = Instant::now();
     let app = APP.with(|a| a.get().cloned());
     for id in ROUTES.with_borrow(|r| r.expired(now)) {
-        let busy = view(&id).is_some_and(|v| running(&v));
+        let busy = view(&id).is_some_and(|v| running(&v) || super::crashes::recovering(&v));
         if busy || VIEWS.with_borrow(|r| r.shown(&id)) {
             ROUTES.with_borrow_mut(|r| r.postpone(&id, now));
         } else if let Some(app) = &app {
@@ -460,6 +460,7 @@ pub fn agent_js(
 ) -> Res<()> {
     let mtm = main_thread()?;
     let v = view(id).ok_or(GONE)?;
+    super::crashes::check(&v)?;
     let world = if page {
         unsafe { WKContentWorld::pageWorld(mtm) }
     } else {
@@ -511,6 +512,7 @@ fn js_error(error: &NSError) -> String {
 pub fn agent_page(id: &str) -> Res<(PageState, bool)> {
     main_thread()?;
     let v = view(id).ok_or(GONE)?;
+    super::crashes::check(&v)?;
     Ok((v.delegate.state(&v.web), page_tools::capturing()))
 }
 
@@ -522,6 +524,7 @@ pub fn agent_picture(
 ) -> Res<()> {
     main_thread()?;
     let v = view(id).ok_or(GONE)?;
+    super::crashes::check(&v)?;
     page_tools::picture(&v.web, rect, true, move |image| {
         done(image.as_deref().and_then(page_tools::png))
     });

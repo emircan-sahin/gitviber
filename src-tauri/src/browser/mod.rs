@@ -9,6 +9,7 @@ mod agent;
 pub mod client;
 pub mod console;
 pub mod control;
+mod crashes;
 mod downloads;
 mod keys;
 #[cfg(target_os = "macos")]

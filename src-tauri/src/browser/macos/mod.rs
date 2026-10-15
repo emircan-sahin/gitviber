@@ -5,6 +5,7 @@
 
 mod agent;
 mod cookies;
+mod crashes;
 mod downloads;
 mod page_tools;
 mod page_view;
@@ -353,9 +354,9 @@ struct DelegateIvars {
     network: RefCell<network::Log>,
     /// The picker's tag while it's on (page_tools.rs pick).
     picking: RefCell<Option<String>>,
-    /// The page's process ended once since the user last sent it somewhere: the next time it
-    /// stays down, or a page that kills it on load would reload forever.
-    crashed: Cell<bool>,
+    /// When its process ended and was reloaded (crashes.rs): ending again soon after leaves it
+    /// stopped, or a page that kills it on load would reload forever.
+    crashes: RefCell<super::crashes::Crashes>,
     /// The agent commands running on it now (agent.rs): while any are, it doesn't idle, and its
     /// page's dialogs answer themselves.
     running: RefCell<HashSet<u64>>,
@@ -401,6 +402,13 @@ define_class!(
             agent::idle(&self.ivars().id);
         }
 
+        /// webViewWebContentProcessDidTerminate: with why (WebKit's private delegate method,
+        /// asked for by respondsToSelector: and called in its place).
+        #[unsafe(method(_webView:webContentProcessDidTerminateWithReason:))]
+        fn process_ended_why(&self, web: &WKWebView, reason: isize) {
+            crashes::ended(self, web, Some(reason));
+        }
+
         #[unsafe(method(gvSendConsole))]
         fn send_console(&self) {
             self.ivars().console_pending.set(false);
@@ -436,7 +444,7 @@ define_class!(
                 }
                 Policy::Allow => {
                     if clicked && main {
-                        self.ivars().crashed.set(false);
+                        self.ivars().crashes.borrow_mut().sent();
                     }
                     WKNavigationActionPolicy::Allow
                 }
@@ -525,15 +533,11 @@ define_class!(
             }
         }
 
-        /// The page's process crashed or was reclaimed: loaded again once, rather than blank.
+        /// The page's process crashed or was reclaimed: loaded again, rather than blank
+        /// (crashes.rs). Where WebKit has the private one with its reason, it calls that instead.
         #[unsafe(method(webViewWebContentProcessDidTerminate:))]
         fn process_ended(&self, web: &WKWebView) {
-            if self.ivars().crashed.replace(true) {
-                let message = "The page stopped again after loading once more.".to_string();
-                self.fail(url_text(unsafe { web.URL() }), message);
-            } else {
-                unsafe { web.reload() };
-            }
+            crashes::ended(self, web, None);
         }
     }
 
@@ -658,7 +662,7 @@ impl Delegate {
             console_pending: Cell::new(false),
             network: RefCell::default(),
             picking: RefCell::default(),
-            crashed: Cell::new(false),
+            crashes: RefCell::default(),
             running: RefCell::default(),
             zoom: Cell::new(1.0),
         });
@@ -1140,6 +1144,10 @@ fn begin_park(id: &str, since: u64) {
     let Some(v) = view(id) else {
         return;
     };
+    // Not while it reloads after its process ended: it parks once that's done.
+    if crashes::hold_park(&v, id, since) {
+        return;
+    }
     let parked = Parked {
         url: url_text(unsafe { v.web.URL() }),
         snapshot: None,
@@ -1205,7 +1213,7 @@ fn destroy(v: View) {
 
 /// The user sends the page somewhere: a crash after this may reload it again.
 fn sent(v: &View) {
-    v.delegate.ivars().crashed.set(false);
+    v.delegate.ivars().crashes.borrow_mut().sent();
 }
 
 pub fn navigate(id: &str, url: &str) -> Res<()> {
