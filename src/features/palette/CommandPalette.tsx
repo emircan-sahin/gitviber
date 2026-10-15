@@ -21,7 +21,7 @@ import { usePickerIndex } from "@/hooks/usePickerIndex";
 import { ProjectTile } from "@/features/projects/ProjectList";
 
 /**
- * ⇧⌘P runs any command, ⌘P opens a file, as in VS Code: one box, and a leading ">" in it means
+ * ⇧⌘P runs any command, ⌘P opens a file: one box, and a leading ">" in it means
  * commands. "Open Changed File" lists the changes instead, and opens their diffs; "New Terminal in
  * Project…" the other saved projects, to start a terminal in without switching to them; "Resume a
  * Conversation…" an agent's past conversations in a folder, to pick up in a new terminal there.
@@ -255,7 +255,7 @@ export function CommandPalette() {
   }, [index]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    // The palette's own keys switch it over, as in VS Code.
+    // The palette's own keys switch it over.
     if (matchesCommand("workbench.showCommands", e.nativeEvent)) setQuery(">");
     else if (matchesCommand("workbench.quickOpen", e.nativeEvent) && root) {
       setMode("files");

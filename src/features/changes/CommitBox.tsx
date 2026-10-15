@@ -103,7 +103,7 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
   const pushed = !!amend && !!head && !head.unpushed && !!(status.upstream || status.push?.branch);
   const length = [...draft.summary].length;
 
-  // `then`: push or sync right after, as VS Code's Commit & Push (the top bar's commands do it).
+  // `then`: push or sync right after (the top bar's commands do it).
   // `skipHooks`: this once, from the failed commit's toast.
   const commit = async (then?: "git.push" | "git.sync", skipHooks = false) => {
     if (!canCommit) return;

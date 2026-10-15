@@ -1,7 +1,7 @@
 // Paths the terminal pastes for a dropped or copied file, or a pasted image (clipboard.rs). Pure,
 // so it runs under `node --test`.
 
-/** As Ghostty escapes them: a shell reads it as one word, and an AI CLI still finds the file. */
+/** Escaped, a path is one word to a shell, and an AI CLI still finds the file. */
 const SPECIAL = /[\\ ()[\]{}<>"'`!#$&;|*?\t]/g;
 
 /**

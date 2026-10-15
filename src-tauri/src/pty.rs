@@ -372,8 +372,8 @@ impl Ptys {
         self.with(id, |s| Ok(s.pane.clone())).ok()
     }
 
-    /// The folder a session's shell is in now, asked of the process as VS Code does for a split
-    /// (its own, not the foreground job's): once, on a split or a save, never polled.
+    /// The folder a session's shell is in now, asked of the process (its own,
+    /// not the foreground job's): once, on a split or a save, never polled.
     pub fn cwd(&self, id: u32) -> Option<PathBuf> {
         let pid = self.with(id, |s| Ok(s.shell)).ok()??;
         crate::procinfo::cwd(pid)

@@ -1,6 +1,6 @@
 //! Narrowed lists of pull requests and issues. REST has no author, assignee or label to ask a
-//! PR list for, and the matches may lie ten pages down, so a narrowed list is GitHub's search
-//! (as the pull request extension for VS Code does). "Me" is the login of the token's account,
+//! PR list for, and the matches may lie ten pages down, so a narrowed list is GitHub's search.
+//! "Me" is the login of the token's account,
 //! never `@me`, so it follows the account picked for the repository.
 
 use super::{

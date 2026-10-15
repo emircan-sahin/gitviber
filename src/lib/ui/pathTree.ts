@@ -1,4 +1,4 @@
-/** Flat lists of paths shown as a folder tree (Changes' tree view), as VS Code's Source Control tree does it. */
+/** Flat lists of paths shown as a folder tree (Changes' tree view). */
 
 export interface FolderRow<T> {
   kind: "folder";

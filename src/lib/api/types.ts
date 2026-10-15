@@ -239,7 +239,7 @@ export interface DiffPair {
 /** Whitespace a diff ignores: changes in its amount (git's -b), or all of it (-w). */
 export type Whitespace = "amount" | "all";
 
-/** Search in files (grep.rs): the query and Monaco's toggles, with VS Code's include/exclude globs. */
+/** Search in files (grep.rs): the query and Monaco's toggles, with include/exclude globs. */
 export interface SearchQuery {
   text: string;
   matchCase: boolean;

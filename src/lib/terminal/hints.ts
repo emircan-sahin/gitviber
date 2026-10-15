@@ -6,8 +6,8 @@ import { followTerminalLink, shownLinks, type ShownLink } from "../links/linkHos
 import { HINT_ALPHABET, hintLabels } from "./hintLabels";
 import type { Pane } from "./terminals";
 
-// Link hints: a letter label on every link on a pane's screen, as kitty's hints kitten and Vimium
-// do it. Typing a label opens its link, with Shift copies it; Esc, a scroll or a resize ends them.
+// Link hints: a letter label on every link on a pane's screen.
+// Typing a label opens its link, with Shift copies it; Esc, a scroll or a resize ends them.
 // The labels are a few DOM nodes over the screen, placed by cell: nothing is drawn by the renderer.
 
 interface Session {

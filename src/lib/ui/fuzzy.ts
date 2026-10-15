@@ -79,7 +79,7 @@ export function fuzzyMatch(query: string, text: string): Match | null {
 export const prepareQuery = (q: string) => q.toLowerCase().replace(/\s+/g, "");
 
 /**
- * A path, matched on its file name first, as VS Code does: "fuzzy" finds src/lib/fuzzy.ts before
+ * A path, matched on its file name first: "fuzzy" finds src/lib/fuzzy.ts before
  * src/fuzzy-old/index.ts. Falls back to the whole path, so "lib/fuz" works too.
  */
 export function matchPath(query: string, path: string): Match | null {

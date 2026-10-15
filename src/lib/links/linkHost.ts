@@ -124,7 +124,7 @@ export type TerminalTarget = Target | GitTarget;
 
 const CLICK = `${IS_MAC ? "⌘" : "Ctrl"}-click`;
 
-/** What ⌘-click does, for the hover: as VS Code's terminal says it. */
+/** What ⌘-click does, for the hover. */
 function hint(target: TerminalTarget) {
   const does = "commit" in target ? "Show in History" : "number" in target ? `Open #${target.number}` : "url" in target ? "Follow link" : target.dir ? "Show folder" : "Open file";
   return `${does} (${CLICK})`;

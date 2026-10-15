@@ -18,7 +18,7 @@ export const copyLater = (text: () => Promise<string>, what: string) =>
 export const copyFiles = (paths: string[]) =>
   api.copyFiles(paths).then(() => toast("success", paths.length > 1 ? `${paths.length} files copied` : `${copyNoun(paths)} copied`), failed("Could not copy"));
 
-/** The menu item that copies `paths`: "Copy Image" for one image, as VS Code's image preview names it. */
+/** The menu item that copies `paths`: "Copy Image" for one image. */
 export const copyLabel = (paths: string[]) => (paths.length > 1 ? `Copy ${paths.length} Files` : `Copy ${copyNoun(paths)}`);
 
 // The files clipboard.rs puts a picture on the pasteboard for.

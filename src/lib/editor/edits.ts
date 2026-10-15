@@ -157,7 +157,7 @@ async function write(path: string) {
   const e = edits.get(path);
   if (!e) return true;
   const model = e.model && !e.model.isDisposed() ? e.model : null;
-  // Undo then stops at what was saved, as VS Code's does, instead of taking back the whole run of typing.
+  // Undo then stops at what was saved, instead of taking back the whole run of typing.
   model?.pushStackElement();
   const text = model ? fileText(model) : e.text;
   const version = model?.getAlternativeVersionId();

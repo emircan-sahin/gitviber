@@ -1,4 +1,4 @@
-// What typing follows in a language (VS Code's language-configuration.json): its comments for ⌘/,
+// What typing follows in a language (language-configuration.json): its comments for ⌘/,
 // the brackets and quotes that close themselves, where Enter indents. Shiki colors the code but
 // carries none of it, so it comes from Monaco's own language definitions, loaded as files open, and
 // a table of comment styles for the languages Monaco lacks.
