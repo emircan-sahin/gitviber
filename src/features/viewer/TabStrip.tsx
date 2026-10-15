@@ -36,6 +36,7 @@ function tabLabel(sel: Selection) {
   if (sel.kind === "compare") return `Compare ${compareLabel(sel)}`;
   // A note by its name, as Obsidian's tabs have it.
   if (sel.kind === "vault") return noteName(sel.path);
+  if (sel.kind === "external") return basename(sel.path);
   return isFileSelection(sel) ? basename(selectionPath(sel)) : selectionPath(sel);
 }
 

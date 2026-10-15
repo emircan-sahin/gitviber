@@ -28,7 +28,7 @@ import { treeKey, treeRows, useLazyTree } from "./lazyTree";
 export interface FileTreeHandle {
   collapseAll: () => void;
   /** Opens the folders down to `path`, selects it and focuses the tree; `focus` false leaves focus and the filter be. */
-  reveal: (path: string, focus?: boolean) => void;
+  reveal: (path: string, focus?: boolean, enter?: boolean) => void;
   /** Opens the filter, as Find does with focus in the tree. */
   filter: () => void;
 }
@@ -105,10 +105,10 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   /** A folder the filter holds open around its matches. */
   const heldOpen = (path: string) => !!matching?.children[path];
 
-  /** Opens the folders down to `path` and scrolls to it once its row is there. */
-  const openTo = (path: string) => {
+  /** Opens the folders down to `path` (and `path` itself when it's a folder to go into) and scrolls to it once its row is there. */
+  const openTo = (path: string, enter = false) => {
     const parts = path.split("/");
-    const dirs = parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join("/"));
+    const dirs = (enter ? parts : parts.slice(0, -1)).map((_, i) => parts.slice(0, i + 1).join("/"));
     setExpanded((x) => new Set([...x, ...dirs]));
     dirs.forEach((d) => loadDir(d));
     revealing.current = path;
@@ -121,10 +121,10 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
       setPicked(null);
       setSelected((s) => s && s.split("/")[0]);
     },
-    reveal: (path, focus = true) => {
+    reveal: (path, focus = true, enter = false) => {
       // Picked along with a file opened elsewhere, the user's filter stays: leaving it shows the pick.
       if (focus) filter.close();
-      openTo(path);
+      openTo(path, enter);
       setSelected(path);
       setPicked(null);
       if (focus) treeRef.current?.focus();

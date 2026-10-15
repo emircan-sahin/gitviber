@@ -3,9 +3,10 @@
 // Definition (lib/editor/definitions) and the terminal (terminalLinks below), whose links also
 // reach commits (History), and pull requests and issues (their tabs) of the repo.
 import type { IBufferRange, IDisposable, ILink, Terminal } from "@xterm/xterm";
-import { api, fullName, type GitHubAccount, github, type Issue, issues, type Pull, repoOf, toIssue, toPull } from "../api";
+import { api, type ExternalFound, externalApi, fullName, type GitHubAccount, github, type Issue, issues, type Pull, repoOf, toIssue, toPull } from "../api";
+import { isLocalUrl } from "../browser/url";
 import { IS_MAC, primaryKey } from "../platform";
-import { type Alias, cellText, diskCandidates, diskTarget, type FileIndex, findTerminalLinks, folders, githubItem, hyperlinkTarget, indexCase, indexFiles, type Link, LINK_WINDOW, loadAliases, resolveLink, resolveTerminalLink, type Target } from "./links";
+import { type Alias, cellText, diskCandidates, diskTarget, type FileIndex, findTerminalLinks, folders, githubItem, hardWrapIndent, hyperlinkTarget, indexCase, indexFiles, type Link, LINK_WINDOW, loadAliases, resolveLink, resolveTerminalLink, splitPosition, type Target } from "./links";
 import { dirname, slashes } from "../path";
 import { failed } from "../app/toast";
 import { revealInCode } from "../editor/reveal";
@@ -37,6 +38,10 @@ interface LinkHost {
   github: string | null;
   /** A commit, by its full id, opened in History. */
   showCommit(sha: string): void;
+  /** A file outside the repo, read-only in a tab, at its line when it has one. */
+  openExternal(path: string, line?: { line: number; column: number }): void;
+  /** A page on this machine (a dev server), in a browser tab. */
+  openPage(url: string): void;
   /** A pull request or an issue, in its tab. */
   openItem(item: { kind: "pull"; pull: Pull } | { kind: "issue"; issue: Issue }): void;
 }
@@ -120,20 +125,27 @@ export function openTargetIn(root: string, target: Target) {
  * (`pull`: the URL said which; `repo`: its https://github.com/owner/name).
  */
 type GitTarget = { commit: string } | { number: number; pull: boolean; repo: string };
-export type TerminalTarget = Target | GitTarget;
+/** A file or folder outside the repo, by its real path: a file opens read-only, a folder in the file manager. */
+type ExternalTarget = { external: string; line?: number; column?: number; dir?: boolean };
+export type TerminalTarget = Target | GitTarget | ExternalTarget;
 
 const CLICK = `${IS_MAC ? "⌘" : "Ctrl"}-click`;
 
 /** What ⌘-click does, for the hover. */
 function hint(target: TerminalTarget) {
-  const does = "commit" in target ? "Show in History" : "number" in target ? `Open #${target.number}` : "url" in target ? "Follow link" : target.dir ? "Show folder" : "Open file";
+  const does = "external" in target ? (target.dir ? "Show in the file manager" : "Open file") : "commit" in target ? "Show in History" : "number" in target ? `Open #${target.number}` : "url" in target ? (isLocalUrl(target.url) ? "Open in a browser tab" : "Follow link") : target.dir ? "Show folder" : "Open file";
   return `${does} (${CLICK})`;
 }
 
 /** A terminal link: a page in the browser, a file in the code view and shown in the explorer, a folder in the explorer, a commit in History, a pull request or issue in its tab. */
 export function followTerminalLink(target: TerminalTarget) {
+  if ("external" in target) {
+    if (target.dir) return void externalApi.reveal(target.external).catch(failed("Could not show the folder"));
+    return host?.openExternal(target.external, target.line ? { line: target.line, column: target.column ?? 1 } : undefined);
+  }
   if ("commit" in target) return host?.showCommit(target.commit);
   if ("number" in target) return void openItem(target);
+  if ("url" in target && host && isLocalUrl(target.url)) return host.openPage(target.url);
   if ("url" in target || !host) return openTarget(target, true);
   if (target.dir) return host.reveal(target.path, true);
   openTarget(target, true);
@@ -277,10 +289,10 @@ export function terminalLinks(term: Terminal, cwd: () => string): IDisposable {
         return start.y <= y && end.y >= y && line.whole(l);
       });
       if (!found.length || !host) return callback(undefined);
-      void targetsOf(found, host, cwd()).then((targets) => {
+      let above: string[] | undefined;
+      void targetsOf(found, host, cwd(), () => (above ??= contextDirs(term, y - 1))).then((resolved) => {
         if (ask !== asked) return;
-        const links = found.flatMap((l, i): ILink[] => {
-          const target = targets[i];
+        const links = resolved.flatMap(({ link: l, target }): ILink[] => {
           if (!target) return [];
           return [{ range: line.range(l), text: l.spec, hover: () => title(hint(target)), leave: () => title(null), activate: (e) => primaryKey(e) && followTerminalLink(target) }];
         });
@@ -299,13 +311,22 @@ export function terminalLinks(term: Terminal, cwd: () => string): IDisposable {
 function logicalLine(term: Terminal, y: number) {
   const buf = term.buffer.active;
   const reach = Math.ceil(LINK_WINDOW / term.cols) + 1;
+  const nullCell = buf.getNullCell();
+  // A row goes on from the one above: the terminal wrapped it, or the program cut a path at the edge
+  // and indented the rest (the indent is then how many cells to leave out), else null.
+  const joined = (row: number) => {
+    const line = buf.getLine(row);
+    if (!line || row <= 0) return null;
+    return line.isWrapped ? 0 : hardWrapIndent(buf.getLine(row - 1), line, term.cols, nullCell);
+  };
   let first = y;
-  while (first > y - reach && first > 0 && buf.getLine(first)?.isWrapped) first--;
+  while (first > y - reach && first > 0 && joined(first) !== null) first--;
   let last = y;
-  while (last < y + reach && buf.getLine(last + 1)?.isWrapped) last++;
-  const [cutBefore, cutAfter] = [!!buf.getLine(first)?.isWrapped, !!buf.getLine(last + 1)?.isWrapped];
+  while (last < y + reach && joined(last + 1) !== null) last++;
+  const [cutBefore, cutAfter] = [joined(first) !== null, joined(last + 1) !== null];
   const rows = Array.from({ length: last - first + 1 }, (_, i) => buf.getLine(first + i));
-  const { text, cells, starts } = cellText(rows, term.cols, buf.getNullCell());
+  const skip = rows.map((_, i) => (i ? (joined(first + i) ?? 0) : 0));
+  const { text, cells, starts } = cellText(rows, term.cols, nullCell, skip);
   const cellAt = (c: number) => ({ x: (c % term.cols) + 1, y: first + Math.floor(c / term.cols) + 1 });
   const range = (l: Link): IBufferRange => ({ start: cellAt(cells[l.start]), end: cellAt(cells[l.end] - 1) });
   const whole = (l: Link) => (!cutBefore || l.start > 0) && (!cutAfter || l.end < text.length);
@@ -317,7 +338,24 @@ function logicalLine(term: Terminal, y: number) {
  * the file list or else the disk; SHAs the repo knows; #123 when origin is on GitHub. Commits and
  * issues only from a shell in this checkout, whose repo they'd be.
  */
-async function targetsOf(found: Link[], h: LinkHost, cwd: string): Promise<(TerminalTarget | null)[]> {
+async function targetsOf(found: Link[], h: LinkHost, cwd: string, dirsFor?: (i: number) => string[]): Promise<{ link: Link; target: TerminalTarget | null }[]> {
+  // A path with spaces: the readings that run on past the link, asked along with the links. The
+  // longest that's there wins and takes the words it spans, whose own links are dropped.
+  const extra = found.flatMap((l, i) => (l.longer ?? []).map((link) => ({ i, link })));
+  const all = await resolveAll([...found, ...extra.map((e) => e.link)], h, cwd, dirsFor);
+  const out = found.map((link, i) => ({ link, target: all[i] }));
+  const taken = new Set<number>();
+  extra.forEach((e, k) => {
+    const target = all[found.length + k];
+    if (target && !taken.has(e.i)) {
+      taken.add(e.i);
+      out[e.i] = { link: e.link, target };
+    }
+  });
+  return out.map((o, j) => (!taken.has(j) && [...taken].some((i) => i !== j && found[j].start >= out[i].link.start && found[j].start < out[i].link.end) ? { link: o.link, target: null } : o));
+}
+
+async function resolveAll(found: Link[], h: LinkHost, cwd: string, dirsFor?: (i: number) => string[]): Promise<(TerminalTarget | null)[]> {
   // Windows paths come with backslashes; the index and the links have forward ones.
   const [root, from] = [slashes(h.root), slashes(cwd)];
   const dir = from === root ? "" : from.startsWith(`${root}/`) ? from.slice(root.length + 1) : null;
@@ -350,7 +388,63 @@ async function targetsOf(found: Link[], h: LinkHost, cwd: string): Promise<(Term
     if (hit) targets[i] = diskTarget(found[i].spec, hit.path, hit.kind);
     at += paths.length;
   });
+  await outside(found, targets);
+  // A bare name (`- p4.png`) under a line that names its folder is in that folder.
+  const retry = found.flatMap((l, i) => (targets[i] || !dirsFor || l.kind !== "file" || /[\\/]/.test(splitPosition(l.spec).path) ? [] : dirsFor(i).map((d) => ({ i, link: { ...l, spec: `${d}/${l.spec}` } }))));
+  if (retry.length) {
+    const again = await resolveAll(retry.map((r) => r.link), h, cwd);
+    retry.forEach((r, k) => {
+      if (!targets[r.i]) targets[r.i] = again[k];
+    });
+  }
   return targets;
+}
+
+/**
+ * The folders the output above row `y` (0-based) names, nearest first: a path ending in `/`, or the
+ * folder of a file path. A program lists files by their names under a line that says where they are.
+ */
+function contextDirs(term: Terminal, y: number) {
+  const dirs: string[] = [];
+  for (let r = logicalLine(term, y).first - 1, seen = 0; r >= 0 && seen < CONTEXT_LINES && dirs.length < 4; seen++) {
+    const line = logicalLine(term, r);
+    for (const l of findTerminalLinks(line.text).reverse()) {
+      const { path } = splitPosition(l.spec);
+      const dir = l.kind !== "file" ? null : path.endsWith("/") ? path.slice(0, -1) : path.includes("/") ? dirname(path) : null;
+      if (dir && !dirs.includes(dir)) dirs.push(dir);
+    }
+    r = line.first - 1;
+  }
+  return dirs;
+}
+
+// How far up the output a bare name looks for its folder.
+const CONTEXT_LINES = 40;
+
+// What the disk said of absolute paths outside the repo, as they were found: a file that isn't
+// there yet is asked again on the next hover, so only answers are kept.
+const outsideKnown = new Map<string, ExternalFound>();
+
+/** Absolute and `~` paths no repo file or folder answered to: a file or folder elsewhere on disk. */
+async function outside(found: Link[], targets: (TerminalTarget | null)[]) {
+  const ask = found.flatMap((l, i) => {
+    if (targets[i] || l.kind !== "file") return [];
+    const { path } = splitPosition(l.spec);
+    return /^(?:\/|~\/|~$|[A-Za-z]:[\\/])/.test(path) && !/^[\d/]+$/.test(path) ? [{ i, path }] : [];
+  });
+  const paths = [...new Set(ask.map((a) => a.path).filter((p) => !outsideKnown.has(p)))].slice(0, 50);
+  if (paths.length) {
+    const hits = await externalApi.find(paths).catch(() => paths.map(() => null));
+    if (outsideKnown.size > 500) outsideKnown.clear();
+    paths.forEach((p, n) => hits[n] && outsideKnown.set(p, hits[n]));
+  }
+  for (const { i, path } of ask) {
+    const hit = outsideKnown.get(path);
+    if (!hit) continue;
+    const { line, column } = splitPosition(found[i].spec);
+    if (hit.kind === "file") targets[i] = { external: hit.path, line, column };
+    else if (!line) targets[i] = { external: hit.path, dir: true };
+  }
 }
 
 /** A link on screen in a terminal: its cells (1-based, as xterm's links), its text and where it goes. */
@@ -369,24 +463,27 @@ export async function shownLinks(term: Terminal, cwd: string): Promise<ShownLink
   if (!h) return [];
   const top = term.buffer.active.viewportY;
   const bottom = top + term.rows - 1;
-  const found: { link: Link; range: IBufferRange }[] = [];
+  const found: { link: Link; range: IBufferRange; line: ReturnType<typeof logicalLine> }[] = [];
   for (let y = top; y <= bottom; ) {
     const line = logicalLine(term, y);
     for (const l of findTerminalLinks(line.text)) {
       const range = line.range(l);
       // Labelled at its first cell, which must be on screen.
-      if (line.whole(l) && range.start.y - 1 >= top && range.start.y - 1 <= bottom) found.push({ link: l, range });
+      if (line.whole(l) && range.start.y - 1 >= top && range.start.y - 1 <= bottom) found.push({ link: l, range, line });
     }
     y = Math.max(line.last, y) + 1;
   }
   if (!found.length) return [];
+  const above = new Map<number, string[]>();
   const targets = await targetsOf(
     found.map((f) => f.link),
     h,
     cwd,
+    (i) => {
+      const row = logicalLine(term, found[i].range.start.y - 1).first;
+      if (!above.has(row)) above.set(row, contextDirs(term, row));
+      return above.get(row)!;
+    },
   );
-  return found.flatMap((f, i) => {
-    const target = targets[i];
-    return target ? [{ range: f.range, text: f.link.spec, target }] : [];
-  });
+  return targets.flatMap(({ link, target }, i) => (target ? [{ range: found[i].line.range(link), text: link.spec, target }] : []));
 }

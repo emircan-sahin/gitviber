@@ -47,6 +47,8 @@ export type Selection =
   | { kind: "files"; file: FileChange }
   // A file in an Obsidian vault (`vault`: its folder), outside the repo; `path` is vault-relative.
   | { kind: "vault"; vault: string; path: string }
+  // A file outside the repo (`path`: its real, absolute path) that a terminal link named, read-only.
+  | { kind: "external"; path: string }
   // An agent's guided review (features/review/GuideView) of a commit, of HEAD's branch since
   // `base` (a full ref, `label` its short name), of a pull request (`target`: the repo it's on), or
   // of the worktree's uncommitted changes.
@@ -87,7 +89,7 @@ const rangeScope = (range: PullRange) => `${range.number ?? ""}@${range.base}..$
 
 /** File path for file-like tabs; for a PR or issue overview, a label. */
 export function selectionPath(s: Selection) {
-  if (s.kind === "file" || s.kind === "vault") return s.path;
+  if (s.kind === "file" || s.kind === "vault" || s.kind === "external") return s.path;
   if (s.kind === "pull") return `#${s.pull.number} ${s.pull.title}`;
   if (s.kind === "issue") return `#${s.issue.number} ${s.issue.title}`;
   if (s.kind === "changes") return s.list === "commit" ? `Commit ${s.commit.shortSha}` : s.list === "range" ? `All Changes · ${rangeLabel(s.range)}` : LIST_TITLES[s.list];
@@ -122,6 +124,7 @@ export function selectionKey(s: Selection) {
   if (s.kind === "pull") return `pull:${s.pull.url}`;
   if (s.kind === "issue") return `issue:${s.issue.url}`;
   if (s.kind === "vault") return `vault:${s.vault}:${s.path}`;
+  if (s.kind === "external") return `external:${s.path}`;
   // The same tab as its page moves on.
   if (s.kind === "browser") return `browser::${s.id}`;
   // A PR file by its commits too, as its range's list is.

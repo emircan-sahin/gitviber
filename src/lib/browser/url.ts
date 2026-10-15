@@ -71,5 +71,15 @@ export function isFrameable(url: string): boolean {
   }
 }
 
+/** A page served on this machine (a dev server's), which a tab shows; any other address is the system browser's. */
+export function isLocalUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return (u.protocol === "http:" || u.protocol === "https:") && /^(?:localhost|[\w-]+\.localhost|127(?:\.\d{1,3}){1,3}|0\.0\.0\.0|\[::1?\])$/i.test(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
 /** A port's page on this machine. */
 export const portUrl = (port: number) => `http://localhost:${port}/`;

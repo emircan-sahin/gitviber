@@ -10,7 +10,7 @@ import { warmHighlighter } from "@/lib/editor/highlight";
 import { setLinkHost } from "@/lib/links/linkHost";
 import { prepare } from "@/lib/editor/monaco";
 import { useCommands, useShortcut } from "@/lib/commands/keybindings";
-import { dropReveal, revealWaits } from "@/lib/editor/reveal";
+import { dropReveal, revealInCode, revealWaits } from "@/lib/editor/reveal";
 import { type ChangeList, type ComparePoint, onDisk, type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
 import { useCompareAsk } from "@/lib/repo/compareRequest";
 import { defaultPoints } from "@/lib/git/comparePoints";
@@ -23,7 +23,7 @@ import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
 import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
 import { goGroup, stepGroup, unmaximize, useTerminalsMaximized, useTerminalsOpen, useTerminalTabCount } from "@/lib/terminal/terminals";
 import { useRepo } from "@/lib/repo/useRepo";
-import { type OpenedRepo, vaultApi } from "@/lib/api";
+import { externalApi, type OpenedRepo, vaultApi } from "@/lib/api";
 import { failed } from "@/lib/app/toast";
 import { IS_LINUX, REVEAL_FAILED } from "@/lib/platform";
 import { reviewBase, shortRef } from "@/lib/git/refs";
@@ -209,11 +209,11 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     const at = open.indexOf(focusedPanel() as Panel);
     focusPanel(open[at < 0 ? (dir > 0 ? 0 : open.length - 1) : (at + dir + open.length) % open.length]);
   };
-  const revealInExplorer = useCallback((path: string) => {
+  const revealInExplorer = useCallback((path: string, enter = false) => {
     sidebars.expand("files");
     setExplorerView("files");
     // Once the tree shows: a hidden one can't take focus.
-    requestAnimationFrame(() => fileTree.current?.reveal(path));
+    requestAnimationFrame(() => fileTree.current?.reveal(path, true, enter));
   }, []);
   const showInHistory = useCallback((search: HistorySearch) => {
     setHistorySearch(search);
@@ -304,10 +304,13 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     focusPanel("code");
     open({ kind: "compare", base: sides.base ?? start.base, head: sides.head ?? start.head, mergeBase: true }, true);
   };
-  const openPage = (url: string) => {
-    focusPanel("code");
-    open({ kind: "browser", id: crypto.randomUUID(), url }, true);
-  };
+  const openPage = useCallback(
+    (url: string) => {
+      focusPanel("code");
+      open({ kind: "browser", id: crypto.randomUUID(), url }, true);
+    },
+    [open],
+  );
   // A port opened from a terminal's menu, which doesn't hold the tabs.
   const pageAsk = usePageAsk();
   const pageHandled = useRef(pageAsk?.id ?? 0);
@@ -442,7 +445,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   // can't land on a later visit (a file too large to show never takes it).
   useEffect(() => {
     const t = tabs.find((x) => x.key === activeKey);
-    if (t?.sel.kind !== "file" || !revealWaits(t.sel.path)) dropReveal();
+    if ((t?.sel.kind !== "file" && t?.sel.kind !== "external") || !revealWaits(t.sel.path)) dropReveal();
     // On a tab switch, not on every tab list change.
   }, [activeKey]);
 
@@ -460,14 +463,20 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
       },
       // A file opened from the terminal is picked in the explorer too; a closed explorer stays closed.
       reveal: (path, show) => {
-        if (show) revealInExplorer(path);
+        if (show) revealInExplorer(path, true);
         else if (!sidebars.isCollapsed("files")) fileTree.current?.reveal(path, false);
       },
       github: webUrl,
       showCommit,
+      openExternal: (path, line) => {
+        if (line) revealInCode({ path, ...line });
+        focusPanel("code");
+        open({ kind: "external", path }, true);
+      },
+      openPage,
       openItem: (item) => open(item, true),
     });
-  }, [root, repo.worktrees, repo.revision, open, revealInExplorer, webUrl, showCommit]);
+  }, [root, repo.worktrees, repo.revision, open, openPage, revealInExplorer, webUrl, showCommit]);
   useEffect(() => () => setLinkHost(null), []);
 
   const changeCount = uncommitted.length;
@@ -764,6 +773,7 @@ function FocusLine() {
 /** The open file's working copy (a vault file's too), else the repository's folder (a PR or an issue has no file). */
 function revealInFinder(sel: Selection | undefined) {
   if (sel?.kind === "vault") return void vaultApi.reveal(sel.vault, sel.path).catch(failed(REVEAL_FAILED));
+  if (sel?.kind === "external") return void externalApi.reveal(sel.path).catch(failed(REVEAL_FAILED));
   const path = sel && ["file", "unstaged", "staged", "conflict", "branch"].includes(sel.kind) ? selectionPath(sel) : "";
   void revealPath(path);
 }

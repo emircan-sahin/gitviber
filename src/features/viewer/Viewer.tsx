@@ -34,6 +34,7 @@ import { AllChanges } from "./AllChanges";
 import { CompareView } from "@/features/compare/CompareView";
 import { GuideView } from "@/features/review/GuideView";
 import { VaultView } from "@/features/obsidian/VaultView";
+import { ExternalView } from "./ExternalView";
 import { BrowserView } from "@/features/browser/BrowserView";
 import { diffNote, placeholderFor } from "./placeholders";
 import { FileHeaderPath, Placeholder } from "./FileHeader";
@@ -100,6 +101,8 @@ export function Viewer(props: ViewerProps) {
             <GuideView sel={active.sel} {...props} />
           ) : active.sel.kind === "vault" ? (
             <VaultView tab={active} sel={active.sel} onOpen={props.onOpen} />
+          ) : active.sel.kind === "external" ? (
+            <ExternalView tab={active} sel={active.sel} />
           ) : active.sel.kind === "browser" ? (
             <BrowserView tabKey={active.key} sel={active.sel} root={props.root} onUpdate={props.onUpdate} />
           ) : (

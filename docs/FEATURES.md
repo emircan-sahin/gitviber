@@ -132,6 +132,12 @@ server or talk to the agent without leaving the change you're reading.
 ### Links
 
 - `⌘`-click a path it prints to open the file at that line, or a folder to show it in the explorer.
+  A path that a program like Claude Code wrapped over two rows is still one link. A file outside
+  the repo (an agent's screenshot in `/tmp`, `~/notes.md`) opens read-only in a tab, an image as
+  an image, and a folder outside it shows in the file manager. A bare name under a line that names
+  its folder (`- p4.png` after `…/onb-c/ içinde:`) opens from that folder, and a path with spaces
+  (a macOS screenshot, `~/Desktop/Ekran Resmi 2026-10-15 18.34.46.png`) is one link.
+- A link to a page on this machine (`localhost:3000`) opens in a browser tab, any other in your browser.
 - A commit's SHA opens it in History. `#123` or a link to one of the repo's pull requests or issues
   opens it in its own tab.
 - `⌃⇧Space` puts a letter on every one of those links on screen, in vim or Claude Code too: type it

@@ -13,6 +13,7 @@ pub mod dev_bundle;
 mod diff;
 mod display;
 mod errors;
+mod external;
 mod fs;
 mod git;
 mod github;
@@ -242,6 +243,10 @@ pub fn run() {
             commands::files::list_files,
             commands::files::list_ignored,
             commands::files::path_kinds,
+            commands::files::external_find,
+            commands::files::external_read_file,
+            commands::files::external_media,
+            commands::files::external_reveal,
             commands::files::file_mtimes,
             commands::files::search_files,
             commands::changes::change_lines,

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BLANK, isFrameable, isPageUrl, normalizeUrl, pageHost, pageLabel } from "./url.ts";
+import { BLANK, isFrameable, isLocalUrl, isPageUrl, normalizeUrl, pageHost, pageLabel } from "./url.ts";
 
 test("a port, this machine and the LAN load over http; a name with a dot over https", () => {
   const cases: [string, string][] = [
@@ -207,4 +207,9 @@ test("a port with a path, query or hash is this machine's page there", () => {
   ];
   for (const [typed, url] of cases) assert.equal(normalizeUrl(typed), url, typed);
   for (const typed of ["0/x", "70000/x", "5199x", "5199 /x"]) assert.equal(normalizeUrl(typed), null, typed);
+});
+
+test("a dev server's address is this machine's; another's is not", () => {
+  for (const url of ["http://localhost:3000/", "https://localhost/", "http://127.0.0.1:5173/a?b#c", "http://app.localhost:3000/", "http://0.0.0.0:8080/", "http://[::1]:3000/"]) assert.equal(isLocalUrl(url), true, url);
+  for (const url of ["https://example.dev/", "http://192.168.1.5:3000/", "http://localhost.evil.example/", "http://127.0.0.1.evil.example/", "file:///tmp/x", "javascript:alert(1)", "nope"]) assert.equal(isLocalUrl(url), false, url);
 });

@@ -1,5 +1,5 @@
 use crate::state::{blocking, in_repo, AppState, Res};
-use crate::{clipboard, definitions, fs, git, grep, open_in};
+use crate::{clipboard, definitions, external, fs, git, grep, open_in};
 use tauri::State;
 
 #[tauri::command]
@@ -118,6 +118,30 @@ pub async fn path_kinds(
     paths: Vec<String>,
 ) -> Res<Vec<Option<fs::Kind>>> {
     in_repo(&state, move |r| Ok(fs::kinds(r, &paths))).await
+}
+
+/// Absolute and `~` paths outside the repo that terminal links name (lib/links): what each is
+/// on disk, to show read-only. Nothing here writes.
+#[tauri::command]
+pub async fn external_find(paths: Vec<String>) -> Res<Vec<Option<external::Found>>> {
+    blocking(move || Ok(external::find(&paths))).await
+}
+
+#[tauri::command]
+pub async fn external_read_file(path: String) -> Res<git::FileText> {
+    blocking(move || Ok(external::read_file(&path))).await
+}
+
+/// Raw bytes, as `media`.
+#[tauri::command]
+pub async fn external_media(path: String) -> Res<tauri::ipc::Response> {
+    let bytes = blocking(move || external::read_media(&path)).await?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[tauri::command]
+pub async fn external_reveal(path: String) -> Res<()> {
+    blocking(move || external::reveal(&path)).await
 }
 
 /// When each path (repo-relative) was last modified, in ms since 1970; None: not on disk.
