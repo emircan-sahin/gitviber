@@ -71,6 +71,8 @@ pub fn forget(pty: u32) {
 /// What pane `pty` hasn't been told yet, as a reply from tab `on` tells it; for output::finish
 /// to mark and clean with the rest.
 pub fn take(pty: u32, on: Option<&str>) -> Vec<String> {
+    // Downloads ended since the pane's last reply, unless a wait on their tab took them.
+    super::downloads::deliver(pty);
     notes().take(pty, on)
 }
 

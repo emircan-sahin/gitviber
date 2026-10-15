@@ -1,7 +1,8 @@
 //! What an agent's tab downloads (macos/downloads.rs): saved in a folder of the tab's own under
 //! the app's cache, never the repository or ~/Downloads, gone with the tab; `downloads` lists
-//! it and `wait --download` waits for the next. Each is told once: to the wait on as it ends,
-//! else in the pane's next reply. Apart from AppKit, so it can be tested.
+//! it and `wait --download` waits for the next. Each is told once, by the pane's next reply
+//! after it ends: a `wait --download` on its tab returns it, any other reply notes it. Apart
+//! from AppKit, so it can be tested.
 
 use super::control::Reply;
 use super::notes;
@@ -186,13 +187,14 @@ impl Outcome {
     }
 }
 
-/// A tab's downloads going, and the ones that ended while a `wait` was on, for it to tell.
+/// A tab's downloads going, and the ones ended that no reply has told yet.
 #[derive(Default)]
 struct Tab {
     busy: HashSet<PathBuf>,
-    handed: Vec<Outcome>,
+    ended: Vec<Outcome>,
+    /// A `wait --download` is on it: its ended ones are the wait's, not another reply's.
     waiting: bool,
-    /// Its pane and name, for a note of one handed to a wait that ended first.
+    /// Its pane and name, for the note another reply tells.
     pane: Option<(u32, String)>,
 }
 
@@ -221,7 +223,8 @@ impl Downloads {
         path
     }
 
-    /// One of the tab's ended: handed to the wait on (true), else for a note to tell (false).
+    /// One of the tab's ended, held for the next reply to tell: whether a wait is on to take it.
+    /// Nothing for a tab gone meanwhile.
     pub fn ended(&mut self, id: &str, path: Option<&Path>, outcome: Outcome) -> bool {
         let Some(tab) = self.tabs.get_mut(id) else {
             return false;
@@ -229,9 +232,7 @@ impl Downloads {
         if let Some(path) = path {
             tab.busy.remove(path);
         }
-        if tab.waiting {
-            tab.handed.push(outcome);
-        }
+        tab.ended.push(outcome);
         tab.waiting
     }
 
@@ -241,15 +242,28 @@ impl Downloads {
 
     fn take(&mut self, id: &str) -> Option<Outcome> {
         let tab = self.tabs.get_mut(id)?;
-        (!tab.handed.is_empty()).then(|| tab.handed.remove(0))
+        (!tab.ended.is_empty()).then(|| tab.ended.remove(0))
     }
 
-    /// The wait is over: what it was handed and didn't tell, with the tab's pane for the notes.
-    fn stop(&mut self, id: &str) -> Option<((u32, String), Vec<Outcome>)> {
-        let tab = self.tabs.get_mut(id)?;
-        tab.waiting = false;
-        let left = std::mem::take(&mut tab.handed);
-        Some((tab.pane.clone()?, left)).filter(|(_, left)| !left.is_empty())
+    fn stop(&mut self, id: &str) {
+        if let Some(tab) = self.tabs.get_mut(id) {
+            tab.waiting = false;
+        }
+    }
+
+    /// What pane `pty`'s reply tells of its tabs' downloads, as notes: (tab id, name, note).
+    /// Not one a wait is on, which takes its own.
+    fn told(&mut self, pty: u32) -> Vec<(String, String, String)> {
+        let mut told = vec![];
+        for (id, tab) in &mut self.tabs {
+            let Some((_, name)) = tab.pane.as_ref().filter(|p| p.0 == pty && !tab.waiting) else {
+                continue;
+            };
+            for outcome in tab.ended.drain(..) {
+                told.push((id.clone(), name.clone(), outcome.note()));
+            }
+        }
+        told
     }
 
     fn busy(&self) -> HashSet<PathBuf> {
@@ -277,26 +291,30 @@ pub fn state() -> MutexGuard<'static, Downloads> {
     STATE.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// `wait --download`: the next download of tab `id` to end.
+/// Pane `pty`'s downloads no reply has told, now notes for the one being made (notes.rs).
+pub fn deliver(pty: u32) {
+    let told = state().told(pty);
+    for (id, name, note) in told {
+        notes::note(pty, Some((&id, &name)), note);
+    }
+}
+
+/// `wait --download`: the download of tab `id` that ended since the pane's last reply, else the
+/// next to end.
 pub fn wait(id: &str, timeout: Duration) -> Res<String> {
     let until = Instant::now() + timeout;
     state().wait_on(id);
-    let (outcome, left) = loop {
+    let outcome = loop {
         let mut s = state();
         let outcome = s.take(id);
         if outcome.is_some() || Instant::now() >= until {
-            // Taken and stopped in one hold of the lock: one ending now is this wait's or a
-            // note's, never neither.
-            break (outcome, s.stop(id));
+            // In one hold of the lock: one ending now is this wait's, or held for its reply.
+            s.stop(id);
+            break outcome;
         }
         drop(s);
         std::thread::sleep(POLL);
     };
-    if let Some(((pty, name), left)) = left {
-        for outcome in left {
-            notes::note(pty, Some((id, &name)), outcome.note());
-        }
-    }
     match outcome {
         Some(Outcome::Done {
             name,
@@ -518,39 +536,79 @@ mod tests {
         let _ = std::fs::remove_dir_all(&cache);
     }
 
-    #[test]
-    fn each_download_is_told_once_to_the_wait_on_or_in_a_note() {
-        let mut d = Downloads::default();
-        let done = |name: &str| Outcome::Done {
+    fn done(name: &str) -> Outcome {
+        Outcome::Done {
             name: name.into(),
             path: PathBuf::from(format!("/c/{name}")),
-            size: 24 * 1024,
+            size: 24,
             mime: "application/pdf".into(),
-        };
+        }
+    }
+
+    #[test]
+    fn a_download_is_held_for_the_next_reply_and_a_wait_on_keeps_its_own() {
+        let mut d = Downloads::default();
         d.began("a", Some((1, "t1".into())));
+        d.began("b", Some((1, "t2".into())));
         let path = d.claim("a", Path::new("/c"), "a.pdf");
         assert_eq!(d.busy(), HashSet::from([path.clone()]));
-        // No wait on: a note's, never a later wait's.
         assert!(!d.ended("a", Some(&path), done("a.pdf")));
         assert!(d.busy().is_empty());
-        d.wait_on("a");
-        assert_eq!(d.take("a"), None);
-        assert!(d.ended("a", None, done("b.pdf")));
-        assert!(d.ended("a", None, done("c.pdf")));
-        assert_eq!(d.take("a"), Some(done("b.pdf")));
-        // The one the wait didn't tell goes to a note, with the tab's pane.
-        assert_eq!(d.stop("a"), Some(((1, "t1".into()), vec![done("c.pdf")])));
-        assert!(!d.ended("a", None, done("d.pdf")));
-        assert_eq!(d.take("a"), None);
-        assert!(d.live("a"));
+        // A wait on b keeps b's from another reply.
+        d.wait_on("b");
+        assert!(d.ended("b", None, done("b.pdf")));
+        let told = d.told(1);
+        assert_eq!(told.len(), 1);
+        assert_eq!((told[0].0.as_str(), told[0].1.as_str()), ("a", "t1"));
+        assert!(told[0].2.starts_with("downloaded a.pdf (24 B)"));
+        assert!(d.told(1).is_empty() && d.take("a").is_none(), "told once");
+        assert_eq!(d.take("b"), Some(done("b.pdf")));
+        // Another pane's reply tells none of these.
+        d.stop("b");
+        d.ended("b", None, done("c.pdf"));
+        assert!(d.told(2).is_empty());
+        assert_eq!(d.told(1).len(), 1);
         d.forget("a");
         assert!(!d.live("a") && !d.ended("a", None, done("e.pdf")));
     }
 
     #[test]
+    fn click_then_wait_gets_the_download_that_ended_between() {
+        let (id, pty) = ("tab-click-wait", 9101);
+        state().began(id, Some((pty, "t1".into())));
+        // The click's reply went before the download ended.
+        assert!(notes::take(pty, Some(id)).is_empty());
+        assert!(!state().ended(id, None, done("a.pdf")));
+        let waited = wait(id, Duration::from_millis(300));
+        let told = notes::take(pty, Some(id));
+        state().forget(id);
+        assert!(waited
+            .unwrap()
+            .starts_with("Downloaded a.pdf (24 B, application/pdf)"));
+        assert!(told.is_empty(), "told twice: {told:?}");
+    }
+
+    #[test]
+    fn click_then_another_command_tells_it_and_the_wait_after_has_none() {
+        let (id, pty) = ("tab-told", 9102);
+        state().began(id, Some((pty, "t1".into())));
+        assert!(!state().ended(id, None, done("a.pdf")));
+        // The command between: its reply notes it.
+        let told = notes::take(pty, Some(id));
+        assert_eq!(told.len(), 1);
+        assert!(told[0].starts_with("→ downloaded a.pdf"), "{told:?}");
+        let next = wait(id, Duration::from_millis(300));
+        state().forget(id);
+        assert!(
+            next.unwrap_err().starts_with("Timed out"),
+            "the wait returned the told one"
+        );
+    }
+
+    #[test]
     fn a_wait_tells_the_download_that_ends_while_it_waits() {
-        let id = "tab-waits";
-        state().began(id, Some((7, "t1".into())));
+        let (id, pty) = ("tab-waits", 9103);
+        state().began(id, Some((pty, "t1".into())));
         let ender = std::thread::spawn(move || {
             std::thread::sleep(POLL);
             let failed = Outcome::Failed {
@@ -560,9 +618,11 @@ mod tests {
             state().ended(id, None, failed)
         });
         let waited = wait(id, Duration::from_secs(5));
-        assert!(ender.join().unwrap(), "handed to the wait");
+        assert!(ender.join().unwrap(), "a wait was on");
+        let told = notes::take(pty, Some(id));
         state().forget(id);
         assert_eq!(waited, Err("Download of x.zip failed: cancelled".into()));
+        assert!(told.is_empty(), "told twice: {told:?}");
     }
 
     #[test]
@@ -640,22 +700,5 @@ mod tests {
         // Room left for free_path's " (n)" under the file system's 255 bytes.
         let taken = free_path(Path::new("/d"), &file_name(&"é".repeat(300)), |_| false);
         assert!(taken.file_name().unwrap().len() + " (99)".len() <= 255);
-    }
-
-    #[test]
-    fn a_download_already_told_in_a_note_is_not_what_the_next_wait_returns() {
-        let id = "tab-told";
-        let told = Outcome::Done {
-            name: "a.pdf".into(),
-            path: "/c/a.pdf".into(),
-            size: 1,
-            mime: "application/pdf".into(),
-        };
-        // No wait on: macos/downloads.rs `ended` notes it, and the pane's next reply tells it.
-        assert!(!state().ended(id, None, told));
-        // The agent read that note, clicked a second link and waits for that one.
-        let next = wait(id, Duration::from_millis(300));
-        state().forget(id);
-        assert!(next.is_err(), "the wait returned the told one: {next:?}");
     }
 }

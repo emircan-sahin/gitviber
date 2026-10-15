@@ -4,7 +4,6 @@
 
 use super::{agent, Delegate};
 use crate::browser::downloads::{self, Outcome};
-use crate::browser::notes;
 use block2::DynBlock;
 use objc2::rc::Retained;
 use objc2::runtime::NSObject;
@@ -214,16 +213,11 @@ impl Saver {
         }
     }
 
-    /// Told to a `wait --download`, else in the pane's next reply; let go of either way.
+    /// Held for the pane's next reply (downloads.rs); let go of.
     fn ended(&self, download: &WKDownload, outcome: Outcome) {
         let d = self.ivars();
         GOING.with_borrow_mut(|g| g.retain(|(w, _)| !std::ptr::eq(&**w, download)));
         let path = d.path.borrow().clone();
-        let waited = downloads::state().ended(&d.id, path.as_deref(), outcome.clone());
-        if !waited {
-            if let Some((pty, name)) = agent::pane_of(&d.id) {
-                notes::note(pty, Some((&d.id, &name)), outcome.note());
-            }
-        }
+        downloads::state().ended(&d.id, path.as_deref(), outcome);
     }
 }
