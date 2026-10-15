@@ -1,6 +1,7 @@
 //! The socket `gitviber browser` talks to (client.rs): in a folder only this user can enter,
-//! there only while Settings → Browser lets agents use the browser, and answering only requests
-//! with a token from this launch, which each of the app's terminals is given for its own pane.
+//! answering only requests with a token from this launch, which each of the app's terminals is
+//! given for its own pane. While Settings → Browser doesn't let agents use the browser, it answers
+//! only a page shown to the user (`tab new --show`).
 
 use super::control::{self, Reply, Request};
 use std::path::PathBuf;
@@ -46,8 +47,8 @@ pub fn env(pty: u32) -> Vec<(&'static str, String)> {
     env
 }
 
-/// The answer to a request: none without its pane's token from this launch, none while control
-/// is off.
+/// The answer to a request: none without its pane's token from this launch; while control is
+/// off, only to one that shows the user a page.
 fn answer(app: &AppHandle, req: Request, on: bool) -> Reply {
     let ours = token();
     let pane = req.pty.map(|pty| control::pane_token(ours, pty));
@@ -56,7 +57,7 @@ fn answer(app: &AppHandle, req: Request, on: bool) -> Reply {
             "This terminal is from another launch of GitViber: open a new one to use the browser.",
         );
     }
-    if !on {
+    if !on && !control::allowed_when_off(&req.cmd, &req.args) {
         return Reply {
             code: Some(control::OFF),
             ..Reply::error(control::OFF_TEXT)
@@ -76,7 +77,7 @@ mod unix {
     use super::*;
     use crate::local_socket::{private_dir, serve_line};
     use std::os::unix::fs::PermissionsExt;
-    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::os::unix::net::UnixListener;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex, PoisonError};
     use std::time::Duration;
@@ -85,24 +86,21 @@ mod unix {
     const MAX_REQUEST: u64 = 1024 * 1024;
 
     struct Listening {
-        path: PathBuf,
-        stop: Arc<AtomicBool>,
+        /// Settings → Browser lets agents use the browser.
+        on: Arc<AtomicBool>,
     }
 
     static LISTENING: Mutex<Option<Listening>> = Mutex::new(None);
 
-    /// Settings → Browser's switch: on, the socket is made; off, it goes, and the CLI says so.
+    /// Settings → Browser's switch: the socket is made once and stays, so the CLI can still show
+    /// the user a page while agents may not use the browser; the switch says what it answers.
     pub fn set_enabled(app: &AppHandle, on: bool) {
         let mut listening = LISTENING.lock().unwrap_or_else(PoisonError::into_inner);
-        if on && listening.is_none() {
+        if listening.is_none() {
             *listening = listen(app.clone());
-        } else if !on {
-            if let Some(l) = listening.take() {
-                l.stop.store(true, Ordering::SeqCst);
-                // Wakes the accept, which then sees it's to stop.
-                let _ = UnixStream::connect(&l.path);
-                let _ = std::fs::remove_file(&l.path);
-            }
+        }
+        if let Some(l) = listening.as_ref() {
+            l.on.store(on, Ordering::SeqCst);
         }
     }
 
@@ -113,30 +111,25 @@ mod unix {
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path).ok()?;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-        let stop = Arc::new(AtomicBool::new(false));
-        let stopped = stop.clone();
+        let on = Arc::new(AtomicBool::new(false));
+        let control = on.clone();
         std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                if stopped.load(Ordering::SeqCst) {
-                    break;
-                }
-                if let Ok(stream) = stream {
-                    let (app, stopped) = (app.clone(), stopped.clone());
-                    std::thread::spawn(move || {
-                        serve_line(
-                            &stream,
-                            MAX_REQUEST,
-                            Duration::from_secs(5),
-                            |req| match req {
-                                Some(req) => answer(&app, req, !stopped.load(Ordering::SeqCst)),
-                                None => Reply::error("Not a request."),
-                            },
-                        )
-                    });
-                }
+            for stream in listener.incoming().flatten() {
+                let (app, control) = (app.clone(), control.clone());
+                std::thread::spawn(move || {
+                    serve_line(
+                        &stream,
+                        MAX_REQUEST,
+                        Duration::from_secs(5),
+                        |req| match req {
+                            Some(req) => answer(&app, req, control.load(Ordering::SeqCst)),
+                            None => Reply::error("Not a request."),
+                        },
+                    )
+                });
             }
         });
-        Some(Listening { path, stop })
+        Some(Listening { on })
     }
 
     #[cfg(test)]

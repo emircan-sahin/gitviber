@@ -49,12 +49,26 @@ pub(super) fn on_response(
         .and_then(|r| r.valueForHTTPHeaderField(ns_string!("Content-Disposition")))
         .is_some_and(|d| downloads::attachment(&d.to_string()));
     let shows = unsafe { response.canShowMIMEType() };
-    (attachment || !shows).then_some(WKNavigationResponsePolicy::Download)
+    if !attachment && shows {
+        return None;
+    }
+    // No agent can collect a page opened for the user's file, and nothing caps its size.
+    Some(if agent::strict(&delegate.ivars().id) {
+        WKNavigationResponsePolicy::Cancel
+    } else {
+        WKNavigationResponsePolicy::Download
+    })
 }
 
 /// A navigation became `download`: saved by a Saver of the tab's.
 pub(super) fn began(delegate: &Delegate, download: &WKDownload) {
     let d = delegate.ivars();
+    // A download a page opened for the user starts by itself (a link's `download`): cancelled as
+    // a response is.
+    if agent::strict(&d.id) {
+        unsafe { download.cancel(None) };
+        return;
+    }
     let saver = Saver::alloc(delegate.mtm()).set_ivars(SaverIvars {
         id: d.id.clone(),
         app: d.app.clone(),

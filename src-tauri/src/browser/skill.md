@@ -49,6 +49,12 @@ own domain is GitViber's.
 - A tab the user clicks or types in is theirs: a reply saying the user is using it, or took it,
   means only read it (snapshot, get, find, screenshot) or open your own. Never fight for it; they
   give it back with `tab release` or its Give back button.
+- Your tabs may make no sound for the user; the page still plays and `audio: playing` shows it, in
+  `tab list` and `url` (text and `--json`). Check it to know media is really playing.
+- Use `tab new <url> --show` only when the user asks to see or try a page (e.g. "open it in the
+  browser"); never for your own testing. The page is theirs from the start: it opens as their
+  active tab in a private session (they sign in there if needed), and it is theirs alone: no
+  command reaches it but `tab list`, and only they give it back. 3 at a time, 3 s apart.
 - Logins: use test accounts the project seeds or a saved `session`; for real credentials, 2FA or
   passkeys, stop and ask. A secret goes in with `fill <ref> --secret <NAME>` from an exported
   variable, never as text; replies show it as `[secret $NAME]`.

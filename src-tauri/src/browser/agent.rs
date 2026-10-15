@@ -71,13 +71,20 @@ fn command(app: &AppHandle, req: Request) -> Res<Reply> {
     if let Some(op) = control::parse_pane(&req.cmd, &req.args) {
         let op = op?;
         let (pty, root) = pane(app, &req)?;
+        // A page shown the user is the one command allowed with control off: its reply is a
+        // fixed text, with none of the pane's notes in it.
+        let shows = matches!(op, Pane::Tab(Tabs::Show { .. }));
         // A tab command names pages and their titles; a session's, origins and counts only.
         let (reply, marked) = match op {
-            Pane::Tab(op) => (tabs(app, pty, root, req.tab, op, &req.cwd), true),
+            Pane::Tab(op) => (tabs(app, pty, root, req.tab, op, &req.cwd), !shows),
             Pane::Session(op) => (sessions(app, pty, root, req.tab, op), false),
         };
         // What happened to the pane's tabs meanwhile, marked and cleaned as the rest (notes.rs).
-        let told = notes::take(pty, None);
+        let told = if shows {
+            vec![]
+        } else {
+            notes::take(pty, None)
+        };
         let reply = notes::with(reply.unwrap_or_else(Reply::error), &told);
         let nonce = output::nonce().ok_or(NO_NONCE)?;
         let ctx = output::Ctx {
@@ -215,6 +222,7 @@ fn tabs(
                     default: false,
                     shared,
                     idle,
+                    show: false,
                 };
                 super::agent_new_tab(app, pty, &at, new, first.as_deref())
             })?;
@@ -237,6 +245,25 @@ fn tabs(
             }
             Ok(Reply::out(said.join("\n")))
         }
+        Tabs::Show { name, url } => {
+            let name = name.map_or_else(|| target(to), |n| Ok(Some(n)))?;
+            let (_, name) = main(app, move |app| {
+                // Private like any agent tab: the user's logins stay out of reach of a page an
+                // agent chose. Never sleeping or closing unused, as it is theirs.
+                let new = NewTab {
+                    name: name.as_deref(),
+                    default: false,
+                    shared: false,
+                    idle: Duration::ZERO,
+                    show: true,
+                };
+                super::agent_new_tab(app, pty, &root, new, Some(&url))
+            })?;
+            Ok(Reply::out(format!(
+                "{name}\nOpened for the user, in a private session (not their logins). It's \
+                 theirs: no command reaches it but `tab list` until they give it back."
+            )))
+        }
         Tabs::List => {
             let tabs = main(app, move |_| super::agent_tabs(pty))?;
             let data = serde_json::to_value(&tabs).map_err(|e| e.to_string())?;
@@ -245,6 +272,11 @@ fn tabs(
         Tabs::Release(named) => {
             let name = named.map_or_else(|| target(to), |n| Ok(Some(n)))?;
             let id = main(app, move |_| super::agent_find_tab(pty, name.as_deref()))?;
+            // Only the user's own button hands back a page opened for them.
+            let shown = id.clone();
+            if let Some(name) = main(app, move |_| super::agent_shown(&shown))? {
+                return Err(control::shown_tab(&name));
+            }
             let given = main(app, move |app| super::agent_give_back(app, &id))?;
             Ok(Reply::out(match given {
                 Some(name) => format!("Gave tab {name} back to the pane's agents"),
@@ -292,7 +324,11 @@ fn sessions(
         Sessions::Save(s, force) => {
             let shelf = shelf_here()?;
             let (id, found) = tab()?;
-            let session = drive(app, id, found, Tab::session)?;
+            // The user's tab holds the user's sign-ins: not saved for the agents.
+            let session = drive(app, id, found, |tab| {
+                tab.yours()?;
+                tab.session()
+            })?;
             shelf.save(&s, &session, force)?;
             Ok(Reply::out(format!(
                 "Saved session {s}: {}. {NO_INDEXED_DB}",
@@ -579,8 +615,13 @@ impl Tab {
             Command::Forward => plain(self.go(Go::Forward, "Forward at")?),
             Command::Reload => plain(self.go(Go::Reload, "Reloaded")?),
             Command::Url => {
-                let page = self.page()?.0;
-                plain(Reply::out(titled(&page.url, &page.title, "\n")))
+                let id = self.id.clone();
+                // A page that can't say whether it plays leaves the line out.
+                let (page, audio) = main(&self.app, move |_| {
+                    let page = super::agent_page(&id)?.0;
+                    Ok((page, super::agent_playing(&id).unwrap_or(false)))
+                })?;
+                plain(Reply::out(url_reply(&page.url, &page.title, audio)))
             }
             Command::Snapshot(snap) => self.snapshot(snap, cwd, reveal)?,
             Command::Find(pattern) => {
@@ -1472,6 +1513,16 @@ fn titled(url: &str, title: &str, between: &str) -> String {
     }
 }
 
+/// `url`: the address and title, and `audio: playing` while the page makes sound.
+fn url_reply(url: &str, title: &str, audio: bool) -> String {
+    let page = titled(url, title, "\n");
+    if audio {
+        format!("{page}\naudio: playing")
+    } else {
+        page
+    }
+}
+
 /// `tab list`: a line a tab, the default one marked.
 fn tabs_text(tabs: &[Listed]) -> String {
     if tabs.is_empty() {
@@ -1484,10 +1535,11 @@ fn tabs_text(tabs: &[Listed]) -> String {
             m => format!("idles after {m}m"),
         };
         let data = if t.shared { "shared" } else { "private" };
+        let audio = if t.audio { "  audio: playing" } else { "" };
         let used = ago(Duration::from_secs(t.used_s));
         let page = titled(&t.origin, &t.title, "  ");
         format!(
-            "{}{default}  {}  {}  used {used}  {idle}  {data}  {page}",
+            "{}{default}  {}  {}  used {used}  {idle}  {data}{audio}  {page}",
             t.name, t.state, t.owner
         )
     });
@@ -1554,6 +1606,7 @@ mod tests {
             used_s,
             idle_min,
             shared: name == "t3",
+            audio: name == "t3",
             origin: origin.into(),
             title: title.into(),
             owner: if name == "rv268" {
@@ -1571,7 +1624,7 @@ mod tests {
             tabs_text(&tabs),
             "t1 (default)  awake  agent  used 5s ago  idles after 10m  private  http://localhost:3000  App\n\
              rv268  sleeping  user  used 2m ago  never idles  private  about:blank\n\
-             t3  parked  agent  used 2h ago  idles after 30m  shared  https://example.test"
+             t3  parked  agent  used 2h ago  idles after 30m  shared  audio: playing  https://example.test"
         );
         assert!(tabs_text(&[]).starts_with("No tabs"));
         // --json: the same fields.
@@ -1579,7 +1632,17 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({ "name": "rv268", "default": false, "state": "sleeping", "used_s": 125,
-                "idle_min": 0, "shared": false, "origin": "about:blank", "title": "", "owner": "user" })
+                "idle_min": 0, "shared": false, "audio": false, "origin": "about:blank", "title": "", "owner": "user" })
+        );
+    }
+
+    #[test]
+    fn the_url_reply_adds_a_line_only_while_the_page_makes_sound() {
+        assert_eq!(url_reply("http://a.test/", "A", false), "http://a.test/\nA");
+        assert_eq!(url_reply("http://a.test/", "", false), "http://a.test/");
+        assert_eq!(
+            url_reply("http://a.test/", "A", true),
+            "http://a.test/\nA\naudio: playing"
         );
     }
 

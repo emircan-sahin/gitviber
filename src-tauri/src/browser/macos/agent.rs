@@ -8,7 +8,8 @@ use super::{
     set_agent, url_text, view, Delegate, View, GONE, VIEWS,
 };
 use crate::browser::control::{
-    self, origin, AgentScreen, Found, Listed, NewTab, Route, Routes, TabState, IDLE, MOST_TABS,
+    self, origin, AgentScreen, Found, Listed, NewTab, Owner, Route, Routes, TabState, IDLE,
+    MOST_TABS,
 };
 use crate::browser::Step;
 use crate::browser::{epoch_ms, Look, PageState};
@@ -35,6 +36,8 @@ thread_local! {
     /// when it's due.
     static SWEEP: RefCell<Option<(Instant, Retained<NSTimer>)>> = RefCell::default();
     static APP: OnceCell<AppHandle> = const { OnceCell::new() };
+    /// Whether agents' tabs are muted (Settings → Browser), as they're made and live.
+    static MUTED: Cell<bool> = const { Cell::new(true) };
 }
 
 /// A tab out of sight that never showed takes a page this size.
@@ -46,6 +49,8 @@ struct Opened<'a> {
     url: &'a str,
     root: &'a str,
     pty: u32,
+    /// Opened for the user (`tab new --show`): theirs, and the workspace shows it.
+    show: bool,
 }
 
 /// The tab named so, else the pane's default one, live and awake: the default made in the
@@ -60,6 +65,11 @@ pub fn agent_tab(
 ) -> Res<(String, Found)> {
     main_thread()?;
     let tab = match ROUTES.with_borrow_mut(|r| r.tab(pty, name, is_open))? {
+        // Opened for the user: no command of the agents' goes to it.
+        Some(route) if strict(&route.id) => {
+            let name = ROUTES.with_borrow(|r| r.strict(&route.id).map(String::from));
+            return Err(control::shown_tab(&name.unwrap_or_default()));
+        }
         Some(route) => live(app, &route, "about:blank").map(|made| {
             let found = if made { Found::Restored } else { Found::Open };
             (route.id, found)
@@ -70,6 +80,7 @@ pub fn agent_tab(
                 default: true,
                 shared: false,
                 idle: IDLE,
+                show: false,
             };
             new_tab(app, pty, root, new, url).map(|(id, _)| (id, Found::Made))
         }
@@ -123,6 +134,7 @@ pub fn agent_tabs(pty: u32) -> Res<Vec<Listed>> {
                 used_s: t.used.elapsed().as_secs(),
                 idle_min: t.idle.as_secs() / 60,
                 shared: t.shared,
+                audio: view(id).is_some_and(|v| playing(&v.web)),
                 origin: origin(&url),
                 title,
                 owner: t.owner,
@@ -157,11 +169,19 @@ struct Owned<'a> {
     user: bool,
 }
 
+#[derive(Serialize, Clone)]
+struct Released<'a> {
+    ids: Vec<&'a str>,
+}
+
 /// The user's own press or key in an agent's tab: theirs until they give it back, its agents'
 /// commands that act refused meanwhile (`users`), and the tab's Give back button showing
 /// (`browser-owner`).
 pub(super) fn user_took(id: &str) {
     if ROUTES.with_borrow_mut(|r| r.take(id)).is_some() {
+        if let Some(v) = view(id) {
+            mute(&v.web, false);
+        }
         if let Some(app) = APP.with(|a| a.get().cloned()) {
             emit(&app, "browser-owner", Owned { id, user: true });
         }
@@ -174,9 +194,23 @@ pub fn agent_give_back(app: &AppHandle, id: &str) -> Res<Option<String>> {
     main_thread()?;
     let name = ROUTES.with_borrow_mut(|r| r.give_back(id));
     if name.is_some() {
+        if let Some(v) = view(id).filter(|_| muted(id)) {
+            mute(&v.web, true);
+        }
         emit(app, "browser-owner", Owned { id, user: false });
     }
     Ok(name)
+}
+
+/// Tab `id`'s name while it is the user's alone: opened for them, and not given back.
+pub fn agent_shown(id: &str) -> Res<Option<String>> {
+    main_thread()?;
+    Ok(ROUTES.with_borrow(|r| r.strict(id).map(String::from)))
+}
+
+/// Whether tab `id` is the user's alone (`agent_shown`).
+pub(super) fn strict(id: &str) -> bool {
+    ROUTES.with_borrow(|r| r.strict(id).is_some())
 }
 
 /// Tab `id`'s name while the user has it.
@@ -231,8 +265,12 @@ fn new_tab(
         id: NSUUID::new().UUIDString().to_string().to_lowercase(),
         root: root.into(),
     };
-    let shared = new.shared;
-    // An agent's tab before its view is made, so its first page loads as one.
+    let (shared, show) = (new.shared, new.show);
+    if show {
+        ROUTES.with_borrow_mut(|r| r.may_show(pty, is_open, Instant::now()))?;
+    }
+    // An agent's tab before its view is made, so its first page loads as one (the user's, for
+    // one opened to show).
     let name = ROUTES.with_borrow_mut(|r| r.add(pty, new, route.clone(), is_open))?;
     if !shared {
         let store = unsafe { WKWebsiteDataStore::nonPersistentDataStore(mtm) };
@@ -249,8 +287,19 @@ fn new_tab(
         url,
         root: &route.root,
         pty,
+        show,
     };
     emit(app, "browser-open", opened);
+    if show {
+        emit(
+            app,
+            "browser-owner",
+            Owned {
+                id: &route.id,
+                user: true,
+            },
+        );
+    }
     Ok((route.id, name))
 }
 
@@ -329,13 +378,20 @@ pub fn agent_pane_closed(pty: u32) {
         return;
     }
     crate::browser::notes::forget(pty);
-    for route in ROUTES.with_borrow_mut(|r| r.release(pty)) {
+    let released = ROUTES.with_borrow_mut(|r| r.release(pty));
+    for route in &released {
         if let Some(v) = view(&route.id) {
             native::release_keys(&v);
             page_tools::guard_clipboard(&v.web, false);
+            mute(&v.web, false);
             stop_idle(&v);
             sleep(&v);
         }
+    }
+    // The workspace stops hiding them, as theirs now.
+    if let (false, Some(app)) = (released.is_empty(), APP.with(|a| a.get().cloned())) {
+        let ids: Vec<&str> = released.iter().map(|r| r.id.as_str()).collect();
+        emit(&app, "browser-released", Released { ids });
     }
 }
 
@@ -590,6 +646,57 @@ fn js_error(error: &NSError) -> String {
         )
 }
 
+// Both are WebKit's private API, so each is guarded by respondsToSelector.
+
+/// Whether tab `id`'s page is playing sound, muted or not.
+pub fn agent_playing(id: &str) -> Res<bool> {
+    main_thread()?;
+    let v = view(id).ok_or(GONE)?;
+    Ok(playing(&v.web))
+}
+
+/// Still so while the page is muted: it plays on.
+fn playing(web: &WKWebView) -> bool {
+    web.respondsToSelector(sel!(_isPlayingAudio)) && {
+        let on: Bool = unsafe { msg_send![web, _isPlayingAudio] };
+        on.as_bool()
+    }
+}
+
+/// _WKMediaMutedState's audio bit.
+const AUDIO_MUTED: usize = 1;
+
+/// The page muted at WebKit, not by its scripts: its media plays on and its audio contexts run,
+/// only nothing reaches the speakers.
+fn mute(web: &WKWebView, on: bool) {
+    if web.respondsToSelector(sel!(_setPageMuted:)) {
+        let state = if on { AUDIO_MUTED } else { 0 };
+        let _: () = unsafe { msg_send![web, _setPageMuted: state] };
+    }
+}
+
+/// Whether tab `id` is muted: an agent's, while its agents have it (Settings → Browser).
+fn muted(id: &str) -> bool {
+    MUTED.get() && routed(id) && users(id).is_none()
+}
+
+/// A view made for tab `id`, muted if it should be (a tab the user took stays theirs to hear,
+/// parked and back).
+pub(super) fn mute_new(web: &WKWebView, id: &str) {
+    if muted(id) {
+        mute(web, true);
+    }
+}
+
+/// Settings → Browser: agents' tabs muted or not, now and as they're made.
+pub(super) fn set_muted(on: bool) {
+    MUTED.set(on);
+    let views: Vec<View> = VIEWS.with_borrow(|r| r.live().into_iter().cloned().collect());
+    for v in views.iter().filter(|v| routed(&v.delegate.ivars().id)) {
+        mute(&v.web, muted(&v.delegate.ivars().id));
+    }
+}
+
 /// The page as the address bar has it, and whether its console is kept (Settings → Browser).
 pub fn agent_page(id: &str) -> Res<(PageState, bool)> {
     main_thread()?;
@@ -706,8 +813,17 @@ pub(super) fn adopt(app: &AppHandle, opener: &str, url: &str) -> Res<(String, St
         default: false,
         shared: parent.shared,
         idle: parent.idle,
+        // A page opened for the user opens its popups the same: theirs alone.
+        show: parent.shown && parent.owner == Owner::User,
     };
-    ROUTES.with_borrow_mut(|r| r.add(pty, new, route.clone(), is_open))?;
+    ROUTES.with_borrow_mut(|r| {
+        r.add(pty, new, route.clone(), is_open)?;
+        // Their tab's popup is theirs, but its agents may read it as any tab the user took.
+        if parent.owner == Owner::User {
+            r.take(&route.id);
+        }
+        Ok::<_, String>(())
+    })?;
     let was = asked(opener);
     ask(&route.id, |a| *a = was);
     if let Err(e) = live(app, &route, url) {
@@ -720,8 +836,19 @@ pub(super) fn adopt(app: &AppHandle, opener: &str, url: &str) -> Res<(String, St
         url,
         root: &route.root,
         pty,
+        show: false,
     };
     emit(app, "browser-open", opened);
+    if parent.owner == Owner::User {
+        emit(
+            app,
+            "browser-owner",
+            Owned {
+                id: &route.id,
+                user: true,
+            },
+        );
+    }
     arm_sweep();
     Ok((route.id, name))
 }

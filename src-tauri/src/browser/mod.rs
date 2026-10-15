@@ -33,20 +33,20 @@ pub use macos::{
     agent_appearance, agent_chosen, agent_clear_store, agent_close_tab, agent_cookies,
     agent_device, agent_dialog, agent_dialogs, agent_done, agent_find_tab, agent_give_back,
     agent_js, agent_keys, agent_new_tab, agent_own_store, agent_page, agent_pane_closed,
-    agent_picture, agent_pointer, agent_running, agent_set_cookies, agent_tab, agent_tabs,
-    agent_text, agent_upload, agent_upload_done, agent_users, appearance, clear_data, close,
-    close_all, close_root, configure, console_clear, console_entries, create, find, focus, go,
-    hide, inspect, navigate, network_log, pick, place, set_agent, snapshot, zoom,
+    agent_picture, agent_playing, agent_pointer, agent_running, agent_set_cookies, agent_shown,
+    agent_tab, agent_tabs, agent_text, agent_upload, agent_upload_done, agent_users, appearance,
+    clear_data, close, close_all, close_root, configure, console_clear, console_entries, create,
+    find, focus, go, hide, inspect, navigate, network_log, pick, place, set_agent, snapshot, zoom,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
     agent_appearance, agent_chosen, agent_clear_store, agent_close_tab, agent_cookies,
     agent_device, agent_dialog, agent_dialogs, agent_done, agent_find_tab, agent_give_back,
     agent_js, agent_keys, agent_new_tab, agent_own_store, agent_page, agent_pane_closed,
-    agent_picture, agent_pointer, agent_running, agent_set_cookies, agent_tab, agent_tabs,
-    agent_text, agent_upload, agent_upload_done, agent_users, appearance, clear_data, close,
-    close_all, close_root, configure, console_clear, console_entries, create, find, focus, go,
-    hide, inspect, navigate, network_log, pick, place, set_agent, snapshot, zoom,
+    agent_picture, agent_playing, agent_pointer, agent_running, agent_set_cookies, agent_shown,
+    agent_tab, agent_tabs, agent_text, agent_upload, agent_upload_done, agent_users, appearance,
+    clear_data, close, close_all, close_root, configure, console_clear, console_entries, create,
+    find, focus, go, hide, inspect, navigate, network_log, pick, place, set_agent, snapshot, zoom,
 };
 pub use sessions::Shelf;
 
@@ -304,6 +304,9 @@ mod other {
     pub fn agent_give_back(_: &AppHandle, _: &str) -> Res<Option<String>> {
         Err(UNSUPPORTED.into())
     }
+    pub fn agent_shown(_: &str) -> Res<Option<String>> {
+        Err(UNSUPPORTED.into())
+    }
     pub fn agent_users(_: &str) -> Res<Option<String>> {
         Err(UNSUPPORTED.into())
     }
@@ -333,6 +336,9 @@ mod other {
         _: &str,
         _: Box<dyn FnOnce(Res<String>)>,
     ) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_playing(_: &str) -> Res<bool> {
         Err(UNSUPPORTED.into())
     }
     pub fn agent_page(_: &str) -> Res<(PageState, bool)> {
@@ -388,7 +394,7 @@ mod other {
     pub fn close(_: &str) {}
     pub fn close_root(_: &str) {}
     pub fn close_all() {}
-    pub fn configure(_: u32, _: u32, _: u32, _: bool) {}
+    pub fn configure(_: u32, _: u32, _: u32, _: bool, _: bool) {}
     pub fn pick(_: &str, _: bool) -> Res<()> {
         Err(UNSUPPORTED.into())
     }

@@ -197,7 +197,7 @@ finish() {
 
 CHECKS=(visibility fps isolation sessions unknown_tab device screenshot network sse idle_park tab_close form
   stale_ref covered smooth_scroll fill_honest change_line find_get screenshot_1x untrusted secret frames
-  trusted hover keys clipboard_safe ownership popup download agent_e2e memory)
+  trusted hover keys clipboard_safe ownership popup download agent_hide agent_audio agent_show agent_e2e memory)
 typeset -A NEEDS=(
   visibility "eval" fps "eval" isolation "eval" sessions "session save|session load|--session"
   unknown_tab "--tab" device "device <name|WxH|off>" screenshot "screenshot" network "network <id>"
@@ -212,6 +212,8 @@ typeset -A NEEDS=(
   ownership "tab release"
   # Popups and downloads.
   popup "named for its opener" download "--download|downloads [--clear]"
+  # Agents' tabs shown or hidden, and muted.
+  agent_hide "tab list" agent_audio "audio: playing" agent_show "--show"
   # Opt-in (AGENT_E2E=1): a Claude Code session on the user's account.
   agent_e2e "fill|select|network"
 )
@@ -602,6 +604,115 @@ check_download() {
   gbx --tab dl downloads
   pass_if "downloads lists it" '[[ $OUT == *gitviber-check.txt* ]]' "${${OUT:-$ERR}[1,120]}"
   close dl
+}
+
+# Settings the way the app's own switches change them: the settings module the page runs, in dev.
+set_setting() { js "const m = await import('/src/lib/settings.ts'); m.updateSettings($1); return 'set'" >/dev/null }
+
+check_agent_hide() {
+  page hd1 $URL_A/ && page hd2 $URL_A/form || { record agent_hide FAIL "tab new: $ERR"; return }
+  until_ok 5 '(( $(agent_tabs) >= 2 ))'
+  local shown=$(agent_tabs)
+  set_setting '{ browserShowAgentTabs: false }'
+  until_ok 5 '(( $(agent_tabs) == 0 ))'
+  local ok=$? hidden=$(agent_tabs)
+  pass_if "agents' tabs hidden from the strip" '(( ok == 0 && shown >= 2 ))' "in the strip: $shown, then $hidden"
+  local v=$(value hd1 document.visibilityState) st=$(state hd1)
+  pass_if "hidden tabs still answer" '[[ $v == visible && $st != missing ]]' "hd1 visibilityState $v, state $st"
+  gbx tab close hd2
+  sleep 1
+  set_setting '{ browserShowAgentTabs: true }'
+  until_ok 5 '(( $(agent_tabs) == 1 ))'
+  ok=$?
+  pass_if "shown again, minus the one closed while hidden" '(( ok == 0 ))' "in the strip: $(agent_tabs)"
+  close hd1 hd2
+}
+
+check_agent_audio() {
+  page au $URL_A/audio || { record agent_audio FAIL "tab new: $ERR"; return }
+  gb --json tab list | py tab-audio au | read -r quiet
+  pass_if "silent page: no audio" '[[ $quiet == false ]]' "audio: $quiet"
+  gbx --tab au click '#play'
+  until_ok 8 '[[ $(gb --json tab list | py tab-audio au) == true ]]'
+  local ok=$?
+  pass_if "audio: playing while muted (the default)" '(( ok == 0 ))' "audio $(gb --json tab list | py tab-audio au); page says $(value au window.audio_)"
+  gb tab list > $STATE/tab-list.txt 2>&1
+  pass_if "tab list prints it" 'grep -q "audio: playing" $STATE/tab-list.txt' "$(grep -m1 'audio' $STATE/tab-list.txt)"
+  set_setting '{ browserMuteAgentTabs: false }'; sleep 1
+  pass_if "unmuting leaves the page playing" '[[ $(value au window.audio_) == playing && $(gb --json tab list | py tab-audio au) == true ]]' "page says $(value au window.audio_)"
+  set_setting '{ browserMuteAgentTabs: true }'; sleep 1
+  pass_if "muting again leaves it playing" '[[ $(value au window.audio_) == playing ]]' "page says $(value au window.audio_)"
+  gbx --tab au click '#stop'
+  until_ok 8 '[[ $(gb --json tab list | py tab-audio au) == false ]]'
+  ok=$?
+  pass_if "stopped: audio goes away" '(( ok == 0 ))' "audio $(gb --json tab list | py tab-audio au)"
+  record "sound really muted" INFO "not measurable here: listen once, or trust the probe's _mediaMutedState = 1"
+  close au
+}
+
+# The strip's tab whose address has $1 (no spaces): none, or active or inactive, with +bot when it
+# carries the agent mark.
+strip_tab() {
+  js 'const t = $$("[role=tab]").find((e) => e.title.includes("'$1'")); return !t ? "none" : (t.getAttribute("aria-selected") === "true" ? "active" : "inactive") + (t.querySelector("[aria-label=\"Opened by an agent\"]") ? "+bot" : "")'
+}
+
+# `tab new --show`: a page for the user, theirs from the start; and the only command that works
+# with agent control off. Control is put back on after, whatever happened.
+check_agent_show() {
+  local needle="form?show=s1" needle2="form?show=s2" url=$URL_A/form?show=s1 marked=$(agent_tabs)
+  {
+    gbx tab new s1 $url --show
+    pass_if "tab new --show" '(( RC == 0 ))' "${OUT:-$ERR}"
+    (( RC == 0 )) || return
+    until_ok 8 '[[ $(strip_tab $needle) == active ]]'
+    pass_if "shown tab: in the strip, active, no agent mark" '[[ $(strip_tab $needle) == active ]] && (( $(agent_tabs) == marked ))' "strip: $(strip_tab $needle); agent marks $marked, then $(agent_tabs)"
+    gb tab list > $STATE/tab-list.txt 2>&1
+    pass_if "tab list: it's the user's" 'grep -qE "^s1 .*  user  " $STATE/tab-list.txt' "$(grep -m1 '^s1' $STATE/tab-list.txt)"
+    # Its storage apart from the user's can't be read back here: eval acts, so it's refused on a tab the user has.
+    pass_if "tab list: private, not the user's logins" 'grep -qE "^s1 .*  private  " $STATE/tab-list.txt' "$(grep -m1 '^s1' $STATE/tab-list.txt)"
+    # Strictly the user's: nothing reaches it but `tab list`, reads included.
+    local cmd
+    for cmd in "click body" url snapshot "get text body" console "network" screenshot "session save x" "tab release s1"; do
+      gbx --tab s1 ${=cmd}
+      pass_if "refused on a page opened for the user: $cmd" '(( RC != 0 )) && [[ $ERR == *"opened for the user"* ]]' "rc $RC: ${ERR[1,100]}"
+    done
+    gbx --tab s1 --reveal url
+    pass_if "refused on a page opened for the user: --reveal url" '(( RC != 0 )) && [[ $ERR == *"opened for the user"* ]]' "rc $RC: ${ERR[1,100]}"
+    gbx tab list
+    pass_if "tab list still lists it" '(( RC == 0 )) && [[ $OUT == *s1* ]]' "${OUT[1,100]}"
+    set_setting '{ browserShowAgentTabs: false }'; sleep 1
+    pass_if "not hidden by Show agents' tabs" '[[ $(strip_tab $needle) == active ]]' "strip: $(strip_tab $needle)"
+    set_setting '{ browserShowAgentTabs: true }'
+
+    set_setting '{ browserAgentControl: false }'
+    until_ok 8 '! gb tab list >/dev/null 2>&1'
+    gbx tab new off1 $URL_A/
+    pass_if "control off: tab new without --show refuses" '(( RC == 2 )) && [[ $ERR == *--show* ]]' "rc $RC: $ERR"
+    gbx --tab s1 url
+    pass_if "control off: url refuses" '(( RC == 2 ))' "rc $RC: $ERR"
+    gbx --tab s1 eval 1
+    pass_if "control off: eval refuses" '(( RC == 2 ))' "rc $RC: $ERR"
+    gbx open $URL_A/
+    pass_if "control off: open refuses" '(( RC == 2 ))' "rc $RC: $ERR"
+    sleep 3  # pages are shown 3 s apart at least
+    gbx tab new s2 "$URL_A/form?show=s2" --show
+    pass_if "control off: tab new --show works" '(( RC == 0 ))' "${OUT:-$ERR}"
+    until_ok 8 '[[ $(strip_tab $needle2) == active ]]'
+    pass_if "control off: the page is the active tab" '[[ $(strip_tab $needle2) == active ]]' "strip: $(strip_tab $needle2)"
+  } always {
+    set_setting '{ browserAgentControl: true }'
+    until_ok 8 'gb tab list >/dev/null 2>&1'
+  }
+  # Only the user's own button gives a page back: pressed here as the dev bridge can, on the tab.
+  # Then it is its agents' again: the mark, and theirs to close.
+  js 'press($$("[role=tab]").find((e) => e.title.includes("'$needle'"))); await sleep(500); return press("Give back to agent")' >/dev/null
+  until_ok 5 '[[ $(strip_tab $needle) == *+bot ]]'
+  pass_if "the Give back button hands it to the agent" '[[ $(strip_tab $needle) == *+bot ]]' "strip: $(strip_tab $needle)"
+  gbx --tab s1 url
+  pass_if "given back, its agent reads it again" '(( RC == 0 ))' "${OUT:-$ERR}"
+  js 'press($$("[role=tab]").find((e) => e.title.includes("'$needle2'"))); await sleep(500); return press("Give back to agent")' >/dev/null
+  until_ok 5 '[[ $(strip_tab $needle2) == *+bot ]]'
+  close s1 s2
 }
 
 # ---- setup

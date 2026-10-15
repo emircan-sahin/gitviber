@@ -86,7 +86,7 @@ export function BrowserSection() {
         </Field>
         <Field
           label="Let agents use the browser"
-          hint="An agent in a terminal can open pages, read them, click, type and take screenshots with the gitviber browser command. A terminal pane's agents get tabs of their own, opened in the background without taking your active tab, each signed in apart from your browsing unless the agent asks for yours. Off, the command says so and does nothing."
+          hint="An agent in a terminal can open pages, read them, click, type and take screenshots with the gitviber browser command. A terminal pane's agents get tabs of their own, opened in the background without taking your active tab, each signed in apart from your browsing unless the agent asks for yours. Off, the command says so and does nothing, except that an agent can still open a page for you with --show."
         >
           <Switch checked={s.browserAgentControl} onChange={(v) => updateSettings({ browserAgentControl: v })} />
         </Field>
@@ -100,6 +100,18 @@ export function BrowserSection() {
             options={BROWSER_AGENT_DRAWN.map((n) => ({ value: String(n), label: String(n) }))}
             variant="field"
           />
+        </Field>
+        <Field
+          label="Show agents' tabs"
+          hint="The tabs agents open appear in the tab strip. Off, they stay out of it and keep running as they were; one you took over stays, and turning this on brings the rest back."
+        >
+          <Switch checked={s.browserShowAgentTabs} onChange={(v) => updateSettings({ browserShowAgentTabs: v })} />
+        </Field>
+        <Field
+          label="Mute agents' tabs"
+          hint="Agent tabs make no sound for you; the page still plays, and audio: playing shows the agent it does. Tabs you open or take over are never muted."
+        >
+          <Switch checked={s.browserMuteAgentTabs} onChange={(v) => updateSettings({ browserMuteAgentTabs: v })} />
         </Field>
         {s.browserAgentControl && (
           <Field

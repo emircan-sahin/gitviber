@@ -53,7 +53,7 @@ pub fn parse_cli(args: Vec<String>) -> Cli {
 }
 
 enum Failure {
-    /// No socket: control is off (the app takes it away then).
+    /// No socket: the app hasn't made it yet (it does once Settings load), so control reads as off.
     Off,
     /// A socket nobody listens on: GitViber quit, or crashed.
     NotRunning,

@@ -146,9 +146,9 @@ export const browserApi = {
   inspect: (id: string) => invoke<boolean>("browser_inspect", { id }),
   /** The chords bound to the app's commands: only these leave a page (keys.rs). */
   setAppKeys: (chords: string[]) => invoke<void>("browser_set_app_keys", { chords }),
-  /** Hidden views kept alive, the minutes until one parks (0: never), agents' tabs drawn out of sight at once, and the console on or off. */
-  configure: (liveHidden: number, parkAfterMin: number, agentDrawn: number, console: boolean, agentControl: boolean) =>
-    invoke<void>("browser_configure", { liveHidden, parkAfterMin, agentDrawn, console, agentControl }),
+  /** Hidden views kept alive, the minutes until one parks (0: never), agents' tabs drawn out of sight at once, the console on or off, agent control, and agents' tabs muted. */
+  configure: (liveHidden: number, parkAfterMin: number, agentDrawn: number, console: boolean, agentControl: boolean, agentMuted: boolean) =>
+    invoke<void>("browser_configure", { liveHidden, parkAfterMin, agentDrawn, console, agentControl, agentMuted }),
   /** An agent's tab the user took, back to its agents; `browser-owner` says so. */
   giveBack: (id: string) => invoke<void>("browser_give_back", { id }),
   /** Each agent's skill written (`on`) or removed, and where it stands, told to Settings too; main window only. */

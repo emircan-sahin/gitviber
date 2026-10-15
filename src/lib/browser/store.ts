@@ -37,14 +37,14 @@ export const useParks = (id: string) => parks.use().get(id) ?? 0;
 
 
 // Settings → Browser: how many pages out of sight stay alive, for how long, how many agents' tabs
-// draw at once, and whether they keep a console.
+// draw at once, whether they keep a console, and whether agents' tabs are muted.
 let sentPolicy = "";
 function sendPolicy() {
-  const { browserLiveHidden, browserParkAfterMin, browserAgentDrawn, browserConsole, browserAgentControl } = getSettings();
-  const key = `${browserLiveHidden} ${browserParkAfterMin} ${browserAgentDrawn} ${browserConsole} ${browserAgentControl}`;
+  const { browserLiveHidden, browserParkAfterMin, browserAgentDrawn, browserConsole, browserAgentControl, browserMuteAgentTabs } = getSettings();
+  const key = `${browserLiveHidden} ${browserParkAfterMin} ${browserAgentDrawn} ${browserConsole} ${browserAgentControl} ${browserMuteAgentTabs}`;
   if (key === sentPolicy) return;
   sentPolicy = key;
-  void browserApi.configure(browserLiveHidden, browserParkAfterMin, browserAgentDrawn, browserConsole, browserAgentControl).catch(() => {});
+  void browserApi.configure(browserLiveHidden, browserParkAfterMin, browserAgentDrawn, browserConsole, browserAgentControl, browserMuteAgentTabs).catch(() => {});
 }
 subscribeSettings(sendPolicy);
 sendPolicy();
