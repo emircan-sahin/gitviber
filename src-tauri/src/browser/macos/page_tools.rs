@@ -43,6 +43,8 @@ const SECRET: &str = r#"(() => {
   const post = () => {
     let el = document.activeElement;
     while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement;
+    // Focus in a frame: that frame's own script says what has it.
+    if (el?.localName === "iframe" || el?.localName === "frame") return;
     const secret = el?.localName === "input" && el.type === "password";
     window.webkit?.messageHandlers?.gvSecret?.postMessage(secret ? "1" : "0");
   };
