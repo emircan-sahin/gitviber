@@ -396,6 +396,11 @@ impl Tab {
             } => self.act(json!({ "cmd": "type", "target": target, "text": text })),
             Command::Type { target, text, .. } => {
                 let focused = self.script(json!({ "cmd": "focus", "target": target }))?;
+                if focused["line"] == true && text.contains(['\n', '\r']) {
+                    return Err(
+                        "A single-line field takes no line breaks: `press Enter` submits it".into(),
+                    );
+                }
                 let id = self.id.clone();
                 main(&self.app, move |_| super::agent_text(&id, &text))?;
                 let label = focused["label"].as_str().unwrap_or_default();

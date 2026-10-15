@@ -245,7 +245,7 @@ const MODIFIERS: [(&str, u64, u16); 10] = [
     ("meta", COMMAND, 0x37),
     ("cmd", COMMAND, 0x37),
     ("command", COMMAND, 0x37),
-    // Playwright's name for the platform's shortcut key.
+    // The platform's shortcut key: ⌘ on a Mac.
     ("controlormeta", COMMAND, 0x37),
     ("super", COMMAND, 0x37),
 ];
@@ -441,8 +441,12 @@ impl Held {
                 });
             }
             Some(_) => {}
-            // Held down already (`key down`): it stays down, as a key can't go down twice.
-            None if self.holds(&key) => {}
+            // Held down already (`key down`): a key can't go down twice.
+            None if self.holds(&key) => {
+                return Err(format!(
+                    "{last} is held down already: `key up {last}` lets it go"
+                ))
+            }
             None => {
                 let stroke = key.stroke(flags);
                 edit = edit_of(stroke.flags, key.plain);
@@ -1098,13 +1102,14 @@ mod tests {
     fn pressing_a_key_already_held_down_doesnt_send_a_second_down() {
         let mut held = Held::default();
         held.down("w").unwrap();
-        let (steps, _) = held.press("w", Half::Both).unwrap();
+        // Refused, saying so: nothing goes down a second time.
+        let refused = held.press("w", Half::Both).unwrap_err();
+        assert!(refused.contains("held down already"), "{refused}");
         assert!(
-            !steps
-                .iter()
-                .any(|s| matches!(s, KeyStep::Down(s) if s.code == 0x0D)),
-            "{steps:?}"
+            held.press("Shift+W", Half::Both).is_err(),
+            "the same key, shifted"
         );
+        assert_eq!(held.press("e", Half::Both).unwrap().0.len(), 2);
     }
 
     #[test]

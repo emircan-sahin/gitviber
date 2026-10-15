@@ -85,7 +85,9 @@ fill, select and --synthetic go by the page's script.
   type [--synthetic] <ref|css> <text>
                                Type into a field: focused, its caret at the end, the text put in
                                as an input method does, in any language, whatever the keyboard;
-                               a line break as text. No key events: press sends those
+                               a line break as text, in a textarea or an editor only (a single-
+                               line field takes none: press Enter submits it). No key events:
+                               press sends those
   select <ref|css> <value>...  Choose a <select>'s options, by value or label
   upload <ref|css> <file>...   Files for the page's file chooser, relative to this folder or
                                absolute: the element clicked (an <input type=file>, its label,
