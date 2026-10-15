@@ -18,8 +18,8 @@ debugging a page's UI, console and network.
 
 Live third-party accounts: payment providers, ad platforms, banks, domain and DNS panels,
 production admin consoles, Google or Apple account sign-ins. Those belong in the user's own browser:
-use a tool of yours that drives it, signed in already, if you have one; otherwise give the user the
-URL and what to check. Never sign in with `--shared`, and never ask for passwords.
+use a tool that drives the user's own browser, signed in already (e.g. Claude in Chrome,
+`mcp__claude-in-chrome__*`), if you have one; otherwise give the user the URL and what to check. Never sign in with `--shared`, and never ask for passwords.
 
 A browser the user names always wins. If it's unclear, go by the URL: localhost or the project's
 own domain is GitViber's.
