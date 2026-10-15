@@ -1,13 +1,5 @@
 <p align="center">
-  <img alt="GitViber" src="assets/icon.svg" width="112">
-</p>
-
-<h1 align="center">GitViber</h1>
-
-<p align="center">
-  <b>Vibe code from one app.</b><br>
-  Run your agents in parallel worktrees, watch their diffs land live, browse the code, test it in
-  the terminal and commit, without GitHub Desktop, an editor and three terminal windows open.
+  <img alt="GitViber: vibe code from one app. Agents in parallel worktrees, live diffs, a terminal and commit, in one window." src="assets/banner.png">
 </p>
 
 <p align="center">
@@ -17,211 +9,176 @@
   <a href="LICENSE"><img alt="GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square"></a>
 </p>
 
-![GitViber with a diff, the file explorer and the terminal open](assets/screenshot-dark.png)
-
 <p align="center">
-  <a href="https://github.com/emircan-sahin/gitviber/releases/latest"><b>Download for macOS or Linux</b></a>
+  <a href="https://github.com/emircan-sahin/gitviber/releases/latest"><b>Download</b></a>
   ·
   <a href="#install">Install</a>
+  ·
+  <a href="https://emircan-sahin.github.io/gitviber/">Website</a>
+  ·
+  <a href="docs/FEATURES.md">Every feature</a>
   ·
   <a href="CHANGELOG.md">What's new</a>
 </p>
 
 ## Why GitViber
 
-Coding with agents turned the day into reading code. You start Claude Code or Codex in a few
-worktrees, then juggle an editor to look at the files, GitHub Desktop to see the diffs, a pile of
-terminals to run things and a browser for the pull requests. Editors like Cursor easily eat
-gigabytes of RAM just to let you read.
+Coding with agents turned the day into reading code. You run Claude Code or Codex in a few
+worktrees, and juggle an editor to read files, a git client for diffs, terminals to run things and
+a browser to check the result. GitViber is all of it in one window, and your agents can use the
+window too.
 
-GitViber is one window for all of it, and it's small:
+|  |  |
+| --- | --- |
+| **Agents get a browser** | Claude Code and Codex open pages, click, type and read the console in tabs of their own, in the background. |
+| **14 MB** | The whole app. No bundled Chromium: a Rust core and the system webview. |
+| **0% CPU** | At idle. It wakes when files change, not on a timer. |
+| **Plain git, no telemetry** | Your own git, config, hooks and signing. No account, no API keys. [Details](docs/PRIVACY.md). |
 
-- **14 MB app.** GitHub Desktop is 681 MB. No bundled Chromium, a Rust core and the system webview.
-- **Idles at 0% CPU.** It wakes up when files change, not on a timer.
-- **Memory it gives back.** Activity Monitor also counts memory the app is done with but WebKit
-  hasn't collected yet, so the number climbs while you click around and drops again after a few
-  idle minutes. Closing a terminal frees its GPU memory at once.
-- **Fast on big diffs.** Diffs are computed in Rust and highlighted off the main thread.
-- **Plain git underneath.** Your config, hooks, credentials and signing. Nothing of its own goes into the repo.
+<p align="center">
+  <img alt="GitViber with a diff, the file explorer and the terminal open" src="assets/screenshot-dark.png">
+</p>
 
-## Everything in one window
+---
 
-### Many agents, one screen
+## Your agents, side by side
 
-Give every agent its own worktree and switch between them from the top bar, each with its change
-count, its pull request and how its checks are doing. Start one from any branch, commit or issue,
-in the folder you choose, or check a pull request out into its own worktree without touching
-yours. A new worktree can run a command such as `claude` in its terminal right away, and gets copies
-of the ignored files `.worktreeinclude` lists, like your `.env`. Rename one along with its folder,
-give it a color its chip and terminal tabs wear, lock it, and remove or prune it when the work is
-merged. Clean up removes every merged worktree with nothing uncommitted in one go, branches too,
-after showing the ignored files that go with them, like `node_modules`; merging a pull request in
-the app offers to remove its worktree.
-The top bar names a worktree by its branch and its folder, so a folder that no longer says what it
-holds shows. Git keeps a branch in one worktree, so picking one that another holds says where it
-is: Enter opens that worktree (with a way back), and the row's menu checks the commit out here
-detached, or starts a new branch from it. When a linked worktree holds the default branch and the
-main folder is on another, the worktree picker offers to move it back.
-Every worktree keeps its own terminals, so nothing gets lost when you hop between them, and a
-terminal can open in another project or any folder too. A tab and its worktree show a ring while
-Claude Code works there, and a dot once it finishes or asks for you, with a desktop notification if
-you turned those on (Settings → Notifications, one switch per kind); clicking it brings you to that
-terminal. Other agents get the dot when they ring the terminal bell or send a notification. The
-Agents menu in the top bar lists every agent in your terminals, the ones waiting for you first, and
-the Dock icon counts those. Quit with Claude Code, Gemini CLI or opencode still running, and the
-restored terminal has the command that resumes the conversation typed at the prompt; Resume a
-conversation picks up any older Claude Code conversation in a worktree.
+**Every agent gets its own worktree, and you see all of them at once.**
 
-### Watch the work land
+- **Switch from the top bar.** Each worktree shows its change count, pull request and check status.
+- **Start from anything.** A branch, a commit, an issue or a pull request, in the folder you choose.
+  A new worktree can run `claude` right away and gets your `.env` copied in.
+- **Know who needs you.** A ring while Claude Code works, a dot when it finishes or asks, a desktop
+  notification if you want one. The Agents menu lists every agent, the waiting ones first.
+- **Pick up where you left off.** Quit with agents running and the restored terminal has the
+  command that resumes the conversation already typed.
 
-Diffs refresh the moment an agent saves, without losing your scroll position. Unified or split,
-word-level highlights, unchanged lines folded away until you want the whole file (`⌥C`). A changed
-image shows side by side, as a swipe or as an onion skin. `J` / `K` walk the changed files and `V`
-marks one viewed; when the agent touches it again, the mark clears so you know to look again.
+[More: worktrees and agents →](docs/FEATURES.md#worktrees-and-agents)
 
-Changes lists files flat or as a folder tree, by name or newest first, which helps when an agent
-touches many at once; a folder stages, discards or stashes everything under it. In an unstaged
-diff, edit the new side right there and save with `⌘S`, or stash just the lines you pick.
+## A browser your agents can use
 
-### Test it right there
+**Agents in your terminal can drive a real browser, right inside GitViber.**
+Turn it on in Settings → Browser: Claude Code and Codex learn the `gitviber browser` command by themselves, and any other agent gets a note to paste.
 
-A real terminal sits under the diff (`⌘J`), with tabs and splits. Run the tests, start the dev
-server or talk to the agent without leaving the change you're reading. Each pane of a split has a
-numbered title bar with what runs there, `⇧⌘←` / `⇧⌘→` page through them, and `⌘R` names it.
-Zoomed to one pane (`⇧⌘↵`), the toolbar shows which one it is and a dot per pane, so an agent at
-work in another stays in sight. The terminal has its own font, size, cursor and scrollback in
-Settings, and `⌘=` / `⌘−` in the terminal or a pinch over it size its text.
-`⌘`-click a path it prints to open the file at that line, or a folder to show it in the explorer;
-a commit's SHA opens it in History, and `#123` or a link to one of the repo's pull requests or
-issues opens it in its own tab. `⌃⇧Space` puts a letter on every one of those links on screen, in
-vim or Claude Code too: type it to open the link, or with Shift to copy it.
-In zsh and bash 4.4+ each command gets a mark, red when it failed, that tells how long it took,
-`⌘↑` / `⌘↓` jump between them, and the last one's output copies from the right-click menu; your
-dotfiles stay as they are. Turn on "A long command finishes" in Settings → Notifications and a
-command that runs past 10 seconds and ends while you're looking elsewhere puts a dot on its tab,
-with a desktop notification naming the program (never its arguments) if you turned those on.
+- **Hidden, and out of your way.** Agents work in tabs of their own, opened in the background. They
+  never take your window, your pointer, your keyboard or your clipboard.
+- **Keeps working when you don't look.** Their tabs keep drawing while GitViber is hidden or
+  minimized, so a long run doesn't stall behind another app.
+- **Light on CPU and RAM.** It's the webview already in the app, with no second browser to launch.
+  A tab nobody touched for a while slows down, one unused for an hour closes, and a Mac low on
+  memory gets it back from sleeping tabs at once.
+- **Logins that are theirs, or shared.** Each tab signs in apart from the others and from you, so
+  two tabs can be two accounts of the app you're testing. Save a login once as a session and any tab
+  or agent in that repository can load it.
+- **Acts like a person.** Real clicks, keys, hover and drag, waits for elements to be ready, and
+  every action reports what changed. Popups open as tabs, downloads land in a folder, frames and
+  file uploads work.
+- **Sees what you'd see in DevTools.** The page as a tree it can act on, screenshots, the console,
+  and every request with headers, bodies and WebSocket frames.
+- **You can step in.** Click or type in an agent's tab and it's yours, until you press Give back.
 
-It's made for agents too: paste a screenshot or drop files and Claude Code or Codex gets their
-paths, Shift+Enter reaches them as its own key, and on a Mac a trackpad swipe scrolls Claude
-Code's fullscreen view row by row, as it does vim and htop.
+[More: agents driving the browser →](docs/FEATURES.md#agents-drive-the-browser)
 
-### Test it in a browser
+## Understand a change before you read it
 
-Open a browser tab beside the code with `⇧⌘B` or the globe in the top bar, and check the agent's
-work where you read it. A terminal pane's right-click menu opens the ports its dev server listens
-on, and the address bar lists every port your worktree's terminals serve. Each tab is a page of its
-own, with `⌘F` to find in it, `⌘=` / `⌘−` to zoom it, a switch to show it light or dark whatever
-the app is, and the Web Inspector on `⌥⌘I`. On Linux a tab shows the pages on your own machine
-(localhost) only, without these tools.
+**Your own agent reads the diff first and tells you where to look.**
 
-Device mode (`⇧⌘M`) draws a phone or tablet around the page, notch and corners included, and gives
-the page that device's width, pixel ratio and user agent, upright or turned; Responsive takes any
-size you drag it to. It's still your Mac's browser engine with a mouse: no touch events, hover still
-works, and `<meta name=viewport>` is ignored.
+- **Guided Review.** For a pull request, a commit, a branch or what isn't committed yet: an
+  overview, a diagram of the data and flow it touches, then sections in reading order, each with its
+  category, how important it is and a one-line check. Mark them reviewed as you go.
+- **Find Risks.** The change's concrete problems, most severe first: wrong logic, edge cases, races,
+  security and data loss.
+- **Ask Agent.** Any section or risk opens a Claude Code session in the worktree with that part in
+  its prompt box, so the agent can fix the files too.
 
-`⇧⌘C` picks an element (⇧-click to gather a few, then click the last): ask what you want, pick the
-model, and a new agent session starts in your worktree's terminal with the page's address, each
-element's selector, React components, styles and a picture of it, and your question, as Ask Agent
-does with a review. The console counts the page's errors and warnings, failed requests too, and
-Send Errors to Agent asks about them the same way; a question about an element can take the
-page's errors along.
+No extra account: it runs the `claude` or `codex` CLI you're already signed in to.
 
-A page out of sight closes after a while to give its memory back, and comes back where it was when
-you look again; Settings → Browser sets how many stay open and for how long, and can reload a
-worktree's pages when its agent finishes.
+[More: reviewing →](docs/FEATURES.md#guided-review)
 
-Agents can drive the browser themselves once you turn it on in Settings → Browser (it's off until
-you do). The agents in a terminal pane get tabs of their own, opened in the background without
-taking yours and named so each agent keeps to its own: with `gitviber browser` they open pages, read
-them as a tree they can act on, click, type, take screenshots and read the console. Each tab signs
-in apart from the others and from you, so two tabs can be two accounts, and a login can be saved as
-a session for another tab to load. A login or payment popup opens as another tab that can still
-post back to the page that opened it, and a download lands in a folder of the tab's own, its path in
-the agent's reply. A tab no command touched for a while slows down, and one left unused for an hour
-closes, unless it's on show. `gitviber browser help` lists it all.
+## Watch the work land
 
-An agent's clicks, keys, hover, drag and scroll reach the page as real input, without moving your
-pointer or reaching your keyboard or clipboard. Its tabs keep drawing while GitViber is hidden or
-minimized; Settings → Browser → Agent tabs drawing at once sets how many. Click or type in an
-agent's tab and it's yours: its agent only reads it until you press Give back to agent, or run
-`gitviber browser tab release`.
+**Diffs refresh the moment an agent saves, without losing your place.**
 
-So agents know the command is there, and when to use it instead of your own browser, GitViber
-writes a skill for them while agent control is on: `~/.claude/skills/gitviber-browser/SKILL.md`
-for Claude Code and `~/.agents/skills/gitviber-browser/SKILL.md` for Codex, each only if that agent
-is installed (`~/.claude` or `~/.codex` is there). It holds `gitviber browser help` as this version
-prints it, is rewritten when an update changes that (never by an older version), and is deleted
-when you turn agent control or Settings → Browser → Teach Claude Code and Codex off, or uninstall
-that agent. A `gitviber-browser` skill of your own there is never touched. For other agents, Settings has the same text to paste into your `CLAUDE.md` or
-`AGENTS.md`.
+- Unified or split, word-level highlights, unchanged lines folded away.
+- `J` / `K` walk the changed files, `V` marks one viewed. If the agent touches it again, the mark
+  clears so you know to look again.
+- Edit the new side right in the diff, stage single lines, stash just the lines you pick.
+- Review pull requests in the same viewer, commit by commit if you like, with its checks beside it.
 
-### Browse the code, not just the diff
+[More: diffs and review →](docs/FEATURES.md#diffs-and-review)
 
-A full file explorer with change bars in the gutter, quick open (`⌘P`) and rename, create and
-delete from the right-click menu. Pick two files with `⌘`-click to compare them side by side. Fix a
-line right in the file view and save it with `⌘S`. For most days that's the editor you no longer
-need open.
+## A terminal that knows about agents
 
-Markdown renders the way GitHub shows it, in files, pull requests and issues alike: Mermaid
-diagrams, math, `> [!NOTE]` alerts, and a file's frontmatter as a table.
+**A real terminal under the diff (`⌘J`), with tabs and splits.**
 
-### Your Obsidian vault, beside the code
+- **Every command is marked** with how long it took, red when it failed. `⌘↑` / `⌘↓` jump between them.
+- **Click what it prints.** Paths open at the line, `#123` opens the pull request, a SHA opens
+  History. `⌃⇧Space` puts a letter on every link, even inside vim or Claude Code.
+- **Made for agents.** Paste a screenshot or drop files and Claude Code or Codex gets their paths.
+  Shift+Enter works, and a trackpad swipe scrolls Claude Code's fullscreen view.
 
-If you use Obsidian, your vault shows in a section under the explorer's files, found on its own.
-Notes open in a tab the way Obsidian's reading view shows them: wikilinks that open the note they
-name, embedded notes, images and PDFs, callouts, highlights, tags and properties. Canvases open
-as their board, to pan and zoom, and images, audio, video and PDFs in the media viewer. Switch a
-note to Code to edit it and save it with `⌘S`. Settings → Obsidian picks which vaults show.
+[More: the terminal →](docs/FEATURES.md#the-terminal)
 
-### Commit messages from your agent
+## A browser for you, too
 
-Turn it on in Settings, hit the sparkle next to the commit box, and your own `claude -p` or
-`codex exec` writes the message from the diff. New pull request has the same button for the title
-and description. No API key, no extra account: it uses the CLI you're already signed in to.
+**Check the agent's work where you read it.** `⇧⌘B` opens a tab beside the code.
 
-![Claude Code writing a commit message in GitViber](assets/commit-message.gif)
+- **Your dev server, one click away.** The address bar lists every port your worktree serves.
+  Device mode draws a phone or tablet around the page.
+- **Point at it.** `⇧⌘C` picks an element and starts an agent session with the selector, React
+  components, styles and a picture of it. Console errors and failed requests go to the agent the same way.
 
-### Good-looking, and yours
+[More: the browser →](docs/FEATURES.md#the-browser)
 
-Eleven color themes for the whole app, from Nord and Catppuccin to Solarized, 24 syntax themes,
-your own code font, terminal font and interface scale, and on macOS a see-through window, with
-its opacity and the desktop's blur behind it yours to set. Every action has a shortcut, every shortcut
-can be rebound in Settings, and holding `⌘` shows them all.
+## Browse the code, not just the diff
 
-<table>
-  <tr>
-    <td><img alt="History with the branch graph, light theme" src="assets/screenshot-light.png"></td>
-    <td><img alt="Reviewing a pull request" src="assets/screenshot-pr.png"></td>
-  </tr>
-</table>
+**A full file explorer, so for most days the editor stays closed.**
 
-### And the rest of git
+- Change bars in the gutter, quick open (`⌘P`), rename, create and delete. Fix a line and save with `⌘S`.
+- Markdown renders like GitHub shows it: Mermaid, math, alerts, frontmatter as a table.
+- **Your Obsidian vault shows beside the code**, found on its own, with wikilinks, embeds, canvases and all.
+
+[More: code and notes →](docs/FEATURES.md#code-and-notes)
+
+## Commit messages from your agent
+
+Hit the sparkle next to the commit box and your own `claude -p` or `codex exec` writes the message
+from the diff. New pull request does the same for the title and description. No API key, no extra
+account: it uses the CLI you're already signed in to.
+
+## And the rest of git
+
+Everything you'd open another app for, in the same window:
 
 | | |
 | --- | --- |
-| **History** | Branches and merges as a colored lane graph. Undo, revert, reset, check out or tag from the right-click menu. Reword, squash, drop or reorder commits: pick several with ⌘- or ⇧-click, drag them between commits to move them or onto one to squash them; split a commit into pieces to commit with line staging, or fix staged changes up into an older one, and cherry-pick several commits at once. Branches that point into rewritten commits can move along; anything that rewrites pushed commits asks first. Compare any two commits, or one with the working tree. Open All shows every file of a commit as one scroll of diffs. Put a file back as a commit had it, or take back just that commit's change to it, or a few of its lines; `⌘Z` undoes it |
-| **Branches** | Merge, rebase, and pull with fast-forward, merge or rebase. Pin branches to the top of the picker, with the ones you checked out last under them. Clean up the merged ones in one go, squash- and rebase-merged included. Compare any two branches, remote branches, tags or commits on a screen of their own: the commits each has that the other lacks, the files changed since they parted (as a pull request shows them) or every difference as they stand, all in one scroll with Open All, and a merge into the current branch that says what would conflict before you make it |
-| **Patches** | Copy a file, a few lines, a commit or a stash as a patch. Apply one from the clipboard: it shows what it changes first, merges with your edits where it must, and `⌘Z` takes it back |
-| **Conflicts** | Resolve block by block (current, incoming, both, or by hand) with each block's merge base a click away, then continue, skip or abort. Or hand them to the agent in your terminal, or open them in the merge tool your git config names |
-| **Pull requests** | List (narrow it to the ones you created, are assigned, are asked to review or are mentioned in, or to drafts and labels, and it remembers per repository), read, review in the same diff viewer, create, merge and check out. Read one commit by commit: pick a commit, or a run of them, to see only what they changed. See why a check failed and copy it for the agent (GitHub) |
-| **Issues** | List (narrow it to the ones you created, are assigned or are mentioned in, or by label), read, open, edit, comment, close and reopen, or start one in its own worktree (GitHub) |
+| **History** | A colored lane graph. Reword, squash, drop, reorder or split commits, cherry-pick several at once, compare any two points. |
+| **Branches** | Merge, rebase, pull. Compare any two branches and see what would conflict before you merge. |
+| **Conflicts** | Resolve block by block, hand them to the agent in your terminal, or open your merge tool. |
+| **Pull requests & issues** | List, filter, read, review, create, merge and check out. (GitHub) |
+| **Patches** | Copy a file, lines, a commit or a stash as a patch. Apply one with a preview, and `⌘Z` takes it back. |
+
+[More: git →](docs/FEATURES.md#git)
+
+## Good-looking, and yours
+
+Eleven color themes, 24 syntax themes, your own fonts and scale, a see-through window on macOS. Every
+action has a shortcut, every shortcut can be rebound, and holding `⌘` shows them all
+([the list](docs/SHORTCUTS.md)).
+
+---
 
 ## Install
 
-Grab the latest build from [Releases](https://github.com/emircan-sahin/gitviber/releases/latest):
-
-| | |
-| --- | --- |
-| **macOS** 13 or later | `GitViber_<version>_universal.dmg`, one app for Apple Silicon and Intel, signed and notarized |
-| **Linux** x86_64 | `.deb` for Debian and Ubuntu, `.rpm` for Fedora, `.AppImage` for the rest |
-
-Or with Homebrew:
+**macOS 13 or later**, signed and notarized, one app for Apple Silicon and Intel:
 
 ```sh
 brew install --cask emircan-sahin/tap/gitviber
 ```
 
-On Linux:
+Or grab `GitViber_<version>_universal.dmg` from [Releases](https://github.com/emircan-sahin/gitviber/releases/latest).
+
+**Linux x86_64** from the same page: `.deb` for Debian and Ubuntu, `.rpm` for Fedora, `.AppImage` for the rest.
 
 ```sh
 sudo apt install ./GitViber_*_amd64.deb          # Debian, Ubuntu
@@ -229,16 +186,10 @@ sudo dnf install ./GitViber-*.x86_64.rpm         # Fedora
 chmod +x GitViber_*.AppImage && ./GitViber_*.AppImage
 ```
 
-To open a repository from a terminal, run `gitviber .` (or any path inside one); a file opens in
-the code view, at a line with `gitviber src/app.ts:42` or `:42:7`. On macOS, GitViber's own
-terminal has the command with nothing to install. Homebrew and the Linux packages put it on your
-`PATH` for every terminal; otherwise use **Install 'gitviber' Command** in the app menu (File on
-Linux). A folder dropped on the Dock icon opens too, and one outside a repository offers to
-initialize one.
-
-GitViber tells you when a new version is out. The macOS app and the AppImage update in place;
-a `.deb` or `.rpm` install gets a link to the release to download it from. What changed is in the [changelog](CHANGELOG.md), and every release lists SHA-256
-checksums in `SHA256SUMS`.
+Open a repository from a terminal with `gitviber .`, or a file at a line with `gitviber src/app.ts:42`.
+On macOS, GitViber's own terminal has the command with nothing to install; elsewhere use
+**Install 'gitviber' Command** in the app menu. GitViber tells you when a new version is out, and
+the macOS app and the AppImage update in place. Every release lists SHA-256 checksums in `SHA256SUMS`.
 
 GitViber is used daily on macOS. The Linux builds are tested in CI, but the app itself is only
 starting to get used there ([#35](https://github.com/emircan-sahin/gitviber/issues/35)). Windows
@@ -246,11 +197,11 @@ is untested and has no build yet.
 
 ### Requirements
 
-- **git 2.36 or newer.** GitViber runs your own git, and says so on first launch if it's missing
-  or older. On macOS, `xcode-select --install` or Homebrew's `git` will do.
+- **git 2.36 or newer.** GitViber runs your own git, and says so on first launch if it's missing or
+  older. On macOS, `xcode-select --install` or Homebrew's `git` will do.
 - **Optional:** the [GitHub CLI](https://cli.github.com) (`gh auth login`) for pull requests and
-  issues; git's stored github.com credential works too. `claude` or `codex` if you want commit
-  messages written for you.
+  issues; git's stored github.com credential works too. `claude` or `codex` for commit messages
+  written for you.
 
 ### Build from source
 
@@ -276,31 +227,11 @@ toolchains, e.g. on Arch), run it with `NO_STRIP=true`.
 
 ## Privacy
 
-No telemetry, no API keys. The app talks to your git remotes and, for pull requests and issues,
-GitHub. For those it borrows a login you already have, the GitHub CLI (`gh auth token`) first,
-then git's stored github.com credential, and keeps the token in memory. GitViber checks GitHub
-Releases for updates at launch and every few hours; turn it off in Settings → Updates. Errors, including every
-error message the app shows you (a failed push's git output, say), go to a local file
-(`~/Library/Logs/app.gitviber.desktop/errors.log` on macOS, Help → Show Logs) and nowhere else,
-with logins in URLs and GitHub tokens blanked out. Help → Copy Diagnostics copies only the versions
-of GitViber, the OS, git, `gh` and WebKit, for you to paste into a bug report. Markdown from GitHub
-is cut down to GitHub's own HTML allowlist, and an image hosted outside GitHub loads only when you
-click it. Commit message suggestions go wherever the command you picked sends them. To show your
-Obsidian vault, GitViber reads Obsidian's own list of vaults on your disk; it never touches the
-vault's `.obsidian` folder. Browser tabs keep their own cookies, site storage and cache, apart
-from the app's, and load pages straight from where they're served; your other browsers' sign-ins
-don't carry over, and Settings → Browser → Clear Browsing Data empties them. An agent's tabs each
-keep theirs in memory, apart from yours, unless the agent asks for yours. Logins an agent saves as
-sessions (`gitviber browser session save`), their cookies and site storage included, are kept in
-the app's data folder, readable by you alone, and never printed or sent anywhere; Clear Browsing
-Data deletes them too. An agent's tab logs the requests its page makes, headers and bodies
-included, in memory only and only in agents' tabs, for its agent to read. What an agent reads of a
-page, picks, console lines or requests included, goes wherever that agent sends it. The agents' skill (above) is written only while agent control
-and its setting are on, and only for an agent that's installed. Letting agents use the browser opens a socket on your Mac only, in a
-folder only you can enter, that only GitViber's own terminals have the keys to. Each pane's key
-reaches only that pane's tabs, so an agent that changes which pane it says it's in gets nowhere;
-another program running as you can still read a pane's key from its environment (`ps -E`), as it
-could read anything else of yours.
+No telemetry, no API keys, no account. The app talks to your git remotes and, for pull requests and
+issues, GitHub, borrowing a login you already have (the GitHub CLI first, then git's stored
+credential) and keeping the token in memory. Errors go to a local log file and nowhere else.
+Browser tabs keep their own cookies, apart from the app's and from your other browsers. Agent
+control of the browser is off until you turn it on. [Everything, in detail →](docs/PRIVACY.md)
 
 ## FAQ
 
@@ -329,85 +260,11 @@ the versions a bug report needs.
 Linux, `sudo apt remove git-viber` or `sudo dnf remove git-viber`, or delete the AppImage. To
 remove the settings by hand, delete the folders above and `~/Library/Caches/app.gitviber.desktop`.
 
-## Shortcuts
-
-<details>
-<summary>Every shortcut, and how they map on Linux</summary>
-
-<br>
-
-Every shortcut below except moving around a list or view (arrows, `↵`, `⎋`, `⇧F10`) can be rebound in Settings (`⌘,`).
-While you type, only shortcuts with `⌘`, `⌃` or an F-key apply, except `⌘←` `⌘→` and `⌃` with a letter, which edit the text.
-On Linux and Windows `⌘` is Ctrl, the views are on Alt+1–4, Ctrl+Tab / Ctrl+Shift+Tab switch tabs, and the terminal's
-`⌘T` `⌘D` `⌘K` `⌘W` are Ctrl+Shift+T, D, K and W, since Ctrl+letter stays the shell's (split down is Ctrl+Alt+Shift+D,
-zooming a pane Ctrl+Shift+Enter, maximizing Ctrl+Alt+Shift+Enter, the previous / next pane Ctrl+Alt+← / →; focusing a pane by side has no default there, the shell and the desktop use those keys, and neither has renaming a pane, since Ctrl+R is the shell's history search).
-Reopening a closed tab and closing the other tabs have no default there either, as Ctrl+Shift+T opens a terminal.
-
-| Keys | |
-| --- | --- |
-| `⌘,` | Settings |
-| Hold `⌘`, or `⌘/` | Show every shortcut, the ones that don't work where you are dimmed (the hold can be turned off in Settings) |
-| `⇧⌘P` `⌘P` | Command palette, quick open |
-| `⌘F` `⇧⌘F` | Find where focus is, find in files |
-| `⌥⌘F`, or `/` in the list | Search the history |
-| `⌃1` `⌃2` `⌃3` `⌃4` | Changes, History, PRs, Issues |
-| `⌘1` … `⌘8`, `⌘9` | Go to tab 1 to 8, the last tab; the terminal's while it has focus |
-| `⇧⌘]` `⇧⌘[`, `⌘→` `⌘←`, `⌃⇥` `⌃⇧⇥` | Next / previous tab; the terminal's while it has focus, though in a terminal pane `⌘←` `⌘→` go to the line's start and end |
-| `⌥←` `⌥→` | Move the focused tab left / right, in the code view's tabs or the terminal's |
-| `⇧⌘T` `⌥⌘T` | Reopen the closed tab, close the other tabs |
-| `J` `K` | Next / previous changed file |
-| `↓` `↑` `↵` | Move through the focused list (Changes, History, PRs, Issues), `↵` keeps the tab open; `Home` `End` `PgUp` `PgDn` too |
-| `⇧↓` `⇧↑`, `Esc` | Pick a range of rows in Changes or History, let the picked rows go |
-| `⇧F10` | The focused row's right-click menu |
-| `V` | Mark file viewed |
-| `C` | Add a review note on the selected lines, else the cursor's |
-| `S` `⌘⌫` | Stage or unstage, discard the open file; in the explorer `⌘⌫` deletes the file |
-| `⌘A` | Select every change (in the Changes list) |
-| `⌘Z` `⇧⌘Z` | Undo, redo the last git action (outside text fields) |
-| `F7` `⇧F7`, `⌥↓` `⌥↑` | Next / previous change |
-| `⌥⌘S` `⌥⌘N` `⇧⌘⌫` | Stage, unstage, discard the selected lines, else the change at the cursor (next / previous change puts it there) |
-| `⌥S` `⌥C` `⌥W` `⌥Z` | Split view, collapse unchanged, ignore whitespace, word wrap |
-| `F12` or `⌘↵`, `⌥F12`, `⇧F12` | Go to definition (`⌘`-click too), peek it, find references (in the code view) |
-| `=` `−` `0` | Zoom an image in, out, to fit (in the image view) |
-| `⌘S` | Save the file you're editing |
-| `F2` | Rename the file, branch or worktree (in the explorer, branch picker or worktree picker) |
-| `T` `M` `⌫` | Open a terminal in the worktree, merge its branch, remove it (in the worktree picker) |
-| `⇧⌘O` | Open in the external app you last picked |
-| `⌘B` `⌥⌘B` | Toggle the git panel, the file explorer |
-| `⇧⌘G` `⌘E` `⇧⌘E` | Focus the git panel, the code view, the file explorer |
-| `F6` `⇧F6` | Focus the next / previous panel (not from the terminal, which keeps F-keys for its programs) |
-| `→` `⎋` | From a file in a list to its code, and back |
-| `↑` `↓` `PgUp` `PgDn` `Space` `Home` `End` | Scroll the focused code view, `←` `→` sideways |
-| `⌘J` or `⌃` `` ` `` | Toggle the terminal |
-| `⌘T` | New terminal |
-| `⌘D` `⇧⌘D` `⌘K` | Split right, split down, clear (in the terminal) |
-| `⇧⌘←` `⇧⌘→` | Previous / next terminal pane by its number, wrapping around; zoomed, the pane shown (in the terminal) |
-| `⌥⌘←` `⌥⌘→` `⌥⌘↑` `⌥⌘↓`, `⇧⌘↑` `⇧⌘↓` | Focus the terminal pane on that side (in the terminal) |
-| `⌘↵` | Maximize the terminal over the workspace, and back (in the terminal) |
-| `⇧⌘↵` | Show only the focused terminal pane in the panel, and all of them again (in the terminal) |
-| `⌘R` | Rename the focused pane of a split terminal (in the terminal; a double-click on its header too) |
-| `⌘↑` `⌘↓` | Scroll to the previous / next command's prompt (in the terminal, with shell integration) |
-| `⌃⇧Space` | Label the links on screen: type a label to open its link, with Shift to copy it (in the terminal) |
-| `⇧⌘B` | Open a browser tab |
-| `⌘L` `⌘R` `⌘[` `⌘]` | Address bar, reload, back, forward (in a browser tab) |
-| `⌘F` `⌘G` `⇧⌘G` | Find in the page, next / previous match (in a browser tab) |
-| `⇧⌘C` `⇧⌘M` `⌥⌘I` | Pick an element for the agent, device mode, Web Inspector (in a browser tab) |
-| `⌘=` `⌘−` `⌘0` | Zoom the interface; in the terminal, its font size (a pinch or Ctrl+scroll too); in a browser tab, the page |
-| `⌥⌘=` `⌥⌘−` `⌥⌘0` | Code font size |
-| `⌘W` | Close tab, or the terminal pane in focus |
-| `⌃⌘C` | Focus the commit message, from anywhere |
-| `⌘↵` | Commit (in the commit message) |
-| `⌃⇧⌘T` `⌃⇧⌘P` `⌃⌘P` | Fetch, pull, push |
-| `⇧⌘R` | Reload the window, which ends every terminal |
-| `⌘O` | Open repository |
-
-</details>
-
 ## Hacking on it
 
 Tauri 2 and Rust on the backend, React 19 with Radix and Tailwind v4 on the front. Diffs are
 computed in Rust with `similar`, highlighting is Shiki in a web worker, and the UI runs in the
-system webview, so there's no bundled Chromium.
+system webview.
 
 ```sh
 pnpm tauri dev      # run the app (takes the next free port if 1420 is in use)
