@@ -1,5 +1,6 @@
 // llms.txt and llms-full.txt (llmstxt.org), written on every build from en.json and the README's
-// Install, Privacy and FAQ sections, so what they tell a model never drifts from the site.
+// Install and FAQ sections plus docs/FEATURES.md and docs/PRIVACY.md, so what they tell a model never
+// drifts from the site.
 
 // Plain-text readers garble typographic punctuation; keep the files ASCII where it's only style.
 const ascii = (s) =>
@@ -26,7 +27,18 @@ function section(readme, heading, repo) {
     .replace(/\]\((?!https?:)([^)]+)\)/g, `](${repo}/blob/main/$1)`);
 }
 
-export function llms({ t, readme, locales, pageUrl, siteUrl, version, repo, brew, author, chapters, chapterText }) {
+/** A docs/ file without its title and back link, headings pushed down `by` levels, links absolute. */
+function doc(text, by, repo) {
+  return text
+    .replace(/^# .*\n+Back to the .*\n+/, "")
+    .replace(/^---\n+/gm, "")
+    .replace(/^<img .*>\n+/gm, "")
+    .replace(/^(#{2,5}) /gm, (_, h) => `${h}${"#".repeat(by)} `)
+    .replace(/\]\((?!https?:|#)([^)]+)\)/g, (_, p) => `](${repo}/blob/main/docs/${p.replace(/^\.\.\//, "")})`)
+    .trim();
+}
+
+export function llms({ t, readme, docs, locales, pageUrl, siteUrl, version, repo, brew, author, chapters, chapterText }) {
   const home = `${siteUrl}/`;
   // The FAQ opens with what GitViber is: the summary both files start with.
   const intro = `${t.faq.items[0].a} Licensed under the GPL-3.0, with no account and no telemetry.`;
@@ -115,13 +127,17 @@ ${t.rest.subtitle}
 
 ${t.rest.items.map((i) => feature(`${i.title}:`, i.text)).join("\n")}
 
+## Feature reference
+
+${doc(docs.FEATURES, 1, repo)}
+
 ## Install
 
 ${section(readme, "Install", repo)}
 
 ## Privacy
 
-${section(readme, "Privacy", repo)}
+${doc(docs.PRIVACY, 1, repo)}
 
 ## FAQ
 

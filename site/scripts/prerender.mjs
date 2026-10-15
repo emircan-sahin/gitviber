@@ -87,7 +87,10 @@ writeFileSync(path.join(dist, "robots.txt"), `${robots}\nSitemap: ${home}sitemap
 
 const en = JSON.parse(readFileSync(path.join(root, "src/i18n/messages/en.json"), "utf8"));
 const readme = readFileSync(path.join(root, "../README.md"), "utf8");
-const { short, full } = llms({ t: en, readme, locales: LOCALES, pageUrl, siteUrl, version, repo: REPO_URL, brew: BREW, author: AUTHOR, chapters, chapterText });
+const docs = Object.fromEntries(
+  ["FEATURES", "PRIVACY"].map((n) => [n, readFileSync(path.join(root, `../docs/${n}.md`), "utf8")]),
+);
+const { short, full } = llms({ t: en, readme, docs, locales: LOCALES, pageUrl, siteUrl, version, repo: REPO_URL, brew: BREW, author: AUTHOR, chapters, chapterText });
 writeFileSync(path.join(dist, "llms.txt"), short);
 writeFileSync(path.join(dist, "llms-full.txt"), full);
 

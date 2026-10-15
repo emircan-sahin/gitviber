@@ -1,14 +1,14 @@
 name: Site
 
 # Builds site/ and deploys it to GitHub Pages. A pull request only builds it. Published releases
-# redeploy too, since the download buttons link straight to that release's files. The README feeds
+# redeploy too, since the download buttons link straight to that release's files. The README and docs/ feed
 # llms-full.txt. Social images and icons are committed (pnpm og needs Chrome), never built here.
 on:
   push:
     branches: [main]
-    paths: ["site/**", "assets/**", "README.md", "pnpm-lock.yaml", ".github/workflows/site.yml"]
+    paths: ["site/**", "assets/**", "README.md", "docs/**", "pnpm-lock.yaml", ".github/workflows/site.yml"]
   pull_request:
-    paths: ["site/**", "assets/**", "README.md", "pnpm-lock.yaml", ".github/workflows/site.yml"]
+    paths: ["site/**", "assets/**", "README.md", "docs/**", "pnpm-lock.yaml", ".github/workflows/site.yml"]
   release:
     types: [published]
   workflow_dispatch:
