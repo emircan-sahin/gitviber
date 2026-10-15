@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { source } from "./agentSource.test.ts";
 
-// scripts/agent.js on a page with frames: a same-origin frame's page read and acted in as part of
+// scripts/agent/ on a page with frames: a same-origin frame's page read and acted in as part of
 // the page, at the top viewport's coordinates; another origin's frame named, not read.
-const source = readFileSync(new URL("../../../src-tauri/src/browser/scripts/agent.js", import.meta.url), "utf8");
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const globals = ["window", "document", "getComputedStyle", "Event", "InputEvent", "MouseEvent", "PointerEvent", "KeyboardEvent", "HTMLInputElement", "HTMLTextAreaElement", "MutationObserver", "location"];
 const agent = new AsyncFunction("input", ...globals, source);

@@ -22,7 +22,15 @@ use std::sync::{mpsc, Arc, LazyLock, Mutex, MutexGuard, PoisonError, TryLockErro
 use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Manager, Url};
 
-const AGENT: &str = include_str!("scripts/agent.js");
+/// The agent script, its parts joined in order (scripts/agent/prelude.js says what each holds);
+/// the tests join the same list (src/lib/browser/agentSource.test.ts).
+const AGENT: &str = concat!(
+    include_str!("scripts/agent/prelude.js"),
+    include_str!("scripts/agent/read.js"),
+    include_str!("scripts/agent/act.js"),
+    include_str!("scripts/agent/watch.js"),
+    include_str!("scripts/agent/run.js"),
+);
 /// A step on the main thread answers at once: past this the app is stuck.
 const STEP: Duration = Duration::from_secs(10);
 /// What a script or a picture may take.
@@ -477,7 +485,7 @@ fn later_for<T: Send + 'static>(
         .map_err(|_| "The page didn't answer in time.".to_string())?
 }
 
-/// What's where a pointer command acts (agent.js `aim`).
+/// What's where a pointer command acts (scripts/agent/act.js `aim`).
 #[derive(serde::Deserialize)]
 struct Spot {
     x: f64,
@@ -731,8 +739,8 @@ impl Tab {
         main(&self.app, move |_| super::agent_page(&id))
     }
 
-    /// agent.js on the page, given `input`: its answer, or the error it gave. Each call tells the
-    /// page the tab's highest ref so far, and learns it back (agent.js's `floor`).
+    /// The agent script on the page, given `input`: its answer, or the error it gave. Each call tells the
+    /// page the tab's highest ref so far, and learns it back (prelude.js's `floor`).
     fn script(&self, input: Value) -> Res<Value> {
         self.script_for(input, SCRIPT)
     }
@@ -756,7 +764,7 @@ impl Tab {
         }
     }
 
-    /// agent.js's `out` for `input`.
+    /// The agent script's `out` for `input`.
     fn said(&self, input: Value) -> Res<String> {
         let found = self.script(input)?;
         Ok(found["out"].as_str().unwrap_or_default().to_string())
@@ -905,7 +913,7 @@ impl Tab {
         Ok(label.to_string())
     }
 
-    /// Where a pointer command acts once a person could act there, and what's there (agent.js
+    /// Where a pointer command acts once a person could act there, and what's there (act.js
     /// `aim`, which every action takes its point from).
     fn aim(&self, target: &Target) -> Res<Spot> {
         let input = match target {

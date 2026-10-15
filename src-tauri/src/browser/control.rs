@@ -1,6 +1,6 @@
 //! `gitviber browser …` from an agent in a GitViber terminal: the request it sends over the
 //! socket (server.rs), what it may ask, and the tabs each terminal pane's agents get. The page's
-//! part is scripts/agent.js; apart from AppKit, so it can be tested.
+//! part is scripts/agent/; apart from AppKit, so it can be tested.
 
 use super::console::Entry;
 use super::input;

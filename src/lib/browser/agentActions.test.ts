@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { source } from "./agentSource.test.ts";
 
-// scripts/agent.js acting on a stand-in page: an action happens only on an element a person
+// scripts/agent/ acting on a stand-in page: an action happens only on an element a person
 // could act on, and fill, select and check read back what they did.
-const source = readFileSync(new URL("../../../src-tauri/src/browser/scripts/agent.js", import.meta.url), "utf8");
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const globals = ["window", "document", "getComputedStyle", "Event", "InputEvent", "MouseEvent", "PointerEvent", "KeyboardEvent", "HTMLInputElement", "HTMLTextAreaElement", "MutationObserver", "location"];
 const agent = new AsyncFunction("input", ...globals, source);
