@@ -206,6 +206,7 @@ pub fn agent_pointer(
         agent::yours(id)?;
     }
     let v = view(id).ok_or(GONE)?;
+    super::crashes::check(&v)?;
     let web = &v.web;
     let window = web.window().ok_or("The page isn't drawn now.")?;
     let zoom = unsafe { web.pageZoom() };
@@ -292,6 +293,7 @@ pub fn agent_keys(id: &str, keys: Keys) -> Res<()> {
     }
     drop_resent_keys(mtm);
     let v = view(id).ok_or(GONE)?;
+    super::crashes::check(&v)?;
     let window = v.web.window().ok_or("The page isn't drawn now.")?;
     let mut held = v.web.ivars().held.borrow_mut();
     let (steps, edit) = match &keys {
@@ -395,6 +397,7 @@ pub fn agent_text(id: &str, text: &str) -> Res<()> {
     main_thread()?;
     agent::yours(id)?;
     let v = view(id).ok_or(GONE)?;
+    super::crashes::check(&v)?;
     for c in input::as_typed(text).chars() {
         insert(&v.web, c.encode_utf8(&mut [0; 4]));
     }

@@ -8,7 +8,7 @@ use super::{
     set_agent, url_text, view, Delegate, View, GONE, VIEWS,
 };
 use crate::browser::control::{
-    self, origin, AgentScreen, Found, Listed, NewTab, Route, Routes, TabState, IDLE,
+    self, origin, AgentScreen, Found, Listed, NewTab, Route, Routes, TabState, IDLE, MOST_TABS,
 };
 use crate::browser::Step;
 use crate::browser::{epoch_ms, Look, PageState};
@@ -200,6 +200,8 @@ pub(super) fn yours(id: &str) -> Res<()> {
 /// The tab closed, by the user or with its worktree: no agent drives it again, even reopened.
 pub(super) fn forget_tab(id: &str) {
     ROUTES.with_borrow_mut(|r| r.close(id));
+    super::downloads::forget(id);
+    super::popups::forget(Some(id));
 }
 
 /// Whether the tab is still there for its agents: live, or parked to load again.
@@ -296,7 +298,7 @@ pub(super) fn sleep_past_cap(keep: &str) {
         if over == 0 {
             break;
         }
-        if let Some(v) = view(id).filter(|v| !running(v)) {
+        if let Some(v) = view(id).filter(|v| !busy(v)) {
             stop_idle(&v);
             sleep(&v);
             over -= 1;
@@ -313,6 +315,8 @@ pub(super) fn routed(id: &str) -> bool {
 /// (close_all), so none stays a user's tab with network.js on it.
 pub(super) fn forget_all() {
     ROUTES.with_borrow_mut(Routes::clear);
+    super::downloads::forget_all();
+    super::popups::forget(None);
     super::ASKED.with_borrow_mut(HashMap::clear);
 }
 
@@ -324,6 +328,7 @@ pub fn agent_pane_closed(pty: u32) {
     if main_thread().is_err() {
         return;
     }
+    crate::browser::notes::forget(pty);
     for route in ROUTES.with_borrow_mut(|r| r.release(pty)) {
         if let Some(v) = view(&route.id) {
             native::release_keys(&v);
@@ -432,7 +437,7 @@ fn sweep() {
     let now = Instant::now();
     let app = APP.with(|a| a.get().cloned());
     for id in ROUTES.with_borrow(|r| r.expired(now)) {
-        let busy = view(&id).is_some_and(|v| running(&v));
+        let busy = view(&id).is_some_and(|v| busy(&v));
         if busy || VIEWS.with_borrow(|r| r.shown(&id)) {
             ROUTES.with_borrow_mut(|r| r.postpone(&id, now));
         } else if let Some(app) = &app {
@@ -448,9 +453,15 @@ fn running(v: &View) -> bool {
 
 /// Its idle timer is up: asleep, unless a command runs on it.
 pub(super) fn idle(id: &str) {
-    if let Some(v) = view(id).filter(|v| !running(v)) {
+    if let Some(v) = view(id).filter(|v| !busy(v)) {
         sleep(&v);
     }
+}
+
+/// A command runs on it, or its page reloads after its process ended: then it's neither slept
+/// nor moved out of its panel (crashes.rs).
+fn busy(v: &View) -> bool {
+    running(v) || super::crashes::recovering(v)
 }
 
 /// How the page's dialogs are answered while an agent's command runs on it.
@@ -531,6 +542,7 @@ pub fn agent_js(
 ) -> Res<()> {
     let mtm = main_thread()?;
     let v = view(id).ok_or(GONE)?;
+    super::crashes::check(&v)?;
     let world = if page {
         unsafe { WKContentWorld::pageWorld(mtm) }
     } else {
@@ -582,6 +594,7 @@ fn js_error(error: &NSError) -> String {
 pub fn agent_page(id: &str) -> Res<(PageState, bool)> {
     main_thread()?;
     let v = view(id).ok_or(GONE)?;
+    super::crashes::check(&v)?;
     Ok((v.delegate.state(&v.web), page_tools::capturing()))
 }
 
@@ -664,4 +677,51 @@ pub(super) fn answered(
         .note(&line, &url_text(unsafe { web.URL() }), ts);
     delegate.console_changed();
     Some(accept)
+}
+
+/// Agent tab `id`'s pane and name, for what's told of it (notes.rs).
+pub(super) fn pane_of(id: &str) -> Option<(u32, String)> {
+    ROUTES.with_borrow(|r| r.pane_of(id).map(|(pty, t)| (pty, t.name.clone())))
+}
+
+/// A popup of agent tab `opener`'s page (popups.rs), a tab of the same pane from now on, named
+/// for it (`browser-open` as any other), and awake in its cookies, device and look: its id and
+/// name. Its view is the one `create` makes from WebKit's configuration, which loads `url`.
+pub(super) fn adopt(app: &AppHandle, opener: &str, url: &str) -> Res<(String, String)> {
+    let (pty, parent) = ROUTES
+        .with_borrow(|r| r.pane_of(opener).map(|(pty, t)| (pty, t.clone())))
+        .ok_or(GONE)?;
+    let open = ROUTES.with_borrow_mut(|r| r.list(pty, is_open));
+    // Said as the popup's note puts it (popups.rs `blocked`): no advice to close one.
+    if open.len() >= MOST_TABS {
+        return Err(format!("This pane has {MOST_TABS} tabs"));
+    }
+    let name = crate::browser::popups::name(&parent.name, |n| open.iter().any(|t| t.name == n));
+    let route = Route {
+        id: NSUUID::new().UUIDString().to_string().to_lowercase(),
+        root: parent.route.root.clone(),
+    };
+    let new = NewTab {
+        name: Some(&name),
+        default: false,
+        shared: parent.shared,
+        idle: parent.idle,
+    };
+    ROUTES.with_borrow_mut(|r| r.add(pty, new, route.clone(), is_open))?;
+    let was = asked(opener);
+    ask(&route.id, |a| *a = was);
+    if let Err(e) = live(app, &route, url) {
+        forget_tab(&route.id);
+        super::forget(&route.id);
+        return Err(e);
+    }
+    let opened = Opened {
+        id: &route.id,
+        url,
+        root: &route.root,
+        pty,
+    };
+    emit(app, "browser-open", opened);
+    arm_sweep();
+    Ok((route.id, name))
 }

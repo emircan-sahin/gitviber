@@ -5,11 +5,14 @@
 
 mod agent;
 mod cookies;
+mod crashes;
+mod downloads;
 mod memory;
 mod native;
 mod page_tools;
 mod page_view;
 mod panel;
+mod popups;
 
 pub use agent::{
     agent_appearance, agent_close_tab, agent_device, agent_dialogs, agent_find_tab,
@@ -57,10 +60,10 @@ use objc2_foundation::{
     NSUUID,
 };
 use objc2_web_kit::{
-    WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate,
-    WKNavigationResponse, WKNavigationResponsePolicy, WKNavigationType, WKOpenPanelParameters,
-    WKUIDelegate, WKUserContentController, WKWebView, WKWebViewConfiguration, WKWebsiteDataStore,
-    WKWindowFeatures,
+    WKDownload, WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationActionPolicy,
+    WKNavigationDelegate, WKNavigationResponse, WKNavigationResponsePolicy, WKNavigationType,
+    WKOpenPanelParameters, WKUIDelegate, WKUserContentController, WKWebView,
+    WKWebViewConfiguration, WKWebsiteDataStore, WKWindowFeatures,
 };
 use serde::Serialize;
 use std::cell::{Cell, OnceCell, RefCell};
@@ -464,9 +467,9 @@ struct DelegateIvars {
     network: RefCell<network::Log>,
     /// The picker's tag while it's on (page_tools.rs pick).
     picking: RefCell<Option<String>>,
-    /// The page's process ended once since the user last sent it somewhere: the next time it
-    /// stays down, or a page that kills it on load would reload forever.
-    crashed: Cell<bool>,
+    /// When its process ended and was reloaded (crashes.rs): ending again soon after leaves it
+    /// stopped, or a page that kills it on load would reload forever.
+    crashes: RefCell<super::crashes::Crashes>,
     /// The agent commands running on it now (agent.rs): while any are, it doesn't idle, and its
     /// page's dialogs answer themselves.
     running: RefCell<HashSet<u64>>,
@@ -547,6 +550,13 @@ define_class!(
             }
         }
 
+        /// webViewWebContentProcessDidTerminate: with why (WebKit's private delegate method,
+        /// asked for by respondsToSelector: and called in its place).
+        #[unsafe(method(_webView:webContentProcessDidTerminateWithReason:))]
+        fn process_ended_why(&self, web: &WKWebView, reason: isize) {
+            crashes::ended(self, web, Some(reason));
+        }
+
         #[unsafe(method(gvSendConsole))]
         fn send_console(&self) {
             self.ivars().console_pending.set(false);
@@ -576,14 +586,13 @@ define_class!(
             let main = unsafe { action.targetFrame() }.is_none_or(|f| unsafe { f.isMainFrame() });
             let clicked = unsafe { action.navigationType() } == WKNavigationType::LinkActivated;
             let decision = match policy(&url, main, clicked) {
-                // A link with `download`: nothing here saves files.
+                // A link with `download`: only an agent's tab saves files (downloads.rs).
                 Policy::Allow if unsafe { action.shouldPerformDownload() } => {
-                    self.download(&url);
-                    WKNavigationActionPolicy::Cancel
+                    downloads::on_link(self, &url)
                 }
                 Policy::Allow => {
                     if clicked && main {
-                        self.ivars().crashed.set(false);
+                        self.ivars().crashes.borrow_mut().sent();
                     }
                     WKNavigationActionPolicy::Allow
                 }
@@ -604,6 +613,9 @@ define_class!(
             response: &WKNavigationResponse,
             decide: &DynBlock<dyn Fn(WKNavigationResponsePolicy)>,
         ) {
+            if let Some(policy) = downloads::on_response(self, response) {
+                return decide.call((policy,));
+            }
             if unsafe { response.canShowMIMEType() } {
                 return decide.call((WKNavigationResponsePolicy::Allow,));
             }
@@ -611,6 +623,21 @@ define_class!(
                 self.download(&url_text(unsafe { response.response().URL() }));
             }
             decide.call((WKNavigationResponsePolicy::Cancel,));
+        }
+
+        #[unsafe(method(webView:navigationAction:didBecomeDownload:))]
+        fn action_download(&self, _web: &WKWebView, _action: &WKNavigationAction, download: &WKDownload) {
+            downloads::began(self, download);
+        }
+
+        #[unsafe(method(webView:navigationResponse:didBecomeDownload:))]
+        fn response_download(
+            &self,
+            _web: &WKWebView,
+            _response: &WKNavigationResponse,
+            download: &WKDownload,
+        ) {
+            downloads::began(self, download);
         }
 
         #[unsafe(method(webView:didStartProvisionalNavigation:))]
@@ -659,30 +686,38 @@ define_class!(
             }
         }
 
-        /// The page's process crashed or was reclaimed: loaded again once, rather than blank.
+        /// The page's process crashed or was reclaimed: loaded again, rather than blank
+        /// (crashes.rs). Only where WebKit lacks the private one below, which it calls instead.
         #[unsafe(method(webViewWebContentProcessDidTerminate:))]
         fn process_ended(&self, web: &WKWebView) {
-            if self.ivars().crashed.replace(true) {
-                let message = "The page stopped again after loading once more.".to_string();
-                self.fail(url_text(unsafe { web.URL() }), message);
-            } else {
-                unsafe { web.reload() };
-            }
+            crashes::ended(self, web, None);
         }
     }
 
     unsafe impl WKUIDelegate for Delegate {
         /// A link to a new window (target=_blank, window.open) opens here: tabs come from the app.
+        /// An agent's tab gets it as a tab of its own, its opener kept (popups.rs).
         #[unsafe(method_id(webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:))]
         fn new_window(
             &self,
             web: &WKWebView,
-            _configuration: &WKWebViewConfiguration,
+            configuration: &WKWebViewConfiguration,
             action: &WKNavigationAction,
             _features: &WKWindowFeatures,
         ) -> Option<Retained<WKWebView>> {
-            unsafe { web.loadRequest(&action.request()) };
-            None
+            match popups::open(self, configuration, action) {
+                popups::Popup::Tab(popup) => Some(popup),
+                popups::Popup::Blocked => None,
+                popups::Popup::InPlace => {
+                    unsafe { web.loadRequest(&action.request()) };
+                    None
+                }
+            }
+        }
+
+        #[unsafe(method(webViewDidClose:))]
+        fn did_close(&self, _web: &WKWebView) {
+            popups::closed(self);
         }
 
         #[unsafe(method(webView:runJavaScriptAlertPanelWithMessage:initiatedByFrame:completionHandler:))]
@@ -813,7 +848,7 @@ impl Delegate {
             console_pending: Cell::new(false),
             network: RefCell::default(),
             picking: RefCell::default(),
-            crashed: Cell::new(false),
+            crashes: RefCell::default(),
             running: RefCell::default(),
             zoom: Cell::new(1.0),
             panel: RefCell::default(),
@@ -1044,10 +1079,17 @@ pub fn create(
 
     let clipboard = NSUUID::new().UUIDString().to_string();
     let agent = agent::routed(id);
-    let config = unsafe { WKWebViewConfiguration::new(mtm) };
+    // A popup's comes from WebKit with its opener (popups.rs), and WebKit loads its page.
+    let given = popups::given();
+    let config = given
+        .clone()
+        .unwrap_or_else(|| unsafe { WKWebViewConfiguration::new(mtm) });
     let store = asked(id).store.unwrap_or_else(|| data_store(mtm));
     unsafe {
-        config.setWebsiteDataStore(&store);
+        // A popup keeps WebKit's: it must be the opener's very object, or WebKit raises.
+        if given.is_none() {
+            config.setWebsiteDataStore(&store);
+        }
         // Its own, so none of the app page's scripts (Tauri's IPC) reach this page.
         let content = WKUserContentController::new(mtm);
         page_tools::install(&content, id, agent.then_some(&*clipboard), mtm);
@@ -1109,7 +1151,9 @@ pub fn create(
         page_view::zoom_view(&web, &delegate, zoom);
     }
     page_view::show_as(id, &web, look.dark);
-    load(&web, &page);
+    if given.is_none() {
+        load(&web, &page);
+    }
     #[cfg(debug_assertions)]
     log_process(&web, "made");
 
@@ -1336,6 +1380,10 @@ fn begin_park(id: &str, since: u64) {
     let Some(v) = view(id) else {
         return;
     };
+    // Not while it reloads after its process ended: it parks once that's done.
+    if crashes::hold_park(&v, id, since) {
+        return;
+    }
     let parked = Parked {
         url: url_text(unsafe { v.web.URL() }),
         snapshot: None,
@@ -1406,7 +1454,7 @@ fn destroy(v: View) {
 
 /// The user sends the page somewhere: a crash after this may reload it again.
 fn sent(v: &View) {
-    v.delegate.ivars().crashed.set(false);
+    v.delegate.ivars().crashes.borrow_mut().sent();
 }
 
 pub fn navigate(id: &str, url: &str) -> Res<()> {

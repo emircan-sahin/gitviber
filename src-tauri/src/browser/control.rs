@@ -42,7 +42,11 @@ are out of their reach. Each tab, the default one too, has cookies and storage o
 when it closes, unless --shared. A tab no command touched for 10 minutes sleeps: slowed, and in
 time parked to save memory, its next command loading it again. Unused for an hour, it closes,
 unless the user has it on show. A press or a key of the user's in a tab makes it theirs: until
-they give it back, commands that act on it fail and those that read it still run.
+they give it back, commands that act on it fail and those that read it still run. A popup
+(window.open, a target=_blank link) opens as another tab named for its opener (t1-popup1), in the
+opener's cookies; a popup that closes itself closes its tab. A page whose process ends (a crash,
+memory) loads again; ending again within 30 s, it's left stopped. Replies end with what happened
+meanwhile, each line starting with → (--json: notes).
 
 Tabs
   tab new [name] [url] [--shared] [--session <name>] [--idle <minutes>]
@@ -164,12 +168,16 @@ Acting by the page's script, setting what a person would and reading it back
   on an unchanged page says so.
 
 Waiting
-  wait <css> | --text <text> | --url <glob> | --fn <js> | --load | --ms <n> [--timeout <ms>]
+  wait <css> | --text <text> | --url <glob> | --fn <js> | --load | --download | --ms <n>
+       [--timeout <ms>]
                                Until an element shows, the text does, the address matches (part
                                of it; with * or **, all of it, or its path from a leading /), an
-                               expression is true, the page has loaded, or the time is up: one
-                               of them; 10 s at most unless --timeout says (120 s at most). A
-                               timeout says what was still not so
+                               expression is true, the page has loaded, a download of the
+                               tab's ends (one that ended since the previous command on the tab
+                               started counts, even if a reply noted it; each is returned once;
+                               prints its path, size and type), or the time is up: one of them;
+                               10 s at most unless --timeout says (120 s at most). A timeout says
+                               what was still not so
 
 Page tools
   eval <js>                    Runs in the page; prints the result as JSON (undefined, NaN,
@@ -177,6 +185,9 @@ Page tools
   console [--level error|warn] [--all] [--clear]
                                What the page and its frames logged since it loaded (a frame's
                                lines name it); --all every page's kept
+  downloads [--clear]          The tab's downloaded files, newest first, with their paths: kept
+                               in a folder of the tab's own (its newest 20, a day at most), gone
+                               when it closes; one that ends is noted in the next reply
   network [--failed] [--filter <text>] [--type fetch|xhr|ws|resource] [--method <m>]
           [--status <404|4xx>] [--clear]
                                What the page and its frames requested and loaded, one line each
@@ -238,6 +249,9 @@ pub struct Reply {
     /// The exit status when not 0 or 1 (OFF).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<i32>,
+    /// What happened to the pane's tabs meanwhile (notes.rs), also at the end of the text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
     /// A dialog the user has open on the page, holding its scripts (also said in the text).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dialog: Option<String>,
@@ -344,6 +358,8 @@ pub enum Command {
     Upload(String, Vec<String>),
     Scroll(Scroll, Option<u32>),
     Wait(Wait, Duration),
+    /// Until a download of the tab's ends.
+    WaitDownload(Duration),
     Eval(String),
     Screenshot(Shot),
     Console {
@@ -353,6 +369,8 @@ pub enum Command {
         all: bool,
         clear: bool,
     },
+    /// The tab's downloaded files, or (true) their removal.
+    Downloads(bool),
     Network(network::Ask),
     Device(Option<AgentScreen>),
     /// Whether the page's dialogs are accepted (OK) rather than dismissed.
@@ -391,8 +409,10 @@ impl Command {
             | Self::Find(_)
             | Self::Get(_)
             | Self::Wait(..)
+            | Self::WaitDownload(_)
             | Self::Screenshot(_)
             | Self::Console { .. }
+            | Self::Downloads(_)
             | Self::Network(_)
             | Self::Dialogs(_) => false,
         }
@@ -606,6 +626,11 @@ pub fn parse(cmd: &str, args: &[String]) -> Result<Command, String> {
         "eval" => Err("Usage: gitviber browser eval <js>".into()),
         "screenshot" => screenshot(args),
         "console" => console(args),
+        "downloads" => match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+            [] => Ok(Command::Downloads(false)),
+            ["--clear"] => Ok(Command::Downloads(true)),
+            _ => Err("Usage: gitviber browser downloads [--clear]".into()),
+        },
         "network" => network::ask(args).map(Command::Network),
         "device" if args.is_empty() => {
             Err("Usage: gitviber browser device <name|WxH|off>, or device --list".into())
@@ -876,13 +901,21 @@ fn scroll(args: &[String]) -> Result<Command, String> {
     Ok(Command::Scroll(to, px))
 }
 
+/// What `wait` says given two things to wait for.
+const ONE_THING: &str =
+    "wait waits for one thing: give one of --text, --url, --fn, --load, --download and --ms";
+
 fn wait(args: &[String]) -> Result<Command, String> {
-    let (mut what, mut timeout, mut css) = (None, WAIT, vec![]);
+    let (mut what, mut timeout, mut css, mut download) = (None, WAIT, vec![], false);
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         let next = match arg.as_str() {
             "--text" => Wait::Text(value(&mut it, arg)?.clone()),
             "--load" => Wait::Load,
+            "--download" => {
+                download = true;
+                continue;
+            }
             "--url" => Wait::Url(value(&mut it, arg)?.clone()),
             "--fn" => Wait::Fn(value(&mut it, arg)?.clone()),
             "--ms" => Wait::Ms(number(value(&mut it, arg)?, arg)?),
@@ -898,14 +931,14 @@ fn wait(args: &[String]) -> Result<Command, String> {
             }
         };
         if what.replace(next).is_some() {
-            return Err(
-                "wait waits for one thing: give one of --text, --url, --fn, --load \
-                        and --ms"
-                    .into(),
-            );
+            return Err(ONE_THING.into());
         }
     }
+    if download && (what.is_some() || !css.is_empty()) {
+        return Err(ONE_THING.into());
+    }
     let what = match (what, css.is_empty()) {
+        (None, true) if download => return Ok(Command::WaitDownload(timeout)),
         (Some(w), true) => w,
         (None, false) => Wait::Css(css.join(" ")),
         (Some(Wait::Fn(_)), false) => {
@@ -914,7 +947,7 @@ fn wait(args: &[String]) -> Result<Command, String> {
         _ => {
             return Err(
                 "Usage: gitviber browser wait <css> | --text <text> | --url <glob> | \
-                        --fn <js> | --load | --ms <n>"
+                        --fn <js> | --load | --download | --ms <n>"
                     .into(),
             )
         }
@@ -1429,6 +1462,13 @@ impl Routes {
             .map(|t| t.name.as_str())
     }
 
+    /// Agent tab `id` with the pane it's in.
+    pub fn pane_of(&self, id: &str) -> Option<(u32, &Named)> {
+        self.panes
+            .iter()
+            .find_map(|(pty, p)| Some((*pty, p.tabs.iter().find(|t| t.route.id == id)?)))
+    }
+
     /// Tab `id` out of its pane.
     pub fn close(&mut self, id: &str) -> Option<Named> {
         gone(id);
@@ -1861,6 +1901,15 @@ mod tests {
             .unwrap_err()
             .contains("Quote"));
         assert_eq!(
+            parse("wait", &args("--download --timeout 60000")),
+            Ok(Command::WaitDownload(Duration::from_secs(60)))
+        );
+        assert_eq!(parse("downloads", &[]), Ok(Command::Downloads(false)));
+        assert_eq!(
+            parse("downloads", &args("--clear")),
+            Ok(Command::Downloads(true))
+        );
+        assert_eq!(
             parse("eval", &args("document.title")),
             Ok(Command::Eval("document.title".into()))
         );
@@ -2120,6 +2169,10 @@ mod tests {
             ("wait", "--url"),
             ("wait", "--fn"),
             ("wait", "--soon"),
+            ("wait", "--download report.pdf"),
+            ("wait", "--download --load"),
+            ("downloads", "--all"),
+            ("downloads", "--clear now"),
             ("scroll", "down far"),
             ("screenshot", "a.png b.png"),
             ("screenshot", "--scale 3"),
@@ -2288,6 +2341,8 @@ mod tests {
             ("wait", "--fn document.title"),
             ("wait", "--load"),
             ("wait", "--ms 5"),
+            ("wait", "--download --timeout 60000"),
+            ("downloads", "--clear"),
             ("eval", "1"),
             ("console", "--level error --all --clear"),
             (
@@ -2403,6 +2458,9 @@ mod tests {
             ("snapshot", "-s e1 --boxes -o tree.txt"),
             ("wait", "--url /lobby"),
             ("wait", "--fn ok"),
+            ("wait", "--download"),
+            ("downloads", ""),
+            ("downloads", "--clear"),
             ("screenshot", "--refs"),
         ] {
             assert!(!parse(cmd, &args(a)).unwrap().acts(), "{cmd}");
@@ -2492,7 +2550,11 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!((list[0].name.as_str(), list[0].default), ("t2", false));
         assert_eq!(r.tab(1, None, all), Ok(None));
+        let pane_of = |r: &Routes, id| r.pane_of(id).map(|(pty, t)| (pty, t.name.clone()));
+        assert_eq!(pane_of(&r, "b"), Some((1, "t2".into())));
+        assert_eq!(pane_of(&r, "c"), Some((2, "t1".into())));
         assert_eq!(r.release(1), [route("b")]);
+        assert_eq!(pane_of(&r, "b"), None);
         assert!(r.release(1).is_empty() && r.named("b").is_none());
         assert_eq!(r.list(1, all), []);
         assert_eq!(r.tab(2, None, all), Ok(Some(route("c"))));

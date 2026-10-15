@@ -6,6 +6,40 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-10-15
+
+### Added
+
+- **Several browser tabs per agent.** `gitviber browser tab new <name> [url]` opens another tab for a terminal pane's agents, `tab list` shows each one with its state and page, and `tab close` closes it; `--tab <name>` sends a command to one, so agents sharing a pane never switch tabs under each other. A tab an agent uses keeps drawing at full speed out of sight; one left alone for ten minutes (or its `--idle` minutes) sleeps, and one unused for an hour closes, unless it's on show.
+- **Agent tabs keep drawing while GitViber is hidden or minimized.** Settings → Browser → Agent tabs drawing at once (4 to 24, 12 unless you choose) sets how many; past it the one used longest ago sleeps, and when the Mac runs low on memory, agents' sleeping tabs give theirs back at once.
+- **Each agent tab signs in on its own.** Every tab has its own cookies and storage, so two tabs can be two accounts of the app you're testing; `tab new --shared` uses your logins instead. `session save` keeps a tab's login (cookies, localStorage and sessionStorage) for the repository and its worktrees, and `tab new --session` or `session load` puts it into another tab. Saved sessions are readable by you alone, never printed, and Clear Browsing Data deletes them.
+- **The page's requests, for the agent.** `gitviber browser network` lists an agent tab's fetches, XHRs, WebSockets and other loads, filtered by failure, type, text, method or status, and `network <id>` shows one in full: headers, bodies and WebSocket frames. The log stays in memory, and only agents' tabs keep one.
+- **Agents act on a page as a person could.** Clicks, typing and selects wait for their element to show, be enabled and hold still, and name what covers it when something does; `fill`, `select` and the new `check` / `uncheck` read the value back. Each action ends with one line of what changed: elements added or removed, a dialog, the address, console errors and requests. `wait` takes `--url` and `--fn`, and says what still wasn't so when it times out.
+- **Agents use real mouse and keyboard input.** Clicks, hovers, drags, scrolls and keys reach the page as a person's would, trusted and with CSS `:hover`, without moving your pointer or touching your keyboard: `dblclick`, `rightclick`, `drag`, `key down` / `key up`, `press --hold`, and `type` that your keyboard layout doesn't change. An agent's keys and clipboard never reach your terminal or your clipboard.
+- **Take a tab from the agent.** Press or type in an agent's tab and it's yours: commands that would act on it stop and say so, those that only read it still run, and Give back to agent in its address bar, or `gitviber browser tab release`, hands it back. `tab list` shows each tab's owner.
+- **Agents upload files.** `upload` clicks the page's file input or its own upload button and answers the chooser that opens with the files named, which must be there.
+- **Popups open as tabs of their own.** `window.open` and `target=_blank` in an agent's tab open a tab of the same pane, named for its opener (`t1-popup1`), in the opener's cookies and keeping `window.opener`, so sign-in and payment windows that talk back to the page work. Only a popup closes itself with `window.close()`; one past the 12 tabs a pane may open is blocked, its opener staying where it was, and the agent is told why. Each reply ends with what happened to the pane's tabs meanwhile, one `→` line each.
+- **Agents get the files a page downloads.** An agent's tab saves its downloads in a folder of its own, two of one name keeping both: `wait --download` waits for one and prints its path, size and type, `downloads` lists the tab's files, and each download is told once, to that wait or in the pane's next reply.
+- **Agents read a page in parts.** An element keeps its ref across snapshots, and a ref whose element left fails as stale instead of reaching another one. `find` searches the page for a text or a pattern, `get` reads one element's text, HTML, value, attribute, styles or box, and `snapshot` takes one element's part, each ref's box, or writes it all to a file.
+- **Agents work inside a page's frames.** `snapshot`, `find`, `get` and every action go on into a frame of the page's origin, whose elements take refs as any others; a frame of another origin is named with its origin, as one the agent can't read. `console` and `network` include the frames' lines and requests, each naming the frame it came from.
+- **Screenshots at the page's own size.** One pixel per CSS pixel unless `--scale` says otherwise, 2000 px on the longest side at most, of the viewport, one element or a `--clip` of it, as PNG or JPEG; `--refs` draws each control's ref on the picture.
+- **Page text is marked as the page's.** What a page wrote comes back between marks naming its origin, so an agent can tell it from your instructions. Tokens, keys and passwords in addresses and headers are hidden unless `--reveal`, and `fill --secret NAME` types a value from the environment that no later reply shows.
+- **GitViber teaches Claude Code and Codex to use its browser.** With agent control on, Settings → Browser → Teach Claude Code and Codex writes a `gitviber-browser` skill for each agent that's installed: when to use GitViber's browser and when your own, how to work with it, and every command. It follows each update, goes when you turn it off, and a skill of your own by that name is never touched. Other agents get the same text to paste into `CLAUDE.md` or `AGENTS.md`.
+
+### Changed
+
+- **A dialog left open on an agent's page is named on every reply** until it's answered, and commands that need the page's scripts fail at once instead of waiting.
+- **`console` shows the current page's lines,** with `--all` for every page it kept and `--level` for errors or warnings; `eval` gives `undefined`, `NaN`, `Infinity` and big integers as themselves.
+- **`gitviber browser help` groups its commands,** and a terminal pane opens 12 browser tabs at most.
+
+### Fixed
+
+- **An agent reaches only its own pane's browser tabs.** Each terminal pane gets a key of its own, so an agent that claims another pane's number can't drive its tabs or sessions.
+- **A browser tab its agent closed doesn't come back with `⇧⌘T`,** and one you reopen is yours, not the agent's.
+- **A command on a tab that closed to save memory waits for its page to load again,** instead of finding it empty.
+- **Agents' clicks and typing work on more pages:** fields with a maximum length or a date format of their own, web components' fields, SVG, links inside headings and elements drawn with `display: contents`.
+- **A page that keeps crashing stops,** on its third crash in five minutes, with why, instead of reloading again and again; an agent's commands there say so, and `reload` or `open` tries again.
+
 ## [0.1.13] - 2026-10-09
 
 ### Added
@@ -574,7 +608,8 @@ with `.deb`, `.rpm` and AppImage builds for Linux.
   repository from the welcome screen.
 - Help → Show Logs and Copy Diagnostics for bug reports. No telemetry.
 
-[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.13...HEAD
+[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.14...HEAD
+[0.1.14]: https://github.com/emircan-sahin/gitviber/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/emircan-sahin/gitviber/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/emircan-sahin/gitviber/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/emircan-sahin/gitviber/compare/v0.1.10...v0.1.11

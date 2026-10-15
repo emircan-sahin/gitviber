@@ -567,6 +567,7 @@ type Shot = Box<dyn FnOnce(Option<Retained<NSImage>>)>;
 pub fn agent_picture(id: &str, picture: Picture, done: Box<dyn FnOnce(Option<Taken>)>) -> Res<()> {
     main_thread()?;
     let v = view(id).ok_or(GONE)?;
+    super::crashes::check(&v)?;
     let zoom = unsafe { v.web.pageZoom() };
     let size = v.web.bounds().size;
     let Some(points) = picks::picture_rect(picture.rect, zoom, (size.width, size.height), 0.0)

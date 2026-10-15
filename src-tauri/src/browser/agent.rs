@@ -5,9 +5,11 @@ use super::control::{
     self, AgentScreen, Click, Command, Found, Listed, NewTab, Pane, Reply, Request, Scroll,
     Sessions, Tabs, Target, Wait,
 };
+use super::downloads;
 use super::input::{self, Half, Keys, Pointer};
 use super::marks;
 use super::network;
+use super::notes;
 use super::output;
 use super::picks::{self, Bounds};
 use super::sessions::{self, Session, Shelf};
@@ -74,9 +76,12 @@ fn command(app: &AppHandle, req: Request) -> Res<Reply> {
             Pane::Tab(op) => (tabs(app, pty, root, req.tab, op, &req.cwd), true),
             Pane::Session(op) => (sessions(app, pty, root, req.tab, op), false),
         };
+        // What happened to the pane's tabs meanwhile, marked and cleaned as the rest (notes.rs).
+        let told = notes::take(pty, None);
+        let reply = notes::with(reply.unwrap_or_else(Reply::error), &told);
         let nonce = output::nonce().ok_or(NO_NONCE)?;
         let ctx = output::Ctx {
-            marked,
+            marked: marked || !told.is_empty(),
             origin: None,
             nonce: &nonce,
             reveal: req.reveal,
@@ -84,7 +89,7 @@ fn command(app: &AppHandle, req: Request) -> Res<Reply> {
             dialog: None,
             looped: false,
         };
-        return Ok(output::finish(reply.unwrap_or_else(Reply::error), &ctx));
+        return Ok(output::finish(reply, &ctx));
     }
     let cmd = control::parse(&req.cmd, &req.args)?;
     let (pty, root) = pane(app, &req)?;
@@ -130,7 +135,7 @@ fn command(app: &AppHandle, req: Request) -> Res<Reply> {
         } else {
             tab.run(cmd, made, &req.cwd, req.reveal)
         };
-        tab.finish(ran, &said, req.reveal)
+        tab.finish(ran, &said, req.reveal, pty)
     })
 }
 
@@ -162,6 +167,8 @@ fn drive<T>(
 ) -> Res<T> {
     let queue = queue(&id);
     let _turn = take_turn(&queue, STEP)?;
+    // What a `wait --download` after it looks back to.
+    downloads::command(&id);
     let tab = Tab {
         app: app.clone(),
         id,
@@ -320,6 +327,19 @@ fn load(
     session: &Session,
 ) -> Res<String> {
     drive(app, id, found, |tab| tab.load_session(name, session))
+}
+
+/// Agent tab `id` closed as `tab close` closes it, once the command running on it is done: its
+/// page closed itself (window.close()), maybe in that very command.
+pub(super) fn close_soon(app: &AppHandle, id: String) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let queue = queue(&id);
+        let Ok(_turn) = take_turn(&queue, control::CLI_WAIT) else {
+            return;
+        };
+        let _ = main(&app, move |app| super::agent_close_tab(app, &id));
+    });
 }
 
 fn shelf(app: &AppHandle, root: &str) -> Res<Shelf> {
@@ -631,6 +651,18 @@ impl Tab {
             Command::Console { level, all, clear } => {
                 plain(self.console(level.as_deref(), all, clear)?)
             }
+            Command::WaitDownload(timeout) => {
+                plain(Reply::out(downloads::wait(&self.id, timeout)?))
+            }
+            Command::Downloads(clear) => {
+                let cache = downloads::cache(&self.app)?;
+                plain(downloads::listing(
+                    &cache,
+                    &self.id,
+                    clear,
+                    SystemTime::now(),
+                ))
+            }
             Command::Network(ask) => plain(self.network(ask, reveal)?),
             Command::Device(screen) => plain(self.device(screen)?),
             Command::Appearance(dark) => {
@@ -696,13 +728,16 @@ impl Tab {
     /// A command's reply as the agent gets it, a failure's too (output::finish): marked as the
     /// page's, cleaned, and with the nudge when it's the same as the last two (`said`: as typed)
     /// with the page no different after each.
-    fn finish(&self, ran: Res<(Reply, Meta)>, said: &str, reveal: bool) -> Res<Reply> {
+    /// What happened to the pane's tabs meanwhile (notes.rs: a popup, a download, a crash)
+    /// joins it before it's marked and cleaned.
+    fn finish(&self, ran: Res<(Reply, Meta)>, said: &str, reveal: bool, pty: u32) -> Res<Reply> {
         let (reply, meta) = ran.unwrap_or_else(|e| plain(Reply::error(e)));
         let state = match &reply.error {
             Some(error) => Some(format!("failed: {error}")),
             None => meta.state,
         };
         let looped = state.is_some_and(|s| remember(&self.id, |m| m.history.again(said, &s)));
+        let reply = notes::with(reply, &notes::take(pty, Some(&self.id)));
         let nonce = output::nonce().ok_or(NO_NONCE)?;
         let origin = self.page().ok().map(|p| control::origin(&p.0.url));
         let ctx = output::Ctx {
@@ -1496,7 +1531,7 @@ fn duration_text(d: Duration) -> String {
     }
 }
 
-fn ago(idle: Duration) -> String {
+pub(super) fn ago(idle: Duration) -> String {
     match idle.as_secs() {
         s @ 0..60 => format!("{s}s ago"),
         s @ 60..3600 => format!("{}m ago", s / 60),

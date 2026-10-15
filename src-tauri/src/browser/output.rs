@@ -201,6 +201,10 @@ pub fn finish(mut reply: Reply, ctx: &Ctx) -> Reply {
     for text in [&mut reply.out, &mut reply.error].into_iter().flatten() {
         *text = clean(text);
     }
+    // --json's copy of the pane's notes (notes.rs), cleaned as their lines in the text are.
+    for note in &mut reply.notes {
+        *note = clean(note);
+    }
     if let Some(data) = &mut reply.data {
         if !ctx.reveal {
             redact_json(data);
@@ -471,7 +475,7 @@ pub fn hide_secrets(text: &str, secrets: &[(String, String)]) -> String {
             forms.push((format!("{prefix}…"), name.as_str()));
         }
     }
-    forms.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    forms.sort_by_key(|a| std::cmp::Reverse(a.0.len()));
     let mut out = text.to_string();
     for (form, name) in forms {
         out = out.replace(&form, &format!("[secret ${name}]"));

@@ -9,14 +9,18 @@ mod agent;
 pub mod client;
 pub mod console;
 pub mod control;
+mod crashes;
+mod downloads;
 mod input;
 mod keys;
 #[cfg(target_os = "macos")]
 mod macos;
 mod marks;
 pub mod network;
+mod notes;
 mod output;
 pub mod picks;
+mod popups;
 pub mod ports;
 mod registry;
 pub mod server;
