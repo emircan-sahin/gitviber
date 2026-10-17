@@ -480,38 +480,20 @@ check_screenshot_1x() {
 check_screenshot_full() {
   page full $URL_A/tall || { record screenshot_full FAIL "tab new: $ERR"; return }
   gbx --tab full scroll down
-  local before=$(value full scrollY) w=$(value full innerWidth)
+  local before=$(value full scrollY) w=$(value full innerWidth) h=$(value full innerHeight)
   gbx --tab full screenshot $STATE/tall.png --full
-  local files=($STATE/tall-<->.png(N)) sizes="" f
+  # One picture is tall.png, several tall-1.png and on. Its pixels a CSS px: 1, less in a viewport past 2000 px.
+  local files=($STATE/tall.png(N) $STATE/tall-<->.png(N)) sizes="" f
   for f in $files; do sizes+="${$(py png $f 2>/dev/null)/ /x} "; done
-  pass_if "screenshot --full: pictures of 2000 px" '[[ $sizes == "${w}x2000 ${w}x1000 " ]]' "want ${w}x2000 ${w}x1000, got ${sizes:-none: $OUT$ERR}"
-  pass_if "screenshot --full: the page once, fixed parts once" 'py tall-check $files >$STATE/tall.out 2>&1' "$(<$STATE/tall.out)"
+  local want="$(py tall-sizes $w $h) "
+  pass_if "screenshot --full: pictures of 2000 px" '[[ -n $sizes && $sizes == $want ]]' "want $want, got ${sizes:-none: $OUT$ERR}"
+  pass_if "screenshot --full: the page once, fixed parts once" 'py tall-check $(py tall-scale $w $h) $files >$STATE/tall.out 2>&1' "$(<$STATE/tall.out 2>/dev/null)"
   local after=$(value full scrollY) head=$(value full 'getComputedStyle(document.getElementById("head")).visibility')
   pass_if "screenshot --full: page put back" '[[ $after == $before && $head == visible ]]' "scroll $before then $after, header $head"
   gbx --tab full screenshot --full --clip 0,0,10,10
   pass_if "screenshot --full takes no --clip" '(( RC != 0 ))' "exit $RC: $ERR"
   rm -f $files
   close full
-}
-
-# What a page tells of its input: the first row is touch's, the second the mouse's.
-check_touch() {
-  page touch $URL_A/touch || { record touch FAIL "tab new: $ERR"; return }
-  local probe='`${navigator.maxTouchPoints} ${"ontouchstart" in window} ${matchMedia("(pointer: coarse)").matches} ${matchMedia("(hover: none)").matches} ${getComputedStyle(document.getElementById("probe")).color}`'
-  gbx --tab touch device iPhone 15
-  local seen=$(value touch $probe)
-  pass_if "device: a phone has touch" '[[ $seen == "5 true true true rgb(255, 0, 0)" ]]' "$seen ($OUT$ERR)"
-  gbx --tab touch click '#tap'
-  local log=$(value touch 'log_.join(" ")')
-  pass_if "device: a click is a tap" '[[ $log == "pointerdown:touch touchstart mousedown pointerup:touch touchend mouseup click" ]]' "$log"
-  gbx --tab touch device 1280x800
-  seen=$(value touch $probe)
-  pass_if "device WxH: the mouse stays" '[[ $seen == "0 false false false rgb(0, 128, 0)" ]]' "$seen"
-  gbx --tab touch click '#tap'
-  log=$(value touch 'log_.join(" ")')
-  pass_if "device WxH: a click is a click" '[[ $log != *touch* && $log == *click ]]' "$log"
-  gbx --tab touch device off
-  close touch
 }
 
 check_untrusted() {

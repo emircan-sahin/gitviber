@@ -76,7 +76,7 @@ PAGES = {
 <script>
 window.log_ = [];
 for (const t of ['pointerdown', 'touchstart', 'mousedown', 'pointerup', 'touchend', 'mouseup', 'click']) {
-  document.getElementById('tap').addEventListener(t, (e) => log_.push(e.pointerType ? t + ':' + e.pointerType : t));
+  document.getElementById('tap').addEventListener(t, (e) => log_.push(t.startsWith('pointer') ? t + ':' + e.pointerType : t));
 }
 </script>""",
         "<style>#probe { color: rgb(0, 128, 0) } @media (pointer: coarse) { #probe { color: rgb(255, 0, 0) } }</style>"),

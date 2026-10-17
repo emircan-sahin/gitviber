@@ -48,10 +48,16 @@ class Parsing(unittest.TestCase):
         rows = [check.tall_expect(i) for i in range(3000)]
         self.assertEqual(check.png_column(png_rows(rows), 1), rows)
         self.assertIsNone(check.tall_check(rows))
+        # A viewport wider than 2000 px takes the page at less than 1 px a CSS px.
+        self.assertEqual(check.tall_scale(1280, 800), 1.0)
+        self.assertAlmostEqual(check.tall_scale(3440, 1128), 2000 / 3440)
+        half = [check.tall_expect(i / 0.5) for i in range(1500)]
+        self.assertIsNone(check.tall_check(half, 0.5))
+        self.assertIn("rows", check.tall_check(half))
         # The header drawn again below the first tile is a fault, and so is a missing row.
         again = rows[:800] + [(255, 0, 0)] * 60 + rows[860:]
         self.assertIn("row 803", check.tall_check(again))
-        self.assertIn("2999 rows", check.tall_check(rows[:-1]))
+        self.assertIn("2980 rows", check.tall_check(rows[:-20]))
 
     def test_bridge_replies(self):
         self.assertEqual(check.bridge_value('{"ok":true,"value":"x y"}'), (True, "x y"))

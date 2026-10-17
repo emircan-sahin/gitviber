@@ -239,27 +239,33 @@ def png_column(data, x):
     return rows
 
 
-def tall_expect(row, total=3000):
-    """The colour of row `row` of site.py's /tall page: its fixed header, its fixed footer, or the
+def tall_expect(y, total=3000):
+    """The colour at `y` CSS px of site.py's /tall page: its fixed header, its fixed footer, or the
     band under them."""
-    if row < 60:
+    if y < 60:
         return (255, 0, 0)
-    if row >= total - 40:
+    if y >= total - 40:
         return (0, 0, 0)
-    i = row // 200
+    i = int(y) // 200
     return (40 + i * 13, 100, 200 - i * 9)
 
 
-def tall_check(rows):
-    """Whether the rows of a full-page screenshot of /tall are its page, top to bottom, the header
-    and the footer each once. Rows by a band's edge are left out. The first fault, or None."""
-    if len(rows) != 3000:
-        return f"{len(rows)} rows, not 3000"
+def tall_scale(view_w, view_h, scale=1.0):
+    """The pixels a CSS px of a screenshot gets: `scale`, less where its longest side would pass 2000."""
+    return min(scale, 2000 / max(view_w, view_h))
+
+
+def tall_check(rows, scale=1.0):
+    """Whether the rows of a full-page screenshot of /tall (all its pictures, top to bottom, at
+    `scale` px a CSS px) are its page, the header and the footer each once. Rows by an edge are
+    left out. The first fault, or None."""
+    if abs(len(rows) - 3000 * scale) > 5:
+        return f"{len(rows)} rows, want {3000 * scale:.0f}"
+    edges = [e * scale for e in (60, 2960, *range(0, 3001, 200))]
     for i, got in enumerate(rows):
-        edges = (60, 2960) + tuple(range(0, 3001, 200))
         if any(abs(i - e) <= 2 for e in edges):
             continue
-        want = tall_expect(i)
+        want = tall_expect(i / scale)
         if any(abs(g - w) > 6 for g, w in zip(got, want)):
             return f"row {i} is {got}, want {want}"
     return None
@@ -403,12 +409,21 @@ def main(cmd, *args):
         if not size:
             return 1
         print(*size)
+    elif cmd == "tall-sizes":
+        # The pictures of the /tall page for a w×h viewport: piece = 2000 px of the page at most.
+        w, h = float(args[0]), float(args[1])
+        s = tall_scale(w, h)
+        piece = int(2000 / s)
+        heights = [min(piece, 3000 - top) for top in range(0, 3000, piece)]
+        print(*(f"{round(w * s)}x{round(ph * s)}" for ph in heights))
+    elif cmd == "tall-scale":
+        print(tall_scale(float(args[0]), float(args[1])))
     elif cmd == "tall-check":
-        rows = []
-        for path in args:
+        scale, rows = float(args[0]), []
+        for path in args[1:]:
             with open(path, "rb") as f:
                 rows += png_column(f.read(), 10)
-        fault = tall_check(rows)
+        fault = tall_check(rows, scale)
         print(fault or "the page once, top to bottom")
         return 1 if fault else 0
     elif cmd == "fps":
