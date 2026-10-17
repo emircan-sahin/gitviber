@@ -77,12 +77,15 @@ Tabs
 
 Sessions
   session save <name> [--force]
-                               The tab's cookies, and its page's localStorage and sessionStorage
-                               (not IndexedDB), saved for this repository and its worktrees; over
-                               a session of that name only with --force. Not from a --shared tab
+                               The tab's cookies, and its page's localStorage, sessionStorage and
+                               IndexedDB (8 MB of it; a database that holds a Blob or a CryptoKey,
+                               or doesn't fit, is named and left out), saved for this repository
+                               and its worktrees; over a session of that name only with --force.
+                               Not from a --shared tab
   session load <name>          Into the tab, on the page's origin the session was saved at (a
-                               blank tab goes there first): the tab's cookies and storage
-                               cleared, then the saved ones set. Not into a --shared tab
+                               blank tab goes there first): the tab's cookies, storage and
+                               IndexedDB cleared, then the saved ones set; a database the page
+                               keeps open is named and left out. Not into a --shared tab
   session clear                The tab's own cookies and storage, gone
   session list                 Each saved session's name, origin, cookie count and age
   session delete <name>        A saved session gone. A session's name is one whatever its case

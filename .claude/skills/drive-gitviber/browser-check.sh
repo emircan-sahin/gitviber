@@ -195,11 +195,12 @@ finish() {
 # `gitviber browser help` it uses; a check whose needs aren't there is skipped, so a branch can
 # add its own here before the commands land.
 
-CHECKS=(visibility fps isolation sessions unknown_tab device screenshot network sse idle_park tab_close form
+CHECKS=(visibility fps isolation sessions session_idb unknown_tab device screenshot network sse idle_park tab_close form
   stale_ref covered smooth_scroll fill_honest change_line find_get screenshot_1x untrusted secret frames
   trusted hover keys background_keys clipboard_safe clipboard_tab ownership popup download agent_hide agent_audio agent_show agent_e2e memory)
 typeset -A NEEDS=(
   visibility "eval" fps "eval" isolation "eval" sessions "session save|session load|--session"
+  session_idb "IndexedDB"
   unknown_tab "--tab" device "device <name|WxH|off>" screenshot "screenshot" network "network <id>"
   sse "network" idle_park "--idle" tab_close "tab close" form "fill|select|click|wait"
   memory "tab list"
@@ -263,6 +264,35 @@ check_sessions() {
   gbx --tab s3 session load lc-alice
   pass_if "session load on another origin" '(( RC != 0 ))' "refused: $ERR"
   close s1 s2 s3
+}
+
+# A login kept in IndexedDB (as Firebase Auth does) comes back in another tab, with the store's
+# key path, index and kinds of value; a database with a Blob is named and left out.
+check_session_idb() {
+  page si $URL_A/ || { record session_idb FAIL "tab new: $ERR"; return }
+  SESSIONS+=(lc-idb)
+  gb session delete lc-idb >/dev/null 2>&1
+  local make="(async () => {
+    const open = (name, version, fill) => new Promise((ok, no) => { const r = indexedDB.open(name, version); r.onupgradeneeded = () => fill(r.result); r.onsuccess = () => { r.result.close(); ok() }; r.onerror = () => no(r.error) });
+    await open('gv-check', 3, (db) => { const s = db.createObjectStore('auth', { keyPath: 'id' }); s.createIndex('by_name', 'name'); s.put({ id: 'u1', name: 'alice', token: 'tok-idb', at: new Date(0), raw: new Uint8Array([1, 2, 3]) }); db.createObjectStore('plain').put('v', 'k') });
+    await open('gv-check-blob', 1, (db) => { db.createObjectStore('files').put(new Blob(['x']), 'f') });
+    return 'made' })()"
+  local made=$(value si $make)
+  pass_if "IndexedDB made in the page" '[[ $made == made ]]' "$made $ERR"
+  gbx --tab si session save lc-idb --force
+  pass_if "session save: IndexedDB kept, a Blob's database named" \
+    '(( RC == 0 )) && [[ $OUT == *"IndexedDB databases"* && $OUT == *"left out: gv-check-blob (holds a Blob"* ]]' "$OUT$ERR"
+  gbx tab new si2 --session lc-idb && gbx --tab si2 wait --load
+  local read="(async () => {
+    const db = await new Promise((ok, no) => { const r = indexedDB.open('gv-check'); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error) });
+    const s = db.transaction('auth').objectStore('auth');
+    const row = await new Promise((ok) => { const g = s.get('u1'); g.onsuccess = () => ok(g.result) });
+    const names = (await indexedDB.databases()).map((d) => d.name).sort().join('+');
+    const out = [row.token, db.version, s.keyPath, [...s.indexNames].join(), row.at.toISOString(), [...new Uint8Array(row.raw)].join(), names].join('|');
+    db.close(); return out })()"
+  local got=$(value si2 $read)
+  pass_if "tab new --session: IndexedDB comes back" '[[ $got == "tok-idb|3|id|by_name|1970-01-01T00:00:00.000Z|1,2,3|gv-check" ]]' "$got $ERR"
+  close si si2
 }
 
 check_unknown_tab() {

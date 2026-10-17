@@ -237,9 +237,10 @@ own, opened in the background without taking yours. `gitviber browser help` list
 
 - Each tab has its own cookies and storage, so two tabs can be two accounts of the app you're
   testing. `tab new --shared` uses your logins instead.
-- `session save` keeps a tab's login (cookies, localStorage and sessionStorage) for the repository
-  and its worktrees, and `tab new --session` or `session load` puts it into another tab or another
-  agent's. Saved sessions are readable by you alone.
+- `session save` keeps a tab's login (cookies, localStorage, sessionStorage and IndexedDB) for the
+  repository and its worktrees, and `tab new --session` or `session load` puts it into another tab or
+  another agent's. An IndexedDB database that holds a file or a key that can't be exported, or is too
+  big, is named and left out. Saved sessions are readable by you alone.
 
 **Acting on a page**
 
