@@ -114,12 +114,17 @@ Reading
                                masked), an attribute, computed styles (a few useful ones unless
                                named) or box (x,y,w,h in the viewport, CSS px); 4000 characters
                                at most, HTML 8000
-  screenshot [path] [-s <ref|css> | --clip x,y,w,h] [--scale <0.1-2>] [--refs]
+  screenshot [path] [-s <ref|css> | --clip x,y,w,h | --full] [--scale <0.1-2>] [--refs]
                                What the viewport shows, or one element of it, or a clip (CSS
                                px), at 1 px a CSS px unless --scale says, its longest side 2000
                                px at most; --refs draws each interactive element's ref on it. A
                                PNG, or a JPEG where the path ends in .jpg; to the app's cache
-                               unless a path is given. Prints its path and size
+                               unless a path is given. Prints its path and size.
+                               --full: the page's whole height (the document's scroll; a page
+                               that scrolls inside an element gives the viewport), scrolled
+                               through; fixed and sticky parts are drawn once. In pictures of
+                               2000 px at most, top to bottom (shot-1.png, shot-2.png), five at
+                               most: a longer page is cut
 
 Acting with the mouse and keyboard: the page gets them as the user's own (trusted events, user
 activation), without the real pointer moving or the user's focus taken. A point x,y is CSS px
@@ -532,6 +537,8 @@ pub struct Shot {
     pub scale: f64,
     /// The interactive elements' refs drawn on it.
     pub refs: bool,
+    /// The whole page, scrolled through, in pictures of 2000 px at most.
+    pub full: bool,
 }
 
 /// `get`'s ask: what of the element (text, html, value, attr, styles, box), the attribute or
@@ -1066,7 +1073,8 @@ fn glob(pattern: &str, text: &str) -> bool {
 const SCALES: std::ops::RangeInclusive<f64> = 0.1..=2.0;
 
 fn screenshot(args: &[String]) -> Result<Command, String> {
-    let usage = "Usage: gitviber browser screenshot [path] [-s <ref|css> | --clip x,y,w,h] \
+    let usage =
+        "Usage: gitviber browser screenshot [path] [-s <ref|css> | --clip x,y,w,h | --full] \
                  [--scale <0.1-2>] [--refs]";
     let mut shot = Shot {
         path: None,
@@ -1074,6 +1082,7 @@ fn screenshot(args: &[String]) -> Result<Command, String> {
         clip: None,
         scale: 1.0,
         refs: false,
+        full: false,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -1089,6 +1098,7 @@ fn screenshot(args: &[String]) -> Result<Command, String> {
                     .ok_or_else(|| format!("--scale is 0.1 to 2, not {scale:?}"))?;
             }
             "--refs" => shot.refs = true,
+            "--full" => shot.full = true,
             _ if arg.starts_with("--") => return Err(format!("screenshot doesn't take {arg}")),
             _ if shot.path.is_none() => shot.path = Some(arg.clone()),
             _ => return Err(usage.into()),
@@ -1096,6 +1106,9 @@ fn screenshot(args: &[String]) -> Result<Command, String> {
     }
     if shot.target.is_some() && shot.clip.is_some() {
         return Err("screenshot takes one of -s and --clip".into());
+    }
+    if shot.full && (shot.target.is_some() || shot.clip.is_some() || shot.refs) {
+        return Err("screenshot --full takes no -s, --clip or --refs".into());
     }
     Ok(Command::Screenshot(shot))
 }
@@ -1200,6 +1213,14 @@ pub fn allowed_when_off(cmd: &str, args: &[String]) -> bool {
 pub fn jpeg(path: &Path) -> bool {
     path.extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg"))
+}
+
+/// The name of the `n`th of a full page's pictures: `shot.png` is `shot-2.png`.
+pub fn piece_name(path: &str, n: usize) -> String {
+    let stem = Path::new(path)
+        .extension()
+        .map_or(path.len(), |e| path.len() - e.len() - 1);
+    format!("{}-{n}{}", &path[..stem], &path[stem..])
 }
 
 /// Where `screenshot <path>` writes: a .png, .jpg or .jpeg under the CLI's folder (no `..` out
@@ -2053,7 +2074,8 @@ mod tests {
                 target: Some("e2".into()),
                 clip: None,
                 scale: 1.0,
-                refs: false
+                refs: false,
+                full: false
             }))
         );
         assert_eq!(
@@ -2071,7 +2093,8 @@ mod tests {
                     h: 200.0
                 }),
                 scale: 0.5,
-                refs: true
+                refs: true,
+                full: false
             }))
         );
         assert_eq!(
@@ -2313,7 +2336,9 @@ mod tests {
             ("screenshot", "--clip 0,0,10"),
             ("screenshot", "--clip 0,0,-5,10"),
             ("screenshot", "--ref e1 --clip 0,0,5,5"),
-            ("screenshot", "--full"),
+            ("screenshot", "--full -s e1"),
+            ("screenshot", "--full --clip 0,0,5,5"),
+            ("screenshot", "--full --refs"),
             ("console", "--level info"),
             ("console", "--level"),
             ("console", "--since"),
@@ -2450,6 +2475,7 @@ mod tests {
             ("get", "styles color e1"),
             ("screenshot", "shot.jpg -s e1 --scale 0.5 --refs"),
             ("screenshot", "--clip 0,0,100,50"),
+            ("screenshot", "--full shot.png --scale 0.5"),
             ("click", "e1 --synthetic"),
             ("click", "412,300"),
             ("dblclick", "e1"),
@@ -3123,6 +3149,13 @@ mod tests {
         std::fs::write(dir.join("todo.md"), "# my notes").unwrap();
         assert!(text_path(&dir, "todo.md").is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_full_pages_pictures_are_numbered_before_the_extension() {
+        assert_eq!(piece_name("shot.png", 2), "shot-2.png");
+        assert_eq!(piece_name("out.d/Page.JPG", 3), "out.d/Page-3.JPG");
+        assert_eq!(piece_name("a.b.jpeg", 1), "a.b-1.jpeg");
     }
 
     #[test]

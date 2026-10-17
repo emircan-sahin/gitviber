@@ -5,7 +5,7 @@
 
 use super::{emit, main_thread, url_text, view, Delegate, View, WebView, GONE};
 use crate::browser::console::{Counts, Entry};
-use crate::browser::marks::{picture_size, place_tag, Label, Picture, Taken};
+use crate::browser::marks::{picture_size, place_tag, Cut, Label, Picture, Taken};
 use crate::browser::network;
 use crate::browser::picks::{self, Bounds, Pick};
 use crate::browser::{cut, epoch_ms};
@@ -24,8 +24,8 @@ use objc2_app_kit::{
     NSImageInterpolation, NSRectFill, NSStringDrawing,
 };
 use objc2_foundation::{
-    ns_string, NSArray, NSDictionary, NSError, NSNumber, NSObjectProtocol, NSPoint, NSRect, NSSize,
-    NSString, NSTimer, NSUUID,
+    ns_string, NSArray, NSData, NSDictionary, NSError, NSNumber, NSObjectProtocol, NSPoint, NSRect,
+    NSSize, NSString, NSTimer, NSUUID,
 };
 use objc2_web_kit::{
     WKContentWorld, WKPreferences, WKScriptMessage, WKScriptMessageHandler,
@@ -644,21 +644,7 @@ pub fn agent_picture(id: &str, picture: Picture, done: Box<dyn FnOnce(Option<Tak
 /// then encoded.
 fn redrawn(image: &NSImage, size: (u32, u32), labels: &[Label], jpeg: bool) -> Option<Vec<u8>> {
     let (w, h) = (f64::from(size.0), f64::from(size.1));
-    let rep = unsafe {
-        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
-            NSBitmapImageRep::alloc(),
-            std::ptr::null_mut(),
-            size.0 as isize,
-            size.1 as isize,
-            8,
-            4,
-            true,
-            false,
-            NSDeviceRGBColorSpace,
-            0,
-            0,
-        )
-    }?;
+    let rep = bitmap(size)?;
     let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
     NSGraphicsContext::saveGraphicsState_class();
     NSGraphicsContext::setCurrentContext(Some(&context));
@@ -695,6 +681,30 @@ fn redrawn(image: &NSImage, size: (u32, u32), labels: &[Label], jpeg: bool) -> O
     }
     context.flushGraphics();
     NSGraphicsContext::restoreGraphicsState_class();
+    encode(&rep, jpeg)
+}
+
+/// An empty bitmap `size` pixels big.
+fn bitmap(size: (u32, u32)) -> Option<Retained<NSBitmapImageRep>> {
+    unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            size.0 as isize,
+            size.1 as isize,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            0,
+            0,
+        )
+    }
+}
+
+/// `rep` as a PNG, or a JPEG.
+fn encode(rep: &NSBitmapImageRep, jpeg: bool) -> Option<Vec<u8>> {
     let (kind, properties) = if jpeg {
         let quality = NSNumber::new_f64(0.85);
         let key = unsafe { NSImageCompressionFactor };
@@ -707,6 +717,66 @@ fn redrawn(image: &NSImage, size: (u32, u32), labels: &[Label], jpeg: bool) -> O
     };
     let data = unsafe { rep.representationUsingType_properties(kind, &properties) }?;
     Some(data.to_vec())
+}
+
+/// A full page's pictures, each `(its cuts, its height in pixels)` drawn from the `tiles` (PNGs
+/// of one size), as PNGs or JPEGs.
+pub fn agent_stitch(
+    tiles: &[Vec<u8>],
+    pieces: &[(Vec<Cut>, u32)],
+    jpeg: bool,
+) -> Res<Vec<Vec<u8>>> {
+    const FAILED: &str = "Couldn't put the page's pictures together.";
+    main_thread()?;
+    let mut images = Vec::new();
+    for png in tiles {
+        let data = NSData::with_bytes(png);
+        let rep = NSBitmapImageRep::imageRepWithData(&data).ok_or(FAILED)?;
+        let image = NSImage::initWithData(NSImage::alloc(), &data).ok_or(FAILED)?;
+        let size = (rep.pixelsWide() as f64, rep.pixelsHigh() as f64);
+        // Its own pixels, whatever resolution the file says.
+        image.setSize(NSSize::new(size.0, size.1));
+        images.push((image, size));
+    }
+    let width = images.first().ok_or(FAILED)?.1 .0;
+    let mut out = Vec::new();
+    for (cuts, height) in pieces {
+        let size = (width as u32, *height);
+        let rep = bitmap(size).ok_or(FAILED)?;
+        let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep).ok_or(FAILED)?;
+        NSGraphicsContext::saveGraphicsState_class();
+        NSGraphicsContext::setCurrentContext(Some(&context));
+        NSColor::whiteColor().set();
+        NSRectFill(NSRect::new(
+            NSPoint::ZERO,
+            NSSize::new(width, f64::from(*height)),
+        ));
+        for cut in cuts {
+            let Some((image, (_, tile_h))) = images.get(cut.tile) else {
+                continue;
+            };
+            let rows = f64::from(cut.rows).min(tile_h - f64::from(cut.src));
+            // AppKit's y goes up from the bottom; a row's goes down from the top.
+            let into = NSRect::new(
+                NSPoint::new(0.0, f64::from(*height) - f64::from(cut.dst) - rows),
+                NSSize::new(width, rows),
+            );
+            let from = NSRect::new(
+                NSPoint::new(0.0, tile_h - f64::from(cut.src) - rows),
+                NSSize::new(width, rows),
+            );
+            image.drawInRect_fromRect_operation_fraction(
+                into,
+                from,
+                NSCompositingOperation::Copy,
+                1.0,
+            );
+        }
+        context.flushGraphics();
+        NSGraphicsContext::restoreGraphicsState_class();
+        out.push(encode(&rep, jpeg).ok_or(FAILED)?);
+    }
+    Ok(out)
 }
 
 pub(super) fn png(image: &NSImage) -> Option<Vec<u8>> {

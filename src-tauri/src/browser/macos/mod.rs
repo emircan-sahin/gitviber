@@ -24,7 +24,7 @@ pub use native::{
     agent_chosen, agent_keys, agent_pointer, agent_text, agent_upload, agent_upload_done,
 };
 pub use page_tools::{
-    agent_dialog, agent_picture, console_clear, console_entries, network_log, pick,
+    agent_dialog, agent_picture, agent_stitch, console_clear, console_entries, network_log, pick,
 };
 pub use page_view::{appearance, find, zoom};
 

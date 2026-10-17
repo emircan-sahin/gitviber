@@ -320,3 +320,40 @@ function view({ target = null, clip = null, refs = false }) {
   }
   return { rect, labels };
 }
+
+/**
+ * A full-page screenshot's steps. `begin`: the page at its top, its height and the viewport,
+ * with the fixed and sticky elements noted. `to`: the page scrolled to `y`, those elements
+ * shown only where a person would see them (one near the top in the first tile, one near the
+ * bottom in the last, a sticky one in the first), so a header isn't drawn on every tile.
+ * `end`: all put back, the page scrolled to where it was.
+ */
+async function tile({ step, y = 0, first = false, last = false }) {
+  const t = state.tile;
+  if (step === "begin") {
+    state.tile = { was: [window.scrollX, window.scrollY], pinned: [] };
+    window.scrollTo({ left: window.scrollX, top: 0, behavior: "instant" });
+    await frame();
+    for (const el of document.querySelectorAll("body, body *")) {
+      const position = styleOf(el).position;
+      if (position !== "fixed" && position !== "sticky") continue;
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      state.tile.pinned.push({ el, low: position === "fixed" && r.y + r.height / 2 > window.innerHeight / 2, set: [el.style.getPropertyValue("visibility"), el.style.getPropertyPriority("visibility")] });
+    }
+    return { height: document.documentElement.scrollHeight, w: window.innerWidth, h: window.innerHeight };
+  }
+  if (!t) throw new Error("No full-page screenshot is under way");
+  const show = (p, on) => p.el.style.setProperty("visibility", on ? p.set[0] : "hidden", on ? p.set[1] : "important");
+  if (step === "to") {
+    window.scrollTo({ left: window.scrollX, top: y, behavior: "instant" });
+    for (const p of t.pinned) show(p, (first && last) || (p.low ? last : first));
+    await frame();
+    await new Promise((done) => setTimeout(done, 100));
+    return { y: window.scrollY };
+  }
+  for (const p of t.pinned) show(p, true);
+  window.scrollTo({ left: t.was[0], top: t.was[1], behavior: "instant" });
+  state.tile = null;
+  return {};
+}

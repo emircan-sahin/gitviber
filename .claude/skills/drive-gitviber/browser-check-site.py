@@ -65,7 +65,17 @@ def page(title, body, head=""):
     return f"<!doctype html><html><head><title>{title}</title>{head}</head><body>{body}</body></html>"
 
 
+# 15 bands of 200 px, each its own colour (browser-check.py tall_expect has the same formula),
+# with a fixed header and footer: a full-page screenshot shows each of them once.
+BANDS = "".join(
+    f'<div style="height: 200px; background: rgb({40 + i * 13}, 100, {200 - i * 9})"></div>' for i in range(15))
+
 PAGES = {
+    "/tall": page("tall", f"""
+<div id="head" style="position: fixed; top: 0; left: 0; width: 100%; height: 60px; background: rgb(255, 0, 0)"></div>
+{BANDS}
+<div id="foot" style="position: fixed; bottom: 0; left: 0; width: 100%; height: 40px; background: rgb(0, 0, 0)"></div>""",
+        "<style>body { margin: 0 }</style>"),
     "/audio": page("audio", """
 <button id="play" onclick="play()">Play</button><button id="stop" onclick="stop()">Stop</button>
 <script>

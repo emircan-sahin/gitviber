@@ -24,6 +24,24 @@ use std::sync::{mpsc, Arc, LazyLock, Mutex, MutexGuard, PoisonError, TryLockErro
 use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Manager, Url};
 
+/// A full page's tiles, taken.
+struct Tiled {
+    plan: marks::Plan,
+    view_h: f64,
+    /// The page's height, CSS px.
+    height: f64,
+    /// A tile's width, pixels.
+    width: u32,
+    /// The scale asked, and the one the tiles came at.
+    asked: f64,
+    scale: f64,
+    /// Where each tile was scrolled to, CSS px, and its PNG.
+    ys: Vec<f64>,
+    png: Vec<Vec<u8>>,
+    /// Where each picture goes: a file, or the app's cache.
+    paths: Vec<Option<PathBuf>>,
+}
+
 /// The agent script, its parts joined in order (scripts/agent/prelude.js says what each holds);
 /// the tests join the same list (src/lib/browser/agentSource.test.ts).
 const AGENT: &str = concat!(
@@ -1313,6 +1331,9 @@ impl Tab {
     /// The viewport, one element or a clip of it as drawn, at 1 px a CSS px unless scaled, the
     /// refs drawn on it if asked; written where told, else to the app's cache.
     fn screenshot(&self, shot: control::Shot, cwd: &str) -> Res<Reply> {
+        if shot.full {
+            return self.full_page(shot.scale, shot.path.as_deref(), cwd);
+        }
         let path = shot
             .path
             .map(|p| control::picture_path(Path::new(cwd), &p))
@@ -1338,11 +1359,7 @@ impl Tab {
                 .collect(),
             jpeg: path.as_deref().is_some_and(control::jpeg),
         };
-        let id = self.id.clone();
-        let taken = later(&self.app, move |_, done| {
-            super::agent_picture(&id, picture, done)
-        })?
-        .ok_or("No picture: WebKit gave none.")?;
+        let taken = self.take(picture)?;
         let ((w, h), scale) = (taken.size, taken.scale);
         let path = match path {
             Some(path) => {
@@ -1360,6 +1377,125 @@ impl Tab {
         Ok(Reply::out(format!(
             "{path} ({w}×{h} px, {scale:.2} px a CSS px{shrunk})"
         )))
+    }
+
+    /// `picture` of the viewport, taken.
+    fn take(&self, picture: marks::Picture) -> Res<marks::Taken> {
+        let id = self.id.clone();
+        later(&self.app, move |_, done| {
+            super::agent_picture(&id, picture, done)
+        })?
+        .ok_or_else(|| "No picture: WebKit gave none.".into())
+    }
+
+    /// The page from top to bottom: a tile of it for each viewport, put together in pictures of
+    /// at most 2000 px (several files, numbered, where it is taller), written to `named` or the
+    /// app's cache. Its fixed parts are put back before the pictures are made.
+    fn full_page(&self, scale: f64, named: Option<&str>, cwd: &str) -> Res<Reply> {
+        let begun = self.script(json!({ "cmd": "tile", "step": "begin" }))?;
+        let tiled = self.tiles(&begun, scale, named, cwd);
+        let _ = self.script(json!({ "cmd": "tile", "step": "end" }));
+        let tiled = tiled?;
+        let jpeg = tiled.paths[0].as_deref().is_some_and(control::jpeg);
+        let (view_h, scale) = (tiled.view_h, tiled.scale);
+        let px = |css: f64| ((css * scale).round() as u32).max(1);
+        let pieces: Vec<(Vec<marks::Cut>, u32)> = tiled
+            .plan
+            .pieces
+            .iter()
+            .map(|&piece| (marks::cuts(&tiled.ys, view_h, piece, scale), px(piece.1)))
+            .collect();
+        let heights: Vec<u32> = pieces.iter().map(|p| p.1).collect();
+        let png = tiled.png;
+        let pictures = main(&self.app, move |_| super::agent_stitch(&png, &pieces, jpeg))?;
+        let mut lines = Vec::new();
+        for ((bytes, path), h) in pictures.into_iter().zip(tiled.paths).zip(heights) {
+            let path = match path {
+                Some(path) => {
+                    std::fs::write(&path, &bytes)
+                        .map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
+                    path.display().to_string()
+                }
+                None => picks::save_png(&self.app, &bytes).ok_or("Couldn't save the picture.")?,
+            };
+            lines.push(format!("{path} ({}×{h} px)", tiled.width));
+        }
+        let reached = tiled.plan.pieces.last().map_or(0.0, |p| p.0 + p.1);
+        let cut = if tiled.plan.cut {
+            format!(", cut: the page goes on to {} px", tiled.height)
+        } else {
+            String::new()
+        };
+        let shrunk = if scale < tiled.asked {
+            ", shrunk to stay within 2000 px"
+        } else {
+            ""
+        };
+        lines.push(format!(
+            "{reached} CSS px of page, {scale:.2} px a CSS px{shrunk}{cut}"
+        ));
+        Ok(Reply::out(lines.join("\n")))
+    }
+
+    /// Each tile of the page: scrolled to, taken as a PNG.
+    fn tiles(&self, begun: &Value, scale: f64, named: Option<&str>, cwd: &str) -> Res<Tiled> {
+        let num = |key: &str| {
+            begun[key]
+                .as_f64()
+                .filter(|v| *v >= 1.0)
+                .ok_or("The page gave no size.")
+        };
+        let (width, view_h, height) = (num("w")?, num("h")?, num("height")?);
+        let plan = marks::plan_page(height, (width, view_h), scale);
+        // Every file's name is checked before the page is scrolled for any of them.
+        let many = plan.pieces.len() > 1;
+        let paths = (1..=plan.pieces.len())
+            .map(|i| {
+                named
+                    .map(|p| {
+                        let p = if many {
+                            control::piece_name(p, i)
+                        } else {
+                            p.into()
+                        };
+                        control::picture_path(Path::new(cwd), &p)
+                    })
+                    .transpose()
+            })
+            .collect::<Res<Vec<_>>>()?;
+        let (mut ys, mut png, mut taken_scale, mut pixels) = (Vec::new(), Vec::new(), scale, 0);
+        for (i, &y) in plan.tiles.iter().enumerate() {
+            let last = i + 1 == plan.tiles.len();
+            let to = json!({ "cmd": "tile", "step": "to", "y": y, "first": i == 0, "last": last });
+            let at = self.script(to)?;
+            let rect = Bounds {
+                x: 0.0,
+                y: 0.0,
+                w: width,
+                h: view_h,
+            };
+            let picture = marks::Picture {
+                rect,
+                scale,
+                labels: vec![],
+                jpeg: false,
+            };
+            let taken = self.take(picture)?;
+            (taken_scale, pixels) = (taken.scale, taken.size.0);
+            ys.push(at["y"].as_f64().unwrap_or(y));
+            png.push(taken.bytes);
+        }
+        Ok(Tiled {
+            plan,
+            view_h,
+            height,
+            width: pixels,
+            asked: scale,
+            scale: taken_scale,
+            ys,
+            png,
+            paths,
+        })
     }
 
     fn console(&self, level: Option<&str>, all: bool, clear: bool) -> Res<Reply> {

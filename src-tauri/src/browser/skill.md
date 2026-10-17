@@ -30,7 +30,8 @@ own domain is GitViber's.
   snapshots. Snapshot again only when a ref fails as stale (its element left, or the page or its
   frame moved on), and then only the part you need (`snapshot -s <ref|css>`).
 - Read with `snapshot -i`, `snapshot -s`, `find` and `get` before any screenshot. Take one only
-  for layout, colour, canvas and images; `screenshot --refs` when you need to see where refs are.
+  for layout, colour, canvas and images; `screenshot --refs` when you need to see where refs are,
+  `--full` for a whole long page (pictures of 2000 px, one file each).
 - Prefer refs to CSS. CSS and `wait <css>` reach the top document only: inside a frame, use refs.
   A cross-origin frame can't be read at all; say so rather than guess what's in it.
 - Every action ends with a `→` line of what changed: after a click or a key, `→ no DOM

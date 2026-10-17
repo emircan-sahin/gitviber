@@ -202,6 +202,69 @@ def png_size(data):
     return struct.unpack(">II", data[16:24])
 
 
+def png_column(data, x):
+    """The RGB of each row of a PNG (8-bit, not interlaced) down column x."""
+    import zlib
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("not a PNG")
+    w, h, depth, kind, _, _, interlace = struct.unpack(">IIBBBBB", data[16:29])
+    if depth != 8 or interlace or kind not in (2, 6):
+        raise ValueError("a PNG this reader doesn't take")
+    bpp = 3 if kind == 2 else 4
+    idat, i = b"", 8
+    while i < len(data):
+        n, tag = struct.unpack(">I4s", data[i:i + 8])
+        if tag == b"IDAT":
+            idat += data[i + 8:i + 8 + n]
+        i += 12 + n
+    raw, stride = zlib.decompress(idat), w * bpp
+    prev, rows, at = bytearray(stride), [], 0
+    for _ in range(h):
+        f, line, at = raw[at], bytearray(raw[at + 1:at + 1 + stride]), at + 1 + stride
+        for j in range(stride):
+            a = line[j - bpp] if j >= bpp else 0
+            b, c = prev[j], (prev[j - bpp] if j >= bpp else 0)
+            if f == 1:
+                line[j] = (line[j] + a) & 255
+            elif f == 2:
+                line[j] = (line[j] + b) & 255
+            elif f == 3:
+                line[j] = (line[j] + (a + b) // 2) & 255
+            elif f == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[j] = (line[j] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        rows.append(tuple(line[x * bpp:x * bpp + 3]))
+        prev = line
+    return rows
+
+
+def tall_expect(row, total=3000):
+    """The colour of row `row` of site.py's /tall page: its fixed header, its fixed footer, or the
+    band under them."""
+    if row < 60:
+        return (255, 0, 0)
+    if row >= total - 40:
+        return (0, 0, 0)
+    i = row // 200
+    return (40 + i * 13, 100, 200 - i * 9)
+
+
+def tall_check(rows):
+    """Whether the rows of a full-page screenshot of /tall are its page, top to bottom, the header
+    and the footer each once. Rows by a band's edge are left out. The first fault, or None."""
+    if len(rows) != 3000:
+        return f"{len(rows)} rows, not 3000"
+    for i, got in enumerate(rows):
+        edges = (60, 2960) + tuple(range(0, 3001, 200))
+        if any(abs(i - e) <= 2 for e in edges):
+            continue
+        want = tall_expect(i)
+        if any(abs(g - w) > 6 for g, w in zip(got, want)):
+            return f"row {i} is {got}, want {want}"
+    return None
+
+
 def fps(before, after):
     """Frames a second between two `[frames, performance.now()]` readings."""
     (f1, t1), (f2, t2) = before, after
@@ -340,6 +403,14 @@ def main(cmd, *args):
         if not size:
             return 1
         print(*size)
+    elif cmd == "tall-check":
+        rows = []
+        for path in args:
+            with open(path, "rb") as f:
+                rows += png_column(f.read(), 10)
+        fault = tall_check(rows)
+        print(fault or "the page once, top to bottom")
+        return 1 if fault else 0
     elif cmd == "fps":
         print(f"{fps(json.loads(args[0]), json.loads(args[1])):.1f}")
     elif cmd == "missing":

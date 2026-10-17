@@ -339,3 +339,51 @@ test("a page that draws no frames still gets its answer within seconds", async (
   delete p.window.requestAnimationFrame;
   assert.match((await run(p, { cmd: "click", target: "#later" })).error, /isn't visible/);
 });
+
+test("a full page is scrolled through with its fixed and sticky parts shown once, and put back", async () => {
+  // A style that keeps inline properties as a page's does: a priority comes with the value.
+  const pinned = (position: string, y: number) => {
+    const inline = new Map<string, [string, string]>();
+    return el("div", {}, [], {
+      box: { x: 0, y, width: 1280, height: 60 },
+      style: {
+        position,
+        display: "block",
+        visibility: "visible",
+        getPropertyValue: (k: string) => inline.get(k)?.[0] ?? "",
+        getPropertyPriority: (k: string) => inline.get(k)?.[1] ?? "",
+        setProperty: (k: string, v: string, priority = "") => (v ? inline.set(k, [v, priority]) : inline.delete(k)),
+        shown: () => !inline.get("visibility")?.[0],
+      },
+    });
+  };
+  const header = pinned("fixed", 0);
+  const footer = pinned("fixed", 740);
+  const bar = pinned("sticky", 0);
+  const plain = pinned("static", 300);
+  const body = el("body", {}, [header, footer, bar, plain], { scrollHeight: 2400 });
+  const p = page([]);
+  Object.assign(p.document, { body, documentElement: body, querySelectorAll: () => [body, header, footer, bar, plain] });
+  p.window.scrollX = 0;
+  p.window.scrollY = 500;
+  p.window.scrollTo = ({ top }: { top: number }) => (p.window.scrollY = top);
+  const shown = () => [header, footer, bar, plain].map((n) => (n.style as any).shown());
+
+  const begun = await run(p, { cmd: "tile", step: "begin" });
+  assert.deepEqual([begun.height, begun.w, begun.h, p.window.scrollY], [2400, 1280, 800, 0]);
+  // The first tile has the header and the sticky bar; the last has the footer; the middle none.
+  assert.equal((await run(p, { cmd: "tile", step: "to", y: 0, first: true, last: false })).y, 0);
+  assert.deepEqual(shown(), [true, false, true, true]);
+  assert.equal((await run(p, { cmd: "tile", step: "to", y: 800, first: false, last: false })).y, 800);
+  assert.deepEqual(shown(), [false, false, false, true]);
+  await run(p, { cmd: "tile", step: "to", y: 1600, first: false, last: true });
+  assert.deepEqual(shown(), [false, true, false, true]);
+  // A page of one tile shows all of it.
+  await run(p, { cmd: "tile", step: "to", y: 0, first: true, last: true });
+  assert.deepEqual(shown(), [true, true, true, true]);
+  // Done: everything shown and the page where the person had it.
+  await run(p, { cmd: "tile", step: "to", y: 800, first: false, last: false });
+  await run(p, { cmd: "tile", step: "end" });
+  assert.deepEqual([...shown(), p.window.scrollY], [true, true, true, true, 500]);
+  assert.match((await run(p, { cmd: "tile", step: "to", y: 0 })).error, /No full-page screenshot/);
+});

@@ -34,9 +34,10 @@ pub use macos::{
     agent_device, agent_dialog, agent_dialogs, agent_done, agent_find_tab, agent_give_back,
     agent_js, agent_keys, agent_new_tab, agent_own_store, agent_page, agent_pane_closed,
     agent_picture, agent_playing, agent_pointer, agent_running, agent_set_cookies, agent_shown,
-    agent_tab, agent_tabs, agent_text, agent_upload, agent_upload_done, agent_users, appearance,
-    clear_data, close, close_all, close_root, configure, console_clear, console_entries, create,
-    find, focus, go, hide, inspect, navigate, network_log, pick, place, set_agent, snapshot, zoom,
+    agent_stitch, agent_tab, agent_tabs, agent_text, agent_upload, agent_upload_done, agent_users,
+    appearance, clear_data, close, close_all, close_root, configure, console_clear,
+    console_entries, create, find, focus, go, hide, inspect, navigate, network_log, pick, place,
+    set_agent, snapshot, zoom,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
@@ -44,9 +45,10 @@ pub use other::{
     agent_device, agent_dialog, agent_dialogs, agent_done, agent_find_tab, agent_give_back,
     agent_js, agent_keys, agent_new_tab, agent_own_store, agent_page, agent_pane_closed,
     agent_picture, agent_playing, agent_pointer, agent_running, agent_set_cookies, agent_shown,
-    agent_tab, agent_tabs, agent_text, agent_upload, agent_upload_done, agent_users, appearance,
-    clear_data, close, close_all, close_root, configure, console_clear, console_entries, create,
-    find, focus, go, hide, inspect, navigate, network_log, pick, place, set_agent, snapshot, zoom,
+    agent_stitch, agent_tab, agent_tabs, agent_text, agent_upload, agent_upload_done, agent_users,
+    appearance, clear_data, close, close_all, close_root, configure, console_clear,
+    console_entries, create, find, focus, go, hide, inspect, navigate, network_log, pick, place,
+    set_agent, snapshot, zoom,
 };
 pub use sessions::Shelf;
 
@@ -251,7 +253,7 @@ mod other {
         console::Entry,
         control::{AgentScreen, Found, Listed, NewTab},
         input::{Keys, Pointer},
-        marks::{Picture, Taken},
+        marks::{Cut, Picture, Taken},
         network::Log,
         sessions::Cookie,
     };
@@ -345,6 +347,9 @@ mod other {
         Err(UNSUPPORTED.into())
     }
     pub fn agent_picture(_: &str, _: Picture, _: Box<dyn FnOnce(Option<Taken>)>) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_stitch(_: &[Vec<u8>], _: &[(Vec<Cut>, u32)], _: bool) -> Res<Vec<Vec<u8>>> {
         Err(UNSUPPORTED.into())
     }
     pub fn agent_device(_: &AppHandle, _: &str, _: Option<AgentScreen>) -> Res<()> {
