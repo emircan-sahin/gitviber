@@ -77,8 +77,31 @@ class NoFrame extends Error {}
  * same-origin frame's own document (frames nest: `frame=a >> frame=b >> <css>`).
  */
 function scopeOf(target, doc = document) {
-  const framed = /^\s*frame=(.+?)\s>>\s(.+)$/s.exec(target);
-  return framed ? scopeOf(framed[2], inFrame(framed[1].trim(), doc)) : { doc, css: target };
+  const framed = splitFrame(target);
+  return framed ? scopeOf(framed[1], inFrame(framed[0], doc)) : { doc, css: target };
+}
+
+/** `frame=<name> >> <rest>` as [name, rest], cut at the first ` >> ` outside quotes and brackets. */
+function splitFrame(target) {
+  const start = /^\s*frame=/.exec(target)?.[0].length;
+  if (start === undefined) return null;
+  let quote = "";
+  let depth = 0;
+  for (let i = start; i < target.length; i++) {
+    const c = target[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = "";
+    } else if (c === '"' || c === "'") quote = c;
+    else if (c === "[" || c === "(") depth++;
+    else if (c === "]" || c === ")") depth--;
+    else if (depth <= 0 && /\s/.test(c) && target.startsWith(">> ", i + 1)) {
+      const name = target.slice(start, i).trim();
+      const rest = target.slice(i + 4).trim();
+      if (name && rest) return [name, rest];
+    }
+  }
+  return null;
 }
 
 /** The page of the same-origin frame `name` (a ref, or CSS in `doc`) is. */

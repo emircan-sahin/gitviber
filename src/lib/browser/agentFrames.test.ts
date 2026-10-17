@@ -270,3 +270,14 @@ test("wait --text looks in the page's text, or a frame's when it names one", asy
   assert.equal((await has("Card", "#late")).note, "No frame matches #late");
   assert.equal((await has("Card", "#ad")).invalid, true);
 });
+
+test("a frame's selector is cut at the first ' >> ' outside quotes and brackets", async () => {
+  const p = named();
+  const note = async (css: string) => (await run(p, { cmd: "exists", css })).note;
+  assert.equal(await note("frame=#late[title='a >> b'] >> #x"), "No frame matches #late[title='a >> b']");
+  assert.equal(await note('frame=#late[title="a >> b"] >> frame=#y >> #x'), 'No frame matches #late[title="a >> b"]');
+  assert.equal(await note("frame=#late:not(.a >> .b) >> #x"), "No frame matches #late:not(.a >> .b)");
+  // The first frame is the one missing, whatever follows; a lone frame= is no step at all.
+  assert.equal(await note("frame=#nope >> frame=#cart >> #x"), "No frame matches #nope");
+  assert.equal((await run(p, { cmd: "exists", css: "frame=#cart" })).found, false);
+});
