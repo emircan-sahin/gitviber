@@ -187,6 +187,8 @@ export interface Settings {
   /** WINDOW_OPACITY's percent and BACKGROUND_BLUR's radius; applied on macOS only. */
   windowOpacity: number;
   backgroundBlur: number;
+  /** The terminal shows the desktop through at the window's opacity too (translucency.ts); solid otherwise. */
+  terminalGlass: boolean;
   uiFont: UiFont;
   customUiFont: string;
   uiFontWeight: UiFontWeight;
@@ -330,6 +332,7 @@ const DEFAULTS: Settings = {
   lightTheme: "light",
   windowOpacity: 100,
   backgroundBlur: 0,
+  terminalGlass: false,
   uiFont: "System",
   customUiFont: "",
   uiFontWeight: 500,
@@ -452,6 +455,7 @@ function load(): Settings {
     delete (s as { translucency?: unknown }).translucency;
     s.windowOpacity = inRange(s.windowOpacity, WINDOW_OPACITY, DEFAULTS.windowOpacity);
     s.backgroundBlur = inRange(s.backgroundBlur, BACKGROUND_BLUR, DEFAULTS.backgroundBlur);
+    if (typeof s.terminalGlass !== "boolean") s.terminalGlass = DEFAULTS.terminalGlass;
     if (!UI_SCALES.includes(s.uiScale)) s.uiScale = DEFAULTS.uiScale;
     if (!Object.hasOwn(OPTION_KEYS, s.optionAsMeta)) s.optionAsMeta = DEFAULTS.optionAsMeta;
     if (typeof s.shellIntegration !== "boolean") s.shellIntegration = DEFAULTS.shellIntegration;

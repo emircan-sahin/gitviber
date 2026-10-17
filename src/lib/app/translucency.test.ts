@@ -34,6 +34,7 @@ type Settings = typeof import("../settings.ts");
 type Translucency = {
   glassLevels: (opacity: number) => { glass: string; chrome: string; step: string };
   previewTranslucency: (next: { windowOpacity?: number; backgroundBlur?: number }) => void;
+  onGlassTerminal: (listener: () => void) => () => void;
 };
 type Ask = { on: boolean; blur: number };
 type Pending = Ask & { resolve: () => void; reject: (e: unknown) => void };
@@ -143,6 +144,10 @@ async function boot({
     /** The page's look: the code's opacity it shows, or undefined when solid. */
     get look() {
       return "translucency" in root.dataset ? style.get("--glass") : undefined;
+    },
+    /** Whether the terminal is see-through too (data-glass-terminal). */
+    get glassTerminal() {
+      return "glassTerminal" in root.dataset;
     },
     style,
     /** Runs the main thread's queued set_translucent calls, in order, and the ones they lead to. */
@@ -564,4 +569,41 @@ test("off macOS a stored opacity does nothing: no window calls, the page stays s
     assert.deepEqual(w.asked, [], platform);
     assert.equal(w.look, undefined, platform);
   }
+});
+
+test("the terminal turns see-through only with its switch on, once the window is clear", async () => {
+  const w = await boot({ focused: true });
+  let told = 0;
+  w.translucency.onGlassTerminal(() => told++);
+  w.settings.updateSettings({ windowOpacity: 80 });
+  await w.drain();
+  assert.equal(w.look, "80%");
+  assert.equal(w.glassTerminal, false, "the page is see-through, the terminal not asked");
+  assert.equal(told, 0);
+  w.settings.updateSettings({ terminalGlass: true });
+  assert.equal(w.glassTerminal, true);
+  assert.equal(told, 1);
+  w.settings.updateSettings({ windowOpacity: 70 });
+  assert.equal(told, 1, "a change of level doesn't tell the terminal again");
+  w.settings.updateSettings({ terminalGlass: false });
+  assert.equal(w.glassTerminal, false);
+  assert.equal(told, 2);
+});
+
+test("the terminal is solid again with the window: at 100%, in full screen", async () => {
+  const w = await boot({ focused: true, stored: { windowOpacity: 80, terminalGlass: true } });
+  await w.drain();
+  assert.equal(w.glassTerminal, true);
+  await w.fullscreen(true);
+  assert.equal(w.glassTerminal, false);
+  await w.fullscreen(false);
+  await w.drain();
+  assert.equal(w.glassTerminal, true);
+  w.settings.updateSettings({ windowOpacity: 100 });
+  assert.equal(w.glassTerminal, false);
+});
+
+test("a non-boolean stored terminal switch falls back to off", async () => {
+  const w = await boot({ stored: { terminalGlass: "yes" } });
+  assert.equal(w.settings.getSettings().terminalGlass, false);
 });

@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { useEffect, useLayoutEffect, useState } from "react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tip } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import { api, type Worktree } from "@/lib/api";
 import { COMMANDS, commandIn, runCommand, useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { stepTerminalFont, useSettings } from "@/lib/settings";
@@ -183,7 +184,7 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
   }, [active]);
 
   return (
-    <div className="flex h-full flex-col bg-background" onKeyDown={onKeyDown}>
+    <div className={cn("flex h-full flex-col bg-background", !maximized && "terminal-glass")} onKeyDown={onKeyDown}>
       <div className="flex h-9 shrink-0 items-stretch border-b border-border bg-panel">
         <div ref={tablist} role="tablist" aria-label="Terminals" onKeyDown={onTabKey} onWheel={onWheel} data-scrollbar="none" className="flex min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden">
           {groups.map((g) => (

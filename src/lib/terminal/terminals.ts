@@ -19,6 +19,7 @@ import { CommandMarks } from "./commandMarks";
 import { type SaveState } from "./saveRound";
 import { planFit } from "./fit";
 import { ask } from "../app/ask";
+import { onGlassTerminal } from "../app/translucency";
 import { plural } from "../format";
 import { IS_LINUX, IS_MAC, IS_WINDOWS } from "../platform";
 import { failed, toast } from "../app/toast";
@@ -72,6 +73,8 @@ export interface Pane extends SaveState {
   ptyResizeTimer?: number;
   /** The size the pty last heard, `cols x rows`: a resize back to it reaches nobody. */
   ptySize: string;
+  /** The repaints due after a resize or a return to the screen (healSoon). */
+  healTimers?: number[];
   /** The commands shell integration marks. */
   marks: CommandMarks;
   /** Typed into the shell once it's up, with its Enter if it ends with one (openTerminal, a restored agent). */
@@ -178,7 +181,7 @@ export const activeGroup = () => state.groups.find((g) => g.id === state.active)
 // object as a change: it rebuilt its glyph atlas and redrew each pane. The rest is set each time:
 // a pane's macOptionIsMeta may differ from the settings' (left ⌥ held), and equal values are no-ops.
 let appliedTheme = "";
-subscribeSettings(() => {
+function applyOptions() {
   const { theme, ...rest } = terminalOptions();
   const key = JSON.stringify(theme);
   const next = key === appliedTheme ? rest : { ...rest, theme };
@@ -187,7 +190,10 @@ subscribeSettings(() => {
     Object.assign(p.term.options, next);
     fitPane(p);
   }
-});
+}
+subscribeSettings(applyOptions);
+// See-through or solid again once the window has answered (translucency.ts), after the settings.
+onGlassTerminal(applyOptions);
 
 /** `binary`: xterm's onBinary bytes, a char each, which aren't text to encode as UTF-8. */
 interface Input {
@@ -353,7 +359,9 @@ function fitPane(p: Pane, now = false) {
   const held = p.hold !== undefined;
   window.clearTimeout(p.hold?.timer);
   p.hold = plan.colsLater ? { cols: proposed!.cols, timer: window.setTimeout(() => fitPane(p, true), 100) } : undefined;
+  const [cols, rows] = [p.term.cols, p.term.rows];
   p.term.resize(plan.size.cols, plan.size.rows);
+  if (p.term.cols !== cols || p.term.rows !== rows) healSoon(p);
   // The rows sent ahead of the held columns, when the columns themselves change nothing.
   if (held && !plan.colsLater) sendSizeSoon(p);
   if (!p.started) void start(p);
@@ -370,6 +378,22 @@ function releaseHold(p: Pane) {
   p.hold = undefined;
   p.term.resize(cols, p.term.rows);
   sendSizeSoon(p);
+}
+
+/**
+ * Rows of a WebGL pane can keep an old picture while the buffer is right (xterm.js#5847): its model
+ * thinks those cells are drawn. A resize rebuilds the model, so one more rebuild once the program's
+ * redraw after the resize has landed; a second for a slow redraw. Not at once: the redraw is
+ * what it would have to cover.
+ */
+const HEAL_AFTER = [300, 1500];
+function healSoon(p: Pane) {
+  p.healTimers?.forEach((t) => window.clearTimeout(t));
+  p.healTimers = HEAL_AFTER.map((ms) =>
+    window.setTimeout(() => {
+      if (p.gl && p.host.clientWidth) p.term.clearTextureAtlas();
+    }, ms),
+  );
 }
 
 function sendSizeSoon(p: Pane) {
@@ -484,6 +508,8 @@ export function attachPane(id: number, container: HTMLElement) {
   // its screen two rows off what xterm had kept of it.
   const observer = new ResizeObserver(() => fitPane(p));
   observer.observe(p.host);
+  // Back on screen (a tab, the panel): its canvas may have been drawn while hidden.
+  healSoon(p);
   return () => {
     observer.disconnect();
     // WebKit fires no blur for a focused element taken out of the page: the pane would go on drawing
@@ -546,6 +572,7 @@ function closePane(id: number, byUser = false) {
   panes.delete(id);
   window.clearTimeout(p.hold?.timer);
   window.clearTimeout(p.ptyResizeTimer);
+  p.healTimers?.forEach((t) => window.clearTimeout(t));
   forgetFind(p);
   endHints(p);
   if (p.pty !== null) void pty.kill(p.pty).catch(() => {});

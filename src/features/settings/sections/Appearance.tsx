@@ -67,7 +67,7 @@ export function AppearanceSection() {
           <>
             <Field
               label="Window opacity"
-              hint={`Below 100%, the desktop shows through the whole window, down to ${floor}%, the lowest the chosen light and dark themes both stay readable at. Text, dialogs, menus and the terminal stay solid, as does the window in full screen or with Reduce transparency on.`}
+              hint={`Below 100%, the desktop shows through the whole window, down to ${floor}%, the lowest the chosen light and dark themes both stay readable at. Text, dialogs and menus stay solid, as does the window in full screen or with Reduce transparency on.`}
             >
               <Slider
                 name="Window opacity"
@@ -91,6 +91,9 @@ export function AppearanceSection() {
                 onChange={(v) => updateSettings({ backgroundBlur: v })}
                 onPreview={(v) => previewTranslucency({ backgroundBlur: v })}
               />
+            </Field>
+            <Field label="Terminal too" hint="Lets the desktop show through the terminal at the same opacity and blur. Colored cells (a diff, Claude Code's prompt box) stay solid, and so does a maximized terminal.">
+              <Switch checked={s.terminalGlass} disabled={s.windowOpacity === 100} onChange={(v) => updateSettings({ terminalGlass: v })} />
             </Field>
           </>
         )}

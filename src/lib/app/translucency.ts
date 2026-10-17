@@ -8,6 +8,8 @@ import { opacityFloor } from "./opacityFloor";
 // Window opacity and Background blur on the window: clear and blurred behind (translucency.rs),
 // then the page's surfaces see-through at that opacity (index.css, through data-translucency and
 // the --glass levels on the root). At 100% neither happens, so a solid window costs nothing.
+// The terminal joins only when its own switch is on: data-glass-terminal on the root, for the
+// panel's CSS and for the xterm theme (terminalOptions), which is told through onGlassTerminal.
 
 /**
  * The page's levels at `opacity` (0-1): the code at it, the bars and side panels a step more
@@ -86,10 +88,23 @@ const opacity = () => {
   return IS_MAC && !reduce && !fullscreen && windowOpacity < 100 ? Math.max(windowOpacity, appearanceFloor()) : 100;
 };
 
+const glassTerminalListeners = new Set<() => void>();
+/** `listener` runs when the terminal turns see-through or solid; returns its stop. */
+export function onGlassTerminal(listener: () => void) {
+  glassTerminalListeners.add(listener);
+  return () => void glassTerminalListeners.delete(listener);
+}
+
 function apply() {
   const shown = opacity();
   const on = shown < 100;
   const root = document.documentElement;
+  const glassTerminal = on && ready && live().terminalGlass;
+  if (glassTerminal !== ("glassTerminal" in root.dataset)) {
+    if (glassTerminal) root.dataset.glassTerminal = "";
+    else delete root.dataset.glassTerminal;
+    glassTerminalListeners.forEach((l) => l());
+  }
   if (on && ready) {
     const levels = glassLevels(shown / 100);
     root.style.setProperty("--glass", levels.glass);

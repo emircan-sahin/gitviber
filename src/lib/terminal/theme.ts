@@ -65,7 +65,10 @@ const ANSI: Partial<Record<Theme, Record<string, string>>> = {
 /** The terminal's own font, size and cursor, the code view's weight, the app's own background and accents. */
 export function terminalOptions(): ITerminalOptions {
   const s = getSettings();
+  // translucency.ts: the panel paints the see-through color, so xterm's own is clear.
+  const glass = "glassTerminal" in document.documentElement.dataset;
   return {
+    allowTransparency: glass,
     fontFamily: terminalFontFamily(s),
     fontSize: s.terminalFontSize,
     fontWeight: s.codeFontWeight,
@@ -83,7 +86,7 @@ export function terminalOptions(): ITerminalOptions {
     macOptionIsMeta: s.optionAsMeta === "both",
     theme: {
       ...(ANSI[s.theme] ?? (s.dark ? ANSI_DARK : ANSI_LIGHT)),
-      background: cssVar("--background"),
+      background: glass ? "rgba(0, 0, 0, 0)" : cssVar("--background"),
       foreground: cssVar("--foreground"),
       cursor: cssVar("--primary"),
       cursorAccent: cssVar("--background"),

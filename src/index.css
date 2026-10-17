@@ -569,7 +569,10 @@
   --glass-part: var(--glass-elevated);
   background-color: var(--glass-elevated);
 }
-:root[data-translucency] .glass-background {
+:root[data-translucency] .glass-background,
+/* The terminal, once Appearance asks for it (translucency.ts) and not maximized, where the workspace
+   would show through it. */
+:root[data-translucency][data-glass-terminal] .terminal-glass {
   --background: transparent;
   --panel: var(--glass-panel-step);
   /* Changed lines tint over the code's own, rather than standing solid in it. */
