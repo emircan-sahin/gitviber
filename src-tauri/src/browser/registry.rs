@@ -102,6 +102,14 @@ impl<V> Registry<V> {
         self.views.iter_mut().find(|e| e.id == id)
     }
 
+    /// The worktree a view, live or parked, was made for.
+    pub fn root_of(&self, id: &str) -> Option<&str> {
+        self.views
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| e.root.as_str())
+    }
+
     /// A live view; a parked one has none.
     pub fn get(&self, id: &str) -> Option<&V> {
         self.views.iter().find(|e| e.id == id)?.view()
@@ -642,6 +650,16 @@ mod tests {
             Some("data:b".to_string())
         );
         assert!(r.hidden().is_empty());
+    }
+
+    #[test]
+    fn a_view_knows_its_worktree_parked_or_not() {
+        let mut r = Registry::new();
+        r.insert("a", "/w/one", 1, false);
+        let (since, _) = r.hide("a").unwrap();
+        r.park("a", since, parked("http://x.test/"));
+        assert_eq!(r.root_of("a"), Some("/w/one"));
+        assert_eq!(r.root_of("b"), None);
     }
 
     #[test]

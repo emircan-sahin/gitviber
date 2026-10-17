@@ -858,8 +858,8 @@ define_class!(
     }
 
     unsafe impl WKUIDelegate for Delegate {
-        /// A link to a new window (target=_blank, window.open) opens here: tabs come from the app.
-        /// An agent's tab gets it as a tab of its own, its opener kept (popups.rs).
+        /// A link to a new window (target=_blank, window.open) becomes a tab of its own, its
+        /// opener kept: an agent's in its pane, a user's next to theirs (popups.rs).
         #[unsafe(method_id(webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:))]
         fn new_window(
             &self,

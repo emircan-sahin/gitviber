@@ -64,6 +64,7 @@ import { openNotes, useNoteCheck } from "@/lib/review/noteStore";
 import { copyNotes, pendingNotes, sendNotes } from "@/features/review/ReviewNotes";
 import { openGuide } from "@/features/review/guides";
 import { useAgentTabs } from "@/lib/browser/agentTabs";
+import { usePopupTabs } from "@/lib/browser/popupTabs";
 import { openTerminal } from "@/lib/terminal/terminals";
 
 const LIST_TABS = ["changes", "history", "pulls", "issues"] as const;
@@ -149,7 +150,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   // the tabs are, below: a change there renders this again before anything is drawn.
   const [branchOnShow, setBranchOnShow] = useState(false);
   const branchReview = useBranchReview(review, repo.revision, reviewing || branchOnShow);
-  const { tabs, allTabs, activeKey, setActiveKey, open: openTab, add, update, closeTabs, discardTabs, close, closeAround, reopen, canReopen, moveTab, goTab, stepTab, pin, onPathMoved } = useTabs(saved, status, branchReview.review && branchReview.rows);
+  const { tabs, allTabs, activeKey, setActiveKey, open: openTab, openBeside, add, update, closeTabs, discardTabs, close, closeAround, reopen, canReopen, moveTab, goTab, stepTab, pin, onPathMoved } = useTabs(saved, status, branchReview.review && branchReview.rows);
   const branchTab = activeKey === selectionKey({ kind: "changes", list: "branch" });
   if (branchTab !== branchOnShow) setBranchOnShow(branchTab);
   // A file opened while the terminal covers the code view (⌘P, a path clicked in the terminal) comes into view.
@@ -163,6 +164,14 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   // A page an agent opened for the user stays as a tab of theirs and comes up, the focus where it was.
   const showForUser = useCallback((sel: Selection) => open(sel, true), [open]);
   useAgentTabs(root, allTabs, add, showForUser, update, discardTabs);
+  const openPopup = useCallback(
+    (sel: Selection, beside: string, kin: ReadonlySet<string>) => {
+      unmaximize();
+      openBeside(sel, beside, kin);
+    },
+    [openBeside],
+  );
+  usePopupTabs(allTabs, activeKey, openPopup, setActiveKey);
   const { viewedMap, viewed, setViewed, toggleViewed } = useViewed(saved, status, repo.refresh, branchReview.review);
   useNoteCheck(repo.revision);
   useEffect(() => saveWorkspace(root, { tabs: allTabs, active: activeKey, listTab, viewed: [...viewedMap], review }), [root, allTabs, activeKey, listTab, viewedMap, review]);
