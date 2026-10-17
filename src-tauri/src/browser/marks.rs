@@ -49,6 +49,9 @@ pub fn picture_size(w: f64, h: f64, scale: f64) -> (u32, u32, f64) {
 /// Pictures a full-page screenshot comes in at most: a taller page is cut after them.
 pub const MOST_PIECES: usize = 5;
 
+/// Tiles a full-page screenshot scrolls through at most, whatever the viewport's height.
+pub const MOST_TILES: usize = 40;
+
 /// How a full page is taken: tiles of it, one viewport each, drawn into pictures of at most
 /// MOST_SIDE px.
 #[derive(Debug, PartialEq)]
@@ -67,7 +70,9 @@ pub fn plan_page(page_h: f64, view: (f64, f64), scale: f64) -> Plan {
     let page_h = page_h.max(view_h);
     let (_, _, scale) = picture_size(view_w, view_h, scale);
     let piece = (MOST_SIDE / scale).floor().max(1.0);
-    let total = page_h.min(piece * MOST_PIECES as f64);
+    let total = page_h
+        .min(piece * MOST_PIECES as f64)
+        .min(view_h * MOST_TILES as f64);
     let pieces = (0..(total / piece).ceil() as usize)
         .map(|i| (i as f64 * piece, piece.min(total - i as f64 * piece)))
         .collect();
@@ -169,6 +174,13 @@ mod tests {
         // Tiles stop where the pictures do.
         assert_eq!(plan.tiles.len(), 13);
         assert_eq!(plan.tiles.last(), Some(&9600.0));
+        // A short viewport is held to its tiles: 40 of 200 px.
+        let short = plan_page(50_000.0, (1280.0, 200.0), 1.0);
+        assert_eq!(
+            (short.tiles.len(), short.pieces.len(), short.cut),
+            (40, 4, true)
+        );
+        assert_eq!(short.pieces.last(), Some(&(6000.0, 2000.0)));
         // A wide viewport shrinks the scale, so a picture takes more of the page.
         let wide = plan_page(50_000.0, (4000.0, 800.0), 1.0);
         assert_eq!(wide.pieces[0], (0.0, 4000.0));

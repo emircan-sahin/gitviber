@@ -40,6 +40,8 @@ struct Tiled {
     png: Vec<Vec<u8>>,
     /// Where each picture goes: a file, or the app's cache.
     paths: Vec<Option<PathBuf>>,
+    /// The page stopped scrolling here (CSS px of it taken): short of its height.
+    stopped: Option<f64>,
 }
 
 /// The agent script, its parts joined in order (scripts/agent/prelude.js says what each holds);
@@ -63,6 +65,8 @@ const POLL: Duration = Duration::from_millis(100);
 const SETTLE: Duration = Duration::from_millis(500);
 /// The page still this long counts as done redrawing.
 const QUIET: Duration = Duration::from_millis(100);
+/// How long a full-page screenshot may take in all.
+const FULL_PAGE: Duration = Duration::from_secs(60);
 /// An eval's result, cut: an agent reads it.
 const EVAL_MAX: usize = 20_000;
 /// What `eval`'s script gives: `=` and its value however it came, or `!` and what it threw.
@@ -1433,13 +1437,25 @@ impl Tab {
         } else {
             String::new()
         };
+        let stopped = match tiled.stopped {
+            Some(at) if at <= tiled.view_h => format!(
+                "\nThe page doesn't scroll (the document is {} px tall by its own count): this is the \
+                 viewport. A page that scrolls inside an element isn't taken whole",
+                tiled.height
+            ),
+            Some(at) => format!(
+                "\nThe page stopped scrolling at {at} of {} px: the rest isn't in the picture",
+                tiled.height
+            ),
+            None => String::new(),
+        };
         let shrunk = if scale < tiled.asked {
             ", shrunk to stay within 2000 px"
         } else {
             ""
         };
         lines.push(format!(
-            "{reached} CSS px of page, {scale:.2} px a CSS px{shrunk}{cut}"
+            "{reached} CSS px of page, {scale:.2} px a CSS px{shrunk}{cut}{stopped}"
         ));
         Ok(Reply::out(lines.join("\n")))
     }
@@ -1453,28 +1469,43 @@ impl Tab {
                 .ok_or("The page gave no size.")
         };
         let (width, view_h, height) = (num("w")?, num("h")?, num("height")?);
-        let plan = marks::plan_page(height, (width, view_h), scale);
+        let mut plan = marks::plan_page(height, (width, view_h), scale);
         // Every file's name is checked before the page is scrolled for any of them.
-        let many = plan.pieces.len() > 1;
-        let paths = (1..=plan.pieces.len())
-            .map(|i| {
-                named
-                    .map(|p| {
-                        let p = if many {
-                            control::piece_name(p, i)
-                        } else {
-                            p.into()
-                        };
-                        control::picture_path(Path::new(cwd), &p)
-                    })
-                    .transpose()
-            })
-            .collect::<Res<Vec<_>>>()?;
+        let paths_of = |count: usize| {
+            (1..=count)
+                .map(|i| {
+                    named
+                        .map(|p| {
+                            let p = if count > 1 {
+                                control::piece_name(p, i)
+                            } else {
+                                p.into()
+                            };
+                            control::picture_path(Path::new(cwd), &p)
+                        })
+                        .transpose()
+                })
+                .collect::<Res<Vec<_>>>()
+        };
+        let mut paths = paths_of(plan.pieces.len())?;
         let (mut ys, mut png, mut taken_scale, mut pixels) = (Vec::new(), Vec::new(), scale, 0);
+        let (mut stopped, until) = (None, Instant::now() + FULL_PAGE);
         for (i, &y) in plan.tiles.iter().enumerate() {
+            if Instant::now() >= until {
+                return Err(format!(
+                    "Taking the whole page took over {}: {i} of {} tiles. Try --scale 0.5",
+                    duration_text(FULL_PAGE),
+                    plan.tiles.len()
+                ));
+            }
             let last = i + 1 == plan.tiles.len();
             let to = json!({ "cmd": "tile", "step": "to", "y": y, "first": i == 0, "last": last });
             let at = self.script(to)?;
+            // The page didn't move: it doesn't scroll (as the document), or no further.
+            if i > 0 && at["y"].as_f64().is_some_and(|now| now <= ys[i - 1] + 0.5) {
+                stopped = Some(ys[i - 1] + view_h);
+                break;
+            }
             let rect = Bounds {
                 x: 0.0,
                 y: 0.0,
@@ -1492,6 +1523,10 @@ impl Tab {
             ys.push(at["y"].as_f64().unwrap_or(y));
             png.push(taken.bytes);
         }
+        if let Some(at) = stopped {
+            plan = marks::plan_page(at, (width, view_h), scale);
+            paths = paths_of(plan.pieces.len())?;
+        }
         Ok(Tiled {
             plan,
             view_h,
@@ -1502,6 +1537,7 @@ impl Tab {
             ys,
             png,
             paths,
+            stopped,
         })
     }
 

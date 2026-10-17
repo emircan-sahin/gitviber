@@ -342,12 +342,13 @@ test("a page that draws no frames still gets its answer within seconds", async (
 
 test("a full page is scrolled through with its fixed and sticky parts shown once, and put back", async () => {
   // A style that keeps inline properties as a page's does: a priority comes with the value.
-  const pinned = (position: string, y: number) => {
+  const pinned = (position: string, y: number, edges: Record<string, string> = { top: "0px", bottom: "auto" }) => {
     const inline = new Map<string, [string, string]>();
     return el("div", {}, [], {
       box: { x: 0, y, width: 1280, height: 60 },
       style: {
         position,
+        ...edges,
         display: "block",
         visibility: "visible",
         getPropertyValue: (k: string) => inline.get(k)?.[0] ?? "",
@@ -361,29 +362,48 @@ test("a full page is scrolled through with its fixed and sticky parts shown once
   const footer = pinned("fixed", 740);
   const bar = pinned("sticky", 0);
   const plain = pinned("static", 300);
-  const body = el("body", {}, [header, footer, bar, plain], { scrollHeight: 2400 });
+  // Sticky in the flow of the page (a section's header), and one stuck to the bottom edge.
+  const section = pinned("sticky", 300);
+  const sticker = pinned("sticky", 740, { top: "auto", bottom: "0px" });
+  const body = el("body", {}, [header, footer, bar, plain, section, sticker], { scrollHeight: 2400 });
   const p = page([]);
-  Object.assign(p.document, { body, documentElement: body, querySelectorAll: () => [body, header, footer, bar, plain] });
+  Object.assign(p.document, { body, documentElement: body, querySelectorAll: () => [body, header, footer, bar, plain, section, sticker] });
   p.window.scrollX = 0;
   p.window.scrollY = 500;
   p.window.scrollTo = ({ top }: { top: number }) => (p.window.scrollY = top);
-  const shown = () => [header, footer, bar, plain].map((n) => (n.style as any).shown());
+  const shown = () => [header, footer, bar, plain, section, sticker].map((n) => (n.style as any).shown());
 
   const begun = await run(p, { cmd: "tile", step: "begin" });
   assert.deepEqual([begun.height, begun.w, begun.h, p.window.scrollY], [2400, 1280, 800, 0]);
-  // The first tile has the header and the sticky bar; the last has the footer; the middle none.
+  // The first tile has the header and the bar stuck at the top; the last has the footer and the bar stuck at the bottom; a sticky one in the page's flow is always there.
   assert.equal((await run(p, { cmd: "tile", step: "to", y: 0, first: true, last: false })).y, 0);
-  assert.deepEqual(shown(), [true, false, true, true]);
+  assert.deepEqual(shown(), [true, false, true, true, true, false]);
   assert.equal((await run(p, { cmd: "tile", step: "to", y: 800, first: false, last: false })).y, 800);
-  assert.deepEqual(shown(), [false, false, false, true]);
+  assert.deepEqual(shown(), [false, false, false, true, true, false]);
   await run(p, { cmd: "tile", step: "to", y: 1600, first: false, last: true });
-  assert.deepEqual(shown(), [false, true, false, true]);
+  assert.deepEqual(shown(), [false, true, false, true, true, true]);
   // A page of one tile shows all of it.
   await run(p, { cmd: "tile", step: "to", y: 0, first: true, last: true });
-  assert.deepEqual(shown(), [true, true, true, true]);
+  assert.deepEqual(shown(), [true, true, true, true, true, true]);
   // Done: everything shown and the page where the person had it.
   await run(p, { cmd: "tile", step: "to", y: 800, first: false, last: false });
   await run(p, { cmd: "tile", step: "end" });
-  assert.deepEqual([...shown(), p.window.scrollY], [true, true, true, true, 500]);
+  assert.deepEqual([...shown(), p.window.scrollY], [true, true, true, true, true, true, 500]);
   assert.match((await run(p, { cmd: "tile", step: "to", y: 0 })).error, /No full-page screenshot/);
+});
+
+test("a full page's tile waits for the images in view that are still coming, but not for long", async () => {
+  const body = el("body", {}, [], { scrollHeight: 2400 });
+  const p = page([]);
+  let asked = 0;
+  // In view, and loaded on its fifth look; another far below, never loaded.
+  const coming = { getBoundingClientRect: () => ({ x: 0, y: 100, width: 50, height: 50 }), get complete() { return ++asked >= 5; } };
+  const below = { getBoundingClientRect: () => ({ x: 0, y: 3000, width: 50, height: 50 }), complete: false };
+  Object.assign(p.document, { body, documentElement: body, querySelectorAll: () => [], images: [coming, below] });
+  p.window.scrollX = 0;
+  p.window.scrollTo = ({ top }: { top: number }) => (p.window.scrollY = top);
+  await run(p, { cmd: "tile", step: "begin" });
+  await run(p, { cmd: "tile", step: "to", y: 0, first: true, last: true });
+  assert.equal(asked, 5, "waited for the one in view, and for it alone");
+  await run(p, { cmd: "tile", step: "end" });
 });
