@@ -180,6 +180,8 @@ struct Released<'a> {
 pub(super) fn user_took(id: &str) {
     if ROUTES.with_borrow_mut(|r| r.take(id)).is_some() {
         if let Some(v) = view(id) {
+            // Keys its agents held would stay down in the page, and keep the tab awake.
+            native::release_keys(&v);
             mute(&v.web, false);
         }
         if let Some(app) = APP.with(|a| a.get().cloned()) {
@@ -338,20 +340,13 @@ fn live(app: &AppHandle, route: &Route, url: &str) -> Res<bool> {
 }
 
 /// Past the cap (Settings → Browser), the tabs drawn out of sight longest unused sleep: each
-/// panel is a window's backing store, and its page runs at full rate. One a command runs on, or
-/// `keep` (the one a command is about to), is passed over for the next.
+/// panel is a window's backing store, and its page runs at full rate. One a command runs on,
+/// one holding a key, or `keep` (the one a command is about to), is passed over for the next.
 pub(super) fn sleep_past_cap(keep: &str) {
-    let (drawn, cap) = VIEWS.with_borrow(|r| (r.drawn(), r.awake_drawn()));
-    let mut over = drawn.len().saturating_sub(cap);
-    for id in drawn.iter().filter(|id| *id != keep) {
-        if over == 0 {
-            break;
-        }
-        if let Some(v) = view(id).filter(|v| !busy(v)) {
-            stop_idle(&v);
-            sleep(&v);
-            over -= 1;
-        }
+    let past = VIEWS.with_borrow(|r| r.past_cap(keep, |v| busy(v) || holding(v)));
+    for v in past.iter().filter_map(|id| view(id)) {
+        stop_idle(&v);
+        sleep(&v);
     }
 }
 
@@ -369,10 +364,8 @@ pub(super) fn forget_all() {
     super::ASKED.with_borrow_mut(HashMap::clear);
 }
 
-/// The pane closed: its tabs are the user's from now on, asleep as theirs are. Their page keeps
-/// network.js until it parks or closes (a view made again is the user's, without it): its log
-/// is in memory, bounded, and no agent reaches it now, and the scripts it shares its controller
-/// with would have to go to take it out.
+/// The pane closed: its tabs are the user's from now on, asleep as theirs are, without the
+/// network log the agents read.
 pub fn agent_pane_closed(pty: u32) {
     if main_thread().is_err() {
         return;
@@ -383,6 +376,7 @@ pub fn agent_pane_closed(pty: u32) {
         if let Some(v) = view(&route.id) {
             native::release_keys(&v);
             page_tools::guard_clipboard(&v.web, false);
+            page_tools::release_network(&v);
             mute(&v.web, false);
             stop_idle(&v);
             sleep(&v);
@@ -507,11 +501,18 @@ fn running(v: &View) -> bool {
     !v.delegate.ivars().running.borrow().is_empty()
 }
 
-/// Its idle timer is up: asleep, unless a command runs on it.
+/// Its idle timer is up: asleep, unless a command runs on it or it holds a key. Its next command
+/// to end sets the timer again.
 pub(super) fn idle(id: &str) {
-    if let Some(v) = view(id).filter(|v| !busy(v)) {
+    if let Some(v) = view(id).filter(|v| !busy(v) && !holding(v)) {
         sleep(&v);
     }
+}
+
+/// An agent holds a key down on it (`key down`): asleep, its page would lose its focus and its
+/// frames with the key still down, and the key couldn't go down again until it was let go.
+fn holding(v: &View) -> bool {
+    v.web.ivars().held.borrow().any()
 }
 
 /// A command runs on it, or its page reloads after its process ended: then it's neither slept

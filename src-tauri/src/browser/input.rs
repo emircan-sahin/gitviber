@@ -383,6 +383,11 @@ impl Held {
         self.flags
     }
 
+    /// Whether any key or modifier is held down.
+    pub fn any(&self) -> bool {
+        self.flags != 0 || !self.keys.is_empty()
+    }
+
     fn holds(&self, key: &Key) -> bool {
         self.keys.iter().any(|k| k.code == key.code)
     }
@@ -1278,6 +1283,41 @@ mod tests {
         );
         assert_eq!(held.flags(), 0);
         assert!(held.release_all().is_empty() && held.down("w").is_ok());
+    }
+
+    #[test]
+    fn a_tab_holds_keys_from_a_key_down_until_the_last_is_let_go() {
+        let mut held = Held::default();
+        assert!(!held.any());
+        held.down("w").unwrap();
+        assert!(held.any());
+        // A modifier alone holds too; a press, whole or halved, leaves nothing held.
+        held.down("Shift").unwrap();
+        held.up("w").unwrap();
+        assert!(held.any());
+        held.up("Shift").unwrap();
+        assert!(!held.any());
+        held.press("a", Half::Both).unwrap();
+        assert!(!held.any());
+        held.down("Meta").unwrap();
+        held.release_all();
+        assert!(!held.any());
+    }
+
+    /// The user took the tab, or its page's process ended: what was held is let go, and the
+    /// same keys go down again instead of being refused as held already.
+    #[test]
+    fn keys_let_go_by_a_takeover_or_a_crash_can_go_down_again() {
+        let mut held = Held::default();
+        held.down("w").unwrap();
+        held.down("Shift").unwrap();
+        assert!(held.press("w", Half::Both).is_err());
+        assert!(held.down("w").is_err());
+        let steps = held.release_all();
+        assert_eq!(steps.len(), 2, "the key up, then Shift let go");
+        assert!(!held.any());
+        assert!(held.press("w", Half::Both).is_ok());
+        assert!(held.down("w").is_ok() && held.down("Shift").is_ok());
     }
 
     #[test]

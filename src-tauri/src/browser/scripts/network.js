@@ -7,6 +7,9 @@
   const handler = window.webkit?.messageHandlers?.gvNetwork;
   if (!handler || window.__gvNetwork) return;
   window.__gvNetwork = true;
+  // Set false from outside (page_tools.rs `release_network`) once the tab is no agent's: the
+  // page stops copying its requests. A frame's own copy is only cut off from the app.
+  const off = () => window.__gvNetwork === false;
   // Characters kept of a body, a frame, an address, a name (a header's, a status text, a close
   // reason), a header's value and a word (a method, an initiator): network.rs keeps the same,
   // and refuses a post past 1 MiB.
@@ -45,6 +48,7 @@
   // A frame's requests go to the page's one log, each saying which frame as it starts.
   const inFrame = window.top && window.top !== window ? window.location.origin : undefined;
   const post = (updates) => {
+    if (off()) return;
     try {
       const tagged = inFrame ? updates.map((u) => (u.kind ? { ...u, inFrame } : u)) : updates;
       handler.postMessage(stringify(tagged, whole));
@@ -71,6 +75,7 @@
   let skipped = 0;
   /** A new entry, or null past the limit, counted. */
   const begin = (fields, href) => {
+    if (off()) return null;
     if (!room(requests)) {
       if (!skipped++) {
         later(() => {

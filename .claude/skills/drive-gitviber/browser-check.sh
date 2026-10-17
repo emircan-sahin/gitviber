@@ -197,7 +197,7 @@ finish() {
 
 CHECKS=(visibility fps isolation sessions unknown_tab device screenshot network sse idle_park tab_close form
   stale_ref covered smooth_scroll fill_honest change_line find_get screenshot_1x untrusted secret frames
-  trusted hover keys clipboard_safe ownership popup download agent_hide agent_audio agent_show agent_e2e memory)
+  trusted hover keys background_keys clipboard_safe ownership popup download agent_hide agent_audio agent_show agent_e2e memory)
 typeset -A NEEDS=(
   visibility "eval" fps "eval" isolation "eval" sessions "session save|session load|--session"
   unknown_tab "--tab" device "device <name|WxH|off>" screenshot "screenshot" network "network <id>"
@@ -205,10 +205,11 @@ typeset -A NEEDS=(
   memory "tab list"
   # Acting as a person could, stable refs, the change line, reading in parts, honest output.
   stale_ref "fails as stale" covered "covered by" smooth_scroll "covered by" fill_honest "check | uncheck"
-  change_line "→ no visible change" find_get "find <|get styles|-o <file>" screenshot_1x "--clip|--scale|--refs"
+  change_line "→ no DOM change" find_get "find <|get styles|-o <file>" screenshot_1x "--clip|--scale|--refs"
   untrusted "--reveal" secret "--secret" frames "frame of the page's origin"
   # Native input.
-  trusted "--synthetic" hover "CSS :hover applies" keys "key down <key>|--hold" clipboard_safe "--synthetic"
+  trusted "--synthetic" hover "CSS :hover applies" keys "key down <key>|--hold"
+  background_keys "key down <key>|--idle|canvas repainted" clipboard_safe "--synthetic"
   ownership "tab release"
   # Popups and downloads.
   popup "named for its opener" download "--download|downloads [--clear]"
@@ -540,6 +541,51 @@ check_keys() {
   gbx --tab ky type '#txt' $'one\ntwo'
   pass_if "type: line break into <input> refused" '(( RC != 0 ))' "$ERR"
   close ky
+}
+
+# Keys and clicks to several tabs at once, none of them on show: each tab gets its own events,
+# trusted, with the page focused and visible, and a held key reaches the page's frames. Another
+# tab holding a key doesn't sleep with its idle time up, while one that holds none does.
+check_background_keys() {
+  local t held up up2
+  for t in bk1 bk2; do page $t $URL_A/game || { record background_keys FAIL "tab new $t: $ERR"; return }; done
+  page bk3 $URL_A/game --idle 1 && page bk4 $URL_A/game --idle 1 || { record background_keys FAIL "tab new: $ERR"; return }
+  gbx --tab bk1 key down ArrowRight
+  local k1=$RC e1=$ERR said=$OUT
+  gbx --tab bk2 key down ArrowRight; local k2=$RC e2=$ERR
+  gbx --tab bk3 key down ArrowRight; local k3=$RC e3=$ERR
+  gbx --tab bk4 key down ArrowRight
+  pass_if "key down on four tabs, none on show" '(( k1 == 0 && k2 == 0 && k3 == 0 && RC == 0 ))' "$k1 $e1 | $k2 $e2 | $k3 $e3 | $RC $ERR"
+  pass_if "key down on a canvas game says the canvas repainted" '[[ $said == *"canvas repainted"* ]]' "${${(M)${(f)said}:#→*}:-$said}"
+  gbx --tab bk2 press a; gbx --tab bk2 click '#fire'
+  sleep 1
+  local log1=$(value bk1 'log_.join(" ")') log2=$(value bk2 'log_.join(" ")')
+  pass_if "each tab gets its own trusted key events, focused and visible" \
+    '[[ $log1 == "keydown:ArrowRight:true:true:visible" && $log2 == "keydown:ArrowRight:true:true:visible keydown:a:true:true:visible keyup:a:true:true:visible" ]]' "bk1: $log1; bk2: $log2"
+  local a=$(value bk1 moved_); sleep 1; local b=$(value bk1 moved_) held=$(value bk1 'held_()')
+  pass_if "a held key moves the page's frames on" '(( ${b:-0} - ${a:-0} >= 30 )) && [[ $held == ArrowRight ]]' "moved $a then $b, held: $held"
+  local fired=$(value bk2 fired_) blurs=$(value bk2 blurs_)
+  pass_if "click on a tab with a key held down" '[[ $fired == 1 && $blurs == 0 ]]' "fired $fired, blurs $blurs"
+  gbx --tab bk1 key down ArrowRight
+  pass_if "key down on one held already says so" '(( RC != 0 )) && [[ $ERR == *"held already"* ]]' "$RC $ERR"
+  gbx --tab bk1 key up ArrowRight; local up=$RC
+  gbx --tab bk2 key up ArrowRight; local up2=$RC
+  held=$(value bk1 'held_()')$(value bk2 'held_()')
+  pass_if "key up on each" '(( up == 0 && up2 == 0 )) && [[ -z $held ]]' "$up $up2 held: ${held:-none}"
+  gbx --tab bk2 click '#fire'
+  pass_if "nothing moving: no DOM change" '[[ $OUT == *"→ no DOM change"* ]]' "${${(M)${(f)OUT}:#→*}:-$OUT$ERR}"
+  # bk3 holds its key and bk4 holds its own, both idle for a minute; bk4 lets go first.
+  gbx --tab bk4 key up ArrowRight
+  local t0=$SECONDS
+  until_ok 100 '[[ $(state bk4) == sleeping ]]'
+  local ok=$?
+  pass_if "a tab holding no key sleeps with its idle time up" '(( ok == 0 ))' "bk4: $(state bk4) after $(( SECONDS - t0 )) s"
+  local s3=$(state bk3) h3=$(value bk3 'held_()') b3=$(value bk3 blurs_)
+  pass_if "a tab holding a key stays awake past its idle time" '[[ $s3 == awake && $h3 == ArrowRight && $b3 == 0 ]]' "bk3: $s3, held $h3, blurs $b3"
+  gbx --tab bk3 key up ArrowRight; up=$RC
+  held=$(value bk3 'held_()')
+  pass_if "key up on it after" '(( up == 0 )) && [[ -z $held ]]' "$up, held: ${held:-none}"
+  close bk1 bk2 bk3 bk4
 }
 
 check_clipboard_safe() {

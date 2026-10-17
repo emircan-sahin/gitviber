@@ -33,8 +33,9 @@ own domain is GitViber's.
   for layout, colour, canvas and images; `screenshot --refs` when you need to see where refs are.
 - Prefer refs to CSS. CSS and `wait <css>` reach the top document only: inside a frame, use refs.
   A cross-origin frame can't be read at all; say so rather than guess what's in it.
-- Every action ends with a `→` line of what changed: after a click or a key, `→ no visible
-  change` means it did nothing (fill and check read their field back instead). A failed action
+- Every action ends with a `→` line of what changed: after a click or a key, `→ no DOM
+  change` means no element changed: on a canvas game look for `canvas repainted`, or take a
+  screenshot (fill and check read their field back instead). A failed action
   says why (covered, disabled, not visible): fix that, don't force it with `eval`.
 - Clicks, typing, keys, hover, drag and scroll reach the page as the user's own input (trusted).
   Only if a page ignores one, try once with `--synthetic` where the command takes it. A refusal

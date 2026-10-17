@@ -373,6 +373,72 @@ test("an action's changes are counted from just before it until the page holds s
   assert.equal((await run(p, { cmd: "changes" })).gone, true);
 });
 
+/** A page with <canvas> elements, and the scratch canvas the watch draws their pixels on. */
+function canvasPage(canvases: Node[]) {
+  const btn = el("button", {}, ["Go"], { id: "go" });
+  const p = page([btn, ...canvases]);
+  p.hit = btn;
+  const draw = { from: null as Node | null };
+  const ctx = {
+    imageSmoothingQuality: "",
+    drawImage: (c: Node) => {
+      draw.from = c;
+    },
+    // As a browser does: drawing a cross-origin canvas works, reading the result back doesn't.
+    getImageData: () => {
+      if (draw.from?.tainted) throw new Error("SecurityError");
+      return { data: draw.from?.pixels ?? [] };
+    },
+  };
+  const querySelectorAll = p.document.querySelectorAll;
+  p.document.querySelectorAll = (css: string) => (css === "canvas" ? canvases : querySelectorAll(css));
+  (p.document as any).createElement = () => ({ width: 0, height: 0, getContext: () => ctx });
+  return { p, btn, ctx };
+}
+
+test("a canvas that paints otherwise during an action is said, with no element changed", async () => {
+  const field = el("canvas", {}, [], { pixels: [0, 0, 0, 255] });
+  const { p, btn } = canvasPage([field]);
+  btn.onClick = () => (field.pixels = [0, 40, 0, 255]);
+  await act(p, { cmd: "click", target: "#go" });
+  const moved = await run(p, { cmd: "changes", quiet: 0, most: 0 });
+  assert.equal(typeof moved.canvas, "number");
+  assert.equal(moved.added + moved.removed + moved.texts + moved.attributes, 0, "the DOM says nothing");
+  assert.match(moved.state, /\|canvas:\d+$/, "the loop nudge sees the page move");
+  // Painted the same, it isn't said; the page's state is then what it was without canvases.
+  await act(p, { cmd: "click", target: "#go" });
+  const still = await run(p, { cmd: "changes", quiet: 0, most: 0 });
+  assert.equal(still.canvas, null);
+  assert.doesNotMatch(still.state, /canvas/);
+});
+
+test("a canvas already painting by itself is called animating, and doesn't change the page's state for the loop nudge", async () => {
+  let frame = 0;
+  const field = el("canvas", {}, [], {});
+  Object.defineProperty(field, "pixels", { get: () => [frame++] });
+  const { p } = canvasPage([field]);
+  await act(p, { cmd: "click", target: "#go" });
+  const seen = await run(p, { cmd: "changes", quiet: 0, most: 0 });
+  assert.equal(seen.canvas, "animating");
+  assert.doesNotMatch(seen.state, /canvas/, "so the same command thrice on it is still nudged");
+});
+
+test("a canvas that can't be read, is hidden, or is past the fourth shown is left out of the change line", async () => {
+  const tainted = el("canvas", {}, [], { pixels: [1], tainted: true });
+  const hidden = el("canvas", {}, [], { pixels: [1], style: { display: "none" } });
+  const shown = Array.from({ length: 5 }, () => el("canvas", {}, [], { pixels: [1] }));
+  const { p, btn } = canvasPage([tainted, hidden, ...shown]);
+  btn.onClick = () => {
+    for (const c of [tainted, hidden, shown[3], shown[4]]) c.pixels = [2];
+  };
+  await act(p, { cmd: "click", target: "#go" });
+  assert.equal((await run(p, { cmd: "changes", quiet: 0, most: 0 })).canvas, null);
+  // The fourth of those shown, the unreadable one among them, is looked at.
+  btn.onClick = () => (shown[2].pixels = [2]);
+  await act(p, { cmd: "click", target: "#go" });
+  assert.equal(typeof (await run(p, { cmd: "changes", quiet: 0, most: 0 })).canvas, "number");
+});
+
 test("a page that never holds still is read at the most, and a failed action leaves no watch", async () => {
   const busy = el("button", {}, ["Spin"], { id: "spin" });
   const p = page([busy]);

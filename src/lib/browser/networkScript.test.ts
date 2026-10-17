@@ -386,3 +386,27 @@ test("a frame's requests say which frame, each as it starts; the page's own say 
   await settle();
   assert.ok(own.posts.flat().every((u) => !("inFrame" in u)));
 });
+
+test("a tab handed to the user stops copying requests once its flag is turned off, and the page's own requests go on", async () => {
+  let reached = 0;
+  const p = page(async () => {
+    reached++;
+    return new Response("{}", { headers: { "content-type": "application/json" } });
+  });
+  await p.window.fetch("/before");
+  await settle();
+  assert.equal(p.entries().length, 1);
+  // What the app sets in the page once the pane that owned the tab is closed.
+  p.window.__gvNetwork = false;
+  const posted = p.posts.length;
+  const response: Response = await p.window.fetch("/after", { method: "POST", body: "x" });
+  assert.deepEqual(await response.json(), {}, "the page still gets its own response");
+  const xhr = new p.window.XMLHttpRequest();
+  xhr.open("GET", "/xhr");
+  xhr.send();
+  xhr.finish(200, "{}");
+  new p.window.WebSocket("ws://localhost:5173/live");
+  await settle();
+  assert.equal(reached, 2);
+  assert.equal(p.posts.length, posted, "nothing more is posted");
+});

@@ -284,6 +284,19 @@ impl<V> Registry<V> {
         drawn.into_iter().map(|e| e.id.clone()).collect()
     }
 
+    /// The views to sleep to bring those drawn off-screen down to the cap, the longest unused
+    /// first, passing over `keep` and any `pinned`: a pinned one stays awake, over the cap if
+    /// need be.
+    pub fn past_cap(&self, keep: &str, pinned: impl Fn(&V) -> bool) -> Vec<String> {
+        let drawn = self.drawn();
+        let over = drawn.len().saturating_sub(self.awake_drawn);
+        drawn
+            .into_iter()
+            .filter(|id| id != keep && self.get(id).is_some_and(|v| !pinned(v)))
+            .take(over)
+            .collect()
+    }
+
     /// The views drawn off-screen past `cap`, the longest unused first: they sleep.
     #[cfg(test)]
     fn over_awake(&self, cap: usize) -> Vec<String> {
@@ -294,6 +307,7 @@ impl<V> Registry<V> {
     }
 
     /// How many may draw off-screen at once (`over_awake`).
+    #[cfg(test)]
     pub fn awake_drawn(&self) -> usize {
         self.awake_drawn
     }
@@ -516,6 +530,25 @@ mod tests {
         assert_eq!(r.drawn(), r.over_awake(0));
         r.set_awake_drawn(1);
         assert_eq!(r.over_awake(r.awake_drawn()), ["d"]);
+    }
+
+    #[test]
+    fn past_the_cap_a_view_that_is_kept_or_pinned_stays_awake_and_the_next_sleeps() {
+        let mut r = Registry::new();
+        for (id, n) in [("a", 1), ("b", 2), ("c", 3), ("d", 4)] {
+            r.insert(id, "/w", n, true);
+        }
+        r.set_awake_drawn(2);
+        assert_eq!(r.past_cap("", |_| false), ["a", "b"]);
+        // The one a command is about to use is passed over for the next.
+        assert_eq!(r.past_cap("a", |_| false), ["b", "c"]);
+        // One holding a key (view 2) too: the next longest unused sleeps in its place.
+        assert_eq!(r.past_cap("a", |n| *n == 2), ["c", "d"]);
+        // All pinned: none sleeps, the cap is exceeded.
+        assert!(r.past_cap("", |_| true).is_empty());
+        // Within the cap, none.
+        r.set_awake_drawn(4);
+        assert!(r.past_cap("", |_| false).is_empty());
     }
 
     #[test]

@@ -23,6 +23,11 @@ use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::sync::OnceLock;
 
+/// An awake tab sits in its panel, or in GitViber's window when on show, whatever else is on
+/// screen: with no window at all, GitViber's own is gone.
+const NOT_DRAWN: &str =
+    "The page isn't drawn now: GitViber's window is closed. Open it, then run the command again.";
+
 /// Without WebKit's own wait for the mouse events it holds, about a frame between events, so
 /// it doesn't coalesce them.
 const PACE_SECS: f64 = 0.016;
@@ -208,7 +213,7 @@ pub fn agent_pointer(
     let v = view(id).ok_or(GONE)?;
     super::crashes::check(&v)?;
     let web = &v.web;
-    let window = web.window().ok_or("The page isn't drawn now.")?;
+    let window = web.window().ok_or(NOT_DRAWN)?;
     let zoom = unsafe { web.pageZoom() };
     let size = web.bounds().size;
     let at = at
@@ -294,7 +299,7 @@ pub fn agent_keys(id: &str, keys: Keys) -> Res<()> {
     drop_resent_keys(mtm);
     let v = view(id).ok_or(GONE)?;
     super::crashes::check(&v)?;
-    let window = v.web.window().ok_or("The page isn't drawn now.")?;
+    let window = v.web.window().ok_or(NOT_DRAWN)?;
     let mut held = v.web.ivars().held.borrow_mut();
     let (steps, edit) = match &keys {
         Keys::Press(chord, half) => held.press(chord, *half)?,
