@@ -2,9 +2,9 @@
 //! reported to the app page as they go and when they end, and cancelled from there. An agent's
 //! tab saves its files apart (downloads.rs).
 
-use super::{downloads::file_of, emit, Delegate};
+use super::{begin_park, downloads::file_of, emit, Delegate, Id, VIEWS};
 use crate::browser::downloads;
-use crate::browser::user_downloads::{Claims, Progress, State};
+use crate::browser::user_downloads::{allow, made_since, Claims, Progress, State};
 use block2::DynBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, ProtocolObject};
@@ -15,8 +15,10 @@ use objc2_foundation::{
 };
 use objc2_web_kit::{WKDownload, WKDownloadDelegate};
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
+use std::time::{Instant, SystemTime};
 use tauri::{AppHandle, Manager};
 
 /// How often a download going says how far it is.
@@ -27,11 +29,26 @@ thread_local! {
     static GOING: RefCell<Vec<Retained<Saver>>> = RefCell::default();
     static CLAIMS: RefCell<Claims> = RefCell::default();
     static NEXT: Cell<u64> = const { Cell::new(1) };
+    /// When each tab started its latest downloads (user_downloads.rs `allow`).
+    static RECENT: RefCell<HashMap<String, Vec<Instant>>> = RefCell::default();
+    /// Hidden tabs whose park waited for a download: the hide (`since`) to park by.
+    static PARKS: RefCell<HashMap<String, u64>> = RefCell::default();
 }
 
 /// A navigation of user tab `delegate` became `download`: saved by a Saver of its own.
 pub(super) fn began(delegate: &Delegate, download: &WKDownload) {
     let d = delegate.ivars();
+    // A page out of sight, or one starting many, saves nothing the user didn't ask for.
+    let shown = VIEWS.with_borrow(|r| r.shown(&d.id));
+    let going = GOING.with_borrow(Vec::len);
+    let allowed = shown
+        && RECENT
+            .with_borrow_mut(|r| allow(r.entry(d.id.clone()).or_default(), going, Instant::now()));
+    if !allowed {
+        unsafe { download.cancel(None) };
+        emit(&d.app, "browser-download-blocked", Id { id: &d.id });
+        return;
+    }
     let key = NEXT.replace(NEXT.get() + 1);
     let saver = Saver::alloc(delegate.mtm()).set_ivars(SaverIvars {
         tab: d.id.clone(),
@@ -39,6 +56,8 @@ pub(super) fn began(delegate: &Delegate, download: &WKDownload) {
         app: d.app.clone(),
         download: RefCell::new(Some(download.retain())),
         path: RefCell::default(),
+        reserved: Cell::new(None),
+        marked: Cell::new(false),
         name: RefCell::new(file_of(download)),
         refused: RefCell::default(),
         quiet: Cell::new(false),
@@ -50,10 +69,18 @@ pub(super) fn began(delegate: &Delegate, download: &WKDownload) {
     GOING.with_borrow_mut(|g| g.push(saver));
 }
 
-/// Whether tab `tab` has a download going: its page parks only once they end, or its view's
-/// going would take them along.
-pub(super) fn going(tab: &str) -> bool {
+fn going(tab: &str) -> bool {
     GOING.with_borrow(|g| g.iter().any(|s| s.ivars().tab == tab))
+}
+
+/// Whether a hide's park of `tab` waits: it has a download going, which would end with its
+/// view. It parks by this hide (`since`) once the last one ends.
+pub(super) fn hold_park(tab: &str, since: u64) -> bool {
+    let held = going(tab);
+    if held {
+        PARKS.with_borrow_mut(|p| p.insert(tab.into(), since));
+    }
+    held
 }
 
 /// The user cancelled download `key`; it ends as WebKit reports it cancelled.
@@ -73,6 +100,8 @@ pub(super) fn cancel(key: u64) {
 pub(super) fn forget(tab: &str) {
     let theirs: Vec<_> =
         GOING.with_borrow(|g| g.iter().filter(|s| s.ivars().tab == tab).cloned().collect());
+    PARKS.with_borrow_mut(|p| p.remove(tab));
+    RECENT.with_borrow_mut(|r| r.remove(tab));
     for saver in theirs {
         saver.ivars().quiet.set(true);
         if let Some(download) = saver.ivars().download.borrow().clone() {
@@ -95,8 +124,12 @@ struct SaverIvars {
     app: AppHandle,
     /// Until it ends.
     download: RefCell<Option<Retained<WKDownload>>>,
-    /// Where it's written, once WebKit asked.
+    /// Where it's written, once WebKit asked, and when it was reserved: a file there from before
+    /// is not its own.
     path: RefCell<Option<PathBuf>>,
+    reserved: Cell<Option<SystemTime>>,
+    /// Marked as from the web (`quarantine`), as soon as WebKit has made the file.
+    marked: Cell<bool>,
     name: RefCell<String>,
     /// Why no place was given it, when none was: WebKit only says it was cancelled.
     refused: RefCell<Option<String>>,
@@ -119,6 +152,7 @@ define_class!(
         #[unsafe(method(gvTick))]
         fn tick(&self) {
             if self.ivars().download.borrow().is_some() {
+                self.mark_partial();
                 self.say(State::Going, None);
                 self.tick_later();
             }
@@ -165,20 +199,19 @@ define_class!(
             const CANCELLED: isize = -999;
             // NSURLErrorCannotCreateFile: what's at its path isn't its own.
             const NOT_MADE: isize = -3000;
-            // Nothing half written is left; only a file it made.
-            if let Some(path) = self
-                .ivars()
-                .path
-                .borrow()
-                .as_ref()
-                .filter(|_| error.code() != NOT_MADE)
-            {
-                let _ = std::fs::remove_file(path);
+            // Nothing half written is left; only a file it made, since it was reserved.
+            let d = self.ivars();
+            if let (Some(path), Some(since)) = (d.path.borrow().as_ref(), d.reserved.get()) {
+                if error.code() != NOT_MADE && made_since(path, since) {
+                    let _ = std::fs::remove_file(path);
+                }
             }
             match (self.ivars().refused.take(), error.code()) {
                 (Some(why), _) => self.end(State::Failed, Some(why)),
                 (None, CANCELLED) => self.end(State::Cancelled, None),
-                (None, _) => self.end(State::Failed, Some(error.localizedDescription().to_string())),
+                (None, _) => {
+                    self.end(State::Failed, Some(error.localizedDescription().to_string()))
+                }
             }
         }
     }
@@ -195,10 +228,24 @@ impl Saver {
             .map_err(|_| "there is no Downloads folder".to_string())?;
         let name = downloads::file_name(suggested);
         let path = CLAIMS.with_borrow_mut(|c| c.claim(&folder, &name));
+        self.ivars().reserved.set(Some(SystemTime::now()));
         *self.ivars().name.borrow_mut() = path
             .file_name()
             .map_or(name, |n| n.to_string_lossy().into_owned());
         Ok(path)
+    }
+
+    /// The file is there now: marked as from the web while it is still partial, so a copy opened
+    /// before it ends is checked too.
+    fn mark_partial(&self) {
+        let d = self.ivars();
+        let (Some(path), Some(since)) = (d.path.borrow().clone(), d.reserved.get()) else {
+            return;
+        };
+        if !d.marked.get() && made_since(&path, since) {
+            quarantine(&path);
+            d.marked.set(true);
+        }
     }
 
     fn tick_later(&self) {
@@ -243,6 +290,12 @@ impl Saver {
         d.download.take();
         unsafe { NSObject::cancelPreviousPerformRequestsWithTarget(self) };
         GOING.with_borrow_mut(|g| g.retain(|s| s.ivars().key != d.key));
+        // The tab's park that waited for its downloads goes ahead with the last of them.
+        if !d.quiet.get() && !going(&d.tab) {
+            if let Some(since) = PARKS.with_borrow_mut(|p| p.remove(&d.tab)) {
+                begin_park(&d.tab, since);
+            }
+        }
     }
 }
 

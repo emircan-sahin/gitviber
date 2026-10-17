@@ -50,10 +50,11 @@ pub(super) fn on_response(
     })
 }
 
-/// A navigation became `download`: saved by a Saver of the tab's, or by a user's own (user_downloads.rs).
+/// A navigation became `download`: saved by a Saver of the tab's, or by a user's own
+/// (user_downloads.rs) in a tab that is theirs.
 pub(super) fn began(delegate: &Delegate, download: &WKDownload) {
     let d = delegate.ivars();
-    if !agent::routed(&d.id) {
+    if agent::saves_for_user(&d.id) {
         return user_downloads::began(delegate, download);
     }
     // A download a page opened for the user starts by itself (a link's `download`): cancelled as

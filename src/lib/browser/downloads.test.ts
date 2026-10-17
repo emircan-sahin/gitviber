@@ -24,7 +24,20 @@ test("a tab keeps its latest few, ended ones going first and those going never",
     [1, 3, 4, 5],
   );
   const busy = [1, 2, 3, 4].map((k) => d(k));
-  assert.equal(reported(busy, d(5)).length, 5, "none going is dropped");
+  assert.deepEqual(
+    reported(busy, d(5)).map((x) => x.key),
+    [1, 2, 3, 4],
+    "a new one past the room is left out, none going dropped",
+  );
+});
+
+test("a download dismissed stays off the list, whatever is reported of it after", () => {
+  const gone = new Set([2]);
+  const list = reported([d(1)], d(2, { state: "cancelled" }), gone);
+  assert.deepEqual(
+    list.map((x) => x.key),
+    [1],
+  );
 });
 
 test("the text says how far it is, where it went or why not", () => {

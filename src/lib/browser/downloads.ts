@@ -15,19 +15,23 @@ export interface BrowserDownload {
   why: string | null;
 }
 
-/** The most entries a tab keeps; the oldest ended one makes room. */
+/** The most entries a tab keeps (rows under its address); the oldest ended one makes room. */
 const MOST = 4;
 
-/** `list` with this report of a download: a new entry, or the entry of its key changed. */
-export function reported(list: readonly BrowserDownload[], now: BrowserDownload): BrowserDownload[] {
+/**
+ * `list` with this report of a download: a new entry, or the entry of its key changed. Not one
+ * `dismissed` already, nor a new one when the list is full of downloads going.
+ */
+export function reported(list: readonly BrowserDownload[], now: BrowserDownload, dismissed: ReadonlySet<number> = new Set()): BrowserDownload[] {
+  if (dismissed.has(now.key)) return [...list];
   if (list.some((d) => d.key === now.key)) return list.map((d) => (d.key === now.key ? now : d));
-  const next = [...list, now];
-  while (next.length > MOST) {
+  const next = [...list];
+  while (next.length >= MOST) {
     const ended = next.findIndex((d) => d.state !== "going");
-    if (ended < 0) break;
+    if (ended < 0) return next;
     next.splice(ended, 1);
   }
-  return next;
+  return [...next, now];
 }
 
 /** The folder a saved file went to, by name: "Downloads". */

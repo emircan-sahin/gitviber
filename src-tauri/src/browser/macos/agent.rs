@@ -351,6 +351,13 @@ pub(super) fn sleep_past_cap(keep: &str) {
     }
 }
 
+/// Whether tab `id`'s downloads are the user's (Downloads, under their eye): any tab but an
+/// agent's, and one of an agent's the user took. A tab opened for the user (`--show`) is not
+/// among them: its page is an agent's choice, so it may not put a file there (downloads.rs).
+pub(super) fn saves_for_user(id: &str) -> bool {
+    !routed(id) || (users(id).is_some() && !strict(id))
+}
+
 /// Whether tab `id` is a pane's agent's.
 pub(super) fn routed(id: &str) -> bool {
     ROUTES.with_borrow(|r| r.named(id).is_some())

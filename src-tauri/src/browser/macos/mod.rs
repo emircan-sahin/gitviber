@@ -60,8 +60,8 @@ use objc2_foundation::{
     NSKeyValueChangeKey, NSKeyValueObservingOptions, NSNotificationCenter, NSNumber,
     NSObjectNSDelayedPerforming, NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSPoint,
     NSRect, NSSize, NSString, NSURLAuthenticationChallenge, NSURLAuthenticationMethodServerTrust,
-    NSURLCredential, NSURLRequest, NSURLSessionAuthChallengeDisposition as Disposition,
-    NSUndoManager, NSURL, NSUUID,
+    NSURLCredential, NSURLRequest, NSURLRequestCachePolicy,
+    NSURLSessionAuthChallengeDisposition as Disposition, NSUndoManager, NSURL, NSUUID,
 };
 use objc2_web_kit::{
     WKDownload, WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationActionPolicy,
@@ -1541,8 +1541,8 @@ fn begin_park(id: &str, since: u64) {
     if crashes::hold_park(&v, id, since) {
         return;
     }
-    // Nor with a download going: it would end with the view; a later hide tries again.
-    if user_downloads::going(id) {
+    // Nor with a download going: it would end with the view. It parks when the last ends.
+    if user_downloads::hold_park(id, since) {
         return;
     }
     let parked = Parked {
@@ -1644,7 +1644,15 @@ pub fn go(id: &str, to: Go) -> Res<()> {
     if matches!(to, Go::Reload | Go::HardReload) {
         let failed = v.delegate.ivars().failed.borrow().clone();
         if let Some(page) = failed.and_then(|f| web_page(&f.url).ok()) {
-            load(web, &page);
+            // Hard: past the cache, as reloadFromOrigin is.
+            let policy = if to == Go::HardReload {
+                NSURLRequestCachePolicy::ReloadIgnoringLocalCacheData
+            } else {
+                NSURLRequestCachePolicy::UseProtocolCachePolicy
+            };
+            let request =
+                NSURLRequest::requestWithURL_cachePolicy_timeoutInterval(&page, policy, 60.0);
+            unsafe { web.loadRequest(&request) };
             return Ok(());
         }
     }

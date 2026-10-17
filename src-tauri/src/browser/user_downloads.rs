@@ -6,6 +6,34 @@ use super::downloads::free_path;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime};
+
+/// A page starts this many downloads in a burst; the next ones are refused until the window
+/// passes, as are any while `MOST_GOING` are running in the whole app.
+const BURST: usize = 3;
+const BURST_WINDOW: Duration = Duration::from_secs(10);
+pub const MOST_GOING: usize = 4;
+
+/// Whether a tab may start one more download at `now`, given those it started lately and how
+/// many are `going` in all; counts it.
+pub fn allow(recent: &mut Vec<Instant>, going: usize, now: Instant) -> bool {
+    recent.retain(|&at| now.duration_since(at) < BURST_WINDOW);
+    let ok = going < MOST_GOING && recent.len() < BURST;
+    if ok {
+        recent.push(now);
+    }
+    ok
+}
+
+/// Whether `path` is a plain file made at or after `since`: one a download made, not one that
+/// was there, or that someone put there (a link, say) while it was reserved.
+pub fn made_since(path: &Path, since: SystemTime) -> bool {
+    path.symlink_metadata()
+        .ok()
+        .filter(|m| m.is_file())
+        .and_then(|m| m.created().ok())
+        .is_some_and(|made| made >= since)
+}
 
 #[derive(Serialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -71,6 +99,40 @@ mod tests {
         claims.release(&first);
         assert_eq!(claims.claim(&dir, "report.pdf"), first);
         assert_eq!(std::fs::read(dir.join("report.pdf")).unwrap(), b"mine");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_tab_starts_a_few_downloads_at_a_time_and_the_app_a_few_in_all() {
+        let start = Instant::now();
+        let mut recent = Vec::new();
+        for n in 0..BURST as u64 {
+            assert!(allow(&mut recent, 0, start + Duration::from_millis(n)));
+        }
+        assert!(!allow(&mut recent, 0, start + Duration::from_secs(5)));
+        assert!(allow(&mut recent, 0, start + BURST_WINDOW));
+        // Too many running refuses a tab with none lately, and isn't counted against it.
+        let mut quiet = Vec::new();
+        assert!(!allow(&mut quiet, MOST_GOING, start));
+        assert!(quiet.is_empty());
+    }
+
+    #[test]
+    fn only_a_file_made_since_the_reservation_is_ours_to_remove() {
+        let dir = std::env::temp_dir().join(format!("gitviber-made-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("old");
+        std::fs::write(&old, b"x").unwrap();
+        let since = SystemTime::now() + Duration::from_millis(50);
+        std::thread::sleep(Duration::from_millis(120));
+        let new = dir.join("new");
+        std::fs::write(&new, b"x").unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&new, &link).unwrap();
+        assert!(!made_since(&old, since), "there before");
+        assert!(made_since(&new, since));
+        assert!(!made_since(&link, since), "a link isn't a file it made");
+        assert!(!made_since(&dir.join("none"), since));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

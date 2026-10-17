@@ -1,5 +1,6 @@
 import { browserApi, type BrowserKey, type BrowserPick, type BrowserState } from "../api";
 import { listenHere } from "../app/settingsWindow";
+import { toast } from "../app/toast";
 import { bindingsFor, COMMANDS } from "../commands/commands";
 import { getSettings, subscribeSettings } from "../settings";
 import { createStore } from "../store";
@@ -148,15 +149,30 @@ listenHere<{ id: string }>("browser-focus", ({ payload: { id } }) => {
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 }).catch(() => {});
 
-// What each tab's page downloads (browser/user_downloads.rs), shown under its address until dismissed.
+// What each tab's page downloads (browser/user_downloads.rs), shown under its address until dismissed,
+// or for a minute once ended. A dismissed one stays off, whatever is reported of it after.
 const downloads = createStore<ReadonlyMap<string, readonly BrowserDownload[]>>(new Map());
-listenHere<BrowserDownload>("browser-download", ({ payload }) => downloads.set(new Map(downloads.get()).set(payload.tab, reported(downloads.get().get(payload.tab) ?? [], payload)))).catch(() => {});
+const dismissed = new Set<number>();
+const SHOWN_AFTER_END_MS = 60_000;
+listenHere<BrowserDownload>("browser-download", ({ payload }) => {
+  downloads.set(new Map(downloads.get()).set(payload.tab, reported(downloads.get().get(payload.tab) ?? [], payload, dismissed)));
+  if (payload.state !== "going") setTimeout(() => dismissDownload(payload.tab, payload.key), SHOWN_AFTER_END_MS);
+}).catch(() => {});
+
+// A tab refused a download (a burst of them, or one from a page out of sight): one quiet toast for the burst.
+let blockedAt = 0;
+listenHere("browser-download-blocked", () => {
+  if (Date.now() - blockedAt < 5000) return;
+  blockedAt = Date.now();
+  toast("info", "Download blocked", "A page started several downloads at once, or one out of sight.");
+}).catch(() => {});
 
 const NONE: readonly BrowserDownload[] = [];
 export const useDownloads = (id: string) => downloads.use().get(id) ?? NONE;
 
 /** Download `key` of tab `id` taken off its list. */
 export function dismissDownload(id: string, key: number) {
+  dismissed.add(key);
   const left = (downloads.get().get(id) ?? NONE).filter((d) => d.key !== key);
   const next = new Map(downloads.get());
   if (left.length) next.set(id, left);
