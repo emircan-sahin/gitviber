@@ -44,6 +44,12 @@ pub fn browser_close(id: String) {
     browser::close(&id);
 }
 
+/// `key`: a download `browser-download` reported.
+#[tauri::command]
+pub fn browser_cancel_download(key: u64) -> Res<()> {
+    browser::cancel_download(key)
+}
+
 #[tauri::command]
 pub fn browser_navigate(id: String, url: String) -> Res<()> {
     browser::navigate(&id, &url)

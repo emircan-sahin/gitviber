@@ -20,6 +20,7 @@ import { ConsoleBadge, ConsolePanel } from "./ConsolePanel";
 import { AskPopover, picksAbout } from "./AskPopover";
 import { DeviceBar } from "./DeviceBar";
 import { DeviceFrame } from "./DeviceFrame";
+import { DownloadBar } from "./DownloadBar";
 import { useDevice } from "./useDevice";
 import { useDeviceFit } from "./useDeviceFit";
 import { useNativeRect } from "./useNativeRect";
@@ -265,6 +266,7 @@ function NativePage(props: Props) {
       />
       {choice && device && <DeviceBar choice={choice} device={device} viewport={fitted?.viewport ?? null} dpr={dpr} onChoice={choose} />}
       {find.open && <FindBar find={find} />}
+      <DownloadBar id={id} />
       {capture && consoleOpen && (
         <ConsolePanel id={id} root={root} page={{ url: state?.url ?? sel.url, device: shownAs }} onAsk={closeAsk} onClose={() => setConsoleOpen(false)} />
       )}
