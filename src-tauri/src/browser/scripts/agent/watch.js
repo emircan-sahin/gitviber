@@ -15,9 +15,13 @@ function pageState() {
 }
 
 // A page's canvas changes through draw calls in the page's own world, out of this one's reach:
-// a small picture of each shown canvas, before and after, tells whether it repainted.
+// a small picture of each shown canvas, before and after, tells whether it repainted. Each costs
+// a draw and a readback of SAMPLE² px (well under a millisecond on a 2D canvas), three times an
+// action at the most, plus AMBIENT ms of waiting when there is one.
 const CANVASES = 4;
 const SAMPLE = 48;
+// How long a canvas gets to show it changes by itself, before the action: a few frames.
+const AMBIENT = 50;
 
 /** A hash of `canvas` drawn SAMPLE px square onto `scratch`; null when it can't be read (empty, or tainted by another origin's image). */
 function sample(canvas, scratch) {
@@ -34,31 +38,45 @@ function sample(canvas, scratch) {
   }
 }
 
-/** The shown canvases of the page and its same-origin frames (CANVASES at most), each with its hash. */
-function pictures() {
+/**
+ * The shown canvases of the page and its same-origin frames (CANVASES at most) as [canvas, hash,
+ * animating]: animating when it painted otherwise within AMBIENT ms with nothing done to it.
+ */
+async function pictures() {
   const out = [];
   let scratch;
   for (const doc of documents()) {
     for (const canvas of doc.querySelectorAll?.("canvas") ?? []) {
-      if (out.length === CANVASES) return out;
+      if (out.length === CANVASES) break;
       if (!shows(canvas)) continue;
       scratch ??= document.createElement("canvas");
-      out.push([canvas, sample(canvas, scratch)]);
+      out.push([canvas, sample(canvas, scratch), false]);
     }
+  }
+  if (!out.length) return out;
+  await new Promise((r) => setTimeout(r, AMBIENT));
+  for (const picture of out) {
+    const now = sample(picture[0], scratch);
+    picture[2] = picture[1] !== null && now !== null && now !== picture[1];
+    picture[1] = now;
   }
   return out;
 }
 
-/** The hash of the first of `was` that paints otherwise now, or null if none does. */
+/** Of `was` (pictures), the hash of the first still canvas that paints otherwise now; else "animating" if one was, else null. */
 function repainted(was) {
   if (!was.length) return null;
   const scratch = document.createElement("canvas");
-  for (const [canvas, hash] of was) {
+  let animating = false;
+  for (const [canvas, hash, moving] of was) {
     if (hash === null || !canvas.isConnected) continue;
-    const now = sample(canvas, scratch);
-    if (now !== null && now !== hash) return now;
+    if (moving) animating = true;
+    else {
+      const now = sample(canvas, scratch);
+      if (now !== null && now !== hash) return now;
+    }
   }
-  return null;
+  return animating ? "animating" : null;
 }
 
 /** The page's document and each same-origin frame's, however deep. */
@@ -68,8 +86,9 @@ function documents(doc = document) {
 }
 
 /** What changes on the page from now, an action's, until `changes` reads it. */
-function watch() {
+async function watch() {
   state.watch?.observer.disconnect();
+  const canvases = await pictures();
   const seen = { added: 0, removed: 0, texts: 0, attributes: 0, at: Date.now() };
   const count = (records) => {
     if (records.length) seen.at = Date.now();
@@ -87,7 +106,7 @@ function watch() {
   };
   const observer = new MutationObserver(count);
   for (const doc of documents()) observer.observe(doc, { subtree: true, childList: true, characterData: true, attributes: true });
-  state.watch = { observer, seen, count, dialogs: dialogs(), canvases: pictures() };
+  state.watch = { observer, seen, count, dialogs: dialogs(), canvases };
   return {};
 }
 
@@ -104,7 +123,8 @@ async function changes({ quiet = 100, most = 500 }) {
   w.observer.disconnect();
   state.watch = null;
   const { added, removed, texts, attributes } = w.seen;
-  // In the state too: a canvas game's page is the same to the loop nudge only while it's still.
+  // A repaint is in the state too, so the loop nudge sees a canvas game move; an animation that
+  // runs by itself is not, or no repeated action would ever be nudged.
   const canvas = repainted(w.canvases);
-  return { added, removed, texts, attributes, canvas, dialogs: dialogs() - w.dialogs, state: pageState() + (canvas === null ? "" : `|canvas:${canvas}`) };
+  return { added, removed, texts, attributes, canvas, dialogs: dialogs() - w.dialogs, state: pageState() + (typeof canvas === "number" ? `|canvas:${canvas}` : "") };
 }

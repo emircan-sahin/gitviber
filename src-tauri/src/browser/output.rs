@@ -15,8 +15,9 @@ pub struct Changes {
     pub removed: u64,
     pub texts: u64,
     pub attributes: u64,
-    /// A <canvas> painted otherwise at the end than at the start: the DOM says nothing of it.
-    pub canvas: bool,
+    /// A <canvas> painted otherwise at the end than at the start, or was painting by itself
+    /// already: the DOM says nothing of either.
+    pub canvas: Canvas,
     /// Dialogs on show after, less before: <dialog open>, role=dialog, aria-modal.
     pub dialogs: i64,
     pub url_before: String,
@@ -29,6 +30,25 @@ pub struct Changes {
     pub answered: Vec<String>,
     /// Requests the action started, oldest first.
     pub requests: Vec<Request>,
+}
+
+#[derive(Debug, Default, PartialEq, Clone, Copy)]
+pub enum Canvas {
+    #[default]
+    Still,
+    Repainted,
+    Animating,
+}
+
+impl Canvas {
+    /// From watch.js `changes`: a hash when one repainted, "animating", or null.
+    pub fn of(seen: &Value) -> Self {
+        match seen {
+            Value::Number(_) => Self::Repainted,
+            Value::String(s) if s == "animating" => Self::Animating,
+            _ => Self::Still,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -81,8 +101,10 @@ pub fn changed(c: &Changes) -> String {
         "attribute changed",
         "attributes changed",
     ));
-    if c.canvas {
-        said.push("canvas repainted".into());
+    match c.canvas {
+        Canvas::Still => {}
+        Canvas::Repainted => said.push("canvas repainted".into()),
+        Canvas::Animating => said.push("canvas animating".into()),
     }
     match c.dialogs {
         0 => {}
@@ -539,10 +561,20 @@ mod tests {
         assert_eq!(changed(&quiet), "→ no DOM change");
         // A canvas game moves with no element changing: said, so it isn't read as nothing.
         let painted = Changes {
-            canvas: true,
+            canvas: Canvas::Repainted,
             ..quiet
         };
         assert_eq!(changed(&painted), "→ canvas repainted");
+        // One that moves by itself isn't the action's doing.
+        let moving = Changes {
+            canvas: Canvas::Animating,
+            ..painted
+        };
+        assert_eq!(changed(&moving), "→ canvas animating");
+        assert_eq!(Canvas::of(&json!(2166136261u64)), Canvas::Repainted);
+        assert_eq!(Canvas::of(&json!("animating")), Canvas::Animating);
+        assert_eq!(Canvas::of(&json!(null)), Canvas::Still);
+        assert_eq!(Canvas::of(&json!("other")), Canvas::Still);
     }
 
     #[test]

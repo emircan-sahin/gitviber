@@ -174,8 +174,10 @@ Acting by the page's script, setting what a person would and reading it back
   Each action waits up to a second for its element, and half a second after for what it set
   off, then ends with one line of what changed: `→ +3 elements, dialog opened, url /lobby, 1
   console error, POST /api/join 500`, or `→ no DOM change`: the DOM is what it watches, plus
-  `canvas repainted` when a shown <canvas> painted otherwise (screenshot shows what it drew).
-  The same command a third time on an unchanged page says so.
+  `canvas repainted` when a shown <canvas> painted otherwise, `canvas animating` when it was
+  painting by itself already. Each is judged by a small sample: a WebGL canvas that doesn't keep
+  its drawing buffer, or a small sprite on a big canvas, goes unseen (screenshot shows what it
+  drew). The same command a third time on an unchanged page says so.
 
 Waiting
   wait <css> | --text <text> | --url <glob> | --fn <js> | --load | --download | --ms <n>

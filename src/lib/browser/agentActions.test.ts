@@ -382,10 +382,13 @@ function canvasPage(canvases: Node[]) {
   const ctx = {
     imageSmoothingQuality: "",
     drawImage: (c: Node) => {
-      if (c.tainted) throw new Error("SecurityError");
       draw.from = c;
     },
-    getImageData: () => ({ data: draw.from?.pixels ?? [] }),
+    // As a browser does: drawing a cross-origin canvas works, reading the result back doesn't.
+    getImageData: () => {
+      if (draw.from?.tainted) throw new Error("SecurityError");
+      return { data: draw.from?.pixels ?? [] };
+    },
   };
   const querySelectorAll = p.document.querySelectorAll;
   p.document.querySelectorAll = (css: string) => (css === "canvas" ? canvases : querySelectorAll(css));
@@ -407,6 +410,17 @@ test("a canvas that paints otherwise during an action is said, with no element c
   const still = await run(p, { cmd: "changes", quiet: 0, most: 0 });
   assert.equal(still.canvas, null);
   assert.doesNotMatch(still.state, /canvas/);
+});
+
+test("a canvas already painting by itself is called animating, and doesn't change the page's state for the loop nudge", async () => {
+  let frame = 0;
+  const field = el("canvas", {}, [], {});
+  Object.defineProperty(field, "pixels", { get: () => [frame++] });
+  const { p } = canvasPage([field]);
+  await act(p, { cmd: "click", target: "#go" });
+  const seen = await run(p, { cmd: "changes", quiet: 0, most: 0 });
+  assert.equal(seen.canvas, "animating");
+  assert.doesNotMatch(seen.state, /canvas/, "so the same command thrice on it is still nudged");
 });
 
 test("a canvas that can't be read, is hidden, or is past the fourth shown is left out of the change line", async () => {

@@ -898,7 +898,7 @@ impl Tab {
             removed: count("removed"),
             texts: count("texts"),
             attributes: count("attributes"),
-            canvas: seen["canvas"].is_number(),
+            canvas: output::Canvas::of(&seen["canvas"]),
             dialogs: seen["dialogs"].as_i64().unwrap_or(0),
             new_page: seen["gone"] == true,
             url_before: before.url.clone(),
