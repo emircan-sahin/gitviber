@@ -48,8 +48,10 @@ Off until you turn it on in Settings → Browser.
 - **Tabs.** An agent's tabs each keep their cookies in memory, apart from yours, unless the agent
   asks for yours.
 - **Saved sessions.** Logins an agent saves with `gitviber browser session save`, their cookies and
-  site storage (IndexedDB included) are kept in the app's data folder, readable by you alone, and
-  never printed or sent anywhere. Clear Browsing Data deletes them too.
+  site storage, are kept in the app's data folder, readable by you alone, and never printed or sent
+  anywhere. Clear Browsing Data deletes them too. A page's IndexedDB is saved only when the agent
+  adds `--indexeddb`, and a page that keeps a CryptoKey there can make macOS ask for your login
+  keychain's password once, when it is read.
 - **Request log.** An agent's tab logs the requests its page makes, headers and bodies included, in
   memory only and only in agents' tabs, for its agent to read.
 - **What the agent reads goes where the agent sends it.** A page's text, the elements you pick,

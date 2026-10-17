@@ -325,15 +325,15 @@ fn sessions(
             shelf_here()?.delete(&s)?;
             Ok(Reply::out(format!("Deleted session {s}")))
         }
-        Sessions::Save(s, force) => {
+        Sessions::Save(s, save) => {
             let shelf = shelf_here()?;
             let (id, found) = tab()?;
             // The user's tab holds the user's sign-ins: not saved for the agents.
             let (session, left_out) = drive(app, id, found, |tab| {
                 tab.yours()?;
-                tab.session()
+                tab.session(save.indexeddb)
             })?;
-            shelf.save(&s, &session, force)?;
+            shelf.save(&s, &session, save.force)?;
             Ok(Reply::out(format!(
                 "Saved session {s}: {}.{}",
                 summary(&session),
@@ -1404,7 +1404,7 @@ impl Tab {
 
     /// The tab's login: the cookies of its own store, and its page's storage and IndexedDB, and
     /// what of the IndexedDB couldn't be kept.
-    fn session(&self) -> Res<(Session, Vec<LeftOut>)> {
+    fn session(&self, with_indexed: bool) -> Res<(Session, Vec<LeftOut>)> {
         #[derive(serde::Deserialize)]
         struct Storage {
             origin: String,
@@ -1423,14 +1423,26 @@ impl Tab {
         if !on_web(&storage.origin) {
             return Err(blank.into());
         }
-        let ask = json!({ "op": "read", "limit": INDEXED_DB_MAX });
+        // Reading a database's values is what can make macOS ask for the keychain's password, when
+        // a page keeps a CryptoKey in it: only when asked to. Listing their names asks for nothing.
+        let ask = if with_indexed {
+            json!({ "op": "read", "limit": INDEXED_DB_MAX })
+        } else {
+            json!({ "op": "list" })
+        };
         let id = self.id.clone();
         let read = later(&self.app, move |_, done| {
             super::agent_js(&id, false, INDEXED_DB, &ask.to_string(), done)
         })?;
-        let (indexed, left_out) = match read.and_then(|t| indexed_read(&t)) {
-            Ok(read) => (read.databases, read.skipped),
-            Err(why) => (vec![], vec![LeftOut::all(&why)]),
+        let (indexed, left_out) = match (read.and_then(|t| indexed_read(&t)), with_indexed) {
+            (Ok(read), true) => (read.databases, read.skipped),
+            (Err(why), true) => (vec![], vec![LeftOut::all(&why)]),
+            // What `list` named is there and not kept: said once, with how to keep it.
+            (Ok(read), false) => (
+                vec![],
+                LeftOut::unasked(read.skipped.len()).into_iter().collect(),
+            ),
+            (Err(_), false) => (vec![], vec![]),
         };
         let session = Session {
             origin: storage.origin,
@@ -1605,6 +1617,16 @@ struct LeftOut {
 }
 
 impl LeftOut {
+    /// The databases the page has that this save didn't ask for: none when it has none.
+    fn unasked(n: usize) -> Option<Self> {
+        (n > 0).then(|| Self {
+            name: format!("{n} databases"),
+            why: "not saved: `session save --indexeddb` saves them, and a page that keeps a \
+                  CryptoKey there can make macOS ask for the login keychain's password"
+                .into(),
+        })
+    }
+
     /// All of it: the script itself failed.
     fn all(why: &str) -> Self {
         Self {
@@ -1775,6 +1797,19 @@ mod tests {
         assert_eq!(text, "mert  https://app.test  1 cookies  (saved 3h ago)");
         assert!(!text.contains("s3cret") && !text.contains("t0ken"));
         assert!(sessions_text(&[], 0).starts_with("No sessions"));
+    }
+
+    #[test]
+    fn a_save_that_did_not_ask_for_indexeddb_says_how_to() {
+        assert!(LeftOut::unasked(0).is_none());
+        let said = left_out_text(&[LeftOut::unasked(2).unwrap()]);
+        assert!(
+            said.starts_with(" IndexedDB left out: 2 databases (not saved:"),
+            "{said}"
+        );
+        assert!(said.contains("--indexeddb") && said.contains("keychain"));
+        // The script's list asks for no values.
+        assert!(INDEXED_DB.contains("\"list\""));
     }
 
     #[test]

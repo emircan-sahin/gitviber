@@ -267,7 +267,9 @@ check_sessions() {
 }
 
 # A login kept in IndexedDB (as Firebase Auth does) comes back in another tab, with the store's
-# key path, index and kinds of value; a database with a CryptoKey is named and left out.
+# key path, index and kinds of value; a database with an ImageData (a kind of
+# value a session can't carry) is named and left out. Nothing here stores the kind of key that
+# makes macOS ask for the login keychain's password: no prompt, ever, from a check.
 check_session_idb() {
   page si $URL_A/ || { record session_idb FAIL "tab new: $ERR"; return }
   SESSIONS+=(lc-idb)
@@ -275,14 +277,17 @@ check_session_idb() {
   local make="(async () => {
     const open = (name, version, fill) => new Promise((ok, no) => { const r = indexedDB.open(name, version); r.onupgradeneeded = () => fill(r.result); r.onsuccess = () => { r.result.close(); ok() }; r.onerror = () => no(r.error) });
     await open('gv-check', 3, (db) => { const s = db.createObjectStore('auth', { keyPath: 'id' }); s.createIndex('by_name', 'name'); s.put({ id: 'u1', name: 'alice', token: 'tok-idb', at: new Date(0), raw: new Uint8Array([1, 2, 3]) }); db.createObjectStore('plain').put('v', 'k') });
-    const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 128 }, false, ['encrypt']);
-    await open('gv-check-key', 1, (db) => { db.createObjectStore('keys').put(key, 'k') });
+    await open('gv-check-pixels', 1, (db) => { db.createObjectStore('pixels').put(new ImageData(1, 1), 'p') });
     return 'made' })()"
-  local made=$(value si $make)
-  pass_if "IndexedDB made in the page" '[[ $made == made ]]' "$made $ERR"
-  gbx --tab si session save lc-idb --force
-  pass_if "session save: IndexedDB kept, a CryptoKey's database named" \
-    '(( RC == 0 )) && [[ $OUT == *"IndexedDB databases"* && $OUT == *"left out: gv-check-key (holds a CryptoKey"* ]]' "$OUT$ERR"
+  gbx --tab si eval $make
+  local made=$(py eval-value <<<$OUT)
+  pass_if "IndexedDB made in the page" '[[ $made == made ]]' "${${OUT:-$ERR}[1,200]}"
+  gbx --tab si session save lc-idb
+  pass_if "session save: IndexedDB left alone unless asked" \
+    '(( RC == 0 )) && [[ $OUT != *"IndexedDB databases ("* && $OUT == *"--indexeddb"* ]]' "$OUT$ERR"
+  gbx --tab si session save lc-idb --force --indexeddb
+  pass_if "session save --indexeddb: IndexedDB kept, an ImageData's database named" \
+    '(( RC == 0 )) && [[ $OUT == *"IndexedDB databases"* && $OUT == *"left out: gv-check-pixels (holds a ImageData"* ]]' "$OUT$ERR"
   gbx tab new si2 --session lc-idb && gbx --tab si2 wait --load
   local read="(async () => {
     const db = await new Promise((ok, no) => { const r = indexedDB.open('gv-check'); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error) });
@@ -646,10 +651,11 @@ check_clipboard_safe() {
   close cb
 }
 
-# The tab's one clipboard, from the page's own button (navigator.clipboard) in the page and in a
-# frame of each origin, read back by the page and pasted with the agent's Meta+v. It never reaches
-# the user's clipboard (clipboard_safe asks that); a Copy button of theirs after they take the tab
-# is manual.
+# The tab's clipboard, from the page's own button (navigator.clipboard) in the page and in a frame
+# of its origin, read back by the page and pasted with the agent's Meta+v; a frame of another
+# origin has a copy of its own, which neither replaces the page's nor is read by it. None of it
+# reaches the user's clipboard (clipboard_safe asks that); a Copy button of theirs after they take
+# the tab is manual.
 check_clipboard_tab() {
   page ct "$URL_A/clipframes?other=$SB" || { record clipboard_tab FAIL "tab new: $ERR"; return }
   gbx --tab ct snapshot -i
@@ -665,10 +671,10 @@ check_clipboard_tab() {
   pass_if "tab clipboard: a frame of the page's origin shares it" '[[ $got == same-$SA ]]' "readText: $got"
   gbx --tab ct click ${cross:-e0}
   got=$(value ct $read)
-  pass_if "tab clipboard: a frame of another origin shares it" '[[ $got == cross-$SB ]]' "readText: $got"
+  pass_if "tab clipboard: a frame of another origin neither replaces nor is read by the page's" '[[ $got == same-$SA ]]' "readText: $got"
   gbx --tab ct click '#box'; gbx --tab ct press Meta+v
   got=$(value ct "document.getElementById('box').value")
-  pass_if "Meta+v pastes the tab's clipboard" '[[ $got == cross-$SB ]]' "field: $got"
+  pass_if "Meta+v pastes the page's copy" '[[ $got == same-$SA ]]' "field: $got"
   gbx --tab ct fill '#box' 'cut and kept'
   gbx --tab ct press Meta+a; gbx --tab ct press Meta+x
   got=$(value ct $read)

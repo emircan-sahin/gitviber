@@ -76,16 +76,19 @@ Tabs
                                button does the same
 
 Sessions
-  session save <name> [--force]
-                               The tab's cookies, and its page's localStorage, sessionStorage and
-                               IndexedDB (8 MB of it; a database that holds a Blob or a CryptoKey,
-                               or doesn't fit, is named and left out), saved for this repository
-                               and its worktrees; over a session of that name only with --force.
+  session save <name> [--force] [--indexeddb]
+                               The tab's cookies, and its page's localStorage and sessionStorage,
+                               saved for this repository and its worktrees; over a session of
+                               that name only with --force. --indexeddb adds the page's IndexedDB
+                               (8 MB of it; a database that holds a Blob or doesn't fit is named
+                               and left out). Off unless asked: a page that keeps a CryptoKey
+                               there can make macOS ask for the login keychain's password.
                                Not from a --shared tab
   session load <name>          Into the tab, on the page's origin the session was saved at (a
                                blank tab goes there first): the tab's cookies, storage and
                                IndexedDB cleared, then the saved ones set; a database the page
-                               keeps open is named and left out. Not into a --shared tab
+                               made since in another shape is named and left as it is. Not into
+                               a --shared tab
   session clear                The tab's own cookies and storage, gone
   session list                 Each saved session's name, origin, cookie count and age
   session delete <name>        A saved session gone. A session's name is one whatever its case
@@ -154,7 +157,9 @@ script instead (untrusted events), for a page where native input fails
                                sends it: Enter, Tab, Escape, ArrowDown, F5, a, A, ?, Meta+a,
                                Shift+Tab. --hold: down that long. Meta+a, c, x, v and z the page
                                doesn't take do what the Edit menu does; c, x and v on the tab's
-                               own clipboard, never the user's: one for the tab and its frames, and
+                               own clipboard, never the user's: a copy belongs to the origin that
+                               made it (its frames of that origin share it, another origin's frame
+                               has its own and gets nothing from these keys), 4 MiB at most, and
                                the page's navigator.clipboard is it too
   key down <key> | key up <key>
                                A key held down until let go, as a game reads W; held modifiers
@@ -467,10 +472,17 @@ pub enum Tabs {
     Release(Option<String>),
 }
 
+/// What `session save` was asked besides the name.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Save {
+    pub force: bool,
+    pub indexeddb: bool,
+}
+
 #[derive(Debug, PartialEq)]
 pub enum Sessions {
-    /// Over one of the same name too (`--force`).
-    Save(String, bool),
+    /// Over one of the same name too (`--force`); with the page's IndexedDB (`--indexeddb`).
+    Save(String, Save),
     Load(String),
     Clear,
     List,
@@ -768,21 +780,28 @@ fn tabs(args: &[String]) -> Result<Tabs, String> {
 
 fn sessions(args: &[String]) -> Result<Sessions, String> {
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        ["save", name] => Ok(Sessions::Save(session_name(name)?, false)),
-        ["save", name, "--force"] | ["save", "--force", name] => {
-            Ok(Sessions::Save(session_name(name)?, true))
+        ["save", ref rest @ ..] => {
+            let (mut name, mut save) = (None, Save::default());
+            for arg in rest {
+                match *arg {
+                    "--force" => save.force = true,
+                    "--indexeddb" => save.indexeddb = true,
+                    n if !n.starts_with("--") && name.is_none() => name = Some(n),
+                    _ => return Err(USAGE.into()),
+                }
+            }
+            Ok(Sessions::Save(session_name(name.ok_or(USAGE)?)?, save))
         }
         ["load", name] => Ok(Sessions::Load(session_name(name)?)),
         ["clear"] => Ok(Sessions::Clear),
         ["list"] => Ok(Sessions::List),
         ["delete", name] => Ok(Sessions::Delete(session_name(name)?)),
-        _ => Err(
-            "Usage: gitviber browser session save <name> [--force] | load <name> | clear | \
-                  list | delete <name>"
-                .into(),
-        ),
+        _ => Err(USAGE.into()),
     }
 }
+
+const USAGE: &str = "Usage: gitviber browser session save <name> [--force] [--indexeddb] | \
+                     load <name> | clear | list | delete <name>";
 
 /// `fill <ref|css> --secret <NAME>`'s variable, as the CLI reads it and the app parses it; None
 /// for a fill of text.
@@ -2973,12 +2992,39 @@ mod tests {
         );
         assert_eq!(
             pane("session", "save mert"),
-            Ok(Pane::Session(Sessions::Save("mert".into(), false)))
+            Ok(Pane::Session(Sessions::Save(
+                "mert".into(),
+                Save::default()
+            )))
         );
         assert_eq!(
             pane("session", "save mert --force"),
-            Ok(Pane::Session(Sessions::Save("mert".into(), true)))
+            Ok(Pane::Session(Sessions::Save(
+                "mert".into(),
+                Save {
+                    force: true,
+                    indexeddb: false
+                }
+            )))
         );
+        for args in [
+            "save mert --indexeddb --force",
+            "save --force --indexeddb mert",
+        ] {
+            assert_eq!(
+                pane("session", args),
+                Ok(Pane::Session(Sessions::Save(
+                    "mert".into(),
+                    Save {
+                        force: true,
+                        indexeddb: true
+                    }
+                ))),
+                "{args}"
+            );
+        }
+        assert!(pane("session", "save mert --nope").is_err());
+        assert!(pane("session", "save a b").is_err());
         assert_eq!(
             pane("session", "load mert"),
             Ok(Pane::Session(Sessions::Load("mert".into())))
