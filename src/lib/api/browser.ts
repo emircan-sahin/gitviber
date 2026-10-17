@@ -127,6 +127,8 @@ export const browserApi = {
   place: (id: string, rect: NativeRect, screen: NativeScreen | null) => invoke<void>("browser_place", { id, rect, screen }),
   /** The device's user agent (null: WebKit's own), the page loaded again when it changes. */
   setAgent: (id: string, ua: string | null) => invoke<void>("browser_set_agent", { id, ua }),
+  /** Stops download `key` (`browser-download`'s); it ends as cancelled. */
+  cancelDownload: (key: number) => invoke<void>("browser_cancel_download", { key }),
   /** `aside`: only while something of this page's is drawn over it; otherwise its tab is out of sight, and it may park. */
   hide: (id: string, aside: boolean) => invoke<void>("browser_hide", { id, aside }),
   close: (id: string) => inOrder(id, () => invoke<void>("browser_close", { id })),
