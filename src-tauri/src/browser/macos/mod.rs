@@ -1541,6 +1541,10 @@ fn begin_park(id: &str, since: u64) {
     if crashes::hold_park(&v, id, since) {
         return;
     }
+    // Nor with a download going: it would end with the view; a later hide tries again.
+    if user_downloads::going(id) {
+        return;
+    }
     let parked = Parked {
         url: url_text(unsafe { v.web.URL() }),
         snapshot: None,

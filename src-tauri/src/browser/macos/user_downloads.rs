@@ -50,6 +50,12 @@ pub(super) fn began(delegate: &Delegate, download: &WKDownload) {
     GOING.with_borrow_mut(|g| g.push(saver));
 }
 
+/// Whether tab `tab` has a download going: its page parks only once they end, or its view's
+/// going would take them along.
+pub(super) fn going(tab: &str) -> bool {
+    GOING.with_borrow(|g| g.iter().any(|s| s.ivars().tab == tab))
+}
+
 /// The user cancelled download `key`; it ends as WebKit reports it cancelled.
 pub(super) fn cancel(key: u64) {
     let download = GOING.with_borrow(|g| {
