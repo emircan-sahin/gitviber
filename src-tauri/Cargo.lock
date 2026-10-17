@@ -1426,7 +1426,7 @@ dependencies = [
 
 [[package]]
 name = "gitviber"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "block2",
  "gtk",

@@ -6,6 +6,18 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-10-18
+
+### Added
+
+- **Terminal too.** Settings → Appearance → Terminal too lets the desktop show through the terminal at the Window opacity and Background blur you set. It is off until you turn it on, and works on macOS with Window opacity below 100%. Colored cells, such as a diff or Claude Code's prompt box, stay solid, and so does a maximized terminal.
+
+### Fixed
+
+- **A pane stayed stale while Claude Code animated.** Under a spinner the terminal could draw nothing for seconds, then show only the rows you selected or that changed again, so the screen looked garbled until you resized. Each frame is now drawn as it finishes.
+- **Dragging to select in Claude Code could do nothing.** Claude Code sends its mouse modes again on resizes and focus changes; one arriving during a drag ended its reports, so the selection never formed. A drag now carries on through it.
+- **Rows that kept an old picture after a resize.** A pane redraws itself a moment after it changes size or comes back on screen.
+
 ## [0.1.16] - 2026-10-17
 
 ### Added
