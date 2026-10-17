@@ -362,10 +362,8 @@ pub(super) fn forget_all() {
     super::ASKED.with_borrow_mut(HashMap::clear);
 }
 
-/// The pane closed: its tabs are the user's from now on, asleep as theirs are. Their page keeps
-/// network.js until it parks or closes (a view made again is the user's, without it): its log
-/// is in memory, bounded, and no agent reaches it now, and the scripts it shares its controller
-/// with would have to go to take it out.
+/// The pane closed: its tabs are the user's from now on, asleep as theirs are, without the
+/// network log the agents read.
 pub fn agent_pane_closed(pty: u32) {
     if main_thread().is_err() {
         return;
@@ -376,6 +374,7 @@ pub fn agent_pane_closed(pty: u32) {
         if let Some(v) = view(&route.id) {
             native::release_keys(&v);
             page_tools::guard_clipboard(&v.web, false);
+            page_tools::release_network(&v);
             mute(&v.web, false);
             stop_idle(&v);
             sleep(&v);

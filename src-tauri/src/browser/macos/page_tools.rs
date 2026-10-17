@@ -241,6 +241,29 @@ pub fn capture(on: bool, views: &[View]) {
     }
 }
 
+/// Turns network.js off in the page that runs it (it checks this).
+const NETWORK_OFF: &str = "window.__gvNetwork = false;";
+
+/// A tab no agent has now (its pane closed): its network log dropped, network.js stopped in the
+/// document that runs it, and the agents' scripts and the handler its frames post to gone, so
+/// the pages it loads next never have them. Its log is requests with headers and bodies.
+pub(super) fn release_network(v: &View) {
+    let mtm = v.web.mtm();
+    let content = unsafe { v.web.configuration().userContentController() };
+    unsafe {
+        content.removeScriptMessageHandlerForName_contentWorld(
+            ns_string!("gvNetwork"),
+            &WKContentWorld::pageWorld(mtm),
+        );
+        // There's no taking one script out: all go, and the user's tab's come back.
+        content.removeAllUserScripts();
+        v.web
+            .evaluateJavaScript_completionHandler(&NSString::from_str(NETWORK_OFF), None);
+    }
+    add_scripts(&content, None, mtm);
+    v.delegate.ivars().network.take();
+}
+
 /// An agent's tab's clipboard script (clipboard.js) asked `ask`: `on` or `off`, its calls kept
 /// to the page or the user's again; `copy`, `cut` or `paste` on the page's own clipboard. `done`
 /// gets its answer: for a paste, the text, unless the page took the paste event.
@@ -745,6 +768,14 @@ mod tests {
         assert_eq!(has(&users, CONSOLE), Some((false, World::Page)));
         assert!(scripts(None, false).is_empty());
         assert_eq!(scripts(Some("k"), false).len(), 3);
+    }
+
+    /// A tab handed to the user turns network.js off with what the script itself checks.
+    #[test]
+    fn a_released_tab_switches_network_js_off_by_the_flag_it_checks() {
+        assert!(NETWORK.contains("window.__gvNetwork === false"));
+        assert_eq!(NETWORK_OFF, "window.__gvNetwork = false;");
+        assert!(scripts(None, true).iter().all(|s| s.0 != NETWORK));
     }
 
     /// The tab's key goes in once, as a JSON string, and nothing else answers for it.
