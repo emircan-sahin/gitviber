@@ -1,5 +1,5 @@
 //! Logins an agent saved from a tab (`session save`) to load into another: its cookies, and the
-//! storage of the page's origin. They hold login tokens: they're kept in the app's data folder,
+//! storage and IndexedDB of the page's origin. They hold login tokens: they're kept in the app's data folder,
 //! in one folder for each repository, readable by this user alone, and never printed in full nor
 //! sent anywhere.
 
@@ -17,6 +17,25 @@ pub struct Session {
     pub cookies: Vec<Cookie>,
     pub local: Vec<(String, String)>,
     pub session: Vec<(String, String)>,
+    /// The page's IndexedDB; absent from a session saved before it was carried.
+    #[serde(default)]
+    pub indexed: Vec<Database>,
+}
+
+/// One IndexedDB database as scripts/indexeddb.js read it, to put back as it was.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Database {
+    pub name: String,
+    pub version: u64,
+    /// Each object store: its key path, indexes and records, values in the script's own JSON.
+    pub stores: Vec<serde_json::Value>,
+}
+
+impl Database {
+    pub fn records(&self) -> usize {
+        let records = |s: &serde_json::Value| s["records"].as_array().map_or(0, Vec::len);
+        self.stores.iter().map(records).sum()
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -160,6 +179,7 @@ mod tests {
             }],
             local: vec![("token".into(), "abc".into())],
             session: vec![],
+            indexed: vec![],
         }
     }
 
@@ -203,6 +223,33 @@ mod tests {
         assert!(one.list().is_empty() && !shelves(&data).exists());
         Shelf::clear_all(&data).unwrap();
         let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// IndexedDB came later: a session saved before it reads with none, and one with it round-trips.
+    #[test]
+    fn a_session_saved_before_indexeddb_reads_without_it_and_one_with_it_comes_back_whole() {
+        let old = serde_json::to_value(session("https://app.test")).unwrap();
+        let mut old = old.as_object().unwrap().clone();
+        old.remove("indexed");
+        let read: Session = serde_json::from_value(old.into()).unwrap();
+        assert!(read.indexed.is_empty());
+
+        let mut with = session("https://app.test");
+        with.indexed = vec![Database {
+            name: "firebaseLocalStorageDb".into(),
+            version: 1,
+            stores: vec![
+                serde_json::json!({"name": "firebaseLocalStorage", "keyPath": "fbase_key",
+                    "autoIncrement": false, "indexes": [],
+                    "records": [{"key": "k1", "value": {"fbase_key": "k1", "value": {"$": "obj", "v": {"$": "x"}}}},
+                                {"key": "k2", "value": 2}]}),
+                serde_json::json!({"name": "empty", "keyPath": null, "autoIncrement": true,
+                    "indexes": [], "records": []}),
+            ],
+        }];
+        assert_eq!(with.indexed[0].records(), 2);
+        let again: Session = serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
+        assert_eq!(again, with);
     }
 
     /// Two tabs saving under one name at once (each tab has its own turn, so nothing orders

@@ -195,11 +195,12 @@ finish() {
 # `gitviber browser help` it uses; a check whose needs aren't there is skipped, so a branch can
 # add its own here before the commands land.
 
-CHECKS=(visibility fps isolation sessions unknown_tab device screenshot network sse idle_park tab_close form
+CHECKS=(visibility fps isolation sessions session_idb unknown_tab device screenshot network sse idle_park tab_close form
   stale_ref covered smooth_scroll fill_honest change_line find_get screenshot_1x screenshot_full touch untrusted secret frames
-  trusted hover keys background_keys clipboard_safe ownership popup download agent_hide agent_audio agent_show agent_e2e memory)
+  trusted hover keys background_keys clipboard_safe clipboard_bypass clipboard_tab ownership popup download agent_hide agent_audio agent_show agent_e2e memory)
 typeset -A NEEDS=(
   visibility "eval" fps "eval" isolation "eval" sessions "session save|session load|--session"
+  session_idb "IndexedDB"
   unknown_tab "--tab" device "device <name|WxH|off>" screenshot "screenshot" network "network <id>"
   sse "network" idle_park "--idle" tab_close "tab close" form "fill|select|click|wait"
   memory "tab list"
@@ -211,6 +212,8 @@ typeset -A NEEDS=(
   # Native input.
   trusted "--synthetic" hover "CSS :hover applies" keys "key down <key>|--hold"
   background_keys "key down <key>|--idle|canvas repainted" clipboard_safe "--synthetic"
+  clipboard_tab "frame of the page's origin|--synthetic"
+  clipboard_bypass "--synthetic"
   ownership "tab release"
   # Popups and downloads.
   popup "named for its opener" download "--download|downloads [--clear]"
@@ -263,6 +266,41 @@ check_sessions() {
   gbx --tab s3 session load lc-alice
   pass_if "session load on another origin" '(( RC != 0 ))' "refused: $ERR"
   close s1 s2 s3
+}
+
+# A login kept in IndexedDB (as Firebase Auth does) comes back in another tab, with the store's
+# key path, index and kinds of value; a database with an ImageData (a kind of
+# value a session can't carry) is named and left out. Nothing here stores the kind of key that
+# makes macOS ask for the login keychain's password: no prompt, ever, from a check.
+check_session_idb() {
+  page si $URL_A/ || { record session_idb FAIL "tab new: $ERR"; return }
+  SESSIONS+=(lc-idb)
+  gb session delete lc-idb >/dev/null 2>&1
+  local make="(async () => {
+    const open = (name, version, fill) => new Promise((ok, no) => { const r = indexedDB.open(name, version); r.onupgradeneeded = () => fill(r.result); r.onsuccess = () => { r.result.close(); ok() }; r.onerror = () => no(r.error) });
+    await open('gv-check', 3, (db) => { const s = db.createObjectStore('auth', { keyPath: 'id' }); s.createIndex('by_name', 'name'); s.put({ id: 'u1', name: 'alice', token: 'tok-idb', at: new Date(0), raw: new Uint8Array([1, 2, 3]) }); db.createObjectStore('plain').put('v', 'k') });
+    await open('gv-check-pixels', 1, (db) => { db.createObjectStore('pixels').put(new ImageData(1, 1), 'p') });
+    return 'made' })()"
+  gbx --tab si eval $make
+  local made=$(py eval-value <<<$OUT)
+  pass_if "IndexedDB made in the page" '[[ $made == made ]]' "${${OUT:-$ERR}[1,200]}"
+  gbx --tab si session save lc-idb
+  pass_if "session save: IndexedDB left alone unless asked" \
+    '(( RC == 0 )) && [[ $OUT != *"IndexedDB databases ("* && $OUT == *"--indexeddb"* ]]' "$OUT$ERR"
+  gbx --tab si session save lc-idb --force --indexeddb
+  pass_if "session save --indexeddb: IndexedDB kept, an ImageData's database named" \
+    '(( RC == 0 )) && [[ $OUT == *"IndexedDB databases"* && $OUT == *"left out: gv-check-pixels (holds a ImageData"* ]]' "$OUT$ERR"
+  gbx tab new si2 --session lc-idb && gbx --tab si2 wait --load
+  local read="(async () => {
+    const db = await new Promise((ok, no) => { const r = indexedDB.open('gv-check'); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error) });
+    const s = db.transaction('auth').objectStore('auth');
+    const row = await new Promise((ok) => { const g = s.get('u1'); g.onsuccess = () => ok(g.result) });
+    const names = (await indexedDB.databases()).map((d) => d.name).sort().join('+');
+    const out = [row.token, db.version, s.keyPath, [...s.indexNames].join(), row.at.toISOString(), [...new Uint8Array(row.raw)].join(), names].join('|');
+    db.close(); return out })()"
+  local got=$(value si2 $read)
+  pass_if "tab new --session: IndexedDB comes back" '[[ $got == "tok-idb|3|id|by_name|1970-01-01T00:00:00.000Z|1,2,3|gv-check" ]]' "$got $ERR"
+  close si si2
 }
 
 check_unknown_tab() {
@@ -662,6 +700,76 @@ check_clipboard_safe() {
     record "page can't write your clipboard" PASS "$note"
   fi
   close cb
+}
+
+# The tab's clipboard, from the page's own button (navigator.clipboard) in the page and in a frame
+# of its origin, read back by the page and pasted with the agent's Meta+v; a frame of another
+# origin has a copy of its own, which neither replaces the page's nor is read by it. None of it
+# reaches the user's clipboard (clipboard_safe asks that); a Copy button of theirs after they take
+# the tab is manual.
+check_clipboard_tab() {
+  page ct "$URL_A/clipframes?other=$SB" || { record clipboard_tab FAIL "tab new: $ERR"; return }
+  gbx --tab ct snapshot -i
+  local same=$(py snapshot-ref '"Copy same"' <<<$OUT)
+  # A frame of another origin isn't in the snapshot: its button is clicked by where it is.
+  local cross=$(value ct "(r => Math.round(r.x + 30) + ',' + Math.round(r.y + 20))(document.getElementById('cross').getBoundingClientRect())")
+  local read="(async () => await navigator.clipboard.readText())()"
+  gbx --tab ct click '#copy'
+  local got=$(value ct $read)
+  pass_if "tab clipboard: the page's Copy button" '[[ $got == main-$SA ]]' "readText: $got"
+  gbx --tab ct click ${same:-e0}
+  got=$(value ct $read)
+  pass_if "tab clipboard: a frame of the page's origin shares it" '[[ $got == same-$SA ]]' "readText: $got"
+  gbx --tab ct click ${cross:-e0}
+  got=$(value ct $read)
+  pass_if "tab clipboard: a frame of another origin neither replaces nor is read by the page's" '[[ $got == same-$SA ]]' "readText: $got"
+  gbx --tab ct click '#box'; gbx --tab ct press Meta+v
+  got=$(value ct "document.getElementById('box').value")
+  pass_if "Meta+v pastes the page's copy" '[[ $got == same-$SA ]]' "field: $got"
+  gbx --tab ct fill '#box' 'cut and kept'
+  gbx --tab ct press Meta+a; gbx --tab ct press Meta+x
+  got=$(value ct $read)
+  pass_if "Meta+x keeps the field's text in it" '[[ $got == "cut and kept" ]]' "readText: $got"
+  # The guard is in every kind of frame a page can make, and in a popup: WebKit puts it into each
+  # document at its start (a frame without it would copy to the user's clipboard unguarded).
+  local made="(async () => {
+    const wait = (i) => new Promise((ok) => { i.onload = () => ok(i) });
+    const kind = (i) => typeof i.contentWindow.__gvClipboard;
+    const blank = document.body.appendChild(document.createElement('iframe'));
+    const doc = document.body.appendChild(document.createElement('iframe')); doc.srcdoc = '<p>x</p>'; await wait(doc);
+    const blob = document.body.appendChild(document.createElement('iframe')); blob.src = URL.createObjectURL(new Blob(['<p>y</p>'], { type: 'text/html' })); await wait(blob);
+    return [kind(blank), kind(doc), kind(blob)].join(',') })()"
+  got=$(value ct $made)
+  pass_if "tab clipboard: guarded in about:blank, srcdoc and blob: frames" '[[ $got == function,function,function ]]' "$got"
+  gbx --tab ct click '#pop'
+  local popup=$(py popup-name <<<$OUT)
+  got=$(value ct "typeof window.pop?.__gvClipboard")
+  pass_if "tab clipboard: guarded in a window.open popup" '[[ $got == function ]]' "$got"
+  close $popup
+  record "tab clipboard: the user's own Copy button" SKIP "manual: click in the tab, then its page's Copy button"
+  close ct
+}
+
+# A page that tries to get past the shim (clipbypass in browser-check-site.py) and copy inside the
+# agent's click: the user's clipboard must still be what it was. WebKit itself allows a copy during
+# a click, so this is the shim's alone to hold.
+check_clipboard_bypass() {
+  page cx $URL_A/clipbypass || { record clipboard_bypass FAIL "tab new: $ERR"; return }
+  local before=$(pbpaste 2>/dev/null)
+  gbx --tab cx click '#bypass'
+  sleep 1
+  local after=$(pbpaste 2>/dev/null) res=$(value cx window.res)
+  local note="the page's copy returned: $res; clipboard holds: the user's text, ${#after} characters"
+  if [[ $after == gitviber-bypass-[1-4] ]]; then
+    note="the page's copy returned: $res; clipboard holds: the page's text ($after)"
+    if [[ -n $before && $before != gitviber-bypass-[1-4] ]] && print -rn -- "$before" | pbcopy; then
+      note+="; put back what it held before"
+    fi
+    record "a page past the shim can't write your clipboard" FAIL "$note"
+  else
+    record "a page past the shim can't write your clipboard" PASS "$note"
+  fi
+  close cx
 }
 
 check_ownership() {

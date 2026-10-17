@@ -362,8 +362,9 @@ fn key(web: &WebView, window: &NSWindow, step: KeyStep, edit: Option<Edit>) -> R
 }
 
 /// What the Edit menu would do for a ⌘ key no page took, on the page's own web view: AppKit
-/// sends it no menu action for a key it didn't see. Copy, cut and paste go by the page's own
-/// clipboard (scripts/clipboard.js), never the user's.
+/// sends it no menu action for a key it didn't see. Copy, cut and paste go by the tab's own
+/// clipboard (scripts/clipboard.js), never the user's; none reaches a frame of another origin,
+/// whose copies are its own and which the page may not read.
 fn edit_page(web: &WebView, edit: Edit) {
     let undo = &web.ivars().undo;
     match edit {
@@ -375,6 +376,7 @@ fn edit_page(web: &WebView, edit: Edit) {
         Edit::Copy => page_tools::clipboard(web, "copy", |_| {}),
         Edit::Cut => page_tools::clipboard(web, "cut", |_| {}),
         // A paste event with the text, which the page may take; else the text goes in as typed.
+        // The script answers nothing for a frame of another origin: nothing goes in.
         Edit::Paste => {
             let target = Weak::new(web);
             page_tools::clipboard(web, "paste", move |text| {

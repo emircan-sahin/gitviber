@@ -204,7 +204,8 @@ own, opened in the background without taking yours. `gitviber browser help` list
 **Out of your way**
 
 - **Never yours.** An agent's clicks, keys, hover, drag and scroll reach the page as real input,
-  without moving your pointer or reaching your keyboard or clipboard.
+  without moving your pointer or reaching your keyboard. A page's Copy button writes to the tab's
+  own clipboard, not yours: a guard against ordinary pages (see Privacy), not a wall.
 - **Your tab stays yours.** Click or type in an agent's tab and it's yours: commands that would act
   on it stop and say so, and those that only read it still run, until you press Give back to agent
   or run `gitviber browser tab release`. `tab list` shows each tab's owner.
@@ -241,7 +242,8 @@ own, opened in the background without taking yours. `gitviber browser help` list
   testing. `tab new --shared` uses your logins instead.
 - `session save` keeps a tab's login (cookies, localStorage and sessionStorage) for the repository
   and its worktrees, and `tab new --session` or `session load` puts it into another tab or another
-  agent's. Saved sessions are readable by you alone.
+  agent's. `--indexeddb` adds the page's IndexedDB, for apps that keep their login there; a database
+  that holds a file or is too big is named and left out. Saved sessions are readable by you alone.
 
 **Acting on a page**
 

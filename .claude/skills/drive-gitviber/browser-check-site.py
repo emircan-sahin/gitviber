@@ -12,6 +12,8 @@ look for (an SSE stream the client left) to stdout.
   /game   a page that reads keys as a game does: logs each key event with isTrusted, focus and
           visibility, lets go of its keys when it blurs, and draws a square on a canvas that moves
           while one is held
+  /clipframes?other=<port>  a field and a Copy button that use navigator.clipboard, with a frame of
+          the page's origin and one of the other port's, each with a Copy button of its own (/clipcopy)
   /covered, /smooth, /fill, /native, /frames?other=<port>, /inner, /popup: one page per check
   /file   a text file served as an attachment"""
 import json
@@ -166,6 +168,47 @@ const field = document.getElementById('field').getContext('2d');
     "/inner": page("inner", """
 <button id="inner" onclick="document.title = 'inner clicked'">Inner</button>
 <button id="oops" onclick="throw new Error('inner oops')">Oops</button>"""),
+    "/clipcopy": page("clipcopy", """
+<button id="c">Copy</button>
+<script>
+const n = new URLSearchParams(location.search).get('n');
+c.textContent = 'Copy ' + n;
+c.onclick = () => navigator.clipboard.writeText(n + '-' + location.port);
+</script>"""),
+    "/clipbypass": page("clipbypass", """
+<textarea id="t">gitviber-bypass-1</textarea><button id="bypass">Bypass</button>
+<script>
+// Four ways a page that means to copy for real inside the agent's click might try, each with a
+// text of its own to be found on the clipboard: an object that says "bold" and then "copy"; the
+// pristine execCommand got by hooking Function.prototype.call; toLowerCase swapped so "copy"
+// never matches; and a frame the shim may not be in (sandboxed, scripts off).
+document.getElementById('bypass').onclick = () => {
+  const out = [];
+  const t = document.getElementById('t');
+  const select = (text) => { t.value = text; t.select(); };
+  let n = 0;
+  select('gitviber-bypass-1');
+  out.push(document.execCommand({ toString: () => (n++ ? 'copy' : 'bold') }));
+  let leaked;
+  const orig = Function.prototype.call;
+  Function.prototype.call = function (...a) { if (this && this.name === 'execCommand') leaked = this; return orig.apply(this, a); };
+  try { document.execCommand('bold'); } finally { Function.prototype.call = orig; }
+  select('gitviber-bypass-2');
+  out.push(leaked ? 'leaked:' + Reflect.apply(leaked, document, ['copy']) : 'no leak');
+  const lower = String.prototype.toLowerCase;
+  String.prototype.toLowerCase = function () { return 'x'; };
+  try { select('gitviber-bypass-3'); out.push(document.execCommand('copy')); } finally { String.prototype.toLowerCase = lower; }
+  const f = document.createElement('iframe');
+  f.setAttribute('sandbox', 'allow-same-origin');
+  document.body.append(f);
+  const d = f.contentDocument, ta = d.createElement('textarea');
+  ta.value = 'gitviber-bypass-4';
+  d.body.append(ta);
+  ta.select();
+  out.push(d.execCommand('copy'));
+  window.res = out.join(',');
+};
+</script>"""),
     "/popup": page("popup", """
 <p>Popup</p><button id="closeme" onclick="window.close()">Close</button>
 <script>window.opener && window.opener.postMessage('hi-from-popup', '*');</script>"""),
@@ -197,6 +240,13 @@ class H(BaseHTTPRequestHandler):
             body = ('<p>Frames</p><iframe id="same" src="/inner"></iframe>'
                     f'<iframe id="cross" src="http://127.0.0.1:{int(other)}/inner"></iframe>')
             self.send(200, page("frames", body), "text/html")
+        elif path == "/clipframes":
+            other = parse_qs(self.path.partition("?")[2]).get("other", ["0"])[0]
+            body = ('<input id="box"><button id="copy" onclick="navigator.clipboard.writeText(\'main-\' + location.port)">Copy in page</button>'
+                    '<button id="pop" onclick="window.pop = window.open(\'about:blank\')">Pop</button>'
+                    '<iframe id="same" src="/clipcopy?n=same"></iframe>'
+                    f'<iframe id="cross" src="http://127.0.0.1:{int(other)}/clipcopy?n=cross"></iframe>')
+            self.send(200, page("clipframes", body), "text/html")
         elif path == "/file":
             b = b"gitviber check download\n"
             self.send_response(200)

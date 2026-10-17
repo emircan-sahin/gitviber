@@ -77,7 +77,11 @@ const TRUTHY: &str = include_str!("scripts/truthy.js");
 const STORAGE_READ: &str = "return JSON.stringify({ origin: location.origin, local: Object.entries(localStorage), session: Object.entries(sessionStorage) });";
 /// Written only on the session's origin; elsewhere, where the page is instead.
 const STORAGE_WRITE: &str = "const s = JSON.parse(input); if (location.origin !== s.origin) return location.origin; localStorage.clear(); sessionStorage.clear(); for (const [k, v] of s.local) localStorage.setItem(k, v); for (const [k, v] of s.session) sessionStorage.setItem(k, v); return '';";
-const NO_INDEXED_DB: &str = "IndexedDB isn't carried.";
+/// The page's IndexedDB for a session (read, or written back); in GitViber's world, like the storage's.
+const INDEXED_DB: &str = include_str!("scripts/indexeddb.js");
+/// The most of a page's IndexedDB a session keeps, as the JSON the script makes of its values; a
+/// database that doesn't fit is named when the session is saved, not saved in part.
+const INDEXED_DB_MAX: usize = 8 << 20;
 /// How long a page has to open its file chooser after the click that asks for it.
 const CHOOSER: Duration = Duration::from_secs(3);
 /// The page's height and how far down it is, for the wheel: its window's, not a panel's in it.
@@ -343,18 +347,19 @@ fn sessions(
             shelf_here()?.delete(&s)?;
             Ok(Reply::out(format!("Deleted session {s}")))
         }
-        Sessions::Save(s, force) => {
+        Sessions::Save(s, save) => {
             let shelf = shelf_here()?;
             let (id, found) = tab()?;
             // The user's tab holds the user's sign-ins: not saved for the agents.
-            let session = drive(app, id, found, |tab| {
+            let (session, left_out) = drive(app, id, found, |tab| {
                 tab.yours()?;
-                tab.session()
+                tab.session(save.indexeddb)
             })?;
-            shelf.save(&s, &session, force)?;
+            shelf.save(&s, &session, save.force)?;
             Ok(Reply::out(format!(
-                "Saved session {s}: {}. {NO_INDEXED_DB}",
-                summary(&session)
+                "Saved session {s}: {}.{}",
+                summary(&session),
+                left_out_text(&left_out)
             )))
         }
         Sessions::Load(s) => {
@@ -1579,8 +1584,9 @@ impl Tab {
         Ok(Reply::out(format!("Showing the page as {shown}")))
     }
 
-    /// The tab's login: the cookies of its own store, and its page's storage.
-    fn session(&self) -> Res<Session> {
+    /// The tab's login: the cookies of its own store, and its page's storage and IndexedDB, and
+    /// what of the IndexedDB couldn't be kept.
+    fn session(&self, with_indexed: bool) -> Res<(Session, Vec<LeftOut>)> {
         #[derive(serde::Deserialize)]
         struct Storage {
             origin: String,
@@ -1599,13 +1605,36 @@ impl Tab {
         if !on_web(&storage.origin) {
             return Err(blank.into());
         }
-        Ok(Session {
+        // Reading a database's values is what can make macOS ask for the keychain's password, when
+        // a page keeps a CryptoKey in it: only when asked to. Listing their names asks for nothing.
+        let ask = if with_indexed {
+            json!({ "op": "read", "limit": INDEXED_DB_MAX })
+        } else {
+            json!({ "op": "list" })
+        };
+        let id = self.id.clone();
+        let read = later(&self.app, move |_, done| {
+            super::agent_js(&id, false, INDEXED_DB, &ask.to_string(), done)
+        })?;
+        let (indexed, left_out) = match (read.and_then(|t| indexed_read(&t)), with_indexed) {
+            (Ok(read), true) => (read.databases, read.skipped),
+            (Err(why), true) => (vec![], vec![LeftOut::all(&why)]),
+            // What `list` named is there and not kept: said once, with how to keep it.
+            (Ok(read), false) => (
+                vec![],
+                LeftOut::unasked(read.skipped.len()).into_iter().collect(),
+            ),
+            (Err(_), false) => (vec![], vec![]),
+        };
+        let session = Session {
             origin: storage.origin,
             saved: now(),
             cookies,
             local: storage.local,
             session: storage.session,
-        })
+            indexed,
+        };
+        Ok((session, left_out))
     }
 
     /// Session `s` in place of what the tab's own store had, on the origin it was saved at (a
@@ -1656,10 +1685,24 @@ impl Tab {
                  session's, its storage isn't. Load it again."
             ));
         }
+        let left_out = if s.indexed.is_empty() {
+            vec![]
+        } else {
+            let ask = json!({ "op": "write", "databases": s.indexed });
+            let id = self.id.clone();
+            let wrote = later(&self.app, move |_, done| {
+                super::agent_js(&id, false, INDEXED_DB, &ask.to_string(), done)
+            })?;
+            match wrote.and_then(|t| indexed_wrote(&t)) {
+                Ok(skipped) => skipped,
+                Err(why) => vec![LeftOut::all(&why)],
+            }
+        };
         self.reload()?;
         Ok(format!(
-            "Loaded session {name}: {}. {NO_INDEXED_DB}",
-            summary(s)
+            "Loaded session {name}: {}.{}",
+            summary(s),
+            left_out_text(&left_out)
         ))
     }
 
@@ -1731,13 +1774,81 @@ fn tabs_text(tabs: &[Listed]) -> String {
 
 /// What a session holds, never its values.
 fn summary(s: &Session) -> String {
-    format!(
+    let mut said = format!(
         "{} cookies, {} localStorage and {} sessionStorage items of {}",
         s.cookies.len(),
         s.local.len(),
         s.session.len(),
         s.origin
-    )
+    );
+    if !s.indexed.is_empty() {
+        let records: usize = s.indexed.iter().map(sessions::Database::records).sum();
+        said += &format!(
+            ", and {} IndexedDB databases ({records} records)",
+            s.indexed.len()
+        );
+    }
+    said
+}
+
+/// A database of the page's IndexedDB a session couldn't keep or put back, and why.
+#[derive(serde::Deserialize)]
+struct LeftOut {
+    name: String,
+    why: String,
+}
+
+impl LeftOut {
+    /// The databases the page has that this save didn't ask for: none when it has none.
+    fn unasked(n: usize) -> Option<Self> {
+        (n > 0).then(|| Self {
+            name: format!("{n} databases"),
+            why: "not saved: `session save --indexeddb` saves them, and a page that keeps a \
+                  CryptoKey there can make macOS ask for the login keychain's password"
+                .into(),
+        })
+    }
+
+    /// All of it: the script itself failed.
+    fn all(why: &str) -> Self {
+        Self {
+            name: "IndexedDB".into(),
+            why: why.into(),
+        }
+    }
+}
+
+/// What the script read: the databases it kept and those it left out.
+#[derive(serde::Deserialize)]
+struct IndexedRead {
+    databases: Vec<sessions::Database>,
+    skipped: Vec<LeftOut>,
+}
+
+fn indexed_read(text: &str) -> Res<IndexedRead> {
+    serde_json::from_str(text).map_err(|e| format!("its answer didn't read ({e})"))
+}
+
+fn indexed_wrote(text: &str) -> Res<Vec<LeftOut>> {
+    #[derive(serde::Deserialize)]
+    struct Wrote {
+        skipped: Vec<LeftOut>,
+    }
+    serde_json::from_str::<Wrote>(text)
+        .map(|w| w.skipped)
+        .map_err(|e| format!("its answer didn't read ({e})"))
+}
+
+/// A sentence for a reply, after the summary's; none when nothing was left out.
+fn left_out_text(left_out: &[LeftOut]) -> String {
+    if left_out.is_empty() {
+        return String::new();
+    }
+    let each: Vec<String> = left_out
+        .iter()
+        .map(|l| format!("{} ({})", l.name, l.why))
+        .collect();
+    format!(" IndexedDB left out: {}.", each.join(", "))
 }
 
 /// `session list` at `now` (seconds since 1970).
@@ -1846,15 +1957,59 @@ mod tests {
             }],
             local: vec![("token".into(), "t0ken".into())],
             session: vec![],
+            indexed: vec![],
         };
         assert_eq!(
             summary(&session),
             "1 cookies, 1 localStorage and 0 sessionStorage items of https://app.test"
         );
+        let mut with = session.clone();
+        with.indexed = vec![sessions::Database {
+            name: "app".into(),
+            version: 3,
+            stores: vec![json!({"name": "s", "records": [{"key": 1, "value": "t0ken"}]})],
+        }];
+        let said = summary(&with);
+        assert!(
+            said.ends_with(", and 1 IndexedDB databases (1 records)"),
+            "{said}"
+        );
+        assert!(!said.contains("t0ken"));
         let text = sessions_text(&[("mert".into(), session)], 1_000 + 3 * 3600);
         assert_eq!(text, "mert  https://app.test  1 cookies  (saved 3h ago)");
         assert!(!text.contains("s3cret") && !text.contains("t0ken"));
         assert!(sessions_text(&[], 0).starts_with("No sessions"));
+    }
+
+    #[test]
+    fn a_save_that_did_not_ask_for_indexeddb_says_how_to() {
+        assert!(LeftOut::unasked(0).is_none());
+        let said = left_out_text(&[LeftOut::unasked(2).unwrap()]);
+        assert!(
+            said.starts_with(" IndexedDB left out: 2 databases (not saved:"),
+            "{said}"
+        );
+        assert!(said.contains("--indexeddb") && said.contains("keychain"));
+        // The script's list asks for no values.
+        assert!(INDEXED_DB.contains("\"list\""));
+    }
+
+    #[test]
+    fn what_the_indexeddb_script_leaves_out_is_named() {
+        let text = r#"{"databases":[{"name":"a","version":2,"stores":[]}],"skipped":[{"name":"keys","why":"holds a CryptoKey, which a session can't carry"}]}"#;
+        let read = indexed_read(text).unwrap();
+        assert_eq!(read.databases.len(), 1);
+        assert_eq!(
+            left_out_text(&read.skipped),
+            " IndexedDB left out: keys (holds a CryptoKey, which a session can't carry)."
+        );
+        assert_eq!(left_out_text(&[]), "");
+        assert!(indexed_read("nope").is_err());
+        assert!(indexed_wrote(r#"{"skipped":[]}"#).unwrap().is_empty());
+        // The ops and the limit the script reads are those sent.
+        for word in ["\"read\"", "ask.limit", "ask.databases"] {
+            assert!(INDEXED_DB.contains(word), "{word}");
+        }
     }
 
     #[test]
