@@ -32,6 +32,11 @@ pub(super) fn ended(delegate: &Delegate, web: &WKWebView, reason: Option<isize>)
             crashes::stopped(why)
         }
     };
+    // The page that saw the keys go down is gone: a key held for it can't be let go there, and
+    // would be refused as held already once the page is back.
+    if let Some(web) = d.web.load() {
+        web.ivars().held.borrow_mut().release_all();
+    }
     if let Some((pty, name)) = agent::pane_of(&d.id) {
         notes::note(pty, Some((&d.id, &name)), note);
     }

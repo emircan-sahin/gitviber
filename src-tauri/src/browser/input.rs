@@ -1304,6 +1304,22 @@ mod tests {
         assert!(!held.any());
     }
 
+    /// The user took the tab, or its page's process ended: what was held is let go, and the
+    /// same keys go down again instead of being refused as held already.
+    #[test]
+    fn keys_let_go_by_a_takeover_or_a_crash_can_go_down_again() {
+        let mut held = Held::default();
+        held.down("w").unwrap();
+        held.down("Shift").unwrap();
+        assert!(held.press("w", Half::Both).is_err());
+        assert!(held.down("w").is_err());
+        let steps = held.release_all();
+        assert_eq!(steps.len(), 2, "the key up, then Shift let go");
+        assert!(!held.any());
+        assert!(held.press("w", Half::Both).is_ok());
+        assert!(held.down("w").is_ok() && held.down("Shift").is_ok());
+    }
+
     #[test]
     fn line_breaks_of_any_kind_type_as_one_each() {
         assert_eq!(as_typed("a\n\nb"), "a\n\nb");

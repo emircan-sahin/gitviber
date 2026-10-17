@@ -180,6 +180,8 @@ struct Released<'a> {
 pub(super) fn user_took(id: &str) {
     if ROUTES.with_borrow_mut(|r| r.take(id)).is_some() {
         if let Some(v) = view(id) {
+            // Keys its agents held would stay down in the page, and keep the tab awake.
+            native::release_keys(&v);
             mute(&v.web, false);
         }
         if let Some(app) = APP.with(|a| a.get().cloned()) {
