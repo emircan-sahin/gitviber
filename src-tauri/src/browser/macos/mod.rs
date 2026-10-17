@@ -42,22 +42,25 @@ use objc2::encode::{Encoding, RefEncode};
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, Bool, NSObject, ProtocolObject, Sel};
 use objc2::{
-    available, define_class, msg_send, sel, ClassType, DefinedClass, MainThreadMarker,
+    available, define_class, msg_send, sel, AnyThread, ClassType, DefinedClass, MainThreadMarker,
     MainThreadOnly, Message,
 };
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSAutoresizingMaskOptions, NSBitmapImageFileType,
-    NSBitmapImageRep, NSColor, NSEvent, NSEventModifierFlags, NSImage, NSImageCompressionFactor,
-    NSModalResponse, NSModalResponseOK, NSOpenPanel, NSView, NSWindow, NSWindowOrderingMode,
+    NSAlert, NSAlertFirstButtonReturn, NSApplicationDidResignActiveNotification,
+    NSAutoresizingMaskOptions, NSBitmapImageFileType, NSBitmapImageRep, NSColor, NSEvent,
+    NSEventModifierFlags, NSImage, NSImageCompressionFactor, NSModalResponse, NSModalResponseOK,
+    NSOpenPanel, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
+    NSWindowDidChangeOcclusionStateNotification, NSWindowDidMiniaturizeNotification,
+    NSWindowDidResignKeyNotification, NSWindowOrderingMode, NSWindowWillCloseNotification,
     NSWorkspace,
 };
 use objc2_foundation::{
     ns_string, NSArray, NSCopying, NSDataBase64EncodingOptions, NSDate, NSDictionary, NSError,
-    NSKeyValueChangeKey, NSKeyValueObservingOptions, NSNumber, NSObjectNSDelayedPerforming,
-    NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
-    NSURLAuthenticationChallenge, NSURLAuthenticationMethodServerTrust, NSURLCredential,
-    NSURLRequest, NSURLSessionAuthChallengeDisposition as Disposition, NSUndoManager, NSURL,
-    NSUUID,
+    NSKeyValueChangeKey, NSKeyValueObservingOptions, NSNotificationCenter, NSNumber,
+    NSObjectNSDelayedPerforming, NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSPoint,
+    NSRect, NSSize, NSString, NSURLAuthenticationChallenge, NSURLAuthenticationMethodServerTrust,
+    NSURLCredential, NSURLRequest, NSURLSessionAuthChallengeDisposition as Disposition,
+    NSUndoManager, NSURL, NSUUID,
 };
 use objc2_web_kit::{
     WKDownload, WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationActionPolicy,
@@ -119,6 +122,8 @@ thread_local! {
     static EPHEMERAL: OnceCell<Retained<WKWebsiteDataStore>> = const { OnceCell::new() };
     /// A hidden view parks after this many minutes (browserParkAfterMin); 0 never.
     static PARK_AFTER: Cell<u32> = const { Cell::new(10) };
+    /// Every host made, for the resets that clear them all (Host::watch).
+    static HOSTS: RefCell<Vec<Weak<Host>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// What was asked of a tab, by id, apart from its view: a parked tab made again keeps it. Light or
@@ -199,12 +204,31 @@ unsafe impl RefEncode for CGColor {
     const ENCODING_REF: Encoding = Encoding::Pointer(&Encoding::Struct("CGColor", &[]));
 }
 
+/// What a host knows of the pointer: whether it holds it, and the app page that was told so.
+#[derive(Default)]
+struct HostState {
+    over: Cell<bool>,
+    page: RefCell<Weak<NSView>>,
+}
+
+impl Drop for HostState {
+    fn drop(&mut self) {
+        // A host gone while it held the pointer: its page hears moves again.
+        if self.over.get() && MainThreadMarker::new().is_some() {
+            if let Some(page) = self.page.borrow().load() {
+                refresh(&page);
+            }
+        }
+    }
+}
+
 define_class!(
     /// Holds the web view over the app page. Opaque: a see-through window would otherwise show
     /// the desktop behind a page that hasn't painted yet.
     // SAFETY: NSView has no subclassing requirements, and Host has no Drop.
     #[unsafe(super(NSView))]
     #[name = "GitViberBrowserHost"]
+    #[ivars = HostState]
     struct Host;
 
     impl Host {
@@ -212,15 +236,154 @@ define_class!(
         /// them to the menu bar: a plain J on a page would run Next Changed File.
         #[unsafe(method(keyDown:))]
         fn key_down(&self, _event: &NSEvent) {}
+
+        #[unsafe(method(mouseEntered:))]
+        fn mouse_entered(&self, _event: &NSEvent) {
+            self.over(true);
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _event: &NSEvent) {
+            self.over(false);
+        }
+
+        /// A move here says the pointer is, whatever enter was missed.
+        #[unsafe(method(mouseMoved:))]
+        fn mouse_moved(&self, _event: &NSEvent) {
+            self.over(true);
+        }
+
+        /// A view hidden, or taken to another window, with the pointer in it gets no exit.
+        #[unsafe(method(viewDidHide))]
+        fn view_did_hide(&self) {
+            self.over(false);
+        }
+
+        #[unsafe(method(viewWillMoveToWindow:))]
+        fn view_will_move_to_window(&self, _window: Option<&NSWindow>) {
+            self.over(false);
+        }
     }
 );
 
 impl Host {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(());
+        let this = Self::alloc(mtm).set_ivars(HostState::default());
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
         paint(&this, &NSColor::windowBackgroundColor());
+        // Always, or an exit is missed while the app is in the background.
+        let area = unsafe {
+            NSTrackingArea::initWithRect_options_owner_userInfo(
+                NSTrackingArea::alloc(),
+                NSRect::ZERO,
+                NSTrackingAreaOptions::MouseEnteredAndExited
+                    | NSTrackingAreaOptions::MouseMoved
+                    | NSTrackingAreaOptions::ActiveAlways
+                    | NSTrackingAreaOptions::InVisibleRect,
+                Some(&this),
+                None,
+            )
+        };
+        this.addTrackingArea(&area);
+        HOSTS.with_borrow_mut(|h| {
+            h.retain(|w| w.load().is_some());
+            h.push(Weak::from_retained(&this));
+        });
+        watch();
         this
+    }
+
+    /// Whether the pointer is over the page. WebKit's tracking areas aren't clipped by the views
+    /// above them, so the app page under this one hears the same mouse moves, and its own cursor
+    /// (the arrow of what it shows below) races the page's. While a host holds the pointer, the
+    /// app page hears none (`refresh`).
+    fn over(&self, on: bool) {
+        let state = self.ivars();
+        if state.over.replace(on) == on {
+            return;
+        }
+        if on {
+            *state.page.borrow_mut() = app_page(self).map(Weak::from).unwrap_or_default();
+        }
+        // The page told before, not the one this view is in now.
+        let page = state.page.borrow().load();
+        if let Some(page) = page {
+            refresh(&page);
+        }
+    }
+
+    /// Whether it holds the pointer now: said so, shown, and the pointer really in it, so a
+    /// missed exit never counts.
+    fn holds(&self) -> bool {
+        if !self.ivars().over.get() {
+            return false;
+        }
+        let Some(window) = self.window() else {
+            return false;
+        };
+        let at = self.convertPoint_fromView(window.mouseLocationOutsideOfEventStream(), None);
+        let size = self.bounds().size;
+        holding(
+            self.isHiddenOrHasHiddenAncestor(),
+            (at.x, at.y),
+            (size.width, size.height),
+        )
+    }
+}
+
+/// Shown, and the point in a view of `size` at the origin, give or take a point of rounding.
+fn holding(hidden: bool, at: (f64, f64), size: (f64, f64)) -> bool {
+    const SLACK: f64 = 1.0;
+    !hidden
+        && (-SLACK..=size.0 + SLACK).contains(&at.0)
+        && (-SLACK..=size.1 + SLACK).contains(&at.1)
+}
+
+/// The app page hears no mouse moves exactly while a host beside it holds the pointer, worked
+/// out from the hosts as they are now, so no count or missed event can leave it deaf.
+fn refresh(page: &NSView) {
+    let held = unsafe { page.superview() }.is_some_and(|parent| {
+        let views = parent.subviews();
+        let held = views
+            .iter()
+            .any(|v| v.downcast::<Host>().is_ok_and(|h| h.holds()));
+        held
+    });
+    if page.respondsToSelector(sel!(_setIgnoresMouseMoveEvents:)) {
+        let _: () = unsafe { msg_send![page, _setIgnoresMouseMoveEvents: Bool::new(held)] };
+    }
+}
+
+/// Once: a window that goes out of sight or loses the keys, or the app going to the background,
+/// clears every host's hold; a move over the page holds again.
+fn watch() {
+    thread_local! {
+        static WATCHING: Cell<bool> = const { Cell::new(false) };
+    }
+    if WATCHING.replace(true) {
+        return;
+    }
+    let block = RcBlock::new(|_: std::ptr::NonNull<AnyObject>| {
+        let hosts = HOSTS.with_borrow(|h| h.iter().filter_map(|w| w.load()).collect::<Vec<_>>());
+        for host in hosts {
+            host.over(false);
+        }
+    });
+    let center = NSNotificationCenter::defaultCenter();
+    let names = unsafe {
+        [
+            NSApplicationDidResignActiveNotification,
+            NSWindowDidResignKeyNotification,
+            NSWindowDidMiniaturizeNotification,
+            NSWindowDidChangeOcclusionStateNotification,
+            NSWindowWillCloseNotification,
+        ]
+    };
+    for name in names {
+        // Kept for the life of the app.
+        let _: Retained<AnyObject> = unsafe {
+            msg_send![&*center, addObserverForName: name, object: std::ptr::null_mut::<AnyObject>(), queue: std::ptr::null_mut::<AnyObject>(), usingBlock: &*block]
+        };
     }
 }
 
@@ -1096,6 +1259,8 @@ pub fn create(
         config.setUserContentController(&content);
         let preferences = config.preferences();
         preferences.setJavaScriptCanOpenWindowsAutomatically(false);
+        // As the app page's own (display.rs): WebKit's default halves a game's frames at 120Hz.
+        crate::display::unlock_preferences(&preferences);
         if agent && !page_tools::no_async_clipboard(&preferences) {
             eprintln!(
                 "browser: an agent's tab keeps WebKit's async clipboard; its script guards it"
@@ -1667,6 +1832,12 @@ mod tests {
                 class.verify_sel::<(Bool,), ()>(sel).unwrap();
             }
         }
+        let ignores = sel!(_setIgnoresMouseMoveEvents:);
+        if WKWebView::class().instance_method(ignores).is_some() {
+            WKWebView::class()
+                .verify_sel::<(Bool,), ()>(ignores)
+                .unwrap();
+        }
         let last = sel!(_findLastViewInKeyViewLoop);
         if WKWebView::class().instance_method(last).is_some() {
             WKWebView::class()
@@ -1677,6 +1848,19 @@ mod tests {
             .metaclass()
             .verify_sel::<(*mut SecTrust,), *mut NSURLCredential>(sel!(credentialForTrust:))
             .unwrap();
+    }
+
+    #[test]
+    fn a_host_holds_the_pointer_only_while_shown_and_the_pointer_is_in_it() {
+        let size = (400.0, 300.0);
+        assert!(holding(false, (10.0, 10.0), size));
+        // Rounding at the edge still holds; a point past it does not.
+        assert!(holding(false, (-0.5, 300.5), size));
+        assert!(!holding(false, (-2.0, 10.0), size));
+        assert!(!holding(false, (10.0, 302.0), size));
+        assert!(!holding(false, (500.0, 10.0), size));
+        // Hidden, whatever was said.
+        assert!(!holding(true, (10.0, 10.0), size));
     }
 
     #[test]
