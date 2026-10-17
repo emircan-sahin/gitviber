@@ -103,8 +103,10 @@ Reading
                                left out. Refs (also @e1 or ref=e1) stay with their element; one
                                whose element left, or from another page or a frame that moved
                                on, fails as stale. A frame of the page's origin reads as part of
-                               it, its refs acted on as any; another origin's frame is named
-                               only. --json: also the refs gone since
+                               it, its refs acted on as any, and a CSS selector looks in its own
+                               page as `frame=<ref|css> >> <css>` (frames nest: `frame=a >>
+                               frame=b >> <css>`); another origin's frame is named only.
+                               --json: also the refs gone since
   find <text|/regex/>          The tree's lines with the text (any case) or matching the regex,
                                each with the line before and after it; 30 at most
   get text|html|value|box <ref|css>
@@ -186,7 +188,7 @@ Acting by the page's script, setting what a person would and reading it back
 
 Waiting
   wait <css> | --text <text> | --url <glob> | --fn <js> | --load | --download | --ms <n>
-       [--timeout <ms>]
+       [--frame <ref|css>] [--timeout <ms>]
                                Until an element shows, the text does (the rendered text, as
                                innerText has it: Z A F E R isn't ZAFER, `get text` shows what
                                it is), the address matches (part of it; with * or **, all of it,
@@ -196,7 +198,8 @@ Waiting
                                it; each is returned once; prints its path, size and type), or
                                the time is up: one of them;
                                10 s at most unless --timeout says (120 s at most). A timeout says
-                               what was still not so
+                               what was still not so. --frame looks in a same-origin frame's own
+                               page (<css> or --text only), as `frame=<ref|css> >> <css>` does
 
 Page tools
   eval <js>                    Runs in the page; prints the result as JSON (undefined, NaN,
@@ -565,7 +568,8 @@ pub enum Scroll {
 #[derive(Debug, PartialEq)]
 pub enum Wait {
     Css(String),
-    Text(String),
+    /// The text, in the page or in the frame (a ref or CSS) named.
+    Text(String, Option<String>),
     Load,
     Ms(u64),
     /// The page's address, as output::url_matches takes it.
@@ -959,11 +963,16 @@ const ONE_THING: &str =
     "wait waits for one thing: give one of --text, --url, --fn, --load, --download and --ms";
 
 fn wait(args: &[String]) -> Result<Command, String> {
-    let (mut what, mut timeout, mut css, mut download) = (None, WAIT, vec![], false);
+    let (mut what, mut timeout, mut css, mut download, mut frame) =
+        (None, WAIT, vec![], false, None);
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         let next = match arg.as_str() {
-            "--text" => Wait::Text(value(&mut it, arg)?.clone()),
+            "--text" => Wait::Text(value(&mut it, arg)?.clone(), None),
+            "--frame" => {
+                frame = Some(value(&mut it, arg)?.clone());
+                continue;
+            }
             "--load" => Wait::Load,
             "--download" => {
                 download = true;
@@ -987,7 +996,7 @@ fn wait(args: &[String]) -> Result<Command, String> {
             return Err(ONE_THING.into());
         }
     }
-    if download && (what.is_some() || !css.is_empty()) {
+    if download && (what.is_some() || !css.is_empty() || frame.is_some()) {
         return Err(ONE_THING.into());
     }
     let what = match (what, css.is_empty()) {
@@ -1004,6 +1013,12 @@ fn wait(args: &[String]) -> Result<Command, String> {
                     .into(),
             )
         }
+    };
+    let what = match (what, frame) {
+        (w, None) => w,
+        (Wait::Css(css), Some(f)) => Wait::Css(format!("frame={f} >> {css}")),
+        (Wait::Text(text, _), Some(f)) => Wait::Text(text, Some(f)),
+        (_, Some(_)) => return Err("--frame goes with a CSS selector or --text".into()),
     };
     let what = match what {
         Wait::Ms(ms) => Wait::Ms(ms.min(LONGEST_WAIT.as_millis() as u64)),
@@ -2035,9 +2050,28 @@ mod tests {
         assert_eq!(
             parse("wait", &args("--text Saved --timeout 2000")),
             Ok(Command::Wait(
-                Wait::Text("Saved".into()),
+                Wait::Text("Saved".into(), None),
                 Duration::from_secs(2)
             ))
+        );
+        // A frame's page: its selector, or its text.
+        assert_eq!(
+            parse("wait", &args("--frame #cart .done")),
+            Ok(Command::Wait(
+                Wait::Css("frame=#cart >> .done".into()),
+                WAIT
+            ))
+        );
+        assert_eq!(
+            parse("wait", &args("--text Saved --frame e3")),
+            Ok(Command::Wait(
+                Wait::Text("Saved".into(), Some("e3".into())),
+                WAIT
+            ))
+        );
+        assert_eq!(
+            parse("wait", &args("--load --frame e3")),
+            Err("--frame goes with a CSS selector or --text".into())
         );
         assert_eq!(
             parse("wait", &args("div > .done")),
@@ -2337,6 +2371,11 @@ mod tests {
             ("wait", "--soon"),
             ("wait", "--download report.pdf"),
             ("wait", "--download --load"),
+            ("wait", "--frame"),
+            ("wait", ".x --load --frame e1"),
+            ("wait", "--load --frame e1"),
+            ("wait", "--ms 5 --frame e1"),
+            ("wait", "--download --frame e1"),
             ("downloads", "--all"),
             ("downloads", "--clear now"),
             ("scroll", "down far"),
@@ -2507,6 +2546,8 @@ mod tests {
             ("uncheck", "e1"),
             ("wait", ".done --timeout 500"),
             ("wait", "--text Saved"),
+            ("wait", ".done --frame #cart --timeout 500"),
+            ("wait", "--text Saved --frame e3"),
             ("wait", "--url /lobby"),
             ("wait", "--fn document.title"),
             ("wait", "--load"),

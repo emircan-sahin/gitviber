@@ -545,6 +545,16 @@ check_frames() {
   gbx --tab fr click "$(py snapshot-ref '"Oops"' <<<$snap)"
   gbx --tab fr console
   pass_if "console: a frame's error" '[[ $OUT == *"(frame"* && $OUT == *"inner oops"* ]]' "${${OUT:-$ERR}[1,120]}"
+  gbx --tab fr get text 'frame=#same >> #inner'
+  pass_if "css in a same-origin frame" '[[ $OUT == *Inner* ]]' "${OUT:-$ERR}"
+  gbx --tab fr wait --timeout 3000 'frame=#same >> #inner'
+  local waited=$RC
+  gbx --tab fr wait --timeout 3000 --frame '#same' --text Inner
+  pass_if "wait in a frame: a selector, a text" '(( waited == 0 && RC == 0 ))' "css $waited, text $RC: ${OUT:-$ERR}"
+  gbx --tab fr wait --timeout 600 'frame=#nope >> #inner'
+  pass_if "wait for a frame not there is a timeout that says so" '(( RC != 0 )) && [[ $ERR == *"No frame matches #nope"* ]]' "$RC: $ERR"
+  gbx --tab fr get text 'frame=#cross >> #inner'
+  pass_if "css in another origin's frame says why" '(( RC != 0 )) && [[ $ERR == *"another origin"* ]]' "$RC: $ERR"
   gbx --tab fr snapshot
   pass_if "cross-origin frame's hint" '[[ $OUT == *"127.0.0.1:$SB"* ]]' "${${(M)${(f)OUT}:#*$SB*}:-${${OUT:-$ERR}[1,120]}}"
   close fr

@@ -1215,7 +1215,8 @@ impl Tab {
         }
         let wanted = match &what {
             Wait::Css(css) => format!("{css} to show"),
-            Wait::Text(text) => format!("{text:?} to show"),
+            Wait::Text(text, None) => format!("{text:?} to show"),
+            Wait::Text(text, Some(frame)) => format!("{text:?} to show in frame {frame}"),
             Wait::Load => "the page to load".into(),
             Wait::Url(glob) => format!("the address to match {glob}"),
             Wait::Fn(js) => format!("`{}` to be true", super::cut(js, 80)),
@@ -1242,7 +1243,10 @@ impl Tab {
     fn not_yet(&self, what: &Wait, wait: Duration) -> Res<Option<String>> {
         // Between pages there's no page to ask.
         let asked = |input: Value| match self.script_for(input, wait) {
-            Ok(v) if v["invalid"] == true => Err("That isn't a CSS selector.".to_string()),
+            Ok(v) if v["invalid"] == true => Err(v["note"]
+                .as_str()
+                .unwrap_or("That isn't a CSS selector.")
+                .to_string()),
             Ok(v) => Ok(Some(v)),
             Err(_) => Ok(None),
         };
@@ -1263,13 +1267,16 @@ impl Tab {
                 Some(v) if v["count"].as_u64().unwrap_or(0) > 0 => {
                     Some(format!("{} element(s) match it, none showing", v["count"]))
                 }
-                Some(_) => Some("no element matches it".into()),
+                Some(v) => Some(v["note"].as_str().unwrap_or("no element matches it").into()),
                 None => Some("the page didn't answer".into()),
             },
-            Wait::Text(text) => match asked(json!({ "cmd": "hasText", "text": text }))? {
-                Some(v) if v["found"] == true => None,
-                _ => Some("the page's text doesn't have it".into()),
-            },
+            Wait::Text(text, frame) => {
+                match asked(json!({ "cmd": "hasText", "text": text, "frame": frame }))? {
+                    Some(v) if v["found"] == true => None,
+                    Some(v) if v["note"].is_string() => v["note"].as_str().map(String::from),
+                    _ => Some("the page's text doesn't have it".into()),
+                }
+            }
             Wait::Fn(js) => self.truthy(js, wait)?,
             Wait::Ms(_) => None,
         })

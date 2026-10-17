@@ -67,9 +67,41 @@ const onTop = (el, at) => framesOf(el).reduce((p, frame) => above(frame, p), at)
 /** On a page still shown: an element of a frame that navigated, or was taken out, is stale. */
 const live = (el) => !!el?.isConnected && (docOf(el) === document || !!docOf(el).defaultView);
 
-/** The element a ref (e3, @e3, ref=e3) names, or a CSS selector does. */
+const REF = /^(?:@|ref=)?e(\d+)$/;
+
+/** No frame matches yet: a wait goes on, where any other fault in a frame's name ends it. */
+class NoFrame extends Error {}
+
+/**
+ * The document a target looks in, and the CSS in it: `frame=<ref|css> >> <css>` is <css> in that
+ * same-origin frame's own document (frames nest: `frame=a >> frame=b >> <css>`).
+ */
+function scopeOf(target, doc = document) {
+  const framed = /^\s*frame=(.+?)\s>>\s(.+)$/s.exec(target);
+  return framed ? scopeOf(framed[2], inFrame(framed[1].trim(), doc)) : { doc, css: target };
+}
+
+/** The page of the same-origin frame `name` (a ref, or CSS in `doc`) is. */
+function inFrame(name, doc) {
+  let frame;
+  if (REF.test(name)) frame = resolve(name);
+  else {
+    try {
+      frame = doc.querySelector(name);
+    } catch {
+      throw new Error(`Not a ref or a CSS selector: ${name}`);
+    }
+  }
+  if (!frame) throw new NoFrame(`No frame matches ${name}`);
+  if (!/^i?frame$/.test(frame.localName)) throw new Error(`${name} isn't a frame`);
+  const inner = frameDoc(frame);
+  if (!inner) throw new Error(`${name} is another origin's frame: its page can't be read`);
+  return inner;
+}
+
+/** The element a ref (e3, @e3, ref=e3) names, or a CSS selector does (see scopeOf for frames). */
 function resolve(target) {
-  const ref = /^(?:@|ref=)?e(\d+)$/.exec(target);
+  const ref = REF.exec(target);
   if (ref) {
     const name = `e${ref[1]}`;
     const el = state.refs.get(name)?.deref();
@@ -78,9 +110,10 @@ function resolve(target) {
     if (Number(ref[1]) >= state.next) throw new Error(`No ref ${name} on this page: take a new snapshot`);
     throw new Error(`${name} is stale: take a new snapshot`);
   }
+  const { doc, css } = scopeOf(target);
   let el;
   try {
-    el = document.querySelector(target);
+    el = doc.querySelector(css);
   } catch {
     throw new Error(`Not a ref or a CSS selector: ${target}`);
   }

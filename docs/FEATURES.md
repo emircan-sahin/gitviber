@@ -250,7 +250,8 @@ own, opened in the background without taking yours. `gitviber browser help` list
   the value back, and each action ends with a line of what changed: elements added or removed, a
   dialog, the address, console errors and requests.
 - **Reading.** The page as a tree whose refs stay across snapshots, `find`, `get` for one element's
-  text, HTML, value, attribute, styles or box, and frames of the page's origin.
+  text, HTML, value, attribute, styles or box, and frames of the page's origin (a CSS selector
+  reaches into one as `frame=<ref|css> >> <css>`, and `wait --frame` looks there).
 - **Screenshots** at the page's own size, of the viewport, one element, a clip or (`--full`) the
   whole page in pictures of 2000 px, with `--refs` to draw each control's ref on the picture.
 - **Popups and downloads.** `window.open` and `target=_blank` open as tabs of the same pane, keeping

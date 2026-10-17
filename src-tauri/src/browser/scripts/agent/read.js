@@ -272,18 +272,33 @@ function prune() {
 
 const shows = (el) => el.getClientRects().length > 0 && styleOf(el).visibility !== "hidden";
 
-/** For wait: whether an element matching `css` shows, and how many match. */
+/** For wait: whether an element matching `css` (in a frame, if it says) shows, and how many match. */
 function exists({ css }) {
+  let where;
+  try {
+    where = scopeOf(css);
+  } catch (e) {
+    return e instanceof NoFrame ? { found: false, count: 0, note: e.message } : { found: false, invalid: true, note: e.message };
+  }
   let all;
   try {
-    all = [...document.querySelectorAll(css)];
+    all = [...where.doc.querySelectorAll(where.css)];
   } catch {
     return { found: false, invalid: true };
   }
   return { found: all.some(shows), count: all.length };
 }
 
-const hasText = ({ text }) => ({ found: (document.body?.innerText ?? "").includes(text) });
+/** For wait --text: whether the page's text, or that of the frame `frame` names, has it. */
+function hasText({ text, frame = null }) {
+  let doc = document;
+  try {
+    if (frame) doc = scopeOf(`frame=${frame} >> *`).doc;
+  } catch (e) {
+    return e instanceof NoFrame ? { found: false, note: e.message } : { found: false, invalid: true, note: e.message };
+  }
+  return { found: (doc.body?.innerText ?? "").includes(text) };
+}
 
 /** Labels a screenshot draws at most. */
 const LABELS = 300;
