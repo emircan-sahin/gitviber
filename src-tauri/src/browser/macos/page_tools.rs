@@ -11,7 +11,7 @@ use crate::browser::picks::{self, Bounds, Pick};
 use crate::browser::{cut, epoch_ms};
 use crate::state::Res;
 use block2::{DynBlock, RcBlock};
-use objc2::rc::Retained;
+use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, Bool, NSObject, ProtocolObject};
 use objc2::{
     define_class, msg_send, sel, AllocAnyThread, ClassType, DefinedClass, MainThreadMarker,
@@ -28,7 +28,7 @@ use objc2_foundation::{
     NSSize, NSString, NSTimer, NSUUID,
 };
 use objc2_web_kit::{
-    WKContentWorld, WKPreferences, WKScriptMessage, WKScriptMessageHandler,
+    WKContentWorld, WKFrameInfo, WKPreferences, WKScriptMessage, WKScriptMessageHandler,
     WKScriptMessageHandlerWithReply, WKSnapshotConfiguration, WKUserContentController,
     WKUserScript, WKUserScriptInjectionTime, WKWebView,
 };
@@ -133,7 +133,8 @@ define_class!(
             // A page can post to this handler too: a long message is refused unread.
             let answer = match body.downcast_ref::<NSString>() {
                 Some(text) if text.length() <= MESSAGE_MAX => {
-                    clipboard_answer(&self.ivars().id, &text.to_string())
+                    let frame = unsafe { message.frameInfo() };
+                    clipboard_answer(&self.ivars().id, &text.to_string(), &frame)
                 }
                 Some(_) => Err("gv:size"),
                 None => Err("gv:form"),
@@ -174,16 +175,9 @@ pub(super) struct Clipboard {
 
 impl Clipboard {
     /// The reply to `body`, "key\nop\norigin\ntext", or why not (the script reads "gv:size").
-    /// `get` and `set` the origin's copy; `guard` says whether the tab's calls are still kept to
-    /// it ("1") or the user's ("0"), and says "1" when asked too often: the safe answer.
-    fn answer(
-        &mut self,
-        now: Instant,
-        key: &str,
-        guarded: bool,
-        body: &str,
-    ) -> Result<String, &'static str> {
-        let over = self.over(now);
+    /// `get` and `set` the origin's copy; `hello` says a frame's token, for GitViber's pushes to
+    /// it. Asks count only once the key is right: a page that has none can't use up the count.
+    fn answer(&mut self, now: Instant, key: &str, body: &str) -> Result<Said, &'static str> {
         let mut parts = body.splitn(4, '\n');
         let (Some(asked), Some(op), Some(origin)) = (parts.next(), parts.next(), parts.next())
         else {
@@ -193,10 +187,14 @@ impl Clipboard {
             return Err("gv:key");
         }
         let text = parts.next().unwrap_or("");
+        if self.over(now) {
+            return Err("gv:busy");
+        }
         match op {
-            "guard" => Ok(if guarded || over { "1" } else { "0" }.into()),
-            _ if over => Err("gv:busy"),
-            "get" => Ok(self.copies.get(origin).cloned().unwrap_or_default()),
+            "hello" if (1..=TOKEN_MAX).contains(&text.len()) => Ok(Said::Hello(text.into())),
+            "get" => Ok(Said::Text(
+                self.copies.get(origin).cloned().unwrap_or_default(),
+            )),
             // Origins that are opaque all read "null": none of them is one to keep a copy for.
             "set" if origin == "null" => Err("gv:origin"),
             "set" if text.len() > STORE_MAX => Err("gv:size"),
@@ -205,7 +203,7 @@ impl Clipboard {
                     self.copies.clear();
                 }
                 self.copies.insert(origin.into(), text.into());
-                Ok(String::new())
+                Ok(Said::Text(String::new()))
             }
             _ => Err("gv:op"),
         }
@@ -229,13 +227,68 @@ impl Clipboard {
     }
 }
 
+/// What the store said to a frame.
+#[derive(Debug, PartialEq)]
+enum Said {
+    Text(String),
+    /// A frame's token: the one GitViber's pushes to it answer to.
+    Hello(String),
+}
+
+/// A frame of an agent's tab that said hello (clipboard.js), and the token it answers to.
+pub(super) struct Frame {
+    info: Retained<WKFrameInfo>,
+    token: String,
+    main: bool,
+}
+
 /// What a frame of an agent's tab asked of its clipboard (clipboard.js).
-fn clipboard_answer(id: &str, body: &str) -> Result<String, &'static str> {
+fn clipboard_answer(id: &str, body: &str, frame: &WKFrameInfo) -> Result<String, &'static str> {
     let v = view(id).ok_or("gv:gone")?;
     let ivars = v.web.ivars();
-    let mut clipboard = ivars.copied.borrow_mut();
-    clipboard.answer(Instant::now(), &ivars.clipboard, ivars.guarded.get(), body)
+    let said = ivars
+        .copied
+        .borrow_mut()
+        .answer(Instant::now(), &ivars.clipboard, body)?;
+    match said {
+        Said::Text(text) => Ok(text),
+        Said::Hello(token) => {
+            hello(&v.web, frame, token);
+            Ok(String::new())
+        }
+    }
 }
+
+/// A frame to push the guard to from now on, told the guard as it stands: it began guarded, and
+/// is let go at once if the tab is the user's. The main frame's hello is a new page's, so the
+/// frames it had are gone.
+fn hello(web: &WebView, info: &WKFrameInfo, token: String) {
+    let main = unsafe { info.isMainFrame() };
+    let frame = Frame {
+        info: info.retain(),
+        token,
+        main,
+    };
+    let guarded = web.ivars().guarded.get();
+    if !guarded {
+        send(web, &frame, "off", |_| {});
+    }
+    let mut frames = web.ivars().frames.borrow_mut();
+    if main {
+        frames.clear();
+    } else if frames.len() >= FRAMES_MAX {
+        // The oldest of the others: the main frame's stays.
+        if let Some(oldest) = frames.iter().position(|f| !f.main) {
+            frames.remove(oldest);
+        }
+    }
+    frames.push(frame);
+}
+
+/// The most frames of a tab it pushes the guard to.
+const FRAMES_MAX: usize = 128;
+/// The longest token a frame may say.
+const TOKEN_MAX: usize = 64;
 
 /// The picker's and the console's handlers on a new view's user content controller, and its
 /// page scripts (`add_scripts`). Only an agent's tab gets the network log: no one else asks for
@@ -413,49 +466,65 @@ pub(super) fn release_network(v: &View) {
     v.delegate.ivars().network.take();
 }
 
-/// An agent's tab's clipboard script (clipboard.js) asked `ask`: `on` or `off`, its calls kept
-/// to the page or the user's again; `copy`, `cut` or `paste` on the page's own clipboard. `done`
-/// gets its answer: for a paste, the text, unless the page took the paste event.
-pub(super) fn clipboard(web: &WebView, ask: &str, done: impl FnOnce(Option<String>) + 'static) {
+/// `what` pushed to `frame` of an agent's tab: its clipboard script (clipboard.js) answers to
+/// the frame's token alone. `on` or `off`, its calls kept to the page or the user's again; `copy`,
+/// `cut` or `paste` on the page's own clipboard. `done` gets the answer: for a paste, the text,
+/// unless the page took the paste event. A frame that is gone is forgotten.
+fn send(web: &WebView, frame: &Frame, what: &str, done: impl FnOnce(Option<String>) + 'static) {
     let mtm = web.mtm();
-    let (key, ask) = (
-        NSString::from_str(&web.ivars().clipboard),
-        NSString::from_str(ask),
-    );
+    let (token, what) = (NSString::from_str(&frame.token), NSString::from_str(what));
     let arguments = NSDictionary::<NSString, AnyObject>::from_slices(
-        &[ns_string!("key"), ns_string!("ask")],
-        &[&*key, &*ask],
+        &[ns_string!("token"), ns_string!("what")],
+        &[&*token, &*what],
     );
-    let done = Cell::new(Some(done));
-    let block = RcBlock::new(move |value: *mut AnyObject, _error: *mut NSError| {
-        // SAFETY: WebKit's answer, an object or nil, alive for this call.
+    let (done, weak, gone) = (Cell::new(Some(done)), Weak::new(web), frame.token.clone());
+    let block = RcBlock::new(move |value: *mut AnyObject, error: *mut NSError| {
+        // SAFETY: WebKit's answer and error, objects or nil, alive for this call.
         let text = unsafe { value.as_ref() }
             .and_then(|v| v.downcast_ref::<NSString>())
             .map(|s| s.to_string());
+        if !error.is_null() {
+            if let Some(web) = weak.load() {
+                web.ivars().frames.borrow_mut().retain(|f| f.token != gone);
+            }
+        }
         if let Some(done) = done.take() {
             done(text);
         }
     });
     // `window` can't be redefined by the page, nor the script's own property on it.
     let body = ns_string!(
-        "return typeof window.__gvClipboard === 'function' ? window.__gvClipboard(key, ask) ?? null : null;"
+        "return typeof window.__gvClipboard === 'function' ? window.__gvClipboard(token, what) ?? null : null;"
     );
     unsafe {
         web.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
             body,
             Some(&arguments),
-            None,
+            Some(&frame.info),
             &WKContentWorld::pageWorld(mtm),
             Some(&block),
         )
     };
 }
 
-/// The page's own clipboard calls kept to it (`on`: a page's start, an agent's command), or the
-/// user's again (once they press or type in the tab, or it's released to them).
+/// The main frame's clipboard script asked `ask` (`copy`, `cut` or `paste`); `done` gets its
+/// answer. Nothing is asked of a tab whose main frame has not said hello.
+pub(super) fn clipboard(web: &WebView, ask: &str, done: impl FnOnce(Option<String>) + 'static) {
+    let frames = web.ivars().frames.borrow();
+    match frames.iter().find(|f| f.main) {
+        Some(main) => send(web, main, ask, done),
+        None => done(None),
+    }
+}
+
+/// The page's own clipboard calls kept to it (`on`: an agent's command), or the user's again
+/// (once they press or type in the tab, or it's released to them), pushed to every frame that
+/// said hello; a frame that says it later is told then.
 pub(super) fn guard_clipboard(web: &WebView, on: bool) {
     web.ivars().guarded.set(on);
-    clipboard(web, if on { "on" } else { "off" }, |_| {});
+    for frame in web.ivars().frames.borrow().iter() {
+        send(web, frame, if on { "on" } else { "off" }, |_| {});
+    }
 }
 
 /// WebKit's async Clipboard API off for the page (`navigator.clipboard`), in every document of
@@ -994,6 +1063,25 @@ mod tests {
         assert_eq!(scripts(None, false, true).len(), 1);
     }
 
+    /// The guard's script is in every frame, about:blank, srcdoc and blob: ones and popups' (which
+    /// share the opener's configuration) too, from the first moment of each: WebKit puts a user
+    /// script that is not for the main frame only into each document it makes, at its start.
+    #[test]
+    fn the_clipboard_script_is_for_every_frame_at_document_start() {
+        let all = scripts(Some("k"), false, false);
+        let clipboard = all
+            .iter()
+            .find(|(s, _, _)| s.contains("__gvClipboard"))
+            .unwrap();
+        assert!(!clipboard.1, "not for the main frame only");
+        assert_eq!(clipboard.2, World::Page);
+        let source = include_str!("page_tools.rs");
+        let add = &source[source.find("fn add_script(").unwrap()..];
+        let add = &add[..add.find("\n}\n").unwrap()];
+        assert!(add.contains("WKUserScriptInjectionTime::AtDocumentStart"));
+        assert!(add.contains("main_frame"));
+    }
+
     /// A tab handed to the user turns network.js off with what the script itself checks.
     #[test]
     fn a_released_tab_switches_network_js_off_by_the_flag_it_checks() {
@@ -1004,94 +1092,123 @@ mod tests {
     fn ask(
         c: &mut Clipboard,
         at: Instant,
-        guarded: bool,
         op: &str,
         origin: &str,
         text: &str,
     ) -> Result<String, &'static str> {
-        c.answer(at, "k", guarded, &format!("k\n{op}\n{origin}\n{text}"))
+        match c.answer(at, "k", &format!("k\n{op}\n{origin}\n{text}"))? {
+            Said::Text(text) => Ok(text),
+            Said::Hello(token) => Ok(format!("hello {token}")),
+        }
     }
 
     #[test]
     fn a_copy_is_given_back_to_the_origin_that_made_it_and_to_no_other() {
         let (mut c, t) = (Clipboard::default(), Instant::now());
         assert_eq!(
-            ask(&mut c, t, true, "set", "https://a.test", "line\none"),
+            ask(&mut c, t, "set", "https://a.test", "line\none"),
             Ok(String::new())
         );
         assert_eq!(
-            ask(&mut c, t, true, "get", "https://a.test", ""),
+            ask(&mut c, t, "get", "https://a.test", ""),
             Ok("line\none".into())
         );
         assert_eq!(
-            ask(&mut c, t, true, "get", "https://b.test", ""),
+            ask(&mut c, t, "get", "https://b.test", ""),
             Ok(String::new())
         );
         // Another origin's copy is its own: it doesn't replace this one.
-        ask(&mut c, t, true, "set", "https://b.test", "b's").unwrap();
+        ask(&mut c, t, "set", "https://b.test", "b's").unwrap();
         assert_eq!(
-            ask(&mut c, t, true, "get", "https://a.test", ""),
+            ask(&mut c, t, "get", "https://a.test", ""),
             Ok("line\none".into())
         );
         // The main frame going to b: a's copy is gone for good.
         c.only("https://b.test");
         assert_eq!(
-            ask(&mut c, t, true, "get", "https://a.test", ""),
+            ask(&mut c, t, "get", "https://a.test", ""),
             Ok(String::new())
         );
         assert_eq!(
-            ask(&mut c, t, true, "get", "https://b.test", ""),
+            ask(&mut c, t, "get", "https://b.test", ""),
             Ok("b's".into())
         );
         // Origins that are opaque share the name "null": none keeps a copy.
-        assert_eq!(ask(&mut c, t, true, "set", "null", "x"), Err("gv:origin"));
+        assert_eq!(ask(&mut c, t, "set", "null", "x"), Err("gv:origin"));
     }
 
     #[test]
     fn only_the_tabs_key_is_answered_and_a_copy_over_the_cap_is_refused_not_dropped() {
         let (mut c, t) = (Clipboard::default(), Instant::now());
-        assert_eq!(c.answer(t, "k", true, "guess\nguard\no\n"), Err("gv:key"));
-        assert_eq!(c.answer(t, "k", true, "not a message"), Err("gv:form"));
+        assert_eq!(c.answer(t, "k", "guess\nget\no\n"), Err("gv:key"));
+        assert_eq!(c.answer(t, "k", "not a message"), Err("gv:form"));
         assert_eq!(
-            ask(&mut c, t, true, "set", "o", &"x".repeat(STORE_MAX + 1)),
+            ask(&mut c, t, "set", "o", &"x".repeat(STORE_MAX + 1)),
             Err("gv:size")
         );
         assert_eq!(
-            ask(&mut c, t, true, "set", "o", &"x".repeat(STORE_MAX)),
+            ask(&mut c, t, "set", "o", &"x".repeat(STORE_MAX)),
             Ok(String::new())
         );
-        assert_eq!(ask(&mut c, t, true, "bogus", "o", ""), Err("gv:op"));
+        assert_eq!(ask(&mut c, t, "bogus", "o", ""), Err("gv:op"));
+        // The old guard question is gone: nothing a page asks lets the guard down.
+        assert_eq!(ask(&mut c, t, "guard", "o", ""), Err("gv:op"));
         // More origins than it keeps: the others' copies go, the new one stays.
         for i in 0..=ORIGINS_MAX {
-            ask(&mut c, t, true, "set", &format!("https://{i}.test"), "t").unwrap();
+            ask(&mut c, t, "set", &format!("https://{i}.test"), "t").unwrap();
         }
         assert!(c.copies.len() <= ORIGINS_MAX);
         let last = format!("https://{ORIGINS_MAX}.test");
-        assert_eq!(ask(&mut c, t, true, "get", &last, ""), Ok("t".into()));
+        assert_eq!(ask(&mut c, t, "get", &last, ""), Ok("t".into()));
     }
 
     #[test]
-    fn a_page_that_floods_it_gets_busy_and_the_guard_stays_on() {
+    fn a_frames_hello_says_its_token_and_a_long_or_empty_one_is_refused() {
         let (mut c, t) = (Clipboard::default(), Instant::now());
-        for _ in 0..ASKS_PER_SECOND {
-            assert!(ask(&mut c, t, false, "guard", "o", "") == Ok("0".into()));
+        assert_eq!(
+            ask(&mut c, t, "hello", "o", "abc123"),
+            Ok("hello abc123".into())
+        );
+        assert_eq!(ask(&mut c, t, "hello", "o", ""), Err("gv:op"));
+        assert_eq!(
+            ask(&mut c, t, "hello", "o", &"t".repeat(TOKEN_MAX + 1)),
+            Err("gv:op")
+        );
+    }
+
+    #[test]
+    fn a_page_without_the_key_cannot_use_up_the_count_and_one_with_it_is_held_to_it() {
+        let (mut c, t) = (Clipboard::default(), Instant::now());
+        for _ in 0..10 * ASKS_PER_SECOND {
+            assert_eq!(c.answer(t, "k", "wrong\nget\no\n"), Err("gv:key"));
         }
-        // Past the second's share: no copy is read, and the guard is not let down on its word.
-        assert_eq!(ask(&mut c, t, false, "get", "o", ""), Err("gv:busy"));
-        assert_eq!(ask(&mut c, t, false, "guard", "o", ""), Ok("1".into()));
-        // The next second starts afresh.
+        assert_eq!(ask(&mut c, t, "get", "o", ""), Ok(String::new()));
+        // With the key, past the second's share, it is busy; the next second starts afresh.
+        for _ in 1..ASKS_PER_SECOND {
+            assert!(ask(&mut c, t, "get", "o", "").is_ok());
+        }
+        assert_eq!(ask(&mut c, t, "get", "o", ""), Err("gv:busy"));
         let later = t + Duration::from_millis(1100);
-        assert_eq!(ask(&mut c, later, false, "guard", "o", ""), Ok("0".into()));
+        assert!(ask(&mut c, later, "get", "o", "").is_ok());
     }
 
     #[test]
     fn the_clipboard_script_sends_what_the_tab_reads() {
-        for op in ["set", "get", "guard"] {
+        for op in ["set", "get", "hello"] {
             assert!(CLIPBOARD.contains(&format!("ask(\"{op}\"")), "{op}");
         }
         assert!(CLIPBOARD.contains("gvClipboard"));
-        // No global the page can replace carries the key: the message is a template string.
+        // No global the page can replace carries the key: the message is a template string. And
+        // nothing the guard is decided by comes from a reply or a property of the page's.
         assert!(!CLIPBOARD.contains("JSON."));
+        assert!(!CLIPBOARD.contains("\"guard\""));
+        assert!(!CLIPBOARD.contains("window.length") && !CLIPBOARD.contains("window[i]"));
+        assert_eq!(
+            CLIPBOARD.matches(" on = ").count(),
+            2,
+            "on is set at its start and by a push"
+        );
+        assert!(CLIPBOARD.contains("if (asked !== token) return null;"));
     }
 
     /// The tab's key goes in once, as a JSON string, and nothing else answers for it.

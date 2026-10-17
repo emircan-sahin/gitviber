@@ -209,6 +209,7 @@ class H(BaseHTTPRequestHandler):
         elif path == "/clipframes":
             other = parse_qs(self.path.partition("?")[2]).get("other", ["0"])[0]
             body = ('<input id="box"><button id="copy" onclick="navigator.clipboard.writeText(\'main-\' + location.port)">Copy in page</button>'
+                    '<button id="pop" onclick="window.pop = window.open(\'about:blank\')">Pop</button>'
                     '<iframe id="same" src="/clipcopy?n=same"></iframe>'
                     f'<iframe id="cross" src="http://127.0.0.1:{int(other)}/clipcopy?n=cross"></iframe>')
             self.send(200, page("clipframes", body), "text/html")

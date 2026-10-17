@@ -2,38 +2,47 @@
 // navigator.clipboard) keep to the tab's store, kept by GitViber (page_tools.rs), instead of
 // reaching the user's clipboard. A native click gives the page user activation that outlasts the
 // command, and what a page wrote there would be the user's next paste into a terminal. So the
-// guard is on from the page's start until the user acts in the tab (a press or a key of their
-// own) or it becomes theirs, and on again with an agent's next command. Runs in the page's world
-// at document start, in every frame, before the page's scripts can swap anything it uses.
+// guard is on from the page's start, in every frame, and stays on until GitViber says otherwise:
+// it pushes the guard from outside, by evaluating in each frame that said hello, when the user
+// acts in the tab or it becomes theirs, and again with an agent's next command. Nothing the
+// page can reach decides it: no reply to a promise, no method of a prototype, no property of
+// window is read for it, so a page that replaces them all, in this frame or another, only
+// changes what it sees itself. Runs in the page's world at document start, in every frame,
+// before the page's scripts can swap anything it uses.
 //
-// The key only GitViber and this closure know authenticates every call, and travels only in a
-// string made here and handed to a function taken here: no global the page can replace (JSON,
-// Reflect, bind) touches it, and no function is ever called with it but the closure's own. A
-// frame is never given it: GitViber switches the main frame, which tells its frames to ask.
+// Two secrets, neither readable by the page. The tab's key, which only ever leaves in a string
+// made here for a function taken here (no global the page can replace carries it), authenticates
+// the frame to GitViber. The frame's own token, said in the hello, is what GitViber's pushes
+// answer to: a frame that is gone and replaced by a page of the page's making holds a token that
+// has no use.
 (() => {
   const key = __GV_KEY__;
   const origin = window.origin;
   const Wrap = Promise;
+  const chain = Promise.prototype.then;
   const Text = String;
   const channel = window.webkit?.messageHandlers?.gvClipboard;
   const post = channel && channel.postMessage.bind(channel);
   const wait = setTimeout.bind(window);
   const unwait = clearTimeout.bind(window);
-  // Without GitViber to ask there is no agent here: a tab it let go of (its pane closed) is the
-  // user's, and their page's clipboard is theirs. A page's calls never get this far on their own.
+  const token = Array.from(crypto.getRandomValues(new Uint32Array(4)), (n) => n.toString(16)).join("");
+  // The most a copy can be, in characters: GitViber's cap is in bytes and refuses what is over
+  // it, but a longer string is not worth the trip to it.
+  const MAX = 4 << 20;
+  // Without GitViber to talk to there is no agent here: the user's. Otherwise on, until pushed.
   let on = Boolean(post);
   const exec = Document.prototype.execCommand;
   const denied = (why = "The clipboard isn't allowed here.") => new DOMException(why, "NotAllowedError");
 
-  // The store's calls, each answered by GitViber or refused with "gv:" and why. A tab it no
-  // longer answers for says so by throwing or by an error of WebKit's own; one that is only slow
-  // says "slow".
+  // The store's calls, each answered by GitViber or refused with "gv:" and why. What an answer is
+  // is only ever text for the page: nothing here lets one decide the guard.
   const ask = (op, text = "") =>
     new Wrap((resolve, reject) => {
       if (!post) return reject(new Error("gone"));
       const timer = wait(() => reject(new Error("slow")), 2000);
       try {
-        post(`${key}\n${op}\n${origin}\n${text}`).then(
+        chain.call(
+          post(`${key}\n${op}\n${origin}\n${text}`),
           (reply) => (unwait(timer), resolve(reply)),
           (error) => (unwait(timer), reject(error)),
         );
@@ -43,25 +52,24 @@
       }
     });
   const why = (error) => {
-    const message = Text(error?.message);
-    if (message === "gv:size") return new DOMException("The tab's clipboard holds 4 MiB at most.", "QuotaExceededError");
+    if (Text(error?.message) === "gv:size") return new DOMException("The tab's clipboard holds 4 MiB at most.", "QuotaExceededError");
     return denied();
   };
-  const keep = (text) =>
-    ask("set", text).then(
-      () => undefined,
-      (error) => {
-        const problem = why(error);
-        // The agent reads the page's console: the page may swallow the rejection.
-        console.error(`GitViber: nothing was copied: ${problem.message}`);
-        throw problem;
-      },
-    );
-  const kept = () => ask("get").then((text) => text ?? "", () => { throw denied(); });
-
-  // A frame's first press or key whose answer isn't in yet: a copy waits for it where it can.
-  let settling = null;
-  const settled = (run) => (settling ? settling.then(run) : run());
+  // The agent reads the page's console: the page may swallow the rejection.
+  const refuse = (problem) => {
+    console.error(`GitViber: nothing was copied: ${problem.message}`);
+    return problem;
+  };
+  const keep = (text) => {
+    if (text.length > MAX) return Wrap.reject(refuse(why(new Error("gv:size"))));
+    return chain.call(ask("set", text), () => undefined, (error) => {
+      throw refuse(why(error));
+    });
+  };
+  const kept = () =>
+    chain.call(ask("get"), (text) => text ?? "", () => {
+      throw denied();
+    });
 
   // WebKit's async API is off in an agent's tab (page_tools.rs), so a page finds none: it gets
   // writeText and readText of the store while an agent drives, and a real copy once the tab is
@@ -103,16 +111,12 @@
   const api = {
     writeText(text) {
       const given = Text(text);
-      return settled(() => {
-        if (on) return keep(given);
-        return own.writeText ? own.writeText.call(this, given) : realWrite(given);
-      });
+      if (on) return keep(given);
+      return own.writeText ? own.writeText.call(this, given) : realWrite(given);
     },
     readText() {
-      return settled(() => {
-        if (on) return kept();
-        return own.readText ? own.readText.call(this) : Wrap.reject(denied());
-      });
+      if (on) return kept();
+      return own.readText ? own.readText.call(this) : Wrap.reject(denied());
     },
   };
   if (proto) {
@@ -185,72 +189,24 @@
     const name = Text(command).toLowerCase();
     if (!on || (name !== "copy" && name !== "cut" && name !== "paste")) return exec.call(this, command, ...rest);
     if (name === "paste") return false;
-    copy(this, this.activeElement, name).catch(() => {});
+    chain.call(copy(this, this.activeElement, name), undefined, () => {});
     return true;
   };
 
-  // Whether GitViber still keeps the guard on, asked of it: the answer is the only thing that
-  // lets it down, and the latest answer is the only one that counts, or an agent's click right
-  // after a user's would be let through. Until the answer is in, the guard is on: a user's Enter
-  // on a Copy button right then lands in the store, not their clipboard. That costs them a copy
-  // and no one anything else; the other way round, an agent's click could reach the clipboard.
-  let latest = 0;
-  const sync = () => {
-    const mine = ++latest;
-    on = true;
-    const answered = ask("guard").then(
-      (guarded) => {
-        if (mine === latest) on = guarded !== "0";
-      },
-      (error) => {
-        // Gone: the tab is the user's. Slow: unchanged, and asked again at the next press.
-        if (mine === latest && error?.message !== "slow") on = false;
-      },
-    );
-    settling = answered;
-    answered.then(() => {
-      if (settling === answered) settling = null;
-    });
-    return answered;
-  };
-  if (window !== window.top) {
-    const probe = (e) => {
-      if (e.isTrusted) sync();
-    };
-    addEventListener("pointerdown", probe, true);
-    addEventListener("keydown", probe, true);
-  }
-  // Frames are told to ask, never given the key: a frame of the page's own making may have a
-  // function of its own by this name.
-  const nudge = () => {
-    for (let i = 0; i < window.length; i++) {
-      try {
-        window[i].__gvClipboard?.(null, "ask");
-      } catch {}
-    }
-  };
-  // Neither writable nor configurable: the page can't take the key from a stand-in.
+  // GitViber's calls, by this frame's token alone. Neither writable nor configurable: the page
+  // can't put a stand-in of its own in its place. Anyone else's call changes nothing.
   Object.defineProperty(window, "__gvClipboard", {
     value: (asked, what) => {
-      if (asked !== key) {
-        // Anyone may make it ask GitViber, which answers by what is true.
-        if (what === "ask" && window !== window.top) {
-          sync();
-          nudge();
-        }
-        return null;
-      }
-      if (what === "copy" || what === "cut") {
+      if (asked !== token) return null;
+      if (what === "on" || what === "off") on = what === "on";
+      else if (what === "copy" || what === "cut") {
         const at = focused();
-        return at ? copy(at.doc, at.el, what).then(() => null, () => null) : null;
-      }
-      if (what === "paste") return paste();
-      if (what === "on" || what === "off") {
-        on = what === "on";
-        latest++;
-        nudge();
-      }
+        return at ? chain.call(copy(at.doc, at.el, what), () => null, () => null) : null;
+      } else if (what === "paste") return paste();
       return null;
     },
   });
+  // Hello, so that GitViber can push the guard to this frame: nothing it says comes back through
+  // here.
+  if (post) chain.call(ask("hello", token), undefined, () => {});
 })();

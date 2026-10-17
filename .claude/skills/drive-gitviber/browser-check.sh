@@ -729,6 +729,22 @@ check_clipboard_tab() {
   gbx --tab ct press Meta+a; gbx --tab ct press Meta+x
   got=$(value ct $read)
   pass_if "Meta+x keeps the field's text in it" '[[ $got == "cut and kept" ]]' "readText: $got"
+  # The guard is in every kind of frame a page can make, and in a popup: WebKit puts it into each
+  # document at its start (a frame without it would copy to the user's clipboard unguarded).
+  local made="(async () => {
+    const wait = (i) => new Promise((ok) => { i.onload = () => ok(i) });
+    const kind = (i) => typeof i.contentWindow.__gvClipboard;
+    const blank = document.body.appendChild(document.createElement('iframe'));
+    const doc = document.body.appendChild(document.createElement('iframe')); doc.srcdoc = '<p>x</p>'; await wait(doc);
+    const blob = document.body.appendChild(document.createElement('iframe')); blob.src = URL.createObjectURL(new Blob(['<p>y</p>'], { type: 'text/html' })); await wait(blob);
+    return [kind(blank), kind(doc), kind(blob)].join(',') })()"
+  got=$(value ct $made)
+  pass_if "tab clipboard: guarded in about:blank, srcdoc and blob: frames" '[[ $got == function,function,function ]]' "$got"
+  gbx --tab ct click '#pop'
+  local popup=$(py popup-name <<<$OUT)
+  got=$(value ct "typeof window.pop?.__gvClipboard")
+  pass_if "tab clipboard: guarded in a window.open popup" '[[ $got == function ]]' "$got"
+  close $popup
   record "tab clipboard: the user's own Copy button" SKIP "manual: click in the tab, then its page's Copy button"
   close ct
 }

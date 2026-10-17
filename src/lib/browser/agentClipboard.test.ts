@@ -9,6 +9,7 @@ const KEY = "KEY-5f3a9c-do-not-leak";
 const ORIGIN = "https://a.test";
 const script = readFileSync(new URL("scripts/clipboard.js", browser), "utf8").replace("__GV_KEY__", JSON.stringify(KEY));
 const names = ["window", "document", "Document", "navigator", "Navigator", "addEventListener", "removeEventListener", "DataTransfer", "ClipboardEvent", "ClipboardItem", "Blob", "setTimeout", "console"];
+const WORDS = ["on", "off"];
 
 type Listener = (e: FakeEvent) => void;
 
@@ -45,6 +46,8 @@ interface Host {
   /** The copy of ORIGIN, and of each origin. */
   copied: string;
   copies: Record<string, string>;
+  /** The frames that said hello, as GitViber keeps them: where it pushes the guard. */
+  frames: { win: Win; token: string }[];
   /** What the store refuses a copy with ("gv:size"), and a handler that's gone or never answers. */
   refuse?: string;
   gone?: boolean;
@@ -143,6 +146,7 @@ interface Tab {
   win: Win;
   doc: Doc;
   host: Host;
+  token: string;
   ask: (what: string) => unknown;
   press: (type: string, trusted?: boolean) => void;
   run: () => void;
@@ -171,15 +175,18 @@ function page(host: Host, options: { top?: Win; native?: boolean; origin?: strin
             host.asked.push(op);
             if (host.gone) throw new TypeError("Message handler gvClipboard was removed");
             if (host.silent) return new Promise(() => {});
-            // Answered as things stand now, delivered when `hold` lets it.
-            const guard = host.guarded ? "1" : "0";
+            if (op === "hello") {
+              // GitViber keeps the frame, and tells it at once if the tab is the user's.
+              host.frames.push({ win, token: text });
+              if (!host.guarded) queueMicrotask(() => (win.__gvClipboard as (t: string, w: string) => unknown)(text, "off"));
+            }
             return (async () => {
               await host.hold;
               if (op === "set") {
                 if (host.refuse) throw new Error(host.refuse);
                 host.copies[origin] = text;
               }
-              return op === "get" ? (host.copies[origin] ?? "") : op === "guard" ? guard : "";
+              return op === "get" ? (host.copies[origin] ?? "") : "";
             })();
           },
         },
@@ -208,10 +215,11 @@ function page(host: Host, options: { top?: Win; native?: boolean; origin?: strin
     win,
     doc: document,
     host,
+    token: host.frames.find((f) => f.win === win)?.token ?? "",
     ask: (what) => {
       current = document;
       Doc.real = host;
-      return (win.__gvClipboard as (k: string, w: string) => unknown)(KEY, what);
+      return (win.__gvClipboard as (k: string, w: string) => unknown)(tab.token, what);
     },
     press: (type, trusted = true) => {
       for (const fn of win.listeners[type] ?? []) fn(new FakeEvent(type, { isTrusted: trusted }));
@@ -225,12 +233,19 @@ function page(host: Host, options: { top?: Win; native?: boolean; origin?: strin
   return tab;
 }
 
+/** GitViber's push of the guard to every frame that said hello (guard_clipboard). */
+function push(host: Host, on: boolean) {
+  host.guarded = on;
+  for (const f of host.frames) (f.win.__gvClipboard as (t: string, w: string) => unknown)(f.token, on ? "on" : "off");
+}
+
 const fresh = (): Host => {
   const host: Host = {
     copies: {},
     guarded: true,
     user: "the user's own text",
     asked: [],
+    frames: [],
     get copied() {
       return this.copies[ORIGIN] ?? "";
     },
@@ -259,7 +274,7 @@ test("once the tab is the user's the page's writeText is a real copy, whatever i
   const t = page(host);
   let pageSaw = 0;
   t.doc.listeners.copy = [() => void pageSaw++];
-  t.ask("off");
+  push(host, false);
   const field = new Element("input");
   t.doc.activeElement = field;
   await clip(t).writeText("Copied!");
@@ -273,7 +288,7 @@ test("once the tab is the user's the page's writeText is a real copy, whatever i
 test("a real copy the engine refuses is a NotAllowedError, as the API's", async () => {
   const host = fresh();
   const t = page(host);
-  t.ask("off");
+  push(host, false);
   Doc.refuse = true;
   try {
     assert.equal(await failure(clip(t).writeText("x")), "NotAllowedError");
@@ -292,7 +307,7 @@ test("execCommand's copy and cut go to the store while guarded and to the user's
   assert.equal(t.doc.execCommand("cut"), true);
   assert.equal(t.doc.deleted, 1);
   assert.equal(host.user, "the user's own text");
-  t.ask("off");
+  push(host, false);
   Doc.real = host;
   t.doc.selected = "chosen";
   t.doc.execCommand("copy");
@@ -403,72 +418,56 @@ test("a copy the store refuses is an error the page and the agent see, not a suc
   assert.match(seen[0], /nothing was copied: The tab's clipboard holds 4 MiB at most/);
 });
 
-test("a frame's first press asks whether it is the user's, and only the latest answer counts", async () => {
+test("a frame is let go by GitViber's push, to every frame that said hello and to one that says it later", async () => {
   const host = fresh();
-  const top = page(host).win;
-  const frame = page(host, { top });
-  host.guarded = false;
-  frame.press("pointerdown");
-  await clip(frame).writeText("held until answered");
-  // The answer was "the user's", and the copy waited for it: a real one.
-  assert.equal(host.user, "held until answered");
+  const top = page(host);
+  const frame = page(host, { top: top.win, origin: "https://other.test" });
   frame.run();
-  frame.doc.selected = "frame copy";
+  frame.doc.selected = "guarded at first";
   frame.doc.execCommand("copy");
-  assert.equal(host.user, "frame copy", "the user's own press in it releases it");
+  assert.equal(host.user, "the user's own text", "it begins guarded");
+  push(host, false);
+  frame.run();
+  frame.doc.selected = "the user's press";
+  frame.doc.execCommand("copy");
+  assert.equal(host.user, "the user's press");
+  // A frame made after the tab became the user's is told when it says hello.
+  const later = page(host, { top: top.win, origin: "https://late.test" });
+  await tick();
+  later.run();
+  later.doc.selected = "late";
+  later.doc.execCommand("copy");
+  assert.equal(host.user, "late");
+  // And the agent's next command guards them all again.
+  push(host, true);
+  for (const f of [frame, later]) {
+    f.run();
+    f.doc.selected = "agent";
+    f.doc.execCommand("copy");
+  }
+  assert.equal(host.user, "late");
+});
 
-  // The agent clicks right after: its answer is the guarded one, and the user's late one is stale.
-  let release!: () => void;
-  host.hold = new Promise((r) => (release = r));
-  host.guarded = false;
-  frame.press("keydown");
-  host.guarded = true;
-  frame.press("pointerdown");
-  release();
-  host.hold = undefined;
+test("a frame's own press or key does nothing to the guard: only GitViber's push does", async () => {
+  const host = fresh();
+  const top = page(host);
+  const frame = page(host, { top: top.win });
+  for (const type of ["pointerdown", "keydown", "mousedown", "click"]) frame.press(type);
   await tick();
   frame.run();
-  frame.doc.selected = "agent copy";
+  frame.doc.selected = "agent's click";
   frame.doc.execCommand("copy");
-  assert.notEqual(host.user, "agent copy");
-  frame.press("keydown", false);
-  assert.equal(host.asked.filter((a) => a === "guard").length, 3, "an untrusted event asks nothing");
+  assert.equal(host.user, "the user's own text");
+  assert.deepEqual(host.asked.filter((a) => a !== "hello" && a !== "set"), [], "it asks nothing of GitViber");
 });
 
-test("until the answer is in a frame's guard is on: the user's Enter lands in the store, never an agent's click in the clipboard", async () => {
-  const host = fresh();
-  const top = page(host).win;
-  const frame = page(host, { top });
-  host.hold = new Promise(() => {});
-  frame.press("keydown");
-  frame.run();
-  frame.doc.selected = "pressed";
-  frame.doc.execCommand("copy");
-  assert.equal(host.user, "the user's own text", "a copy that can't wait is kept, not made");
-  assert.equal(host.copies[ORIGIN], undefined, "(the store is asked to hold it)");
-});
-
-test("a tab GitViber no longer answers for is the user's, and one that is only slow is asked again", async () => {
+test("a tab GitViber no longer answers for keeps the guard it was pushed, and no handler at all is the user's", async () => {
   const host = fresh();
   const top = page(host).win;
   const frame = page(host, { top });
   host.gone = true;
-  frame.press("pointerdown");
-  await tick();
-  frame.run();
-  frame.doc.selected = "after the pane closed";
-  frame.doc.execCommand("copy");
-  assert.equal(host.user, "after the pane closed", "its page's Copy is theirs");
-
-  const slow = fresh();
-  slow.silent = true;
-  const waiting = page(slow, { top: page(slow).win });
-  waiting.press("pointerdown");
-  await new Promise((r) => setTimeout(r, 60));
-  waiting.run();
-  waiting.doc.selected = "slow";
-  waiting.doc.execCommand("copy");
-  assert.equal(slow.user, "the user's own text", "slow isn't gone: still guarded");
+  assert.equal(await failure(clip(frame).writeText("x")), "NotAllowedError", "its calls fail, they don't reach the clipboard");
+  assert.equal(host.user, "the user's own text");
 
   // No handler at all: no agent to keep the guard for.
   const bare = fresh();
@@ -478,41 +477,149 @@ test("a tab GitViber no longer answers for is the user's, and one that is only s
   assert.equal(bare.user, "free");
 });
 
-test("the main frame's switch makes its frames ask, and gives them no key", async () => {
+test("only a frame's own token moves its guard, and a frame born of the page's making is never given one", async () => {
   const host = fresh();
   const main = page(host);
   const child = page(host, { top: main.win });
-  // A frame the page made itself, with a function of the same name to catch what it is called with.
   const caught: unknown[][] = [];
   const decoy = { __gvClipboard: (...args: unknown[]) => void caught.push(args) };
-  main.win.length = 2;
-  Object.assign(main.win, { 0: { __gvClipboard: child.win.__gvClipboard }, 1: decoy });
-  host.guarded = false;
-  main.ask("off");
-  await tick();
+  Object.assign(main.win, { length: 2, 0: child.win, 1: decoy });
+  const call = (w: Win, token: unknown, what: string) => (w.__gvClipboard as (t: unknown, w: string) => unknown)(token, what);
+  for (const guess of [undefined, null, "", KEY, "off", main.token, 0]) for (const what of ["off", "on", "copy", "paste", "ask"]) call(child.win, guess, what);
   child.run();
-  child.doc.selected = "child";
+  child.doc.selected = "forged";
   child.doc.execCommand("copy");
-  assert.equal(host.user, "child");
-  host.guarded = true;
-  main.ask("on");
-  await tick();
+  assert.equal(host.user, "the user's own text");
+  push(host, false);
   child.run();
-  child.doc.selected = "guarded again";
+  child.doc.selected = "pushed";
   child.doc.execCommand("copy");
-  assert.equal(host.user, "child");
-  assert.ok(caught.length >= 2);
-  assert.ok(!JSON.stringify(caught).includes(KEY), "the decoy never saw the key");
+  assert.equal(host.user, "pushed");
+  assert.deepEqual(caught, [], "nothing is ever called with a token or the key but by GitViber");
 });
 
-test("a page that hooks everything the script could use gets neither the key nor the guard", async () => {
+/** Replaces what a hostile page can, running `body`; puts everything back. */
+async function hostile(body: (forged: string[]) => Promise<void>) {
+  const forged: string[] = [];
+  const saved = {
+    then: Promise.prototype.then,
+    stringify: JSON.stringify,
+    parse: JSON.parse,
+    call: Function.prototype.call,
+    apply: Function.prototype.apply,
+    bind: Function.prototype.bind,
+    reflect: Reflect.apply,
+    from: Array.from,
+    map: Array.prototype.map,
+    some: Array.prototype.some,
+    includes: Array.prototype.includes,
+    join: Array.prototype.join,
+    push: Array.prototype.push,
+    define: Object.defineProperty,
+  };
+  // Every reply it can forge: the callbacks it is handed are called with a "0", a "1", the key, an
+  // empty text, and an error, in turn.
+  Promise.prototype.then = function (this: Promise<unknown>, a?: unknown, b?: unknown) {
+    if (typeof a === "function") {
+      const first = a as (v: unknown) => unknown;
+      return saved.then.call(this, (v: unknown) => {
+        for (const lie of ["0", "off", false, null, "", KEY]) {
+          try {
+            forged.push(String(lie));
+            first(lie);
+          } catch {}
+        }
+        return first(v);
+      }, b as never);
+    }
+    return saved.then.call(this, a as never, b as never);
+  } as typeof Promise.prototype.then;
+  JSON.stringify = (() => "0") as typeof JSON.stringify;
+  JSON.parse = (() => ({ guarded: false })) as typeof JSON.parse;
+  Array.from = (() => []) as unknown as typeof Array.from;
+  Array.prototype.map = function () { return []; } as typeof Array.prototype.map;
+  Array.prototype.some = function () { return true; } as typeof Array.prototype.some;
+  Array.prototype.includes = function () { return true; } as typeof Array.prototype.includes;
+  Array.prototype.join = function () { return "0"; } as typeof Array.prototype.join;
+  try {
+    await body(forged);
+  } finally {
+    Promise.prototype.then = saved.then;
+    JSON.stringify = saved.stringify;
+    JSON.parse = saved.parse;
+    Function.prototype.call = saved.call;
+    Function.prototype.apply = saved.apply;
+    Function.prototype.bind = saved.bind;
+    Reflect.apply = saved.reflect;
+    Array.from = saved.from;
+    Array.prototype.map = saved.map;
+    Array.prototype.some = saved.some;
+    Array.prototype.includes = saved.includes;
+    Array.prototype.join = saved.join;
+    Array.prototype.push = saved.push;
+    Object.defineProperty = saved.define;
+  }
+}
+
+test("a hostile frame that replaces then, Array's methods, JSON and window.length, forging every reply, never turns its guard off", async () => {
+  const host = fresh();
+  const top = page(host);
+  let frame!: Tab;
+  await hostile(async (forged) => {
+    // After the shim ran, and the page's first script before it, as another frame's would.
+    frame = page(host, { top: top.win });
+    Object.defineProperty(frame.win, "length", { get: () => 999 });
+    for (const type of ["pointerdown", "keydown"]) frame.press(type);
+    await clip(frame).writeText("a hostile frame's text").catch(() => {});
+    await clip(frame).readText().catch(() => {});
+    frame.run();
+    frame.doc.selected = "PAGE-WROTE-THIS";
+    frame.doc.execCommand("copy");
+    await tick();
+    assert.ok(forged.length > 0, "its hooks ran");
+  });
+  assert.equal(host.user, "the user's own text", "nothing reached the user's clipboard");
+  // And the frame is still guarded, now the hooks are gone: it takes GitViber to let it go.
+  frame.run();
+  frame.doc.selected = "after";
+  frame.doc.execCommand("copy");
+  assert.equal(host.user, "the user's own text");
+  push(host, false);
+  frame.run();
+  frame.doc.execCommand("copy");
+  assert.equal(host.user, "after");
+});
+
+test("a frame whose page replaced then before the shim ran is still guarded", async () => {
+  const host = fresh();
+  const top = page(host);
+  const real = Promise.prototype.then;
+  // The reply a poc forged: any callback registered is called with a "0".
+  Promise.prototype.then = function (this: Promise<unknown>, a?: unknown, b?: unknown) {
+    if (typeof a === "function") return real.call(this, () => (a as (v: string) => unknown)("0"), b as never);
+    return real.call(this, a as never, b as never);
+  } as typeof Promise.prototype.then;
+  let frame!: Tab;
+  try {
+    frame = page(host, { top: top.win });
+    frame.win.__gvClipboard && (frame.win.__gvClipboard as (t: unknown, w: string) => unknown)(null, "ask");
+    await new Promise((r) => setTimeout(r, 20));
+  } finally {
+    Promise.prototype.then = real;
+  }
+  frame.run();
+  frame.doc.selected = "PAGE-WROTE-THIS";
+  frame.doc.execCommand("copy");
+  assert.equal(host.user, "the user's own text");
+});
+
+test("a page that hooks everything the script could use sees neither the key nor a token", async () => {
   const host = fresh();
   const seen: string[] = [];
   const spy = (v: unknown) => void seen.push(typeof v === "string" ? v : String(Object.prototype.toString.call(v)));
   const t = page(host);
   const frame = page(host, { top: t.win });
-  // What a page does as its first script: swap what a script might call with a key.
-  const real = { stringify: JSON.stringify, define: Object.defineProperty, bind: Function.prototype.bind, call: Function.prototype.call, apply: Function.prototype.apply, then: Promise.prototype.then, reflect: Reflect.apply };
+  const real = { stringify: JSON.stringify, define: Object.defineProperty, bind: Function.prototype.bind, then: Promise.prototype.then, reflect: Reflect.apply };
   const handler = (t.win.webkit as { messageHandlers: { gvClipboard: { postMessage: unknown } } }).messageHandlers.gvClipboard;
   const post = handler.postMessage;
   JSON.stringify = ((v: unknown, ...r: unknown[]) => (spy(v), real.stringify(v, ...(r as [])))) as typeof JSON.stringify;
@@ -528,10 +635,8 @@ test("a page that hooks everything the script could use gets neither the key nor
     return real.then.call(this, a as never, b as never);
   } as typeof Promise.prototype.then;
   try {
-    // Guessing: every call a page can make, with the wrong key.
+    JSON.stringify("the hook is in");
     for (const what of ["off", "on", "copy", "paste", "ask", "guard"]) (t.win.__gvClipboard as (k: unknown, w: string) => unknown)("guess", what);
-    for (const what of ["off", "ask"]) (frame.win.__gvClipboard as (k: unknown, w: string) => unknown)(undefined, what);
-    // What the script does on its own meanwhile.
     await clip(t).writeText("kept from a hostile page");
     await clip(t).readText();
     t.doc.selected = "x";
@@ -547,10 +652,19 @@ test("a page that hooks everything the script could use gets neither the key nor
     Reflect.apply = real.reflect;
     Promise.prototype.then = real.then;
   }
-  assert.ok(seen.length > 0, "the hooks ran");
-  assert.ok(!seen.some((s) => s.includes(KEY)), "no hook saw the key");
-  assert.ok(!String(t.win.__gvClipboard).includes(KEY) && !String(Function.prototype.toString.call(t.win.__gvClipboard)).includes(KEY));
-  assert.ok(!JSON.stringify(Object.getOwnPropertyNames(t.win).map((k) => String(t.win[k]))).includes(KEY));
+  assert.ok(seen.includes("the hook is in"), "the hooks ran");
+  const secrets = [KEY, t.token, frame.token];
+  assert.ok(secrets.every((x) => x.length > 8));
+  assert.ok(!seen.some((x) => secrets.some((secret) => x.includes(secret))), "no hook saw the key or a token");
+  assert.ok(!String(t.win.__gvClipboard).includes(KEY) && !String(t.win.__gvClipboard).includes(t.token));
+});
+
+test("a copy longer than the cap is refused before it is sent", async () => {
+  const host = fresh();
+  const t = page(host);
+  const sent = host.asked.length;
+  assert.equal(await failure(clip(t).writeText("x".repeat((4 << 20) + 1))), "QuotaExceededError");
+  assert.equal(host.asked.length, sent, "nothing went to GitViber");
 });
 
 test("where WebKit has the async API, its calls are the store's while guarded and WebKit's after", async () => {
@@ -559,7 +673,7 @@ test("where WebKit has the async API, its calls are the store's while guarded an
   await clip(t).writeText("kept");
   assert.equal(host.copied, "kept");
   assert.equal(host.user, "the user's own text");
-  t.ask("off");
+  push(host, false);
   await clip(t).writeText("real");
   assert.equal(host.user, "real");
   assert.equal(await clip(t).readText(), "real");

@@ -442,6 +442,8 @@ struct WebIvars {
     guarded: Cell<bool>,
     /// What those calls copied, for each origin: the tab's clipboard, never the user's.
     copied: RefCell<page_tools::Clipboard>,
+    /// The frames its clipboard script said hello from, to push the guard to.
+    frames: RefCell<Vec<page_tools::Frame>>,
 }
 
 define_class!(
@@ -1272,6 +1274,7 @@ pub fn create(
         clipboard,
         guarded: Cell::new(agent),
         copied: RefCell::default(),
+        frames: RefCell::default(),
     });
     let web: Retained<WebView> =
         unsafe { msg_send![super(web), initWithFrame: NSRect::ZERO, configuration: &*config] };
