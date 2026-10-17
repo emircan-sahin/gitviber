@@ -1,8 +1,8 @@
 //! Downloads in an agent's tab, as WKDownloads: saved in the tab's own folder (downloads.rs),
-//! told to its agent, and gone with the tab. A user's tab still hands them to the system
-//! browser (mod.rs `download`).
+//! told to its agent, and gone with the tab. A user's tab saves them in Downloads instead
+//! (user_downloads.rs).
 
-use super::{agent, Delegate};
+use super::{agent, user_downloads, Delegate};
 use crate::browser::downloads::{self, Outcome};
 use block2::DynBlock;
 use objc2::rc::Retained;
@@ -12,8 +12,7 @@ use objc2_foundation::{
     ns_string, NSData, NSError, NSHTTPURLResponse, NSObjectProtocol, NSString, NSURLResponse, NSURL,
 };
 use objc2_web_kit::{
-    WKDownload, WKDownloadDelegate, WKNavigationActionPolicy, WKNavigationResponse,
-    WKNavigationResponsePolicy,
+    WKDownload, WKDownloadDelegate, WKNavigationResponse, WKNavigationResponsePolicy,
 };
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -25,22 +24,13 @@ thread_local! {
     static GOING: RefCell<Vec<(Retained<WKDownload>, Retained<Saver>)>> = RefCell::default();
 }
 
-/// A link with `download`: saved for an agent, else left to the system browser.
-pub(super) fn on_link(delegate: &Delegate, url: &str) -> WKNavigationActionPolicy {
-    if agent::routed(&delegate.ivars().id) {
-        return WKNavigationActionPolicy::Download;
-    }
-    delegate.download(url);
-    WKNavigationActionPolicy::Cancel
-}
-
-/// A page's file an agent's tab saves: one it can't show, or one sent as an attachment (a CSV
-/// export it would show as text). None for anything else, as for a user's tab.
+/// A page's file a tab saves: one it can't show, or one sent as an attachment (a CSV export it
+/// would show as text). None for anything else.
 pub(super) fn on_response(
     delegate: &Delegate,
     response: &WKNavigationResponse,
 ) -> Option<WKNavigationResponsePolicy> {
-    if !agent::routed(&delegate.ivars().id) || !unsafe { response.isForMainFrame() } {
+    if !unsafe { response.isForMainFrame() } {
         return None;
     }
     let sent = unsafe { response.response() };
@@ -60,9 +50,12 @@ pub(super) fn on_response(
     })
 }
 
-/// A navigation became `download`: saved by a Saver of the tab's.
+/// A navigation became `download`: saved by a Saver of the tab's, or by a user's own (user_downloads.rs).
 pub(super) fn began(delegate: &Delegate, download: &WKDownload) {
     let d = delegate.ivars();
+    if !agent::routed(&d.id) {
+        return user_downloads::began(delegate, download);
+    }
     // A download a page opened for the user starts by itself (a link's `download`): cancelled as
     // a response is.
     if agent::strict(&d.id) {
@@ -84,7 +77,7 @@ pub(super) fn began(delegate: &Delegate, download: &WKDownload) {
 }
 
 /// The download's file name until the server suggests one: its address's last part.
-fn file_of(download: &WKDownload) -> String {
+pub(super) fn file_of(download: &WKDownload) -> String {
     let url = unsafe { download.originalRequest() }.and_then(|r| r.URL());
     let last = url
         .and_then(|u| u.lastPathComponent())

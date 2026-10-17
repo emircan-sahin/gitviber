@@ -26,6 +26,7 @@ mod registry;
 pub mod server;
 mod sessions;
 pub mod skill;
+mod user_downloads;
 
 pub use keys::set_app_keys;
 #[cfg(target_os = "macos")]
@@ -35,8 +36,9 @@ pub use macos::{
     agent_js, agent_keys, agent_new_tab, agent_own_store, agent_page, agent_pane_closed,
     agent_picture, agent_playing, agent_pointer, agent_running, agent_set_cookies, agent_shown,
     agent_tab, agent_tabs, agent_text, agent_upload, agent_upload_done, agent_users, appearance,
-    clear_data, close, close_all, close_root, configure, console_clear, console_entries, create,
-    find, focus, go, hide, inspect, navigate, network_log, pick, place, set_agent, snapshot, zoom,
+    cancel_download, clear_data, close, close_all, close_root, configure, console_clear,
+    console_entries, create, find, focus, go, hide, inspect, navigate, network_log, pick, place,
+    set_agent, snapshot, zoom,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
@@ -45,8 +47,9 @@ pub use other::{
     agent_js, agent_keys, agent_new_tab, agent_own_store, agent_page, agent_pane_closed,
     agent_picture, agent_playing, agent_pointer, agent_running, agent_set_cookies, agent_shown,
     agent_tab, agent_tabs, agent_text, agent_upload, agent_upload_done, agent_users, appearance,
-    clear_data, close, close_all, close_root, configure, console_clear, console_entries, create,
-    find, focus, go, hide, inspect, navigate, network_log, pick, place, set_agent, snapshot, zoom,
+    cancel_download, clear_data, close, close_all, close_root, configure, console_clear,
+    console_entries, create, find, focus, go, hide, inspect, navigate, network_log, pick, place,
+    set_agent, snapshot, zoom,
 };
 pub use sessions::Shelf;
 
@@ -312,6 +315,9 @@ mod other {
     }
     pub fn agent_pane_closed(_: u32) {}
     pub fn agent_appearance(_: &AppHandle, _: &str, _: Option<bool>) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn cancel_download(_: u64) -> Res<()> {
         Err(UNSUPPORTED.into())
     }
     pub fn appearance(_: &str, _: Option<bool>) -> Res<()> {

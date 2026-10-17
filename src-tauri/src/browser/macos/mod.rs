@@ -13,6 +13,7 @@ mod page_tools;
 mod page_view;
 mod panel;
 mod popups;
+mod user_downloads;
 
 pub use agent::{
     agent_appearance, agent_close_tab, agent_device, agent_dialogs, agent_find_tab,
@@ -169,12 +170,6 @@ fn emit<T: Serialize + Clone>(app: &AppHandle, event: &str, payload: T) {
 #[derive(Serialize, Clone)]
 struct Id<'a> {
     id: &'a str,
-}
-
-#[derive(Serialize, Clone)]
-struct Download<'a> {
-    id: &'a str,
-    url: &'a str,
 }
 
 /// SecTrustRef, which only the Security framework's crate types; passed through as is.
@@ -749,9 +744,9 @@ define_class!(
             let main = unsafe { action.targetFrame() }.is_none_or(|f| unsafe { f.isMainFrame() });
             let clicked = unsafe { action.navigationType() } == WKNavigationType::LinkActivated;
             let decision = match policy(&url, main, clicked) {
-                // A link with `download`: only an agent's tab saves files (downloads.rs).
+                // A link with `download` is saved (downloads.rs, user_downloads.rs).
                 Policy::Allow if unsafe { action.shouldPerformDownload() } => {
-                    downloads::on_link(self, &url)
+                    WKNavigationActionPolicy::Download
                 }
                 Policy::Allow => {
                     if clicked && main {
@@ -768,7 +763,7 @@ define_class!(
             decide.call((decision,));
         }
 
-        /// A file the page can't show (a zip, a dmg) would download: left to the system browser.
+        /// A file the page can't show (a zip, a dmg) downloads (downloads.rs).
         #[unsafe(method(webView:decidePolicyForNavigationResponse:decisionHandler:))]
         fn decide_response(
             &self,
@@ -779,13 +774,12 @@ define_class!(
             if let Some(policy) = downloads::on_response(self, response) {
                 return decide.call((policy,));
             }
-            if unsafe { response.canShowMIMEType() } {
-                return decide.call((WKNavigationResponsePolicy::Allow,));
-            }
-            if unsafe { response.isForMainFrame() } {
-                self.download(&url_text(unsafe { response.response().URL() }));
-            }
-            decide.call((WKNavigationResponsePolicy::Cancel,));
+            let policy = if unsafe { response.canShowMIMEType() } {
+                WKNavigationResponsePolicy::Allow
+            } else {
+                WKNavigationResponsePolicy::Cancel
+            };
+            decide.call((policy,));
         }
 
         #[unsafe(method(webView:navigationAction:didBecomeDownload:))]
@@ -1079,17 +1073,6 @@ impl Delegate {
         self.ivars().trusted.borrow_mut().insert(host_key(&host));
         self.changed();
         Some(unsafe { msg_send![NSURLCredential::class(), credentialForTrust: trust] })
-    }
-
-    fn download(&self, url: &str) {
-        emit(
-            &self.ivars().app,
-            "browser-download",
-            Download {
-                id: &self.ivars().id,
-                url,
-            },
-        );
     }
 
     fn state(&self, web: &WKWebView) -> PageState {
@@ -1567,6 +1550,13 @@ fn begin_park(id: &str, since: u64) {
         destroy(v);
         emit(&app, "browser-parked", Id { id });
     }
+}
+
+/// Download `key` of a user's tab stops (user_downloads.rs).
+pub fn cancel_download(key: u64) -> Res<()> {
+    main_thread()?;
+    user_downloads::cancel(key);
+    Ok(())
 }
 
 pub fn close(id: &str) {

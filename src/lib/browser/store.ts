@@ -1,9 +1,9 @@
-import { browserApi, type BrowserKey, type BrowserPick, type BrowserState, github } from "../api";
+import { browserApi, type BrowserKey, type BrowserPick, type BrowserState } from "../api";
 import { listenHere } from "../app/settingsWindow";
-import { failed, toast } from "../app/toast";
 import { bindingsFor, COMMANDS } from "../commands/commands";
 import { getSettings, subscribeSettings } from "../settings";
 import { createStore } from "../store";
+import { type BrowserDownload, reported } from "./downloads";
 import { skillWanted } from "./skill";
 import { onAgentFinished } from "../terminal/agents";
 
@@ -119,6 +119,7 @@ export function forgetBrowser(id: string) {
   drop(parks);
   drop(picked);
   drop(logged);
+  drop(downloads);
 }
 
 // Keys typed into a page that the app takes: its tab's own first, then the app's commands, as
@@ -147,7 +148,18 @@ listenHere<{ id: string }>("browser-focus", ({ payload: { id } }) => {
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 }).catch(() => {});
 
-// Files a page would download aren't saved here.
-listenHere<{ id: string; url: string }>("browser-download", ({ payload: { url } }) =>
-  toast("info", "Downloads open in your browser", url, { label: "Open in Browser", run: () => void github.openUrl(url).catch(failed("Could not open the link")) }),
-).catch(() => {});
+// What each tab's page downloads (browser/user_downloads.rs), shown under its address until dismissed.
+const downloads = createStore<ReadonlyMap<string, readonly BrowserDownload[]>>(new Map());
+listenHere<BrowserDownload>("browser-download", ({ payload }) => downloads.set(new Map(downloads.get()).set(payload.tab, reported(downloads.get().get(payload.tab) ?? [], payload)))).catch(() => {});
+
+const NONE: readonly BrowserDownload[] = [];
+export const useDownloads = (id: string) => downloads.use().get(id) ?? NONE;
+
+/** Download `key` of tab `id` taken off its list. */
+export function dismissDownload(id: string, key: number) {
+  const left = (downloads.get().get(id) ?? NONE).filter((d) => d.key !== key);
+  const next = new Map(downloads.get());
+  if (left.length) next.set(id, left);
+  else next.delete(id);
+  downloads.set(next);
+}
