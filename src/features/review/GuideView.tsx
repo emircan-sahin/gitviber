@@ -198,6 +198,9 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
     const f = path ? byPath.get(path) : undefined;
     if (!f) return;
     if (filtered) flushSync(() => setFilter(ALL));
+    showFile(f);
+  };
+  const showFile = (f: ListFile) => {
     const block = scroller.current?.querySelector(`[data-file="${CSS.escape(selectionKey(f))}"]`);
     if (block) block.scrollIntoView({ block: "start" });
     else onOpen(f, true);
@@ -218,7 +221,7 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
   const done = guide && saved ? guide.sections.filter((_, i) => saved.done.includes(i)).length : 0;
   const filesViewed = [...byPath.values()].filter(isViewed).length;
   const drawn = !!guide && (guide.models.length > 0 || guide.flows.length > 0 || !!guide.diagram);
-  const shown = (guide?.sections ?? []).flatMap((section, i) => (fits(section) ? [{ n: i + 1, section, done: !!saved?.done.includes(i) }] : []));
+  const shown = (guide?.sections ?? []).flatMap((section, i) => (fits(section) ? [{ n: i + 1, section, done: !!saved?.done.includes(i), files: placed?.shown[i] ?? [] }] : []));
   const nav = shown.length > 1;
 
   return (
@@ -348,7 +351,7 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
           </>
         ) : (
           <div className={cn(nav && "@6xl:grid @6xl:grid-cols-[220px_minmax(0,1fr)] @6xl:gap-6")}>
-            {nav && <GuideNav items={shown} onGo={goTo} />}
+            {nav && <GuideNav items={shown} onGo={goTo} onGoFile={(path) => showFile(byPath.get(path)!)} />}
             <div className="min-w-0">
               <div className={cn("mb-6 grid gap-5", nav && "mt-4 @6xl:mt-0", drawn && "@4xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]")}>
                 {guide.summary && (
