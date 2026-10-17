@@ -1639,6 +1639,15 @@ pub fn go(id: &str, to: Go) -> Res<()> {
     let v = view(id).ok_or(GONE)?;
     sent(&v);
     let web = &v.web;
+    // A page that never loaded has nothing for WebKit to reload: its address loads again, as
+    // Try Again does (a dev server that wasn't up yet).
+    if matches!(to, Go::Reload | Go::HardReload) {
+        let failed = v.delegate.ivars().failed.borrow().clone();
+        if let Some(page) = failed.and_then(|f| web_page(&f.url).ok()) {
+            load(web, &page);
+            return Ok(());
+        }
+    }
     unsafe {
         match to {
             Go::Back => drop(web.goBack()),
