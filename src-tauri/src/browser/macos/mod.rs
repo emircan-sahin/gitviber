@@ -445,6 +445,8 @@ struct WebIvars {
     clipboard: String,
     /// The script keeps the page's clipboard calls to the page (on until the user acts here).
     guarded: Cell<bool>,
+    /// What those calls copied, from any frame: the tab's one clipboard, never the user's.
+    copied: RefCell<String>,
 }
 
 define_class!(
@@ -1279,6 +1281,7 @@ pub fn create(
         undo: NSUndoManager::new(mtm),
         clipboard,
         guarded: Cell::new(agent),
+        copied: RefCell::default(),
     });
     let web: Retained<WebView> =
         unsafe { msg_send![super(web), initWithFrame: NSRect::ZERO, configuration: &*config] };

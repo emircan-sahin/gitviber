@@ -197,7 +197,7 @@ finish() {
 
 CHECKS=(visibility fps isolation sessions unknown_tab device screenshot network sse idle_park tab_close form
   stale_ref covered smooth_scroll fill_honest change_line find_get screenshot_1x untrusted secret frames
-  trusted hover keys background_keys clipboard_safe ownership popup download agent_hide agent_audio agent_show agent_e2e memory)
+  trusted hover keys background_keys clipboard_safe clipboard_tab ownership popup download agent_hide agent_audio agent_show agent_e2e memory)
 typeset -A NEEDS=(
   visibility "eval" fps "eval" isolation "eval" sessions "session save|session load|--session"
   unknown_tab "--tab" device "device <name|WxH|off>" screenshot "screenshot" network "network <id>"
@@ -210,6 +210,7 @@ typeset -A NEEDS=(
   # Native input.
   trusted "--synthetic" hover "CSS :hover applies" keys "key down <key>|--hold"
   background_keys "key down <key>|--idle|canvas repainted" clipboard_safe "--synthetic"
+  clipboard_tab "frame of the page's origin|--synthetic"
   ownership "tab release"
   # Popups and downloads.
   popup "named for its opener" download "--download|downloads [--clear]"
@@ -612,6 +613,35 @@ check_clipboard_safe() {
     record "page can't write your clipboard" PASS "$note"
   fi
   close cb
+}
+
+# The tab's one clipboard, from the page's own button (navigator.clipboard) in the page and in a
+# frame of each origin, read back by the page and pasted with the agent's Meta+v. It never reaches
+# the user's clipboard (clipboard_safe asks that); a Copy button of theirs after they take the tab
+# is manual.
+check_clipboard_tab() {
+  page ct "$URL_A/clipframes?other=$SB" || { record clipboard_tab FAIL "tab new: $ERR"; return }
+  gbx --tab ct snapshot -i
+  local same=$(py snapshot-ref '"Copy same"' <<<$OUT) cross=$(py snapshot-ref '"Copy cross"' <<<$OUT)
+  local read="(async () => await navigator.clipboard.readText())()"
+  gbx --tab ct click '#copy'
+  local got=$(value ct $read)
+  pass_if "tab clipboard: the page's Copy button" '[[ $got == main-$SA ]]' "readText: $got"
+  gbx --tab ct click ${same:-e0}
+  got=$(value ct $read)
+  pass_if "tab clipboard: a frame of the page's origin shares it" '[[ $got == same-$SA ]]' "readText: $got"
+  gbx --tab ct click ${cross:-e0}
+  got=$(value ct $read)
+  pass_if "tab clipboard: a frame of another origin shares it" '[[ $got == cross-$SB ]]' "readText: $got"
+  gbx --tab ct click '#box'; gbx --tab ct press Meta+v
+  got=$(value ct "document.getElementById('box').value")
+  pass_if "Meta+v pastes the tab's clipboard" '[[ $got == cross-$SB ]]' "field: $got"
+  gbx --tab ct fill '#box' 'cut and kept'
+  gbx --tab ct press Meta+a; gbx --tab ct press Meta+x
+  got=$(value ct $read)
+  pass_if "Meta+x keeps the field's text in it" '[[ $got == "cut and kept" ]]' "readText: $got"
+  record "tab clipboard: the user's own Copy button" SKIP "manual: click in the tab, then its page's Copy button"
+  close ct
 }
 
 check_ownership() {

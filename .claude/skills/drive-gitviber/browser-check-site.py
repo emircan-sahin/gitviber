@@ -12,6 +12,8 @@ look for (an SSE stream the client left) to stdout.
   /game   a page that reads keys as a game does: logs each key event with isTrusted, focus and
           visibility, lets go of its keys when it blurs, and draws a square on a canvas that moves
           while one is held
+  /clipframes?other=<port>  a field and a Copy button that use navigator.clipboard, with a frame of
+          the page's origin and one of the other port's, each with a Copy button of its own (/clipcopy)
   /covered, /smooth, /fill, /native, /frames?other=<port>, /inner, /popup: one page per check
   /file   a text file served as an attachment"""
 import json
@@ -147,6 +149,13 @@ const field = document.getElementById('field').getContext('2d');
     "/inner": page("inner", """
 <button id="inner" onclick="document.title = 'inner clicked'">Inner</button>
 <button id="oops" onclick="throw new Error('inner oops')">Oops</button>"""),
+    "/clipcopy": page("clipcopy", """
+<button id="c">Copy</button>
+<script>
+const n = new URLSearchParams(location.search).get('n');
+c.textContent = 'Copy ' + n;
+c.onclick = () => navigator.clipboard.writeText(n + '-' + location.port);
+</script>"""),
     "/popup": page("popup", """
 <p>Popup</p><button id="closeme" onclick="window.close()">Close</button>
 <script>window.opener && window.opener.postMessage('hi-from-popup', '*');</script>"""),
@@ -178,6 +187,12 @@ class H(BaseHTTPRequestHandler):
             body = ('<p>Frames</p><iframe id="same" src="/inner"></iframe>'
                     f'<iframe id="cross" src="http://127.0.0.1:{int(other)}/inner"></iframe>')
             self.send(200, page("frames", body), "text/html")
+        elif path == "/clipframes":
+            other = parse_qs(self.path.partition("?")[2]).get("other", ["0"])[0]
+            body = ('<input id="box"><button id="copy" onclick="navigator.clipboard.writeText(\'main-\' + location.port)">Copy in page</button>'
+                    '<iframe id="same" src="/clipcopy?n=same"></iframe>'
+                    f'<iframe id="cross" src="http://127.0.0.1:{int(other)}/clipcopy?n=cross"></iframe>')
+            self.send(200, page("clipframes", body), "text/html")
         elif path == "/file":
             b = b"gitviber check download\n"
             self.send_response(200)

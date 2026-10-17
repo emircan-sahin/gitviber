@@ -150,8 +150,9 @@ script instead (untrusted events), for a page where native input fails
                                A key to the focused element, down and up, as a Mac keyboard
                                sends it: Enter, Tab, Escape, ArrowDown, F5, a, A, ?, Meta+a,
                                Shift+Tab. --hold: down that long. Meta+a, c, x, v and z the page
-                               doesn't take do what the Edit menu does; c, x and v on the page's
-                               own clipboard, never the user's
+                               doesn't take do what the Edit menu does; c, x and v on the tab's
+                               own clipboard, never the user's: one for the tab and its frames, and
+                               the page's navigator.clipboard is it too
   key down <key> | key up <key>
                                A key held down until let go, as a game reads W; held modifiers
                                (key down Shift) go with later keys and clicks. A tab holding a

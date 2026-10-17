@@ -10,7 +10,7 @@ use crate::browser::network;
 use crate::browser::picks::{self, Bounds, Pick};
 use crate::browser::{cut, epoch_ms};
 use crate::state::Res;
-use block2::RcBlock;
+use block2::{DynBlock, RcBlock};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObject, ProtocolObject};
 use objc2::{
@@ -29,10 +29,10 @@ use objc2_foundation::{
 };
 use objc2_web_kit::{
     WKContentWorld, WKPreferences, WKScriptMessage, WKScriptMessageHandler,
-    WKSnapshotConfiguration, WKUserContentController, WKUserScript, WKUserScriptInjectionTime,
-    WKWebView,
+    WKScriptMessageHandlerWithReply, WKSnapshotConfiguration, WKUserContentController,
+    WKUserScript, WKUserScriptInjectionTime, WKWebView,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -83,7 +83,8 @@ struct MessagesIvars {
 }
 
 define_class!(
-    /// gvPick from the picker's world, gvConsole and gvNetwork from the page's.
+    /// gvPick from the picker's world, gvConsole and gvNetwork from the page's, and the page's
+    /// gvClipboard, which answers.
     // SAFETY: NSObject has no subclassing requirements, and Messages has no Drop.
     #[unsafe(super(NSObject))]
     #[name = "GitViberBrowserMessages"]
@@ -117,7 +118,69 @@ define_class!(
             }
         }
     }
+
+    unsafe impl WKScriptMessageHandlerWithReply for Messages {
+        #[unsafe(method(userContentController:didReceiveScriptMessage:replyHandler:))]
+        fn receive_with_reply(
+            &self,
+            _controller: &WKUserContentController,
+            message: &WKScriptMessage,
+            reply: &DynBlock<dyn Fn(*mut AnyObject, *mut NSString)>,
+        ) {
+            let body = unsafe { message.body() };
+            let answer = body
+                .downcast_ref::<NSString>()
+                .and_then(|text| clipboard_answer(&self.ivars().id, &text.to_string()));
+            match answer {
+                Some(text) => {
+                    let text = NSString::from_str(&text);
+                    reply.call((
+                        Retained::as_ptr(&text).cast::<AnyObject>().cast_mut(),
+                        std::ptr::null_mut(),
+                    ));
+                }
+                None => {
+                    let error = NSString::from_str("Not asked of this tab's clipboard");
+                    reply.call((std::ptr::null_mut(), Retained::as_ptr(&error).cast_mut()));
+                }
+            }
+        }
+    }
 );
+
+/// The most a tab's clipboard holds; a bigger copy is left out.
+const STORE_MAX: usize = 4 << 20;
+
+#[derive(Deserialize)]
+struct Asked {
+    key: String,
+    op: String,
+    #[serde(default)]
+    text: String,
+}
+
+/// What a frame of an agent's tab asked of its clipboard (clipboard.js): `set` and `get` its
+/// one store, and `guard`, whether its calls are still kept to it ("1") or the user's ("0").
+/// None unless the page's script asked with the tab's key.
+fn clipboard_answer(id: &str, body: &str) -> Option<String> {
+    let asked: Asked = serde_json::from_str(body).ok()?;
+    let v = view(id)?;
+    let ivars = v.web.ivars();
+    if asked.key != ivars.clipboard {
+        return None;
+    }
+    match asked.op.as_str() {
+        "get" => Some(ivars.copied.borrow().clone()),
+        "set" => {
+            if asked.text.len() <= STORE_MAX {
+                *ivars.copied.borrow_mut() = asked.text;
+            }
+            Some(String::new())
+        }
+        "guard" => Some(if ivars.guarded.get() { "1" } else { "0" }.into()),
+        _ => None,
+    }
+}
 
 /// The picker's and the console's handlers on a new view's user content controller, and its
 /// page scripts (`add_scripts`). Only an agent's tab gets the network log: no one else asks for
@@ -141,6 +204,11 @@ pub(super) fn install(
         let page = WKContentWorld::pageWorld(mtm);
         content.addScriptMessageHandler_contentWorld_name(handler, &page, ns_string!("gvConsole"));
         if agent.is_some() {
+            content.addScriptMessageHandlerWithReply_contentWorld_name(
+                ProtocolObject::from_ref(&*messages),
+                &page,
+                ns_string!("gvClipboard"),
+            );
             content.addScriptMessageHandler_contentWorld_name(
                 handler,
                 &page,
@@ -251,10 +319,9 @@ pub(super) fn release_network(v: &View) {
     let mtm = v.web.mtm();
     let content = unsafe { v.web.configuration().userContentController() };
     unsafe {
-        content.removeScriptMessageHandlerForName_contentWorld(
-            ns_string!("gvNetwork"),
-            &WKContentWorld::pageWorld(mtm),
-        );
+        let page = WKContentWorld::pageWorld(mtm);
+        content.removeScriptMessageHandlerForName_contentWorld(ns_string!("gvNetwork"), &page);
+        content.removeScriptMessageHandlerForName_contentWorld(ns_string!("gvClipboard"), &page);
         // There's no taking one script out: all go, and the user's tab's come back.
         content.removeAllUserScripts();
         v.web
@@ -778,6 +845,23 @@ mod tests {
     }
 
     /// The tab's key goes in once, as a JSON string, and nothing else answers for it.
+    #[test]
+    fn what_the_clipboard_script_asks_is_what_the_tab_answers() {
+        let ask = |body: &str| serde_json::from_str::<Asked>(body).ok();
+        // JSON.stringify leaves out the text of a get and of a guard question.
+        let get = ask(r#"{"key":"k","op":"get"}"#).unwrap();
+        assert_eq!((get.op.as_str(), get.text.as_str()), ("get", ""));
+        assert_eq!(
+            ask(r#"{"key":"k","op":"set","text":"a\nb"}"#).unwrap().text,
+            "a\nb"
+        );
+        assert!(ask("not json").is_none());
+        for op in ["set", "get", "guard"] {
+            assert!(CLIPBOARD.contains(&format!("ask(\"{op}\"")), "{op}");
+        }
+        assert!(CLIPBOARD.contains("gvClipboard"));
+    }
+
     #[test]
     fn the_clipboard_script_answers_to_its_tabs_key_only() {
         assert_eq!(CLIPBOARD.matches("__GV_KEY__").count(), 1);
