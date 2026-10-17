@@ -196,7 +196,7 @@ finish() {
 # add its own here before the commands land.
 
 CHECKS=(visibility fps isolation sessions session_idb unknown_tab device screenshot network sse idle_park tab_close form
-  stale_ref covered smooth_scroll fill_honest change_line find_get screenshot_1x untrusted secret frames
+  stale_ref covered smooth_scroll fill_honest change_line find_get screenshot_1x screenshot_full touch untrusted secret frames
   trusted hover keys background_keys clipboard_safe clipboard_tab ownership popup download agent_hide agent_audio agent_show agent_e2e memory)
 typeset -A NEEDS=(
   visibility "eval" fps "eval" isolation "eval" sessions "session save|session load|--session"
@@ -207,6 +207,7 @@ typeset -A NEEDS=(
   # Acting as a person could, stable refs, the change line, reading in parts, honest output.
   stale_ref "fails as stale" covered "covered by" smooth_scroll "covered by" fill_honest "check | uncheck"
   change_line "→ no DOM change" find_get "find <|get styles|-o <file>" screenshot_1x "--clip|--scale|--refs"
+  screenshot_full "--full" touch "touchstart"
   untrusted "--reveal" secret "--secret" frames "frame of the page's origin"
   # Native input.
   trusted "--synthetic" hover "CSS :hover applies" keys "key down <key>|--hold"
@@ -513,6 +514,45 @@ check_screenshot_1x() {
   close s1x
 }
 
+check_screenshot_full() {
+  page full $URL_A/tall || { record screenshot_full FAIL "tab new: $ERR"; return }
+  gbx --tab full scroll down
+  local before=$(value full scrollY) w=$(value full innerWidth) h=$(value full innerHeight)
+  gbx --tab full screenshot $STATE/tall.png --full
+  # One picture is tall.png, several tall-1.png and on. Its pixels a CSS px: 1, less in a viewport past 2000 px.
+  local files=($STATE/tall.png(N) $STATE/tall-<->.png(N)) sizes="" f
+  for f in $files; do sizes+="${$(py png $f 2>/dev/null)/ /x} "; done
+  local want="$(py tall-sizes $w $h) "
+  pass_if "screenshot --full: pictures of 2000 px" '[[ -n $sizes && $sizes == $want ]]' "want $want, got ${sizes:-none: $OUT$ERR}"
+  pass_if "screenshot --full: the page once, fixed parts once" 'py tall-check $(py tall-scale $w $h) $files >$STATE/tall.out 2>&1' "$(<$STATE/tall.out 2>/dev/null)"
+  local after=$(value full scrollY) head=$(value full 'getComputedStyle(document.getElementById("head")).visibility')
+  pass_if "screenshot --full: page put back" '[[ $after == $before && $head == visible ]]' "scroll $before then $after, header $head"
+  gbx --tab full screenshot --full --clip 0,0,10,10
+  pass_if "screenshot --full takes no --clip" '(( RC != 0 ))' "exit $RC: $ERR"
+  rm -f $files
+  close full
+}
+
+# What a page tells of its input: a phone's has touch, a WxH size keeps the mouse.
+check_touch() {
+  page touch $URL_A/touch || { record touch FAIL "tab new: $ERR"; return }
+  local probe='`${navigator.maxTouchPoints} ${"ontouchstart" in window} ${matchMedia("(pointer: coarse)").matches} ${matchMedia("(hover: none)").matches} ${getComputedStyle(document.getElementById("probe")).color}`'
+  gbx --tab touch device "iPhone 15"
+  local seen=$(value touch $probe)
+  pass_if "device: a phone has touch" '[[ $seen == "5 true true true rgb(255, 0, 0)" ]]' "$seen ($OUT$ERR)"
+  gbx --tab touch click '#tap'
+  local log=$(value touch 'log_.join(" ")')
+  pass_if "device: a click is a tap" '[[ $log == "pointerdown:touch touchstart mousedown pointerup:touch touchend mouseup click" ]]' "$log"
+  gbx --tab touch device 1280x800
+  seen=$(value touch $probe)
+  pass_if "device WxH: the mouse stays" '[[ $seen == "0 false false false rgb(0, 128, 0)" ]]' "$seen"
+  gbx --tab touch click '#tap'
+  log=$(value touch 'log_.join(" ")')
+  pass_if "device WxH: a click is a click" '[[ $log != *touch* && $log == *click ]]' "$log"
+  gbx --tab touch device off
+  close touch
+}
+
 check_untrusted() {
   page ut "$URL_A/?code=abc123&access_token=tok456" || { record untrusted FAIL "tab new: $ERR"; return }
   gbx --tab ut eval document.title
@@ -544,6 +584,16 @@ check_frames() {
   gbx --tab fr click "$(py snapshot-ref '"Oops"' <<<$snap)"
   gbx --tab fr console
   pass_if "console: a frame's error" '[[ $OUT == *"(frame"* && $OUT == *"inner oops"* ]]' "${${OUT:-$ERR}[1,120]}"
+  gbx --tab fr get text 'frame=#same >> #inner'
+  pass_if "css in a same-origin frame" '[[ $OUT == *Inner* ]]' "${OUT:-$ERR}"
+  gbx --tab fr wait --timeout 3000 'frame=#same >> #inner'
+  local waited=$RC
+  gbx --tab fr wait --timeout 3000 --frame '#same' --text Inner
+  pass_if "wait in a frame: a selector, a text" '(( waited == 0 && RC == 0 ))' "css $waited, text $RC: ${OUT:-$ERR}"
+  gbx --tab fr wait --timeout 600 'frame=#nope >> #inner'
+  pass_if "wait for a frame not there is a timeout that says so" '(( RC != 0 )) && [[ $ERR == *"No frame matches #nope"* ]]' "$RC: $ERR"
+  gbx --tab fr get text 'frame=#cross >> #inner'
+  pass_if "css in another origin's frame says why" '(( RC != 0 )) && [[ $ERR == *"another origin"* ]]' "$RC: $ERR"
   gbx --tab fr snapshot
   pass_if "cross-origin frame's hint" '[[ $OUT == *"127.0.0.1:$SB"* ]]' "${${(M)${(f)OUT}:#*$SB*}:-${${OUT:-$ERR}[1,120]}}"
   close fr

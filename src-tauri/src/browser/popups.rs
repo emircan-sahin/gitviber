@@ -1,6 +1,23 @@
 //! What a popup of an agent's tab (macos/popups.rs) is called and how it's told, apart from
 //! AppKit so it can be tested.
 
+use std::time::{Duration, Instant};
+
+/// A page opens this many popups in a burst (a user's tab: one per click or key, which a page
+/// can repeat); the next ones wait for the window to pass.
+const BURST: usize = 5;
+const BURST_WINDOW: Duration = Duration::from_secs(10);
+
+/// Whether a page may open one more popup at `now`, given those it opened lately; counts it.
+pub fn allow(recent: &mut Vec<Instant>, now: Instant) -> bool {
+    recent.retain(|&at| now.duration_since(at) < BURST_WINDOW);
+    let ok = recent.len() < BURST;
+    if ok {
+        recent.push(now);
+    }
+    ok
+}
+
 /// The longest address a note gives: a login's carries a long query.
 const URL_MAX: usize = 200;
 
@@ -57,6 +74,18 @@ mod tests {
         for opener in ["t1", "rv268", &"x".repeat(26), &"y".repeat(32)] {
             assert!(tab_name(&name(opener, none)).is_ok(), "{opener}");
         }
+    }
+
+    #[test]
+    fn a_burst_of_popups_is_cut_off_until_the_window_passes() {
+        let start = Instant::now();
+        let mut recent = Vec::new();
+        for n in 0..BURST as u64 {
+            assert!(allow(&mut recent, start + Duration::from_millis(n)));
+        }
+        assert!(!allow(&mut recent, start + Duration::from_secs(5)));
+        // A refused one isn't counted: the window frees when the first ones age out.
+        assert!(allow(&mut recent, start + BURST_WINDOW));
     }
 
     #[test]

@@ -96,7 +96,7 @@ function documentOf(children: Node[], view: Record<string, unknown>) {
     hit: null as Node | null,
     getElementById: () => null,
     querySelector: (css: string) => find(body, css),
-    querySelectorAll: (css: string) => (css === "iframe" ? all(body).filter((n) => n.localName === "iframe") : []),
+    querySelectorAll: (css: string) => (css === "iframe" ? all(body).filter((n) => n.localName === "iframe") : [find(body, css)].filter(Boolean)),
     getElementsByTagName: () => all(body),
     execCommand: () => false,
     elementFromPoint: () => doc.hit,
@@ -208,4 +208,76 @@ test("a ref in a frame that navigated, or was taken out, is stale", async () => 
   assert.deepEqual(again.removed, ["e2"]);
   assert.match(again.out, /button "Done" \[ref=e3\]/);
   assert.equal((await run(p, { cmd: "get", what: "box", target: "e1" })).out, "112,72,100,30", "the cart's own refs stay");
+});
+
+/** The shop with its frames and heading findable by id, and the text its pay frame shows. */
+function named() {
+  const p = shop();
+  p.cartFrame.id = "cart";
+  p.payFrame.id = "payment";
+  p.top.body.childNodes[0].id = "title";
+  p.top.body.childNodes[2].id = "ad";
+  p.payDoc.body.innerText = "Card Pay";
+  return p;
+}
+
+test("a CSS selector reaches into a same-origin frame with frame=<css> >> <css>, nested as the frames are", async () => {
+  const p = named();
+  const get = (target: string) => run(p, { cmd: "get", what: "text", target });
+  assert.equal((await get("frame=#cart >> frame=#payment >> #pay")).out, "Pay");
+  assert.equal((await get("frame=#cart >> #payment")).out, "");
+  // It looks in the frame's own page, not the page above's.
+  assert.equal((await get("frame=#cart >> #pay")).error, "No element matches frame=#cart >> #pay");
+  assert.equal((await get("#pay")).error, "No element matches #pay");
+  // A frame by its ref is the same, and a click lands as on any ref of a frame.
+  p.payDoc.hit = p.pay;
+  p.cartDoc.hit = p.payFrame;
+  p.top.hit = p.cartFrame;
+  assert.match((await run(p, { cmd: "click", target: "frame=#cart >> frame=#payment >> #pay" })).out, /Clicked button "Pay"/);
+  assert.ok(p.pay.events.some((e) => e.type === "click"));
+  assert.match((await run(p, { cmd: "snapshot", scope: "frame=#cart >> #payment" })).out, /heading "Card"/);
+});
+
+test("a frame's name that isn't a readable frame says why", async () => {
+  const p = named();
+  const text = (target: string) => run(p, { cmd: "get", what: "text", target });
+  assert.equal((await text("frame=#nope >> #pay")).error, "No frame matches #nope");
+  assert.equal((await text("frame=#title >> #pay")).error, "#title isn't a frame");
+  assert.equal((await text("frame=#ad >> p")).error, "#ad is another origin's frame: its page can't be read");
+  await run(p, { cmd: "snapshot" });
+  assert.equal((await text("frame=e9 >> #pay")).error, "No ref e9 on this page: take a new snapshot");
+  assert.equal((await text("frame=e1 >> #pay")).error, "e1 isn't a frame");
+});
+
+test("wait looks in a frame by its selector, and a frame not there yet is only not yet", async () => {
+  const p = named();
+  assert.deepEqual(await run(p, { cmd: "exists", css: "frame=#cart >> frame=#payment >> #pay" }), { found: true, count: 1, last: 0 });
+  const shown = await run(p, { cmd: "exists", css: "frame=#cart >> #missing" });
+  assert.deepEqual([shown.found, shown.count], [false, 0]);
+  const late = await run(p, { cmd: "exists", css: "frame=#late >> #pay" });
+  assert.deepEqual([late.found, late.count, late.note, late.invalid], [false, 0, "No frame matches #late", undefined]);
+  const closed = await run(p, { cmd: "exists", css: "frame=#ad >> p" });
+  assert.deepEqual([closed.found, closed.invalid, closed.note], [false, true, "#ad is another origin's frame: its page can't be read"]);
+  assert.equal((await run(p, { cmd: "exists", css: "frame=#title >> p" })).note, "#title isn't a frame");
+});
+
+test("wait --text looks in the page's text, or a frame's when it names one", async () => {
+  const p = named();
+  const has = (text: string, frame?: string) => run(p, { cmd: "hasText", text, frame });
+  assert.equal((await has("Card", "#cart >> frame=#payment")).found, true);
+  assert.equal((await has("Nowhere", "#cart >> frame=#payment")).found, false);
+  assert.equal((await has("Card")).found, false, "the page above doesn't have the frame's text");
+  assert.equal((await has("Card", "#late")).note, "No frame matches #late");
+  assert.equal((await has("Card", "#ad")).invalid, true);
+});
+
+test("a frame's selector is cut at the first ' >> ' outside quotes and brackets", async () => {
+  const p = named();
+  const note = async (css: string) => (await run(p, { cmd: "exists", css })).note;
+  assert.equal(await note("frame=#late[title='a >> b'] >> #x"), "No frame matches #late[title='a >> b']");
+  assert.equal(await note('frame=#late[title="a >> b"] >> frame=#y >> #x'), 'No frame matches #late[title="a >> b"]');
+  assert.equal(await note("frame=#late:not(.a >> .b) >> #x"), "No frame matches #late:not(.a >> .b)");
+  // The first frame is the one missing, whatever follows; a lone frame= is no step at all.
+  assert.equal(await note("frame=#nope >> frame=#cart >> #x"), "No frame matches #nope");
+  assert.equal((await run(p, { cmd: "exists", css: "frame=#cart" })).found, false);
 });

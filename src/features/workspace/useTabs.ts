@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { browserApi, type RepoStatus } from "@/lib/api";
 import { nearShown, shownIndexToAll, shownTabs } from "@/lib/browser/agentShown";
 import { forgetAgentTab, useHiddenAgentTabs } from "@/lib/browser/agentTabs";
+import { insertBeside } from "@/lib/browser/popupPlace";
 import { forgetBrowser } from "@/lib/browser/store";
 import { newerCopy, useGitHubCacheVersion } from "@/lib/github/githubCache";
 import { editPath, type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
@@ -41,6 +42,12 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
       if (previewAt >= 0 && !pin) return { tabs: prev.map((t, i) => (i === previewAt ? tab : t)), active: key };
       return { tabs: [...prev, tab], active: key };
     });
+  }, []);
+
+  /** A page a browser tab opened (popupTabs.ts): its tab beside the opener's, and the active one. */
+  const openBeside = useCallback((sel: Selection, beside: string, kin: ReadonlySet<string>) => {
+    const key = selectionKey(sel);
+    setTabState(({ tabs: prev }) => (prev.some((t) => t.key === key) ? { tabs: prev, active: key } : { tabs: insertBeside(prev, beside, { key, sel, preview: false }, kin), active: key }));
   }, []);
 
   /** A tab at the end, the active one left as it is: one an agent opened (agentTabs.ts). */
@@ -215,5 +222,5 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
     });
   }, [gitHubVersion]);
 
-  return { tabs, allTabs, activeKey, setActiveKey, open, add, update, closeTabs, discardTabs, close, closeAround, reopen, canReopen: closed.length > 0, moveTab, goTab, stepTab, pin, onPathMoved };
+  return { tabs, allTabs, activeKey, setActiveKey, open, openBeside, add, update, closeTabs, discardTabs, close, closeAround, reopen, canReopen: closed.length > 0, moveTab, goTab, stepTab, pin, onPathMoved };
 }

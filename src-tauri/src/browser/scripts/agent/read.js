@@ -272,18 +272,33 @@ function prune() {
 
 const shows = (el) => el.getClientRects().length > 0 && styleOf(el).visibility !== "hidden";
 
-/** For wait: whether an element matching `css` shows, and how many match. */
+/** For wait: whether an element matching `css` (in a frame, if it says) shows, and how many match. */
 function exists({ css }) {
+  let where;
+  try {
+    where = scopeOf(css);
+  } catch (e) {
+    return e instanceof NoFrame ? { found: false, count: 0, note: e.message } : { found: false, invalid: true, note: e.message };
+  }
   let all;
   try {
-    all = [...document.querySelectorAll(css)];
+    all = [...where.doc.querySelectorAll(where.css)];
   } catch {
     return { found: false, invalid: true };
   }
   return { found: all.some(shows), count: all.length };
 }
 
-const hasText = ({ text }) => ({ found: (document.body?.innerText ?? "").includes(text) });
+/** For wait --text: whether the page's text, or that of the frame `frame` names, has it. */
+function hasText({ text, frame = null }) {
+  let doc = document;
+  try {
+    if (frame) doc = scopeOf(`frame=${frame} >> *`).doc;
+  } catch (e) {
+    return e instanceof NoFrame ? { found: false, note: e.message } : { found: false, invalid: true, note: e.message };
+  }
+  return { found: (doc.body?.innerText ?? "").includes(text) };
+}
 
 /** Labels a screenshot draws at most. */
 const LABELS = 300;
@@ -319,4 +334,60 @@ function view({ target = null, clip = null, refs = false }) {
     }
   }
   return { rect, labels };
+}
+
+/** How long a tile of a full-page screenshot waits for its images, ms. */
+const IMAGES = 1500;
+
+/**
+ * A full-page screenshot's steps. `begin`: the page at its top, its height and the viewport,
+ * with the fixed and sticky elements noted. `to`: the page scrolled to `y`, those elements
+ * shown only where a person would see them (one near the top in the first tile, one near the
+ * bottom in the last, a sticky one in the first), so a header isn't drawn on every tile.
+ * `end`: all put back, the page scrolled to where it was.
+ */
+async function tile({ step, y = 0, first = false, last = false }) {
+  const t = state.tile;
+  if (step === "begin") {
+    state.tile = { was: [window.scrollX, window.scrollY], pinned: [] };
+    window.scrollTo({ left: window.scrollX, top: 0, behavior: "instant" });
+    await frame();
+    for (const el of document.querySelectorAll("body, body *")) {
+      const style = styleOf(el);
+      if (style.position !== "fixed" && style.position !== "sticky") continue;
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      let low = r.y + r.height / 2 > window.innerHeight / 2;
+      if (style.position === "sticky") {
+        // Only a sticky element held at an edge of the viewport is a bar; one in the flow of the
+        // page (a table's header, a section's, a card) is part of it, and stays.
+        const top = parseFloat(style.top), bottom = parseFloat(style.bottom);
+        if (Math.abs(r.y - top) <= 1) low = false;
+        else if (Math.abs(window.innerHeight - (r.y + r.height) - bottom) <= 1) low = true;
+        else continue;
+      }
+      state.tile.pinned.push({ el, low, set: [el.style.getPropertyValue("visibility"), el.style.getPropertyPriority("visibility")] });
+    }
+    return { height: document.documentElement.scrollHeight, w: window.innerWidth, h: window.innerHeight };
+  }
+  if (!t) throw new Error("No full-page screenshot is under way");
+  const show = (p, on) => p.el.style.setProperty("visibility", on ? p.set[0] : "hidden", on ? p.set[1] : "important");
+  if (step === "to") {
+    window.scrollTo({ left: window.scrollX, top: y, behavior: "instant" });
+    for (const p of t.pinned) show(p, (first && last) || (p.low ? last : first));
+    await frame();
+    await new Promise((done) => setTimeout(done, 100));
+    // Images in view that are still coming (a lazy one starts once it is), for a while.
+    const coming = () =>
+      [...(document.images ?? [])].some((img) => {
+        const r = img.getBoundingClientRect();
+        return !img.complete && r.width && r.y + r.height > 0 && r.y < window.innerHeight;
+      });
+    for (const end = Date.now() + IMAGES; coming() && Date.now() < end; ) await new Promise((done) => setTimeout(done, 50));
+    return { y: window.scrollY };
+  }
+  for (const p of t.pinned) show(p, true);
+  window.scrollTo({ left: t.was[0], top: t.was[1], behavior: "instant" });
+  state.tile = null;
+  return {};
 }

@@ -12,14 +12,11 @@ pub fn browser_create(
     id: String,
     root: String,
     url: String,
-    ua: Option<String>,
-    zoom: Option<f64>,
-    dark: Option<bool>,
+    look: browser::Look,
 ) -> Res<Created> {
     if window.label() != "main" {
         return Err("Browser tabs open in the main window.".into());
     }
-    let look = browser::Look { ua, zoom, dark };
     browser::create(&window, &id, &root, &url, &look, false)
 }
 
@@ -29,10 +26,11 @@ pub fn browser_place(id: String, rect: Rect, screen: Option<Screen>) -> Res<()> 
     browser::place(&id, rect, screen)
 }
 
-/// The device's user agent (None: WebKit's own); the page loads again when it changes.
+/// The device's user agent (None: WebKit's own) and whether it has touch; the page loads again
+/// when either changes.
 #[tauri::command]
-pub fn browser_set_agent(id: String, ua: Option<String>) -> Res<()> {
-    browser::set_agent(&id, ua.as_deref())
+pub fn browser_set_agent(id: String, ua: Option<String>, touch: Option<bool>) -> Res<()> {
+    browser::set_agent(&id, ua.as_deref(), touch.unwrap_or(false))
 }
 
 /// `aside`: only while something of the app page's is over it, its tab still on show.
@@ -44,6 +42,12 @@ pub fn browser_hide(id: String, aside: bool) {
 #[tauri::command]
 pub fn browser_close(id: String) {
     browser::close(&id);
+}
+
+/// `key`: a download `browser-download` reported.
+#[tauri::command]
+pub fn browser_cancel_download(key: u64) -> Res<()> {
+    browser::cancel_download(key)
 }
 
 #[tauri::command]

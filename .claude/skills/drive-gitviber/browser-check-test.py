@@ -20,7 +20,45 @@ def png(w, h):
     return b"\x89PNG\r\n\x1a\n" + chunk + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr))
 
 
+def png_rows(colors):
+    """A 2 px wide RGBA PNG, a row to a colour, its rows filtered each of the five ways."""
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data))
+    raw, prev = b"", bytes(8)
+    for i, (r, g, b) in enumerate(colors):
+        line = bytes([r, g, b, 255] * 2)
+        left = lambda j: line[j - 4] if j >= 4 else 0
+        up = lambda j: prev[j]
+        corner = lambda j: prev[j - 4] if j >= 4 else 0
+        def paeth(j):
+            a, b2, c = left(j), up(j), corner(j)
+            p = a + b2 - c
+            pa, pb, pc = abs(p - a), abs(p - b2), abs(p - c)
+            return a if pa <= pb and pa <= pc else b2 if pb <= pc else c
+        kind = i % 5
+        guess = [lambda j: 0, left, up, lambda j: (left(j) + up(j)) // 2, paeth][kind]
+        raw += bytes([kind]) + bytes((line[j] - guess(j)) & 255 for j in range(8))
+        prev = line
+    ihdr = struct.pack(">IIBBBBB", 2, len(colors), 8, 6, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+
+
 class Parsing(unittest.TestCase):
+    def test_a_full_page_screenshot_is_the_tall_page_once(self):
+        rows = [check.tall_expect(i) for i in range(3000)]
+        self.assertEqual(check.png_column(png_rows(rows), 1), rows)
+        self.assertIsNone(check.tall_check(rows))
+        # A viewport wider than 2000 px takes the page at less than 1 px a CSS px.
+        self.assertEqual(check.tall_scale(1280, 800), 1.0)
+        self.assertAlmostEqual(check.tall_scale(3440, 1128), 2000 / 3440)
+        half = [check.tall_expect(i / 0.5) for i in range(1500)]
+        self.assertIsNone(check.tall_check(half, 0.5))
+        self.assertIn("rows", check.tall_check(half))
+        # The header drawn again below the first tile is a fault, and so is a missing row.
+        again = rows[:800] + [(255, 0, 0)] * 60 + rows[860:]
+        self.assertIn("row 803", check.tall_check(again))
+        self.assertIn("2980 rows", check.tall_check(rows[:-20]))
+
     def test_bridge_replies(self):
         self.assertEqual(check.bridge_value('{"ok":true,"value":"x y"}'), (True, "x y"))
         self.assertEqual(check.bridge_value('{"ok":true,"value":3}'), (True, "3"))

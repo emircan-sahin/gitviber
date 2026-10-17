@@ -454,6 +454,7 @@ pub fn run() {
             commands::browser::browser_set_agent,
             commands::browser::browser_hide,
             commands::browser::browser_close,
+            commands::browser::browser_cancel_download,
             commands::browser::browser_navigate,
             commands::browser::browser_go,
             commands::browser::browser_focus,

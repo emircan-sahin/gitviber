@@ -67,9 +67,64 @@ const onTop = (el, at) => framesOf(el).reduce((p, frame) => above(frame, p), at)
 /** On a page still shown: an element of a frame that navigated, or was taken out, is stale. */
 const live = (el) => !!el?.isConnected && (docOf(el) === document || !!docOf(el).defaultView);
 
-/** The element a ref (e3, @e3, ref=e3) names, or a CSS selector does. */
+const REF = /^(?:@|ref=)?e(\d+)$/;
+
+/** No frame matches yet: a wait goes on, where any other fault in a frame's name ends it. */
+class NoFrame extends Error {}
+
+/**
+ * The document a target looks in, and the CSS in it: `frame=<ref|css> >> <css>` is <css> in that
+ * same-origin frame's own document (frames nest: `frame=a >> frame=b >> <css>`).
+ */
+function scopeOf(target, doc = document) {
+  const framed = splitFrame(target);
+  return framed ? scopeOf(framed[1], inFrame(framed[0], doc)) : { doc, css: target };
+}
+
+/** `frame=<name> >> <rest>` as [name, rest], cut at the first ` >> ` outside quotes and brackets. */
+function splitFrame(target) {
+  const start = /^\s*frame=/.exec(target)?.[0].length;
+  if (start === undefined) return null;
+  let quote = "";
+  let depth = 0;
+  for (let i = start; i < target.length; i++) {
+    const c = target[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = "";
+    } else if (c === '"' || c === "'") quote = c;
+    else if (c === "[" || c === "(") depth++;
+    else if (c === "]" || c === ")") depth--;
+    else if (depth <= 0 && /\s/.test(c) && target.startsWith(">> ", i + 1)) {
+      const name = target.slice(start, i).trim();
+      const rest = target.slice(i + 4).trim();
+      if (name && rest) return [name, rest];
+    }
+  }
+  return null;
+}
+
+/** The page of the same-origin frame `name` (a ref, or CSS in `doc`) is. */
+function inFrame(name, doc) {
+  let frame;
+  if (REF.test(name)) frame = resolve(name);
+  else {
+    try {
+      frame = doc.querySelector(name);
+    } catch {
+      throw new Error(`Not a ref or a CSS selector: ${name}`);
+    }
+  }
+  if (!frame) throw new NoFrame(`No frame matches ${name}`);
+  if (!/^i?frame$/.test(frame.localName)) throw new Error(`${name} isn't a frame`);
+  const inner = frameDoc(frame);
+  if (!inner) throw new Error(`${name} is another origin's frame: its page can't be read`);
+  return inner;
+}
+
+/** The element a ref (e3, @e3, ref=e3) names, or a CSS selector does (see scopeOf for frames). */
 function resolve(target) {
-  const ref = /^(?:@|ref=)?e(\d+)$/.exec(target);
+  const ref = REF.exec(target);
   if (ref) {
     const name = `e${ref[1]}`;
     const el = state.refs.get(name)?.deref();
@@ -78,9 +133,10 @@ function resolve(target) {
     if (Number(ref[1]) >= state.next) throw new Error(`No ref ${name} on this page: take a new snapshot`);
     throw new Error(`${name} is stale: take a new snapshot`);
   }
+  const { doc, css } = scopeOf(target);
   let el;
   try {
-    el = document.querySelector(target);
+    el = doc.querySelector(css);
   } catch {
     throw new Error(`Not a ref or a CSS selector: ${target}`);
   }

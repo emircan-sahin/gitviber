@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DEFAULT_DEVICE, DEVICES, deviceOf, isDeviceChoice, RESPONSIVE, RESPONSIVE_MAX, RESPONSIVE_MIN } from "./devices.ts";
+import { DEFAULT_DEVICE, DEVICES, deviceOf, hasTouch, isDeviceChoice, RESPONSIVE, RESPONSIVE_MAX, RESPONSIVE_MIN } from "./devices.ts";
 
 test("every device is a screen a page can lay out on", () => {
   assert.ok(DEVICES.length >= 11);
@@ -69,4 +69,9 @@ test("Responsive's sides stay in bounds wherever they come from", () => {
   for (const no of [[], { name: RESPONSIVE, w: Infinity }, { name: RESPONSIVE, h: -0 }, { name: RESPONSIVE, w: 0 }, { name: "x", rotated: 1 }, { name: "x", w: null }]) {
     assert.equal(isDeviceChoice(no), false, JSON.stringify(no));
   }
+});
+
+test("a phone or a tablet has touch, a Responsive screen does not", () => {
+  for (const d of DEVICES) assert.equal(hasTouch(d), true, d.name);
+  assert.equal(hasTouch(deviceOf({ name: RESPONSIVE })!), false);
 });

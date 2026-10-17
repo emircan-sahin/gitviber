@@ -237,6 +237,7 @@ pub(super) fn yours(id: &str) -> Res<()> {
 pub(super) fn forget_tab(id: &str) {
     ROUTES.with_borrow_mut(|r| r.close(id));
     super::downloads::forget(id);
+    super::user_downloads::forget(id);
     super::popups::forget(Some(id));
 }
 
@@ -315,6 +316,7 @@ fn live(app: &AppHandle, route: &Route, url: &str) -> Res<bool> {
             .ok_or("The window isn't ready.")?;
         let was = asked(&route.id);
         let look = Look {
+            touch: was.screen.as_ref().is_some_and(|s| s.touch),
             ua: was.screen.and_then(|s| s.ua),
             zoom: None,
             dark: was.dark,
@@ -350,6 +352,13 @@ pub(super) fn sleep_past_cap(keep: &str) {
     }
 }
 
+/// Whether tab `id`'s downloads are the user's (Downloads, under their eye): any tab but an
+/// agent's, and one of an agent's the user took. A tab opened for the user (`--show`) is not
+/// among them: its page is an agent's choice, so it may not put a file there (downloads.rs).
+pub(super) fn saves_for_user(id: &str) -> bool {
+    !routed(id) || (users(id).is_some() && !strict(id))
+}
+
 /// Whether tab `id` is a pane's agent's.
 pub(super) fn routed(id: &str) -> bool {
     ROUTES.with_borrow(|r| r.named(id).is_some())
@@ -360,6 +369,7 @@ pub(super) fn routed(id: &str) -> bool {
 pub(super) fn forget_all() {
     ROUTES.with_borrow_mut(Routes::clear);
     super::downloads::forget_all();
+    super::user_downloads::forget_all();
     super::popups::forget(None);
     super::ASKED.with_borrow_mut(HashMap::clear);
 }
@@ -731,7 +741,8 @@ pub fn agent_device(app: &AppHandle, id: &str, screen: Option<AgentScreen>) -> R
         w: s.size.map(|s| s.0),
         h: s.size.map(|s| s.1),
     });
-    set_agent(id, screen.as_ref().and_then(|s| s.ua.as_deref()))?;
+    let touch = screen.as_ref().is_some_and(|s| s.touch);
+    set_agent(id, screen.as_ref().and_then(|s| s.ua.as_deref()), touch)?;
     let off = screen.is_none();
     ask(id, |a| a.screen = screen);
     if off && super::can_set_dpr(&v.web) {

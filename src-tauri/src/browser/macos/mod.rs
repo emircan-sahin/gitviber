@@ -13,6 +13,7 @@ mod page_tools;
 mod page_view;
 mod panel;
 mod popups;
+mod user_downloads;
 
 pub use agent::{
     agent_appearance, agent_close_tab, agent_device, agent_dialogs, agent_find_tab,
@@ -24,7 +25,7 @@ pub use native::{
     agent_chosen, agent_keys, agent_pointer, agent_text, agent_upload, agent_upload_done,
 };
 pub use page_tools::{
-    agent_dialog, agent_picture, console_clear, console_entries, network_log, pick,
+    agent_dialog, agent_picture, agent_stitch, console_clear, console_entries, network_log, pick,
 };
 pub use page_view::{appearance, find, zoom};
 
@@ -59,8 +60,8 @@ use objc2_foundation::{
     NSKeyValueChangeKey, NSKeyValueObservingOptions, NSNotificationCenter, NSNumber,
     NSObjectNSDelayedPerforming, NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSPoint,
     NSRect, NSSize, NSString, NSURLAuthenticationChallenge, NSURLAuthenticationMethodServerTrust,
-    NSURLCredential, NSURLRequest, NSURLSessionAuthChallengeDisposition as Disposition,
-    NSUndoManager, NSURL, NSUUID,
+    NSURLCredential, NSURLRequest, NSURLRequestCachePolicy,
+    NSURLSessionAuthChallengeDisposition as Disposition, NSUndoManager, NSURL, NSUUID,
 };
 use objc2_web_kit::{
     WKDownload, WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationActionPolicy,
@@ -169,12 +170,6 @@ fn emit<T: Serialize + Clone>(app: &AppHandle, event: &str, payload: T) {
 #[derive(Serialize, Clone)]
 struct Id<'a> {
     id: &'a str,
-}
-
-#[derive(Serialize, Clone)]
-struct Download<'a> {
-    id: &'a str,
-    url: &'a str,
 }
 
 /// SecTrustRef, which only the Security framework's crate types; passed through as is.
@@ -625,6 +620,8 @@ struct DelegateIvars {
     hidden_at: Cell<Option<Instant>>,
     /// The device it shows (device mode), as last placed.
     screen: Cell<Option<Screen>>,
+    /// The device has touch (scripts/touch.js is in its page scripts).
+    touch: Cell<bool>,
     /// What the page logged (scripts/console.js), and whether a `browser-console` is on its way.
     console: RefCell<Log>,
     console_pending: Cell<bool>,
@@ -751,9 +748,9 @@ define_class!(
             let main = unsafe { action.targetFrame() }.is_none_or(|f| unsafe { f.isMainFrame() });
             let clicked = unsafe { action.navigationType() } == WKNavigationType::LinkActivated;
             let decision = match policy(&url, main, clicked) {
-                // A link with `download`: only an agent's tab saves files (downloads.rs).
+                // A link with `download` is saved (downloads.rs, user_downloads.rs).
                 Policy::Allow if unsafe { action.shouldPerformDownload() } => {
-                    downloads::on_link(self, &url)
+                    WKNavigationActionPolicy::Download
                 }
                 Policy::Allow => {
                     if clicked && main {
@@ -770,7 +767,7 @@ define_class!(
             decide.call((decision,));
         }
 
-        /// A file the page can't show (a zip, a dmg) would download: left to the system browser.
+        /// A file the page can't show (a zip, a dmg) downloads (downloads.rs).
         #[unsafe(method(webView:decidePolicyForNavigationResponse:decisionHandler:))]
         fn decide_response(
             &self,
@@ -781,13 +778,12 @@ define_class!(
             if let Some(policy) = downloads::on_response(self, response) {
                 return decide.call((policy,));
             }
-            if unsafe { response.canShowMIMEType() } {
-                return decide.call((WKNavigationResponsePolicy::Allow,));
-            }
-            if unsafe { response.isForMainFrame() } {
-                self.download(&url_text(unsafe { response.response().URL() }));
-            }
-            decide.call((WKNavigationResponsePolicy::Cancel,));
+            let policy = if unsafe { response.canShowMIMEType() } {
+                WKNavigationResponsePolicy::Allow
+            } else {
+                WKNavigationResponsePolicy::Cancel
+            };
+            decide.call((policy,));
         }
 
         #[unsafe(method(webView:navigationAction:didBecomeDownload:))]
@@ -864,8 +860,8 @@ define_class!(
     }
 
     unsafe impl WKUIDelegate for Delegate {
-        /// A link to a new window (target=_blank, window.open) opens here: tabs come from the app.
-        /// An agent's tab gets it as a tab of its own, its opener kept (popups.rs).
+        /// A link to a new window (target=_blank, window.open) becomes a tab of its own, its
+        /// opener kept: an agent's in its pane, a user's next to theirs (popups.rs).
         #[unsafe(method_id(webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:))]
         fn new_window(
             &self,
@@ -1013,6 +1009,7 @@ impl Delegate {
             timer: RefCell::default(),
             hidden_at: Cell::new(None),
             screen: Cell::new(None),
+            touch: Cell::new(false),
             console: RefCell::default(),
             console_pending: Cell::new(false),
             network: RefCell::default(),
@@ -1085,17 +1082,6 @@ impl Delegate {
         self.ivars().trusted.borrow_mut().insert(host_key(&host));
         self.changed();
         Some(unsafe { msg_send![NSURLCredential::class(), credentialForTrust: trust] })
-    }
-
-    fn download(&self, url: &str) {
-        emit(
-            &self.ivars().app,
-            "browser-download",
-            Download {
-                id: &self.ivars().id,
-                url,
-            },
-        );
     }
 
     fn state(&self, web: &WKWebView) -> PageState {
@@ -1261,7 +1247,7 @@ pub fn create(
         }
         // Its own, so none of the app page's scripts (Tauri's IPC) reach this page.
         let content = WKUserContentController::new(mtm);
-        page_tools::install(&content, id, agent.then_some(&*clipboard), mtm);
+        page_tools::install(&content, id, agent.then_some(&*clipboard), look.touch, mtm);
         config.setUserContentController(&content);
         let preferences = config.preferences();
         preferences.setJavaScriptCanOpenWindowsAutomatically(false);
@@ -1296,6 +1282,7 @@ pub fn create(
         NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
     );
     let delegate = Delegate::new(mtm, id, window.app_handle().clone(), &web);
+    delegate.ivars().touch.set(look.touch);
     agent::mute_new(&web, id);
     unsafe {
         web.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate)));
@@ -1412,20 +1399,21 @@ fn shape(v: &View, screen: Option<Screen>) {
     round(&v.host, radius, screen.map_or(every, |s| s.corners));
 }
 
-/// The device's user agent, or WebKit's own (None); a change loads the page again, as a server
-/// may answer another one.
-pub fn set_agent(id: &str, ua: Option<&str>) -> Res<()> {
+/// The device's user agent, or WebKit's own (None), and whether it has touch; a change loads
+/// the page again, as a server may answer another one and touch.js goes in at a document's start.
+pub fn set_agent(id: &str, ua: Option<&str>, touch: bool) -> Res<()> {
     main_thread()?;
     let v = view(id).ok_or(GONE)?;
     let now = unsafe { v.web.customUserAgent() }.map(|s| s.to_string());
-    if now.as_deref().filter(|s| !s.is_empty()) != ua {
+    let changed = now.as_deref().filter(|s| !s.is_empty()) != ua;
+    if changed {
         unsafe {
             v.web
                 .setCustomUserAgent(ua.map(NSString::from_str).as_deref())
         };
-        if loadable(&url_text(unsafe { v.web.URL() })) {
-            unsafe { drop(v.web.reload()) };
-        }
+    }
+    if (page_tools::touch(&v, touch) || changed) && loadable(&url_text(unsafe { v.web.URL() })) {
+        unsafe { drop(v.web.reload()) };
     }
     Ok(())
 }
@@ -1565,6 +1553,10 @@ fn begin_park(id: &str, since: u64) {
     if crashes::hold_park(&v, id, since) {
         return;
     }
+    // Nor with a download going: it would end with the view. It parks when the last ends.
+    if user_downloads::hold_park(id, since) {
+        return;
+    }
     let parked = Parked {
         url: url_text(unsafe { v.web.URL() }),
         snapshot: None,
@@ -1574,6 +1566,13 @@ fn begin_park(id: &str, since: u64) {
         destroy(v);
         emit(&app, "browser-parked", Id { id });
     }
+}
+
+/// Download `key` of a user's tab stops (user_downloads.rs).
+pub fn cancel_download(key: u64) -> Res<()> {
+    main_thread()?;
+    user_downloads::cancel(key);
+    Ok(())
 }
 
 pub fn close(id: &str) {
@@ -1652,6 +1651,23 @@ pub fn go(id: &str, to: Go) -> Res<()> {
     let v = view(id).ok_or(GONE)?;
     sent(&v);
     let web = &v.web;
+    // A page that never loaded has nothing for WebKit to reload: its address loads again, as
+    // Try Again does (a dev server that wasn't up yet).
+    if matches!(to, Go::Reload | Go::HardReload) {
+        let failed = v.delegate.ivars().failed.borrow().clone();
+        if let Some(page) = failed.and_then(|f| web_page(&f.url).ok()) {
+            // Hard: past the cache, as reloadFromOrigin is.
+            let policy = if to == Go::HardReload {
+                NSURLRequestCachePolicy::ReloadIgnoringLocalCacheData
+            } else {
+                NSURLRequestCachePolicy::UseProtocolCachePolicy
+            };
+            let request =
+                NSURLRequest::requestWithURL_cachePolicy_timeoutInterval(&page, policy, 60.0);
+            unsafe { web.loadRequest(&request) };
+            return Ok(());
+        }
+    }
     unsafe {
         match to {
             Go::Back => drop(web.goBack()),
