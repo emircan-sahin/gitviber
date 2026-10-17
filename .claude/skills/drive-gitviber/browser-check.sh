@@ -267,7 +267,7 @@ check_sessions() {
 }
 
 # A login kept in IndexedDB (as Firebase Auth does) comes back in another tab, with the store's
-# key path, index and kinds of value; a database with a Blob is named and left out.
+# key path, index and kinds of value; a database with a CryptoKey is named and left out.
 check_session_idb() {
   page si $URL_A/ || { record session_idb FAIL "tab new: $ERR"; return }
   SESSIONS+=(lc-idb)
@@ -275,13 +275,14 @@ check_session_idb() {
   local make="(async () => {
     const open = (name, version, fill) => new Promise((ok, no) => { const r = indexedDB.open(name, version); r.onupgradeneeded = () => fill(r.result); r.onsuccess = () => { r.result.close(); ok() }; r.onerror = () => no(r.error) });
     await open('gv-check', 3, (db) => { const s = db.createObjectStore('auth', { keyPath: 'id' }); s.createIndex('by_name', 'name'); s.put({ id: 'u1', name: 'alice', token: 'tok-idb', at: new Date(0), raw: new Uint8Array([1, 2, 3]) }); db.createObjectStore('plain').put('v', 'k') });
-    await open('gv-check-blob', 1, (db) => { db.createObjectStore('files').put(new Blob(['x']), 'f') });
+    const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 128 }, false, ['encrypt']);
+    await open('gv-check-key', 1, (db) => { db.createObjectStore('keys').put(key, 'k') });
     return 'made' })()"
   local made=$(value si $make)
   pass_if "IndexedDB made in the page" '[[ $made == made ]]' "$made $ERR"
   gbx --tab si session save lc-idb --force
-  pass_if "session save: IndexedDB kept, a Blob's database named" \
-    '(( RC == 0 )) && [[ $OUT == *"IndexedDB databases"* && $OUT == *"left out: gv-check-blob (holds a Blob"* ]]' "$OUT$ERR"
+  pass_if "session save: IndexedDB kept, a CryptoKey's database named" \
+    '(( RC == 0 )) && [[ $OUT == *"IndexedDB databases"* && $OUT == *"left out: gv-check-key (holds a CryptoKey"* ]]' "$OUT$ERR"
   gbx tab new si2 --session lc-idb && gbx --tab si2 wait --load
   local read="(async () => {
     const db = await new Promise((ok, no) => { const r = indexedDB.open('gv-check'); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error) });
@@ -652,7 +653,9 @@ check_clipboard_safe() {
 check_clipboard_tab() {
   page ct "$URL_A/clipframes?other=$SB" || { record clipboard_tab FAIL "tab new: $ERR"; return }
   gbx --tab ct snapshot -i
-  local same=$(py snapshot-ref '"Copy same"' <<<$OUT) cross=$(py snapshot-ref '"Copy cross"' <<<$OUT)
+  local same=$(py snapshot-ref '"Copy same"' <<<$OUT)
+  # A frame of another origin isn't in the snapshot: its button is clicked by where it is.
+  local cross=$(value ct "(r => Math.round(r.x + 30) + ',' + Math.round(r.y + 20))(document.getElementById('cross').getBoundingClientRect())")
   local read="(async () => await navigator.clipboard.readText())()"
   gbx --tab ct click '#copy'
   local got=$(value ct $read)
