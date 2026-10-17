@@ -4,7 +4,7 @@
 //! gets the same, as a tab of the workspace next to its opener (`open_for_user`): the app page
 //! adds it on `browser-popup`.
 
-use super::{agent, asked, create, emit, url_text, view, Delegate, Id, Look, GONE, VIEWS};
+use super::{agent, ask, asked, create, emit, url_text, view, Delegate, Id, Look, GONE, VIEWS};
 use crate::browser::{loadable, notes, popups};
 use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadOnly, Message};
@@ -125,8 +125,11 @@ fn open_for_user(opener: &Delegate, config: &WKWebViewConfiguration, url: &str) 
         return Popup::Blocked;
     }
     let id = NSUUID::new().UUIDString().to_string().to_lowercase();
+    // Light or dark as the opener's agent set it, as an agent's popup has it (agent.rs `adopt`).
+    let was = asked(&d.id);
+    ask(&id, |a| *a = was.clone());
     let look = Look {
-        dark: asked(&d.id).dark,
+        dark: was.dark,
         ..Look::default()
     };
     give(opener, config);
@@ -146,7 +149,10 @@ fn open_for_user(opener: &Delegate, config: &WKWebViewConfiguration, url: &str) 
             );
             Popup::Tab(Retained::into_super(v.web))
         }
-        Err(_) => Popup::Blocked,
+        Err(_) => {
+            super::forget(&id);
+            Popup::Blocked
+        }
     }
 }
 

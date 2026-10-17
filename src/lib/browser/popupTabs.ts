@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { browserApi } from "../api";
 import { listenHere } from "../app/settingsWindow";
 import { toast } from "../app/toast";
 import { type Selection, selectionKey } from "../repo/selection";
@@ -38,24 +39,36 @@ const keyOf = (id: string) => selectionKey({ kind: "browser", id, url: "" });
 export function usePopupTabs(tabs: readonly Tab[], activeKey: string | null, open: (sel: Selection, beside: string, kin: ReadonlySet<string>) => void, setActive: (key: string) => void) {
   const queue = waiting.use();
   useEffect(() => {
-    const mine = queue.filter((p) => tabs.some((t) => t.key === keyOf(p.opener)));
-    if (!mine.length) return;
-    waiting.set(queue.filter((p) => !mine.includes(p)));
-    for (const { id, opener, url } of mine) {
-      const beside = keyOf(opener);
+    if (!queue.length) return;
+    const opener = (p: Popup) => tabs.find((t) => t.key === keyOf(p.opener));
+    waiting.set([]);
+    for (const p of queue) {
+      const from = opener(p);
+      // Its opener went before the tab could be made: nothing would ever show or close the view.
+      if (!from) {
+        void browserApi.close(p.id).catch(() => {});
+        continue;
+      }
+      const beside = from.key;
       const kin = new Set([...openers].filter(([, o]) => o === beside).map(([k]) => k));
-      openers.set(keyOf(id), beside);
-      open({ kind: "browser", id, url }, beside, kin);
+      openers.set(keyOf(p.id), beside);
+      // As the opener is shown, light or dark (a device's user agent would load the popup again).
+      const scheme = from.sel.kind === "browser" ? from.sel.scheme : undefined;
+      open({ kind: "browser", id: p.id, url: p.url, ...(scheme && { scheme }) }, beside, kin);
     }
   }, [queue, tabs, open]);
 
   const was = useRef(activeKey);
+  const placed = useRef(new Set<string>());
   useEffect(() => {
     const closed = was.current;
     const back = openerOf(closed, tabs, openers);
     was.current = activeKey;
-    if (!back || !closed) return;
-    openers.delete(closed);
-    setActive(back);
+    // A popup's tab closed (placed once, then gone) is forgotten.
+    for (const key of openers.keys()) {
+      if (tabs.some((t) => t.key === key)) placed.current.add(key);
+      else if (placed.current.delete(key)) openers.delete(key);
+    }
+    if (back) setActive(back);
   }, [tabs, activeKey, setActive]);
 }
