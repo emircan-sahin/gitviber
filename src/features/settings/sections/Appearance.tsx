@@ -23,6 +23,7 @@ import {
   WINDOW_OPACITY,
 } from "@/lib/settings";
 import { Segmented } from "@/components/ui/segmented";
+import { Switch } from "@/components/ui/switch";
 import { Field, FontPicker, Group, OptionSelect, Slider } from "@/features/settings/controls";
 
 // What the System theme follows.
@@ -127,6 +128,9 @@ export function AppearanceSection() {
             options={UI_SCALES.map((z) => ({ value: String(z), label: `${Math.round(z * 100)}%` }))}
             variant="field"
           />
+        </Field>
+        <Field label="Projects in the sidebar" hint="List your projects at the top of the left panel, to switch with one click. The project menu in the top bar stays.">
+          <Switch checked={s.sidebarProjects} onChange={(v) => updateSettings({ sidebarProjects: v })} />
         </Field>
       </Group>
     </>

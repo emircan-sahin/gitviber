@@ -12,13 +12,15 @@ import { copyText } from "@/lib/app/clipboard";
 import { revealProject } from "@/lib/app/openIn";
 import { RowAction } from "@/components/RowAction";
 import { useAsyncValue } from "@/hooks/useAsyncValue";
+import type { Away } from "./projectAway";
 
 export interface ProjectListProps {
   recent: string[];
   /** The open project: it can't be removed, and opening it again does nothing. */
   current?: string;
-  /** The open project is entered through a linked worktree: its row then opens the main folder, as a row of another project would. */
-  away?: { folder: string; mainBranch: string | null };
+  away?: Away;
+  /** One line a row, without the hover actions (the context menu has them): for a narrow sidebar. */
+  compact?: boolean;
   onOpen: (path: string) => void;
   onForget: (path: string) => void;
   onReorder: (list: string[]) => void;
@@ -46,7 +48,7 @@ function useProjectInfo(paths: string[]) {
  * The saved projects, shared by the top bar's switcher and the welcome screen. Rows open on
  * click or ↵, reorder by dragging, and have hover actions and a right-click menu (also ⇧F10).
  */
-export function ProjectList({ recent, current, away, onOpen, onForget, onReorder, onLocate, onTerminal }: ProjectListProps) {
+export function ProjectList({ recent, current, away, compact, onOpen, onForget, onReorder, onLocate, onTerminal }: ProjectListProps) {
   const info = useProjectInfo(recent);
   // Folders that are gone sink below the rest, each group in the user's own order.
   const gone = (p: string) => info.get(p)?.exists === false;
@@ -88,6 +90,7 @@ export function ProjectList({ recent, current, away, onOpen, onForget, onReorder
             current={p === current}
             away={p === current ? away : undefined}
             first={i === 0}
+            compact={compact}
             tabStop={p === tabStop}
             onOpen={onOpen}
             onForget={onForget}
@@ -107,6 +110,7 @@ function ProjectRow({
   current,
   away,
   first,
+  compact,
   tabStop,
   onOpen,
   onForget,
@@ -117,8 +121,9 @@ function ProjectRow({
   path: string;
   info: ProjectInfo | undefined;
   current: boolean;
-  away?: { folder: string; mainBranch: string | null };
+  away?: Away;
   first: boolean;
+  compact?: boolean;
   tabStop: boolean;
   onOpen: (p: string) => void;
   onForget: (p: string) => void;
@@ -133,6 +138,7 @@ function ProjectRow({
   const github = info?.github;
   // Opening the open project does nothing, unless the window is in one of its worktrees.
   const here = current && !away;
+  const detail = missing ? "Folder not found" : away ? `In worktree ${away.folder}` : path;
   const openLabel = away ? `Open the main folder${away.mainBranch ? `, on ${away.mainBranch}` : ""}` : "Open";
   return (
     <ContextMenu>
@@ -142,22 +148,24 @@ function ProjectRow({
           role="button"
           tabIndex={tabStop ? 0 : -1}
           data-project={path}
+          title={compact ? detail : undefined}
           aria-current={current || undefined}
           onClick={guard(() => (missing ? onLocate(path) : !here && onOpen(path)))}
           className={cn(
-            "group flex h-9 items-center gap-2.5 rounded-sm px-2 outline-none select-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
+            "group flex items-center rounded-sm px-2 outline-none select-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
+            compact ? "h-7 gap-2" : "h-9 gap-2.5",
             here ? "cursor-default bg-active" : "cursor-pointer hover:bg-hover focus:bg-hover data-[state=open]:bg-hover",
             away && "bg-active",
             dragging && "cursor-grabbing bg-elevated shadow-lg ring-1 shadow-black/40 ring-border-strong",
           )}
         >
-          <ProjectTile name={name} large className={cn(missing && "opacity-45")} />
+          <ProjectTile name={name} large={!compact} className={cn(missing && "opacity-45")} />
           <div className="min-w-0 flex-1">
             <div className={cn("truncate text-[12.5px] font-medium", missing && "text-muted-foreground")}>{name}</div>
-            <div className={cn("truncate text-[10.5px]", missing ? "text-conflict" : "text-subtle")}>{missing ? "Folder not found" : away ? `In worktree ${away.folder}` : path}</div>
+            {!compact && <div className={cn("truncate text-[10.5px]", missing ? "text-conflict" : "text-subtle")}>{detail}</div>}
           </div>
           {current && <Check className="size-3.5 shrink-0 text-primary group-focus-within:hidden group-hover:hidden" />}
-          {!dragging && (
+          {!dragging && !compact && (
             <div className="hidden shrink-0 items-center group-focus-within:flex group-hover:flex">
               {missing ? (
                 <RowAction variant="subtle" stopPropagation label="Locate…" onClick={() => onLocate(path)}>

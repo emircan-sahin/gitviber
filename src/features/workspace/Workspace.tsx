@@ -53,6 +53,8 @@ import { SearchView } from "@/features/explorer/SearchView";
 import { ExplorerPanes } from "@/features/obsidian/VaultSection";
 import { TerminalPanel, useTerminalSetup } from "@/features/terminal/TerminalPanel";
 import { TerminalRestoreOffer } from "@/features/terminal/TerminalFind";
+import { SidebarProjects } from "@/features/projects/SidebarProjects";
+import { awayOf } from "@/features/projects/projectAway";
 import { TopBar } from "@/features/topbar/TopBar";
 import { Viewer } from "@/features/viewer/Viewer";
 import { prefetchSelection, resetPairCache } from "@/features/viewer/diffPairs";
@@ -62,6 +64,7 @@ import { openNotes, useNoteCheck } from "@/lib/review/noteStore";
 import { copyNotes, pendingNotes, sendNotes } from "@/features/review/ReviewNotes";
 import { openGuide } from "@/features/review/guides";
 import { useAgentTabs } from "@/lib/browser/agentTabs";
+import { openTerminal } from "@/lib/terminal/terminals";
 
 const LIST_TABS = ["changes", "history", "pulls", "issues"] as const;
 type ListTab = (typeof LIST_TABS)[number];
@@ -558,6 +561,9 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                 </Tip>
                 <CollapseButton side="left" onClick={() => toggle("list", "git")} />
               </PanelHeader>
+              {s.sidebarProjects && (
+                <SidebarProjects recent={recent} current={main} away={awayOf(root, main, repo.worktrees)} onOpen={onOpenRepo} onForget={onForgetRepo} onReorder={onReorderRepos} onLocate={onLocateRepo} onTerminal={(p) => openTerminal(p === main ? root : p)} />
+              )}
               <div className="min-h-0 flex-1">
                 {reviewing && (
                   <BranchReview

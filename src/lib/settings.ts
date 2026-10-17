@@ -301,6 +301,8 @@ export interface Settings {
   openInCustom: CustomApp[];
   /** List only the user's own "Open in" entries. */
   openInHideBuiltins: boolean;
+  /** The projects are listed at the top of the left panel, one click each, as well as in the top bar's switcher. */
+  sidebarProjects: boolean;
 }
 
 /** What can notify, each with its own switch (Settings → Notifications). */
@@ -400,6 +402,7 @@ const DEFAULTS: Settings = {
   openInApp: "",
   openInCustom: [],
   openInHideBuiltins: false,
+  sidebarProjects: false,
 };
 
 // v2: the Monaco-era settings had different fonts and sizes.
@@ -504,6 +507,7 @@ function load(): Settings {
       ? s.openInCustom.filter((c: CustomApp) => c && typeof c.id === "string" && typeof c.name === "string" && typeof c.command === "string")
       : DEFAULTS.openInCustom;
     if (typeof s.openInHideBuiltins !== "boolean") s.openInHideBuiltins = DEFAULTS.openInHideBuiltins;
+    if (typeof s.sidebarProjects !== "boolean") s.sidebarProjects = DEFAULTS.sidebarProjects;
     return s;
   } catch {
     return DEFAULTS;
