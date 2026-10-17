@@ -46,6 +46,7 @@ const CONSOLE: &str = include_str!("../scripts/console.js");
 const NETWORK: &str = include_str!("../scripts/network.js");
 const COMPONENTS: &str = include_str!("../scripts/components.js");
 const CLIPBOARD: &str = include_str!("../scripts/clipboard.js");
+const TOUCH: &str = include_str!("../scripts/touch.js");
 /// In GitViber's world, in every frame of an agent's tab: whether a password field has focus,
 /// for its panel (panel.rs `settle`). The page can't post to it.
 const SECRET: &str = r#"(() => {
@@ -127,6 +128,7 @@ pub(super) fn install(
     content: &WKUserContentController,
     id: &str,
     agent: Option<&str>,
+    touch: bool,
     mtm: MainThreadMarker,
 ) {
     let messages = Messages::alloc(mtm).set_ivars(MessagesIvars { id: id.into() });
@@ -153,15 +155,20 @@ pub(super) fn install(
             );
         }
     }
-    add_scripts(content, agent, mtm);
+    add_scripts(content, agent, touch, mtm);
 }
 
 /// network.js in an agent's tab, whatever the console switch says (an agent asks for its
 /// network itself), clipboard.js answering to `agent`'s key only, and SECRET; console.js while
-/// the console is on. Each in every frame: a frame's errors and requests (a payment form's, an
+/// the console is on, and touch.js in a touch device's. Each in every frame: a frame's errors and requests (a payment form's, an
 /// embedded login's) are often what went wrong, and reach the tab's one log tagged with it.
-fn add_scripts(content: &WKUserContentController, agent: Option<&str>, mtm: MainThreadMarker) {
-    for (source, main_frame, world) in scripts(agent, CAPTURE.get()) {
+fn add_scripts(
+    content: &WKUserContentController,
+    agent: Option<&str>,
+    touch: bool,
+    mtm: MainThreadMarker,
+) {
+    for (source, main_frame, world) in scripts(agent, CAPTURE.get(), touch) {
         let world = match world {
             World::Page => unsafe { WKContentWorld::pageWorld(mtm) },
             World::Ours => ours(mtm),
@@ -177,7 +184,7 @@ enum World {
 }
 
 /// The scripts `add_scripts` puts in: source, main frame only, and world.
-fn scripts(agent: Option<&str>, console: bool) -> Vec<(String, bool, World)> {
+fn scripts(agent: Option<&str>, console: bool, touch: bool) -> Vec<(String, bool, World)> {
     let mut out = vec![];
     if let Some(key) = agent {
         out.push((NETWORK.to_string(), false, World::Page));
@@ -191,6 +198,10 @@ fn scripts(agent: Option<&str>, console: bool) -> Vec<(String, bool, World)> {
     }
     if console {
         out.push((CONSOLE.to_string(), false, World::Page));
+    }
+    // Last: its listeners come after the others', as the page's own come after it.
+    if touch {
+        out.push((TOUCH.to_string(), false, World::Page));
     }
     out
 }
@@ -237,8 +248,25 @@ pub fn capture(on: bool, views: &[View]) {
         unsafe { content.removeAllUserScripts() };
         let routed = super::agent::routed(&v.delegate.ivars().id);
         let key = routed.then_some(&*v.web.ivars().clipboard);
-        add_scripts(&content, key, mtm);
+        add_scripts(&content, key, v.delegate.ivars().touch.get(), mtm);
     }
+}
+
+/// The tab as a touch device (touch.js) or not, from its next load; whether that changed it.
+pub(super) fn touch(v: &View, on: bool) -> bool {
+    let Ok(mtm) = main_thread() else {
+        return false;
+    };
+    if v.delegate.ivars().touch.replace(on) == on {
+        return false;
+    }
+    let content = unsafe { v.web.configuration().userContentController() };
+    // There's no taking one script out: all go, and what stays comes back.
+    unsafe { content.removeAllUserScripts() };
+    let routed = super::agent::routed(&v.delegate.ivars().id);
+    let key = routed.then_some(&*v.web.ivars().clipboard);
+    add_scripts(&content, key, on, mtm);
+    true
 }
 
 /// Turns network.js off in the page that runs it (it checks this).
@@ -260,7 +288,7 @@ pub(super) fn release_network(v: &View) {
         v.web
             .evaluateJavaScript_completionHandler(&NSString::from_str(NETWORK_OFF), None);
     }
-    add_scripts(&content, None, mtm);
+    add_scripts(&content, None, v.delegate.ivars().touch.get(), mtm);
     v.delegate.ivars().network.take();
 }
 
@@ -824,7 +852,7 @@ mod tests {
         let has = |all: &[(String, bool, World)], source: &str| {
             all.iter().find(|s| s.0 == source).map(|s| (s.1, s.2))
         };
-        let agents = scripts(Some("made-up-key"), true);
+        let agents = scripts(Some("made-up-key"), true, false);
         assert_eq!(has(&agents, CONSOLE), Some((false, World::Page)));
         assert_eq!(has(&agents, NETWORK), Some((false, World::Page)));
         assert_eq!(has(&agents, SECRET), Some((false, World::Ours)));
@@ -833,11 +861,16 @@ mod tests {
             agents.iter().all(|s| !s.1),
             "no script for the main frame only"
         );
-        let users = scripts(None, true);
+        let users = scripts(None, true, false);
         assert_eq!(users.len(), 1);
         assert_eq!(has(&users, CONSOLE), Some((false, World::Page)));
-        assert!(scripts(None, false).is_empty());
-        assert_eq!(scripts(Some("k"), false).len(), 3);
+        assert!(scripts(None, false, false).is_empty());
+        assert_eq!(scripts(Some("k"), false, false).len(), 3);
+        // A touch device's tab, user's or agent's, has touch.js, after the rest.
+        let phone = scripts(Some("k"), true, true);
+        assert_eq!(has(&phone, TOUCH), Some((false, World::Page)));
+        assert_eq!(phone.last().map(|s| s.0.as_str()), Some(TOUCH));
+        assert_eq!(scripts(None, false, true).len(), 1);
     }
 
     /// A tab handed to the user turns network.js off with what the script itself checks.

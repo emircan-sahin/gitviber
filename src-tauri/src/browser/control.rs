@@ -213,7 +213,12 @@ Page tools
                                with an id (a frame's naming it); the newest 300 requests and 500
                                other loads
   network <id>                 One in full: headers, bodies, WebSocket frames
-  device <name|WxH|off>        Show the page as a device; `device --list` names them
+  device <name|WxH|off>        Show the page as a device; `device --list` names them. A phone or
+                               tablet also has touch: touch events and maxTouchPoints, (pointer:
+                               coarse) and (hover: none) in matchMedia and in the page's own
+                               stylesheets (not another origin's), and clicks arrive as taps
+                               (touchstart/touchend before the click) with no hovering. A WxH
+                               size keeps the mouse
   appearance light|dark|auto   The page's prefers-color-scheme; auto is the app's
   dialogs accept|dismiss       How the page's alert, confirm and prompt are answered while a
                                command runs on it; dismiss unless told. One the user has open
@@ -1710,6 +1715,8 @@ pub struct AgentScreen {
     pub h: f64,
     pub dpr: Option<f64>,
     pub ua: Option<String>,
+    /// A phone or a tablet: the page finds a touch screen (scripts/touch.js).
+    pub touch: bool,
     /// Responsive's size, for the tab.
     pub size: Option<(u32, u32)>,
 }
@@ -1726,6 +1733,7 @@ struct DeviceSpec {
     h: f64,
     dpr: f64,
     ua: String,
+    platform: String,
     safe: Insets,
 }
 
@@ -1767,6 +1775,7 @@ pub fn device(arg: &str) -> Result<Option<AgentScreen>, String> {
                 h: f64::from(h),
                 dpr: None,
                 ua: None,
+                touch: false,
                 size: Some((w, h)),
             }));
         }
@@ -1780,6 +1789,7 @@ pub fn device(arg: &str) -> Result<Option<AgentScreen>, String> {
         h: d.h - d.safe.top - d.safe.bottom,
         dpr: (d.dpr > 0.0).then_some(d.dpr),
         ua: (!d.ua.is_empty()).then_some(d.ua),
+        touch: d.platform != "web",
         name: d.name,
         size: None,
     }))
@@ -3045,12 +3055,14 @@ mod tests {
         assert_eq!((pro.w, pro.h), (402.0, 874.0 - 62.0 - 34.0));
         assert_eq!(pro.dpr, Some(3.0));
         assert!(pro.ua.as_deref().unwrap().contains("iPhone"));
+        assert!(pro.touch, "a phone has touch");
+        assert!(device("Pixel 8").unwrap().is_some_and(|d| d.touch));
         let sized = device("1280x800").unwrap().unwrap();
         assert_eq!(
             (sized.w, sized.h, sized.size),
             (1280.0, 800.0, Some((1280, 800)))
         );
-        assert!(sized.ua.is_none() && sized.dpr.is_none());
+        assert!(sized.ua.is_none() && sized.dpr.is_none() && !sized.touch);
         assert!(device("10x10").is_err());
         assert!(device("Nokia 3310").is_err());
         assert_eq!(device("OFF"), Ok(None));

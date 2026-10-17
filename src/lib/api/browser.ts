@@ -118,15 +118,15 @@ function inOrder<T>(id: string, run: () => Promise<T>): Promise<T> {
 /** The browser tab's native view (commands/browser.rs); macOS only for now, the rest fail elsewhere. */
 export const browserApi = {
   /**
-   * Tab `id`'s view in worktree `root`, loading `url` as the tab shows it (its device's `ua`, `zoom`, `dark`: null for as
+   * Tab `id`'s view in worktree `root`, loading `url` as the tab shows it (its device's `ua` and `touch`, `zoom`, `dark`: null for as
    * the app), hidden until placed; one already open stays as it is.
    */
-  create: (id: string, root: string, url: string, ua: string | null, zoom: number | null, dark: boolean | null) =>
-    inOrder(id, () => invoke<BrowserCreated>("browser_create", { id, root, url, ua, zoom, dark })),
+  create: (id: string, root: string, url: string, ua: string | null, touch: boolean, zoom: number | null, dark: boolean | null) =>
+    inOrder(id, () => invoke<BrowserCreated>("browser_create", { id, root, url, look: { ua, touch, zoom, dark } })),
   /** `screen`: the device it shows, in device mode. */
   place: (id: string, rect: NativeRect, screen: NativeScreen | null) => invoke<void>("browser_place", { id, rect, screen }),
-  /** The device's user agent (null: WebKit's own), the page loaded again when it changes. */
-  setAgent: (id: string, ua: string | null) => invoke<void>("browser_set_agent", { id, ua }),
+  /** The device's user agent (null: WebKit's own) and whether it has touch, the page loaded again when either changes. */
+  setAgent: (id: string, ua: string | null, touch: boolean) => invoke<void>("browser_set_agent", { id, ua, touch }),
   /** `aside`: only while something of this page's is drawn over it; otherwise its tab is out of sight, and it may park. */
   hide: (id: string, aside: boolean) => invoke<void>("browser_hide", { id, aside }),
   close: (id: string) => inOrder(id, () => invoke<void>("browser_close", { id })),

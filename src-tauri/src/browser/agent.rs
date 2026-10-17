@@ -1524,7 +1524,10 @@ impl Tab {
     fn device(&self, screen: Option<AgentScreen>) -> Res<Reply> {
         let shown = screen.as_ref().map_or_else(
             || "itself".into(),
-            |s| format!("{} ({}×{})", s.name, s.w, s.h),
+            |s| {
+                let touch = if s.touch { ", with touch" } else { "" };
+                format!("{} ({}×{}){touch}", s.name, s.w, s.h)
+            },
         );
         let id = self.id.clone();
         main(&self.app, move |app| super::agent_device(app, &id, screen))?;

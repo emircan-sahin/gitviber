@@ -70,6 +70,9 @@ export function deviceOf(choice: DeviceChoice): Device | null {
   return { name: RESPONSIVE, w, h, dpr: 0, ua: "", radius: 0, safe: NONE, cutout: null, bezel: 0, platform: "web" };
 }
 
+/** Whether the device has a touch screen: a phone or a tablet, not Responsive. */
+export const hasTouch = (device: Device) => device.platform !== "web";
+
 const isSide = (v: unknown) => v === undefined || (typeof v === "number" && Number.isFinite(v) && v > 0);
 
 /** What a stored tab may hold as its device. */

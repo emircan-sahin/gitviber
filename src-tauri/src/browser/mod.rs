@@ -77,11 +77,13 @@ pub struct PageState {
     pub committed: bool,
 }
 
-/// How a tab shows its page from its first load: its device's user agent, its zoom (outside
-/// device mode) and light or dark (None: as the app).
-#[derive(Clone, Debug, Default, PartialEq)]
+/// How a tab shows its page from its first load: its device's user agent and whether it has
+/// touch, its zoom (outside device mode) and light or dark (None: as the app).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
 pub struct Look {
     pub ua: Option<String>,
+    pub touch: bool,
     pub zoom: Option<f64>,
     pub dark: Option<bool>,
 }
@@ -392,7 +394,7 @@ mod other {
     pub fn place(_: &str, _: Rect, _: Option<Screen>) -> Res<()> {
         Err(UNSUPPORTED.into())
     }
-    pub fn set_agent(_: &str, _: Option<&str>) -> Res<()> {
+    pub fn set_agent(_: &str, _: Option<&str>, _: bool) -> Res<()> {
         Err(UNSUPPORTED.into())
     }
     pub fn hide(_: &str, _: bool) {}

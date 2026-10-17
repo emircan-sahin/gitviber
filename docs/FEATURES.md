@@ -180,9 +180,11 @@ work where you read it.
 ### Device mode
 
 `⇧⌘M` draws a phone or tablet around the page, notch and corners included, and gives the page that
-device's width, pixel ratio and user agent, upright or turned. Responsive takes any size you drag it
-to. It's still your Mac's browser engine with a mouse: no touch events, hover still works, and
-`<meta name=viewport>` is ignored.
+device's width, pixel ratio and user agent, upright or turned. A phone or tablet also has touch: the
+page finds touch events, `maxTouchPoints`, `(pointer: coarse)` and `(hover: none)` (in `matchMedia`
+and in its own stylesheets, not another origin's), and your mouse reaches it as a finger, a click as
+a tap. Responsive takes any size you drag it to and keeps the mouse. It's still your Mac's browser
+engine: `:hover` follows the real pointer, and `<meta name=viewport>` is ignored.
 
 ### Ask the agent about the page
 

@@ -623,6 +623,8 @@ struct DelegateIvars {
     hidden_at: Cell<Option<Instant>>,
     /// The device it shows (device mode), as last placed.
     screen: Cell<Option<Screen>>,
+    /// The device has touch (scripts/touch.js is in its page scripts).
+    touch: Cell<bool>,
     /// What the page logged (scripts/console.js), and whether a `browser-console` is on its way.
     console: RefCell<Log>,
     console_pending: Cell<bool>,
@@ -1007,6 +1009,7 @@ impl Delegate {
             timer: RefCell::default(),
             hidden_at: Cell::new(None),
             screen: Cell::new(None),
+            touch: Cell::new(false),
             console: RefCell::default(),
             console_pending: Cell::new(false),
             network: RefCell::default(),
@@ -1255,7 +1258,7 @@ pub fn create(
         }
         // Its own, so none of the app page's scripts (Tauri's IPC) reach this page.
         let content = WKUserContentController::new(mtm);
-        page_tools::install(&content, id, agent.then_some(&*clipboard), mtm);
+        page_tools::install(&content, id, agent.then_some(&*clipboard), look.touch, mtm);
         config.setUserContentController(&content);
         let preferences = config.preferences();
         preferences.setJavaScriptCanOpenWindowsAutomatically(false);
@@ -1289,6 +1292,7 @@ pub fn create(
         NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
     );
     let delegate = Delegate::new(mtm, id, window.app_handle().clone(), &web);
+    delegate.ivars().touch.set(look.touch);
     agent::mute_new(&web, id);
     unsafe {
         web.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate)));
@@ -1405,20 +1409,21 @@ fn shape(v: &View, screen: Option<Screen>) {
     round(&v.host, radius, screen.map_or(every, |s| s.corners));
 }
 
-/// The device's user agent, or WebKit's own (None); a change loads the page again, as a server
-/// may answer another one.
-pub fn set_agent(id: &str, ua: Option<&str>) -> Res<()> {
+/// The device's user agent, or WebKit's own (None), and whether it has touch; a change loads
+/// the page again, as a server may answer another one and touch.js goes in at a document's start.
+pub fn set_agent(id: &str, ua: Option<&str>, touch: bool) -> Res<()> {
     main_thread()?;
     let v = view(id).ok_or(GONE)?;
     let now = unsafe { v.web.customUserAgent() }.map(|s| s.to_string());
-    if now.as_deref().filter(|s| !s.is_empty()) != ua {
+    let changed = now.as_deref().filter(|s| !s.is_empty()) != ua;
+    if changed {
         unsafe {
             v.web
                 .setCustomUserAgent(ua.map(NSString::from_str).as_deref())
         };
-        if loadable(&url_text(unsafe { v.web.URL() })) {
-            unsafe { drop(v.web.reload()) };
-        }
+    }
+    if (page_tools::touch(&v, touch) || changed) && loadable(&url_text(unsafe { v.web.URL() })) {
+        unsafe { drop(v.web.reload()) };
     }
     Ok(())
 }

@@ -206,7 +206,7 @@ typeset -A NEEDS=(
   # Acting as a person could, stable refs, the change line, reading in parts, honest output.
   stale_ref "fails as stale" covered "covered by" smooth_scroll "covered by" fill_honest "check | uncheck"
   change_line "→ no DOM change" find_get "find <|get styles|-o <file>" screenshot_1x "--clip|--scale|--refs"
-  screenshot_full "--full"
+  screenshot_full "--full" touch "touchstart"
   untrusted "--reveal" secret "--secret" frames "frame of the page's origin"
   # Native input.
   trusted "--synthetic" hover "CSS :hover applies" keys "key down <key>|--hold"
@@ -492,6 +492,26 @@ check_screenshot_full() {
   pass_if "screenshot --full takes no --clip" '(( RC != 0 ))' "exit $RC: $ERR"
   rm -f $files
   close full
+}
+
+# What a page tells of its input: the first row is touch's, the second the mouse's.
+check_touch() {
+  page touch $URL_A/touch || { record touch FAIL "tab new: $ERR"; return }
+  local probe='`${navigator.maxTouchPoints} ${"ontouchstart" in window} ${matchMedia("(pointer: coarse)").matches} ${matchMedia("(hover: none)").matches} ${getComputedStyle(document.getElementById("probe")).color}`'
+  gbx --tab touch device iPhone 15
+  local seen=$(value touch $probe)
+  pass_if "device: a phone has touch" '[[ $seen == "5 true true true rgb(255, 0, 0)" ]]' "$seen ($OUT$ERR)"
+  gbx --tab touch click '#tap'
+  local log=$(value touch 'log_.join(" ")')
+  pass_if "device: a click is a tap" '[[ $log == "pointerdown:touch touchstart mousedown pointerup:touch touchend mouseup click" ]]' "$log"
+  gbx --tab touch device 1280x800
+  seen=$(value touch $probe)
+  pass_if "device WxH: the mouse stays" '[[ $seen == "0 false false false rgb(0, 128, 0)" ]]' "$seen"
+  gbx --tab touch click '#tap'
+  log=$(value touch 'log_.join(" ")')
+  pass_if "device WxH: a click is a click" '[[ $log != *touch* && $log == *click ]]' "$log"
+  gbx --tab touch device off
+  close touch
 }
 
 check_untrusted() {
