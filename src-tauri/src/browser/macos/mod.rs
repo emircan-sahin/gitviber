@@ -1096,6 +1096,8 @@ pub fn create(
         config.setUserContentController(&content);
         let preferences = config.preferences();
         preferences.setJavaScriptCanOpenWindowsAutomatically(false);
+        // As the app page's own (display.rs): WebKit's default halves a game's frames at 120Hz.
+        crate::display::unlock_preferences(&preferences);
         if agent && !page_tools::no_async_clipboard(&preferences) {
             eprintln!(
                 "browser: an agent's tab keeps WebKit's async clipboard; its script guards it"
