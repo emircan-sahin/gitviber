@@ -384,7 +384,8 @@ check_idle_park() {
 configure() {
   js "const s = JSON.parse(localStorage.getItem('gitviber.settings.v2') || '{}');
     const args = { liveHidden: ${1:-s.browserLiveHidden ?? 2}, parkAfterMin: s.browserParkAfterMin ?? 10,
-      console: s.browserConsole ?? true, agentControl: true, agentDrawn: s.browserAgentDrawn ?? 12 };
+      console: s.browserConsole ?? true, agentControl: true, agentDrawn: s.browserAgentDrawn ?? 12,
+      agentMuted: s.browserMuteAgentTabs ?? true };
     const call = () => window.__TAURI_INTERNALS__.invoke('browser_configure', args);
     try { await call(); } catch (e) {
       if (!String(e).includes('agentDrawn')) throw e;
