@@ -180,9 +180,11 @@ work where you read it.
 ### Device mode
 
 `⇧⌘M` draws a phone or tablet around the page, notch and corners included, and gives the page that
-device's width, pixel ratio and user agent, upright or turned. Responsive takes any size you drag it
-to. It's still your Mac's browser engine with a mouse: no touch events, hover still works, and
-`<meta name=viewport>` is ignored.
+device's width, pixel ratio and user agent, upright or turned. A phone or tablet also has touch: the
+page finds touch events, `maxTouchPoints`, `(pointer: coarse)` and `(hover: none)` (in `matchMedia`
+and in its own stylesheets, not another origin's), and your mouse reaches it as a finger, a click as
+a tap. Responsive takes any size you drag it to and keeps the mouse. It's still your Mac's browser
+engine: `:hover` follows the real pointer, and `<meta name=viewport>` is ignored.
 
 ### Ask the agent about the page
 
@@ -248,9 +250,10 @@ own, opened in the background without taking yours. `gitviber browser help` list
   the value back, and each action ends with a line of what changed: elements added or removed, a
   dialog, the address, console errors and requests.
 - **Reading.** The page as a tree whose refs stay across snapshots, `find`, `get` for one element's
-  text, HTML, value, attribute, styles or box, and frames of the page's origin.
-- **Screenshots** at the page's own size, of the viewport, one element or a clip, with `--refs` to
-  draw each control's ref on the picture.
+  text, HTML, value, attribute, styles or box, and frames of the page's origin (a CSS selector
+  reaches into one as `frame=<ref|css> >> <css>`, and `wait --frame` looks there).
+- **Screenshots** at the page's own size, of the viewport, one element, a clip or (`--full`) the
+  whole page in pictures of 2000 px, with `--refs` to draw each control's ref on the picture.
 - **Popups and downloads.** `window.open` and `target=_blank` open as tabs of the same pane, keeping
   `window.opener`, so sign-in and payment windows that talk back work. A download lands in a folder
   of the tab's own, its path in the agent's reply. `upload` answers a file chooser.

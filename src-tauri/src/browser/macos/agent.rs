@@ -316,6 +316,7 @@ fn live(app: &AppHandle, route: &Route, url: &str) -> Res<bool> {
             .ok_or("The window isn't ready.")?;
         let was = asked(&route.id);
         let look = Look {
+            touch: was.screen.as_ref().is_some_and(|s| s.touch),
             ua: was.screen.and_then(|s| s.ua),
             zoom: None,
             dark: was.dark,
@@ -740,7 +741,8 @@ pub fn agent_device(app: &AppHandle, id: &str, screen: Option<AgentScreen>) -> R
         w: s.size.map(|s| s.0),
         h: s.size.map(|s| s.1),
     });
-    set_agent(id, screen.as_ref().and_then(|s| s.ua.as_deref()))?;
+    let touch = screen.as_ref().is_some_and(|s| s.touch);
+    set_agent(id, screen.as_ref().and_then(|s| s.ua.as_deref()), touch)?;
     let off = screen.is_none();
     ask(id, |a| a.screen = screen);
     if off && super::can_set_dpr(&v.web) {

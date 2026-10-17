@@ -5,7 +5,7 @@ function wellFormed(_key, value) {
   return typeof value === "string" ? value.toWellFormed() : value;
 }
 
-const run = { snapshot, find, get, aim, focus, focused, click, fill, type, press, select, check, hover, scroll, exists, hasText, view, watch, changes };
+const run = { snapshot, find, get, aim, focus, focused, click, fill, type, press, select, check, hover, scroll, exists, hasText, view, tile, watch, changes };
 
 try {
   if (!Object.hasOwn(run, cmd)) throw new Error(`No ${cmd} here`);

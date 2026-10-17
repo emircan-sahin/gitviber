@@ -128,8 +128,10 @@ fn open_for_user(opener: &Delegate, config: &WKWebViewConfiguration, url: &str) 
     // Light or dark as the opener's agent set it, as an agent's popup has it (agent.rs `adopt`).
     let was = asked(&d.id);
     ask(&id, |a| *a = was.clone());
+    // A phone's popup is a phone's page too.
     let look = Look {
         dark: was.dark,
+        touch: d.touch.get(),
         ..Look::default()
     };
     give(opener, config);

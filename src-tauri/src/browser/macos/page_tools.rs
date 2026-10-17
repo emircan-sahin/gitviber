@@ -5,7 +5,7 @@
 
 use super::{emit, main_thread, url_text, view, Delegate, View, WebView, GONE};
 use crate::browser::console::{Counts, Entry};
-use crate::browser::marks::{picture_size, place_tag, Label, Picture, Taken};
+use crate::browser::marks::{picture_size, place_tag, Cut, Label, Picture, Taken};
 use crate::browser::network;
 use crate::browser::picks::{self, Bounds, Pick};
 use crate::browser::{cut, epoch_ms};
@@ -24,8 +24,8 @@ use objc2_app_kit::{
     NSImageInterpolation, NSRectFill, NSStringDrawing,
 };
 use objc2_foundation::{
-    ns_string, NSArray, NSDictionary, NSError, NSNumber, NSObjectProtocol, NSPoint, NSRect, NSSize,
-    NSString, NSTimer, NSUUID,
+    ns_string, NSArray, NSData, NSDictionary, NSError, NSNumber, NSObjectProtocol, NSPoint, NSRect,
+    NSSize, NSString, NSTimer, NSUUID,
 };
 use objc2_web_kit::{
     WKContentWorld, WKPreferences, WKScriptMessage, WKScriptMessageHandler,
@@ -46,6 +46,7 @@ const CONSOLE: &str = include_str!("../scripts/console.js");
 const NETWORK: &str = include_str!("../scripts/network.js");
 const COMPONENTS: &str = include_str!("../scripts/components.js");
 const CLIPBOARD: &str = include_str!("../scripts/clipboard.js");
+const TOUCH: &str = include_str!("../scripts/touch.js");
 /// In GitViber's world, in every frame of an agent's tab: whether a password field has focus,
 /// for its panel (panel.rs `settle`). The page can't post to it.
 const SECRET: &str = r#"(() => {
@@ -127,6 +128,7 @@ pub(super) fn install(
     content: &WKUserContentController,
     id: &str,
     agent: Option<&str>,
+    touch: bool,
     mtm: MainThreadMarker,
 ) {
     let messages = Messages::alloc(mtm).set_ivars(MessagesIvars { id: id.into() });
@@ -153,15 +155,20 @@ pub(super) fn install(
             );
         }
     }
-    add_scripts(content, agent, mtm);
+    add_scripts(content, agent, touch, mtm);
 }
 
 /// network.js in an agent's tab, whatever the console switch says (an agent asks for its
 /// network itself), clipboard.js answering to `agent`'s key only, and SECRET; console.js while
-/// the console is on. Each in every frame: a frame's errors and requests (a payment form's, an
+/// the console is on, and touch.js in a touch device's. Each in every frame: a frame's errors and requests (a payment form's, an
 /// embedded login's) are often what went wrong, and reach the tab's one log tagged with it.
-fn add_scripts(content: &WKUserContentController, agent: Option<&str>, mtm: MainThreadMarker) {
-    for (source, main_frame, world) in scripts(agent, CAPTURE.get()) {
+fn add_scripts(
+    content: &WKUserContentController,
+    agent: Option<&str>,
+    touch: bool,
+    mtm: MainThreadMarker,
+) {
+    for (source, main_frame, world) in scripts(agent, CAPTURE.get(), touch) {
         let world = match world {
             World::Page => unsafe { WKContentWorld::pageWorld(mtm) },
             World::Ours => ours(mtm),
@@ -177,7 +184,7 @@ enum World {
 }
 
 /// The scripts `add_scripts` puts in: source, main frame only, and world.
-fn scripts(agent: Option<&str>, console: bool) -> Vec<(String, bool, World)> {
+fn scripts(agent: Option<&str>, console: bool, touch: bool) -> Vec<(String, bool, World)> {
     let mut out = vec![];
     if let Some(key) = agent {
         out.push((NETWORK.to_string(), false, World::Page));
@@ -191,6 +198,10 @@ fn scripts(agent: Option<&str>, console: bool) -> Vec<(String, bool, World)> {
     }
     if console {
         out.push((CONSOLE.to_string(), false, World::Page));
+    }
+    // Last: its listeners come after the others', as the page's own come after it.
+    if touch {
+        out.push((TOUCH.to_string(), false, World::Page));
     }
     out
 }
@@ -237,8 +248,25 @@ pub fn capture(on: bool, views: &[View]) {
         unsafe { content.removeAllUserScripts() };
         let routed = super::agent::routed(&v.delegate.ivars().id);
         let key = routed.then_some(&*v.web.ivars().clipboard);
-        add_scripts(&content, key, mtm);
+        add_scripts(&content, key, v.delegate.ivars().touch.get(), mtm);
     }
+}
+
+/// The tab as a touch device (touch.js) or not, from its next load; whether that changed it.
+pub(super) fn touch(v: &View, on: bool) -> bool {
+    let Ok(mtm) = main_thread() else {
+        return false;
+    };
+    if v.delegate.ivars().touch.replace(on) == on {
+        return false;
+    }
+    let content = unsafe { v.web.configuration().userContentController() };
+    // There's no taking one script out: all go, and what stays comes back.
+    unsafe { content.removeAllUserScripts() };
+    let routed = super::agent::routed(&v.delegate.ivars().id);
+    let key = routed.then_some(&*v.web.ivars().clipboard);
+    add_scripts(&content, key, on, mtm);
+    true
 }
 
 /// Turns network.js off in the page that runs it (it checks this).
@@ -260,7 +288,7 @@ pub(super) fn release_network(v: &View) {
         v.web
             .evaluateJavaScript_completionHandler(&NSString::from_str(NETWORK_OFF), None);
     }
-    add_scripts(&content, None, mtm);
+    add_scripts(&content, None, v.delegate.ivars().touch.get(), mtm);
     v.delegate.ivars().network.take();
 }
 
@@ -644,21 +672,7 @@ pub fn agent_picture(id: &str, picture: Picture, done: Box<dyn FnOnce(Option<Tak
 /// then encoded.
 fn redrawn(image: &NSImage, size: (u32, u32), labels: &[Label], jpeg: bool) -> Option<Vec<u8>> {
     let (w, h) = (f64::from(size.0), f64::from(size.1));
-    let rep = unsafe {
-        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
-            NSBitmapImageRep::alloc(),
-            std::ptr::null_mut(),
-            size.0 as isize,
-            size.1 as isize,
-            8,
-            4,
-            true,
-            false,
-            NSDeviceRGBColorSpace,
-            0,
-            0,
-        )
-    }?;
+    let rep = bitmap(size)?;
     let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
     NSGraphicsContext::saveGraphicsState_class();
     NSGraphicsContext::setCurrentContext(Some(&context));
@@ -695,6 +709,30 @@ fn redrawn(image: &NSImage, size: (u32, u32), labels: &[Label], jpeg: bool) -> O
     }
     context.flushGraphics();
     NSGraphicsContext::restoreGraphicsState_class();
+    encode(&rep, jpeg)
+}
+
+/// An empty bitmap `size` pixels big.
+fn bitmap(size: (u32, u32)) -> Option<Retained<NSBitmapImageRep>> {
+    unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            size.0 as isize,
+            size.1 as isize,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            0,
+            0,
+        )
+    }
+}
+
+/// `rep` as a PNG, or a JPEG.
+fn encode(rep: &NSBitmapImageRep, jpeg: bool) -> Option<Vec<u8>> {
     let (kind, properties) = if jpeg {
         let quality = NSNumber::new_f64(0.85);
         let key = unsafe { NSImageCompressionFactor };
@@ -707,6 +745,66 @@ fn redrawn(image: &NSImage, size: (u32, u32), labels: &[Label], jpeg: bool) -> O
     };
     let data = unsafe { rep.representationUsingType_properties(kind, &properties) }?;
     Some(data.to_vec())
+}
+
+/// A full page's pictures, each `(its cuts, its height in pixels)` drawn from the `tiles` (PNGs
+/// of one size), as PNGs or JPEGs.
+pub fn agent_stitch(
+    tiles: &[Vec<u8>],
+    pieces: &[(Vec<Cut>, u32)],
+    jpeg: bool,
+) -> Res<Vec<Vec<u8>>> {
+    const FAILED: &str = "Couldn't put the page's pictures together.";
+    main_thread()?;
+    let mut images = Vec::new();
+    for png in tiles {
+        let data = NSData::with_bytes(png);
+        let rep = NSBitmapImageRep::imageRepWithData(&data).ok_or(FAILED)?;
+        let image = NSImage::initWithData(NSImage::alloc(), &data).ok_or(FAILED)?;
+        let size = (rep.pixelsWide() as f64, rep.pixelsHigh() as f64);
+        // Its own pixels, whatever resolution the file says.
+        image.setSize(NSSize::new(size.0, size.1));
+        images.push((image, size));
+    }
+    let width = images.first().ok_or(FAILED)?.1 .0;
+    let mut out = Vec::new();
+    for (cuts, height) in pieces {
+        let size = (width as u32, *height);
+        let rep = bitmap(size).ok_or(FAILED)?;
+        let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep).ok_or(FAILED)?;
+        NSGraphicsContext::saveGraphicsState_class();
+        NSGraphicsContext::setCurrentContext(Some(&context));
+        NSColor::whiteColor().set();
+        NSRectFill(NSRect::new(
+            NSPoint::ZERO,
+            NSSize::new(width, f64::from(*height)),
+        ));
+        for cut in cuts {
+            let Some((image, (_, tile_h))) = images.get(cut.tile) else {
+                continue;
+            };
+            let rows = f64::from(cut.rows).min(tile_h - f64::from(cut.src));
+            // AppKit's y goes up from the bottom; a row's goes down from the top.
+            let into = NSRect::new(
+                NSPoint::new(0.0, f64::from(*height) - f64::from(cut.dst) - rows),
+                NSSize::new(width, rows),
+            );
+            let from = NSRect::new(
+                NSPoint::new(0.0, tile_h - f64::from(cut.src) - rows),
+                NSSize::new(width, rows),
+            );
+            image.drawInRect_fromRect_operation_fraction(
+                into,
+                from,
+                NSCompositingOperation::Copy,
+                1.0,
+            );
+        }
+        context.flushGraphics();
+        NSGraphicsContext::restoreGraphicsState_class();
+        out.push(encode(&rep, jpeg).ok_or(FAILED)?);
+    }
+    Ok(out)
 }
 
 pub(super) fn png(image: &NSImage) -> Option<Vec<u8>> {
@@ -754,7 +852,7 @@ mod tests {
         let has = |all: &[(String, bool, World)], source: &str| {
             all.iter().find(|s| s.0 == source).map(|s| (s.1, s.2))
         };
-        let agents = scripts(Some("made-up-key"), true);
+        let agents = scripts(Some("made-up-key"), true, false);
         assert_eq!(has(&agents, CONSOLE), Some((false, World::Page)));
         assert_eq!(has(&agents, NETWORK), Some((false, World::Page)));
         assert_eq!(has(&agents, SECRET), Some((false, World::Ours)));
@@ -763,11 +861,16 @@ mod tests {
             agents.iter().all(|s| !s.1),
             "no script for the main frame only"
         );
-        let users = scripts(None, true);
+        let users = scripts(None, true, false);
         assert_eq!(users.len(), 1);
         assert_eq!(has(&users, CONSOLE), Some((false, World::Page)));
-        assert!(scripts(None, false).is_empty());
-        assert_eq!(scripts(Some("k"), false).len(), 3);
+        assert!(scripts(None, false, false).is_empty());
+        assert_eq!(scripts(Some("k"), false, false).len(), 3);
+        // A touch device's tab, user's or agent's, has touch.js, after the rest.
+        let phone = scripts(Some("k"), true, true);
+        assert_eq!(has(&phone, TOUCH), Some((false, World::Page)));
+        assert_eq!(phone.last().map(|s| s.0.as_str()), Some(TOUCH));
+        assert_eq!(scripts(None, false, true).len(), 1);
     }
 
     /// A tab handed to the user turns network.js off with what the script itself checks.

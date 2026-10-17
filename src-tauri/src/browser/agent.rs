@@ -24,6 +24,26 @@ use std::sync::{mpsc, Arc, LazyLock, Mutex, MutexGuard, PoisonError, TryLockErro
 use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Manager, Url};
 
+/// A full page's tiles, taken.
+struct Tiled {
+    plan: marks::Plan,
+    view_h: f64,
+    /// The page's height, CSS px.
+    height: f64,
+    /// A tile's width, pixels.
+    width: u32,
+    /// The scale asked, and the one the tiles came at.
+    asked: f64,
+    scale: f64,
+    /// Where each tile was scrolled to, CSS px, and its PNG.
+    ys: Vec<f64>,
+    png: Vec<Vec<u8>>,
+    /// Where each picture goes: a file, or the app's cache.
+    paths: Vec<Option<PathBuf>>,
+    /// The page stopped scrolling here (CSS px of it taken): short of its height.
+    stopped: Option<f64>,
+}
+
 /// The agent script, its parts joined in order (scripts/agent/prelude.js says what each holds);
 /// the tests join the same list (src/lib/browser/agentSource.test.ts).
 const AGENT: &str = concat!(
@@ -45,6 +65,8 @@ const POLL: Duration = Duration::from_millis(100);
 const SETTLE: Duration = Duration::from_millis(500);
 /// The page still this long counts as done redrawing.
 const QUIET: Duration = Duration::from_millis(100);
+/// How long a full-page screenshot may take in all.
+const FULL_PAGE: Duration = Duration::from_secs(60);
 /// An eval's result, cut: an agent reads it.
 const EVAL_MAX: usize = 20_000;
 /// What `eval`'s script gives: `=` and its value however it came, or `!` and what it threw.
@@ -1197,7 +1219,8 @@ impl Tab {
         }
         let wanted = match &what {
             Wait::Css(css) => format!("{css} to show"),
-            Wait::Text(text) => format!("{text:?} to show"),
+            Wait::Text(text, None) => format!("{text:?} to show"),
+            Wait::Text(text, Some(frame)) => format!("{text:?} to show in frame {frame}"),
             Wait::Load => "the page to load".into(),
             Wait::Url(glob) => format!("the address to match {glob}"),
             Wait::Fn(js) => format!("`{}` to be true", super::cut(js, 80)),
@@ -1224,7 +1247,10 @@ impl Tab {
     fn not_yet(&self, what: &Wait, wait: Duration) -> Res<Option<String>> {
         // Between pages there's no page to ask.
         let asked = |input: Value| match self.script_for(input, wait) {
-            Ok(v) if v["invalid"] == true => Err("That isn't a CSS selector.".to_string()),
+            Ok(v) if v["invalid"] == true => Err(v["note"]
+                .as_str()
+                .unwrap_or("That isn't a CSS selector.")
+                .to_string()),
             Ok(v) => Ok(Some(v)),
             Err(_) => Ok(None),
         };
@@ -1245,13 +1271,16 @@ impl Tab {
                 Some(v) if v["count"].as_u64().unwrap_or(0) > 0 => {
                     Some(format!("{} element(s) match it, none showing", v["count"]))
                 }
-                Some(_) => Some("no element matches it".into()),
+                Some(v) => Some(v["note"].as_str().unwrap_or("no element matches it").into()),
                 None => Some("the page didn't answer".into()),
             },
-            Wait::Text(text) => match asked(json!({ "cmd": "hasText", "text": text }))? {
-                Some(v) if v["found"] == true => None,
-                _ => Some("the page's text doesn't have it".into()),
-            },
+            Wait::Text(text, frame) => {
+                match asked(json!({ "cmd": "hasText", "text": text, "frame": frame }))? {
+                    Some(v) if v["found"] == true => None,
+                    Some(v) if v["note"].is_string() => v["note"].as_str().map(String::from),
+                    _ => Some("the page's text doesn't have it".into()),
+                }
+            }
             Wait::Fn(js) => self.truthy(js, wait)?,
             Wait::Ms(_) => None,
         })
@@ -1313,6 +1342,9 @@ impl Tab {
     /// The viewport, one element or a clip of it as drawn, at 1 px a CSS px unless scaled, the
     /// refs drawn on it if asked; written where told, else to the app's cache.
     fn screenshot(&self, shot: control::Shot, cwd: &str) -> Res<Reply> {
+        if shot.full {
+            return self.full_page(shot.scale, shot.path.as_deref(), cwd);
+        }
         let path = shot
             .path
             .map(|p| control::picture_path(Path::new(cwd), &p))
@@ -1338,11 +1370,7 @@ impl Tab {
                 .collect(),
             jpeg: path.as_deref().is_some_and(control::jpeg),
         };
-        let id = self.id.clone();
-        let taken = later(&self.app, move |_, done| {
-            super::agent_picture(&id, picture, done)
-        })?
-        .ok_or("No picture: WebKit gave none.")?;
+        let taken = self.take(picture)?;
         let ((w, h), scale) = (taken.size, taken.scale);
         let path = match path {
             Some(path) => {
@@ -1360,6 +1388,157 @@ impl Tab {
         Ok(Reply::out(format!(
             "{path} ({w}×{h} px, {scale:.2} px a CSS px{shrunk})"
         )))
+    }
+
+    /// `picture` of the viewport, taken.
+    fn take(&self, picture: marks::Picture) -> Res<marks::Taken> {
+        let id = self.id.clone();
+        later(&self.app, move |_, done| {
+            super::agent_picture(&id, picture, done)
+        })?
+        .ok_or_else(|| "No picture: WebKit gave none.".into())
+    }
+
+    /// The page from top to bottom: a tile of it for each viewport, put together in pictures of
+    /// at most 2000 px (several files, numbered, where it is taller), written to `named` or the
+    /// app's cache. Its fixed parts are put back before the pictures are made.
+    fn full_page(&self, scale: f64, named: Option<&str>, cwd: &str) -> Res<Reply> {
+        let begun = self.script(json!({ "cmd": "tile", "step": "begin" }))?;
+        let tiled = self.tiles(&begun, scale, named, cwd);
+        let _ = self.script(json!({ "cmd": "tile", "step": "end" }));
+        let tiled = tiled?;
+        let jpeg = tiled.paths[0].as_deref().is_some_and(control::jpeg);
+        let (view_h, scale) = (tiled.view_h, tiled.scale);
+        let px = |css: f64| ((css * scale).round() as u32).max(1);
+        let pieces: Vec<(Vec<marks::Cut>, u32)> = tiled
+            .plan
+            .pieces
+            .iter()
+            .map(|&piece| (marks::cuts(&tiled.ys, view_h, piece, scale), px(piece.1)))
+            .collect();
+        let heights: Vec<u32> = pieces.iter().map(|p| p.1).collect();
+        let png = tiled.png;
+        let pictures = main(&self.app, move |_| super::agent_stitch(&png, &pieces, jpeg))?;
+        let mut lines = Vec::new();
+        for ((bytes, path), h) in pictures.into_iter().zip(tiled.paths).zip(heights) {
+            let path = match path {
+                Some(path) => {
+                    std::fs::write(&path, &bytes)
+                        .map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
+                    path.display().to_string()
+                }
+                None => picks::save_png(&self.app, &bytes).ok_or("Couldn't save the picture.")?,
+            };
+            lines.push(format!("{path} ({}×{h} px)", tiled.width));
+        }
+        let reached = tiled.plan.pieces.last().map_or(0.0, |p| p.0 + p.1);
+        let cut = if tiled.plan.cut {
+            format!(", cut: the page goes on to {} px", tiled.height)
+        } else {
+            String::new()
+        };
+        let stopped = match tiled.stopped {
+            Some(at) if at <= tiled.view_h => format!(
+                "\nThe page doesn't scroll (the document is {} px tall by its own count): this is the \
+                 viewport. A page that scrolls inside an element isn't taken whole",
+                tiled.height
+            ),
+            Some(at) => format!(
+                "\nThe page stopped scrolling at {at} of {} px: the rest isn't in the picture",
+                tiled.height
+            ),
+            None => String::new(),
+        };
+        let shrunk = if scale < tiled.asked {
+            ", shrunk to stay within 2000 px"
+        } else {
+            ""
+        };
+        lines.push(format!(
+            "{reached} CSS px of page, {scale:.2} px a CSS px{shrunk}{cut}{stopped}"
+        ));
+        Ok(Reply::out(lines.join("\n")))
+    }
+
+    /// Each tile of the page: scrolled to, taken as a PNG.
+    fn tiles(&self, begun: &Value, scale: f64, named: Option<&str>, cwd: &str) -> Res<Tiled> {
+        let num = |key: &str| {
+            begun[key]
+                .as_f64()
+                .filter(|v| *v >= 1.0)
+                .ok_or("The page gave no size.")
+        };
+        let (width, view_h, height) = (num("w")?, num("h")?, num("height")?);
+        let mut plan = marks::plan_page(height, (width, view_h), scale);
+        // Every file's name is checked before the page is scrolled for any of them.
+        let paths_of = |count: usize| {
+            (1..=count)
+                .map(|i| {
+                    named
+                        .map(|p| {
+                            let p = if count > 1 {
+                                control::piece_name(p, i)
+                            } else {
+                                p.into()
+                            };
+                            control::picture_path(Path::new(cwd), &p)
+                        })
+                        .transpose()
+                })
+                .collect::<Res<Vec<_>>>()
+        };
+        let mut paths = paths_of(plan.pieces.len())?;
+        let (mut ys, mut png, mut taken_scale, mut pixels) = (Vec::new(), Vec::new(), scale, 0);
+        let (mut stopped, until) = (None, Instant::now() + FULL_PAGE);
+        for (i, &y) in plan.tiles.iter().enumerate() {
+            if Instant::now() >= until {
+                return Err(format!(
+                    "Taking the whole page took over {}: {i} of {} tiles. Try --scale 0.5",
+                    duration_text(FULL_PAGE),
+                    plan.tiles.len()
+                ));
+            }
+            let last = i + 1 == plan.tiles.len();
+            let to = json!({ "cmd": "tile", "step": "to", "y": y, "first": i == 0, "last": last });
+            let at = self.script(to)?;
+            // The page didn't move: it doesn't scroll (as the document), or no further.
+            if i > 0 && at["y"].as_f64().is_some_and(|now| now <= ys[i - 1] + 0.5) {
+                stopped = Some(ys[i - 1] + view_h);
+                break;
+            }
+            let rect = Bounds {
+                x: 0.0,
+                y: 0.0,
+                w: width,
+                h: view_h,
+            };
+            let picture = marks::Picture {
+                rect,
+                scale,
+                labels: vec![],
+                jpeg: false,
+            };
+            let taken = self.take(picture)?;
+            (taken_scale, pixels) = (taken.scale, taken.size.0);
+            ys.push(at["y"].as_f64().unwrap_or(y));
+            png.push(taken.bytes);
+        }
+        if let Some(at) = stopped {
+            plan = marks::plan_page(at, (width, view_h), scale);
+            paths = paths_of(plan.pieces.len())?;
+        }
+        Ok(Tiled {
+            plan,
+            view_h,
+            height,
+            width: pixels,
+            asked: scale,
+            scale: taken_scale,
+            ys,
+            png,
+            paths,
+            stopped,
+        })
     }
 
     fn console(&self, level: Option<&str>, all: bool, clear: bool) -> Res<Reply> {
@@ -1388,7 +1567,10 @@ impl Tab {
     fn device(&self, screen: Option<AgentScreen>) -> Res<Reply> {
         let shown = screen.as_ref().map_or_else(
             || "itself".into(),
-            |s| format!("{} ({}×{})", s.name, s.w, s.h),
+            |s| {
+                let touch = if s.touch { ", with touch" } else { "" };
+                format!("{} ({}×{}){touch}", s.name, s.w, s.h)
+            },
         );
         let id = self.id.clone();
         main(&self.app, move |app| super::agent_device(app, &id, screen))?;

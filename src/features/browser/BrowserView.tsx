@@ -7,7 +7,7 @@ import { failed, toast } from "@/lib/app/toast";
 import { formatErrors, type ShownAs } from "@/lib/browser/format";
 import { onBrowserKey, setBrowserState, useBrowserState, useLogged, useParks } from "@/lib/browser/store";
 import { useTakenFromAgent } from "@/lib/browser/agentTabs";
-import { RESPONSIVE } from "@/lib/browser/devices";
+import { hasTouch, RESPONSIVE } from "@/lib/browser/devices";
 import { type Scheme, zoomLabel } from "@/lib/browser/look";
 import { BLANK, isFrameable, pageLabel } from "@/lib/browser/url";
 import { type CommandId, commandIn, useCommands, useShortcut } from "@/lib/commands/keybindings";
@@ -90,6 +90,7 @@ function NativePage(props: Props) {
   const field = useRef<HTMLInputElement>(null);
   const { choice, choose, toggle, device, fitted, resize } = useTabDevice(props, area);
   const ua = device?.ua || null;
+  const touch = !!device && hasTouch(device);
   const { browserConsole: capture, uiScale } = useSettings();
   const [consoleOpen, setConsoleOpen] = useState(false);
   const { picking, picks, toggle: togglePick, closeAsk } = usePicker(id);
@@ -102,7 +103,7 @@ function NativePage(props: Props) {
     let live = true;
     setMade(false);
     // As the tab shows it from the first paint; usePageLook keeps it so after.
-    browserApi.create(id, root, sel.url, ua, sel.zoom ?? null, sel.scheme ? sel.scheme === "dark" : null).then(
+    browserApi.create(id, root, sel.url, ua, touch, sel.zoom ?? null, sel.scheme ? sel.scheme === "dark" : null).then(
       ({ snapshot, dpr: canSetDpr, ...s }) => {
         if (!live) return;
         setBrowserState(s);
@@ -126,10 +127,10 @@ function NativePage(props: Props) {
     if (restoring && loaded) setRestoring(null);
   }, [restoring, loaded]);
 
-  // A device's user agent: the page loads again under it (browser/macos set_agent).
+  // A device's user agent and touch: the page loads again under them (browser/macos set_agent).
   useEffect(() => {
-    if (made) void browserApi.setAgent(id, ua).catch(failed("Could not show the page as the device"));
-  }, [made, id, ua]);
+    if (made) void browserApi.setAgent(id, ua, touch).catch(failed("Could not show the page as the device"));
+  }, [made, id, ua, touch]);
 
   const shown = !device || !!fitted?.fits;
   const screen = device && fitted && { viewport: fitted.viewport, radius: fitted.radius, corners: fitted.corners, dpr: device.dpr || null };

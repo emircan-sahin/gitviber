@@ -202,6 +202,75 @@ def png_size(data):
     return struct.unpack(">II", data[16:24])
 
 
+def png_column(data, x):
+    """The RGB of each row of a PNG (8-bit, not interlaced) down column x."""
+    import zlib
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("not a PNG")
+    w, h, depth, kind, _, _, interlace = struct.unpack(">IIBBBBB", data[16:29])
+    if depth != 8 or interlace or kind not in (2, 6):
+        raise ValueError("a PNG this reader doesn't take")
+    bpp = 3 if kind == 2 else 4
+    idat, i = b"", 8
+    while i < len(data):
+        n, tag = struct.unpack(">I4s", data[i:i + 8])
+        if tag == b"IDAT":
+            idat += data[i + 8:i + 8 + n]
+        i += 12 + n
+    raw, stride = zlib.decompress(idat), w * bpp
+    prev, rows, at = bytearray(stride), [], 0
+    for _ in range(h):
+        f, line, at = raw[at], bytearray(raw[at + 1:at + 1 + stride]), at + 1 + stride
+        for j in range(stride):
+            a = line[j - bpp] if j >= bpp else 0
+            b, c = prev[j], (prev[j - bpp] if j >= bpp else 0)
+            if f == 1:
+                line[j] = (line[j] + a) & 255
+            elif f == 2:
+                line[j] = (line[j] + b) & 255
+            elif f == 3:
+                line[j] = (line[j] + (a + b) // 2) & 255
+            elif f == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[j] = (line[j] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        rows.append(tuple(line[x * bpp:x * bpp + 3]))
+        prev = line
+    return rows
+
+
+def tall_expect(y, total=3000):
+    """The colour at `y` CSS px of site.py's /tall page: its fixed header, its fixed footer, or the
+    band under them."""
+    if y < 60:
+        return (255, 0, 0)
+    if y >= total - 40:
+        return (0, 0, 0)
+    i = int(y) // 200
+    return (40 + i * 13, 100, 200 - i * 9)
+
+
+def tall_scale(view_w, view_h, scale=1.0):
+    """The pixels a CSS px of a screenshot gets: `scale`, less where its longest side would pass 2000."""
+    return min(scale, 2000 / max(view_w, view_h))
+
+
+def tall_check(rows, scale=1.0):
+    """Whether the rows of a full-page screenshot of /tall (all its pictures, top to bottom, at
+    `scale` px a CSS px) are its page, the header and the footer each once. Rows by an edge are
+    left out. The first fault, or None."""
+    if abs(len(rows) - 3000 * scale) > 5:
+        return f"{len(rows)} rows, want {3000 * scale:.0f}"
+    edges = [e * scale for e in (60, 2960, *range(0, 3001, 200))]
+    for i, got in enumerate(rows):
+        if any(abs(i - e) <= 2 for e in edges):
+            continue
+        want = tall_expect(i / scale)
+        if any(abs(g - w) > 6 for g, w in zip(got, want)):
+            return f"row {i} is {got}, want {want}"
+    return None
+
+
 def fps(before, after):
     """Frames a second between two `[frames, performance.now()]` readings."""
     (f1, t1), (f2, t2) = before, after
@@ -340,6 +409,23 @@ def main(cmd, *args):
         if not size:
             return 1
         print(*size)
+    elif cmd == "tall-sizes":
+        # The pictures of the /tall page for a w×h viewport: piece = 2000 px of the page at most.
+        w, h = float(args[0]), float(args[1])
+        s = tall_scale(w, h)
+        piece = int(2000 / s)
+        heights = [min(piece, 3000 - top) for top in range(0, 3000, piece)]
+        print(*(f"{round(w * s)}x{round(ph * s)}" for ph in heights))
+    elif cmd == "tall-scale":
+        print(tall_scale(float(args[0]), float(args[1])))
+    elif cmd == "tall-check":
+        scale, rows = float(args[0]), []
+        for path in args[1:]:
+            with open(path, "rb") as f:
+                rows += png_column(f.read(), 10)
+        fault = tall_check(rows, scale)
+        print(fault or "the page once, top to bottom")
+        return 1 if fault else 0
     elif cmd == "fps":
         print(f"{fps(json.loads(args[0]), json.loads(args[1])):.1f}")
     elif cmd == "missing":

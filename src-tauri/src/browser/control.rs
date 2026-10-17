@@ -103,8 +103,10 @@ Reading
                                left out. Refs (also @e1 or ref=e1) stay with their element; one
                                whose element left, or from another page or a frame that moved
                                on, fails as stale. A frame of the page's origin reads as part of
-                               it, its refs acted on as any; another origin's frame is named
-                               only. --json: also the refs gone since
+                               it, its refs acted on as any, and a CSS selector looks in its own
+                               page as `frame=<ref|css> >> <css>` (frames nest: `frame=a >>
+                               frame=b >> <css>`); another origin's frame is named only.
+                               --json: also the refs gone since
   find <text|/regex/>          The tree's lines with the text (any case) or matching the regex,
                                each with the line before and after it; 30 at most
   get text|html|value|box <ref|css>
@@ -114,12 +116,17 @@ Reading
                                masked), an attribute, computed styles (a few useful ones unless
                                named) or box (x,y,w,h in the viewport, CSS px); 4000 characters
                                at most, HTML 8000
-  screenshot [path] [-s <ref|css> | --clip x,y,w,h] [--scale <0.1-2>] [--refs]
+  screenshot [path] [-s <ref|css> | --clip x,y,w,h | --full] [--scale <0.1-2>] [--refs]
                                What the viewport shows, or one element of it, or a clip (CSS
                                px), at 1 px a CSS px unless --scale says, its longest side 2000
                                px at most; --refs draws each interactive element's ref on it. A
                                PNG, or a JPEG where the path ends in .jpg; to the app's cache
-                               unless a path is given. Prints its path and size
+                               unless a path is given. Prints its path and size.
+                               --full: the page's whole height (the document's scroll; a page
+                               that scrolls inside an element gives the viewport), scrolled
+                               through; fixed and sticky parts are drawn once. In pictures of
+                               2000 px at most, top to bottom (shot-1.png, shot-2.png), five at
+                               most: a longer page is cut
 
 Acting with the mouse and keyboard: the page gets them as the user's own (trusted events, user
 activation), without the real pointer moving or the user's focus taken. A point x,y is CSS px
@@ -181,7 +188,7 @@ Acting by the page's script, setting what a person would and reading it back
 
 Waiting
   wait <css> | --text <text> | --url <glob> | --fn <js> | --load | --download | --ms <n>
-       [--timeout <ms>]
+       [--frame <ref|css>] [--timeout <ms>]
                                Until an element shows, the text does (the rendered text, as
                                innerText has it: Z A F E R isn't ZAFER, `get text` shows what
                                it is), the address matches (part of it; with * or **, all of it,
@@ -191,7 +198,8 @@ Waiting
                                it; each is returned once; prints its path, size and type), or
                                the time is up: one of them;
                                10 s at most unless --timeout says (120 s at most). A timeout says
-                               what was still not so
+                               what was still not so. --frame looks in a same-origin frame's own
+                               page (<css> or --text only), as `frame=<ref|css> >> <css>` does
 
 Page tools
   eval <js>                    Runs in the page; prints the result as JSON (undefined, NaN,
@@ -208,7 +216,12 @@ Page tools
                                with an id (a frame's naming it); the newest 300 requests and 500
                                other loads
   network <id>                 One in full: headers, bodies, WebSocket frames
-  device <name|WxH|off>        Show the page as a device; `device --list` names them
+  device <name|WxH|off>        Show the page as a device; `device --list` names them. A phone or
+                               tablet also has touch: touch events and maxTouchPoints, (pointer:
+                               coarse) and (hover: none) in matchMedia and in the page's own
+                               stylesheets (not another origin's), and clicks arrive as taps
+                               (touchstart/touchend before the click) with no hovering. A WxH
+                               size keeps the mouse
   appearance light|dark|auto   The page's prefers-color-scheme; auto is the app's
   dialogs accept|dismiss       How the page's alert, confirm and prompt are answered while a
                                command runs on it; dismiss unless told. One the user has open
@@ -532,6 +545,8 @@ pub struct Shot {
     pub scale: f64,
     /// The interactive elements' refs drawn on it.
     pub refs: bool,
+    /// The whole page, scrolled through, in pictures of 2000 px at most.
+    pub full: bool,
 }
 
 /// `get`'s ask: what of the element (text, html, value, attr, styles, box), the attribute or
@@ -553,7 +568,8 @@ pub enum Scroll {
 #[derive(Debug, PartialEq)]
 pub enum Wait {
     Css(String),
-    Text(String),
+    /// The text, in the page or in the frame (a ref or CSS) named.
+    Text(String, Option<String>),
     Load,
     Ms(u64),
     /// The page's address, as output::url_matches takes it.
@@ -947,11 +963,16 @@ const ONE_THING: &str =
     "wait waits for one thing: give one of --text, --url, --fn, --load, --download and --ms";
 
 fn wait(args: &[String]) -> Result<Command, String> {
-    let (mut what, mut timeout, mut css, mut download) = (None, WAIT, vec![], false);
+    let (mut what, mut timeout, mut css, mut download, mut frame) =
+        (None, WAIT, vec![], false, None);
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         let next = match arg.as_str() {
-            "--text" => Wait::Text(value(&mut it, arg)?.clone()),
+            "--text" => Wait::Text(value(&mut it, arg)?.clone(), None),
+            "--frame" => {
+                frame = Some(value(&mut it, arg)?.clone());
+                continue;
+            }
             "--load" => Wait::Load,
             "--download" => {
                 download = true;
@@ -975,7 +996,7 @@ fn wait(args: &[String]) -> Result<Command, String> {
             return Err(ONE_THING.into());
         }
     }
-    if download && (what.is_some() || !css.is_empty()) {
+    if download && (what.is_some() || !css.is_empty() || frame.is_some()) {
         return Err(ONE_THING.into());
     }
     let what = match (what, css.is_empty()) {
@@ -992,6 +1013,12 @@ fn wait(args: &[String]) -> Result<Command, String> {
                     .into(),
             )
         }
+    };
+    let what = match (what, frame) {
+        (w, None) => w,
+        (Wait::Css(css), Some(f)) => Wait::Css(format!("frame={f} >> {css}")),
+        (Wait::Text(text, _), Some(f)) => Wait::Text(text, Some(f)),
+        (_, Some(_)) => return Err("--frame goes with a CSS selector or --text".into()),
     };
     let what = match what {
         Wait::Ms(ms) => Wait::Ms(ms.min(LONGEST_WAIT.as_millis() as u64)),
@@ -1066,7 +1093,8 @@ fn glob(pattern: &str, text: &str) -> bool {
 const SCALES: std::ops::RangeInclusive<f64> = 0.1..=2.0;
 
 fn screenshot(args: &[String]) -> Result<Command, String> {
-    let usage = "Usage: gitviber browser screenshot [path] [-s <ref|css> | --clip x,y,w,h] \
+    let usage =
+        "Usage: gitviber browser screenshot [path] [-s <ref|css> | --clip x,y,w,h | --full] \
                  [--scale <0.1-2>] [--refs]";
     let mut shot = Shot {
         path: None,
@@ -1074,6 +1102,7 @@ fn screenshot(args: &[String]) -> Result<Command, String> {
         clip: None,
         scale: 1.0,
         refs: false,
+        full: false,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -1089,6 +1118,7 @@ fn screenshot(args: &[String]) -> Result<Command, String> {
                     .ok_or_else(|| format!("--scale is 0.1 to 2, not {scale:?}"))?;
             }
             "--refs" => shot.refs = true,
+            "--full" => shot.full = true,
             _ if arg.starts_with("--") => return Err(format!("screenshot doesn't take {arg}")),
             _ if shot.path.is_none() => shot.path = Some(arg.clone()),
             _ => return Err(usage.into()),
@@ -1096,6 +1126,9 @@ fn screenshot(args: &[String]) -> Result<Command, String> {
     }
     if shot.target.is_some() && shot.clip.is_some() {
         return Err("screenshot takes one of -s and --clip".into());
+    }
+    if shot.full && (shot.target.is_some() || shot.clip.is_some() || shot.refs) {
+        return Err("screenshot --full takes no -s, --clip or --refs".into());
     }
     Ok(Command::Screenshot(shot))
 }
@@ -1200,6 +1233,14 @@ pub fn allowed_when_off(cmd: &str, args: &[String]) -> bool {
 pub fn jpeg(path: &Path) -> bool {
     path.extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg"))
+}
+
+/// The name of the `n`th of a full page's pictures: `shot.png` is `shot-2.png`.
+pub fn piece_name(path: &str, n: usize) -> String {
+    let stem = Path::new(path)
+        .extension()
+        .map_or(path.len(), |e| path.len() - e.len() - 1);
+    format!("{}-{n}{}", &path[..stem], &path[stem..])
 }
 
 /// Where `screenshot <path>` writes: a .png, .jpg or .jpeg under the CLI's folder (no `..` out
@@ -1689,6 +1730,8 @@ pub struct AgentScreen {
     pub h: f64,
     pub dpr: Option<f64>,
     pub ua: Option<String>,
+    /// A phone or a tablet: the page finds a touch screen (scripts/touch.js).
+    pub touch: bool,
     /// Responsive's size, for the tab.
     pub size: Option<(u32, u32)>,
 }
@@ -1705,6 +1748,7 @@ struct DeviceSpec {
     h: f64,
     dpr: f64,
     ua: String,
+    platform: String,
     safe: Insets,
 }
 
@@ -1746,6 +1790,7 @@ pub fn device(arg: &str) -> Result<Option<AgentScreen>, String> {
                 h: f64::from(h),
                 dpr: None,
                 ua: None,
+                touch: false,
                 size: Some((w, h)),
             }));
         }
@@ -1759,6 +1804,7 @@ pub fn device(arg: &str) -> Result<Option<AgentScreen>, String> {
         h: d.h - d.safe.top - d.safe.bottom,
         dpr: (d.dpr > 0.0).then_some(d.dpr),
         ua: (!d.ua.is_empty()).then_some(d.ua),
+        touch: d.platform != "web",
         name: d.name,
         size: None,
     }))
@@ -2004,9 +2050,28 @@ mod tests {
         assert_eq!(
             parse("wait", &args("--text Saved --timeout 2000")),
             Ok(Command::Wait(
-                Wait::Text("Saved".into()),
+                Wait::Text("Saved".into(), None),
                 Duration::from_secs(2)
             ))
+        );
+        // A frame's page: its selector, or its text.
+        assert_eq!(
+            parse("wait", &args("--frame #cart .done")),
+            Ok(Command::Wait(
+                Wait::Css("frame=#cart >> .done".into()),
+                WAIT
+            ))
+        );
+        assert_eq!(
+            parse("wait", &args("--text Saved --frame e3")),
+            Ok(Command::Wait(
+                Wait::Text("Saved".into(), Some("e3".into())),
+                WAIT
+            ))
+        );
+        assert_eq!(
+            parse("wait", &args("--load --frame e3")),
+            Err("--frame goes with a CSS selector or --text".into())
         );
         assert_eq!(
             parse("wait", &args("div > .done")),
@@ -2053,7 +2118,8 @@ mod tests {
                 target: Some("e2".into()),
                 clip: None,
                 scale: 1.0,
-                refs: false
+                refs: false,
+                full: false
             }))
         );
         assert_eq!(
@@ -2071,7 +2137,8 @@ mod tests {
                     h: 200.0
                 }),
                 scale: 0.5,
-                refs: true
+                refs: true,
+                full: false
             }))
         );
         assert_eq!(
@@ -2304,6 +2371,11 @@ mod tests {
             ("wait", "--soon"),
             ("wait", "--download report.pdf"),
             ("wait", "--download --load"),
+            ("wait", "--frame"),
+            ("wait", ".x --load --frame e1"),
+            ("wait", "--load --frame e1"),
+            ("wait", "--ms 5 --frame e1"),
+            ("wait", "--download --frame e1"),
             ("downloads", "--all"),
             ("downloads", "--clear now"),
             ("scroll", "down far"),
@@ -2313,7 +2385,9 @@ mod tests {
             ("screenshot", "--clip 0,0,10"),
             ("screenshot", "--clip 0,0,-5,10"),
             ("screenshot", "--ref e1 --clip 0,0,5,5"),
-            ("screenshot", "--full"),
+            ("screenshot", "--full -s e1"),
+            ("screenshot", "--full --clip 0,0,5,5"),
+            ("screenshot", "--full --refs"),
             ("console", "--level info"),
             ("console", "--level"),
             ("console", "--since"),
@@ -2450,6 +2524,7 @@ mod tests {
             ("get", "styles color e1"),
             ("screenshot", "shot.jpg -s e1 --scale 0.5 --refs"),
             ("screenshot", "--clip 0,0,100,50"),
+            ("screenshot", "--full shot.png --scale 0.5"),
             ("click", "e1 --synthetic"),
             ("click", "412,300"),
             ("dblclick", "e1"),
@@ -2471,6 +2546,8 @@ mod tests {
             ("uncheck", "e1"),
             ("wait", ".done --timeout 500"),
             ("wait", "--text Saved"),
+            ("wait", ".done --frame #cart --timeout 500"),
+            ("wait", "--text Saved --frame e3"),
             ("wait", "--url /lobby"),
             ("wait", "--fn document.title"),
             ("wait", "--load"),
@@ -3019,12 +3096,14 @@ mod tests {
         assert_eq!((pro.w, pro.h), (402.0, 874.0 - 62.0 - 34.0));
         assert_eq!(pro.dpr, Some(3.0));
         assert!(pro.ua.as_deref().unwrap().contains("iPhone"));
+        assert!(pro.touch, "a phone has touch");
+        assert!(device("Pixel 8").unwrap().is_some_and(|d| d.touch));
         let sized = device("1280x800").unwrap().unwrap();
         assert_eq!(
             (sized.w, sized.h, sized.size),
             (1280.0, 800.0, Some((1280, 800)))
         );
-        assert!(sized.ua.is_none() && sized.dpr.is_none());
+        assert!(sized.ua.is_none() && sized.dpr.is_none() && !sized.touch);
         assert!(device("10x10").is_err());
         assert!(device("Nokia 3310").is_err());
         assert_eq!(device("OFF"), Ok(None));
@@ -3123,6 +3202,13 @@ mod tests {
         std::fs::write(dir.join("todo.md"), "# my notes").unwrap();
         assert!(text_path(&dir, "todo.md").is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_full_pages_pictures_are_numbered_before_the_extension() {
+        assert_eq!(piece_name("shot.png", 2), "shot-2.png");
+        assert_eq!(piece_name("out.d/Page.JPG", 3), "out.d/Page-3.JPG");
+        assert_eq!(piece_name("a.b.jpeg", 1), "a.b-1.jpeg");
     }
 
     #[test]
