@@ -6,6 +6,32 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-10-17
+
+### Added
+
+- **Projects in the sidebar.** Settings → Appearance → Projects in the sidebar lists your projects at the top of the left panel, so a project is one click away instead of two. It is off until you turn it on. In #120.
+- **Files under each guided review section.** In a wide guided review, every section lists its files as a tree in the navigator; a click jumps to that file's diff. In #119.
+- **Downloads in your own browser tabs.** A file a tab can't show, an attachment or a `download` link is saved in your Downloads folder under a name that never replaces a file, marked as from the web, with progress, Cancel and Show in Finder under the address bar. A page may start three downloads per ten seconds and four run at once. In #127.
+- **Popups open as tabs.** `window.open` and `target=_blank` in your own tab open next to it with the opener kept, so sign-in and payment windows can report back and close themselves. In #127.
+- **Full-page screenshots for agents.** `gitviber browser screenshot --full` takes the whole page in pictures of at most 2000 px; fixed headers and footers show once. In #125.
+- **Touch for phone and tablet sizes.** A phone or tablet device gives the page touch events, a coarse pointer and taps, for an agent's clicks and your own mouse. In #126.
+- **CSS and `wait` inside frames.** `frame=<ref|css> >> <css>` reaches an element in a same-origin frame from any command, and `wait --frame` waits in one. In #122.
+- **One clipboard per agent tab.** Frames of an agent tab share one copy kept apart per origin, and the page's own Copy button works once you take the tab; your real clipboard is never read or written by an agent's page. In #124.
+- **IndexedDB in saved sessions.** `session save --indexeddb` keeps a page's IndexedDB with the login, up to a size cap, naming what it leaves out. Without the flag it is never read, since a page that keeps an encryption key there could make macOS ask for the keychain password. In #129.
+
+### Changed
+
+- **The change line says what it saw.** After an action the agent reads `→ no DOM change` instead of "no visible change", `→ canvas repainted` when a canvas drew something because of the action, and `→ canvas animating` when it was moving on its own. `wait --text` is documented to match the rendered text. In #131.
+- **A tab you take lets go of the keys its agent held,** and a tab holding a key is no longer put to sleep under it.
+
+### Fixed
+
+- **The mouse cursor changes over a browser tab.** The page under the tab no longer sets its own arrow over the link's hand or the text's I-beam.
+- **Browser tabs render at the display's refresh rate** instead of WebKit's 60 fps cap, which held games to 60 on a 120 Hz screen.
+- **Reload works on a page that never loaded,** such as a dev server that wasn't up yet; hard reload bypasses the cache there too.
+- **A tab handed back to you drops the network log.** The script that records every request stops and its log is deleted when an agent's pane closes. In #130.
+
 ## [0.1.15] - 2026-10-15
 
 ### Added
@@ -621,7 +647,9 @@ with `.deb`, `.rpm` and AppImage builds for Linux.
   repository from the welcome screen.
 - Help → Show Logs and Copy Diagnostics for bug reports. No telemetry.
 
-[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.14...HEAD
+[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.16...HEAD
+[0.1.16]: https://github.com/emircan-sahin/gitviber/compare/v0.1.15...v0.1.16
+[0.1.15]: https://github.com/emircan-sahin/gitviber/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/emircan-sahin/gitviber/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/emircan-sahin/gitviber/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/emircan-sahin/gitviber/compare/v0.1.11...v0.1.12
