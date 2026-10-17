@@ -1,4 +1,5 @@
 import { ArrowUpToLine, Check, Copy, CornerUpLeft, ExternalLink, FolderOpen, FolderSearch, SquareTerminal, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { arrayMove } from "@dnd-kit/sortable";
 import { SortableList, useSortableItem } from "@/components/Sortable";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -30,22 +31,28 @@ export interface ProjectListProps {
   onTerminal?: (path: string) => void;
 }
 
-/** Asked each time a list mounts (the switcher mounts on open), so a moved folder shows up at once. */
+/** Asked when a list mounts and when the window regains focus (the sidebar's stays mounted), so a moved folder shows up soon. */
 function useProjectInfo(paths: string[]) {
   const key = paths.join("\n");
+  const [focused, setFocused] = useState(0);
+  useEffect(() => {
+    const again = () => setFocused((n) => n + 1);
+    window.addEventListener("focus", again);
+    return () => window.removeEventListener("focus", again);
+  }, []);
   return useAsyncValue(
     async () => {
       const list = key ? key.split("\n") : [];
       const all = await api.projectInfo(list);
       return new Map(list.map((p, i) => [p, all[i]]));
     },
-    [key],
+    [key, focused],
     new Map<string, ProjectInfo>(),
   );
 }
 
 /**
- * The saved projects, shared by the top bar's switcher and the welcome screen. Rows open on
+ * The saved projects, shared by the top bar's switcher, the sidebar and the welcome screen. Rows open on
  * click or ↵, reorder by dragging, and have hover actions and a right-click menu (also ⇧F10).
  */
 export function ProjectList({ recent, current, away, compact, onOpen, onForget, onReorder, onLocate, onTerminal }: ProjectListProps) {
@@ -132,6 +139,8 @@ function ProjectRow({
   onMoveToTop: () => void;
 }) {
   const { props, dragging, guard } = useSortableItem(path);
+  // The row the menu opened on: the switcher's and the sidebar's lists can both hold this project.
+  const menuRow = useRef<Element | null>(null);
   const name = folderName(path);
   // Unknown until project_info answers; treat it as there rather than flash every row dimmed.
   const missing = info?.exists === false;
@@ -148,6 +157,7 @@ function ProjectRow({
           role="button"
           tabIndex={tabStop ? 0 : -1}
           data-project={path}
+          onContextMenu={(e) => (menuRow.current = e.currentTarget)}
           title={compact ? detail : undefined}
           aria-current={current || undefined}
           onClick={guard(() => (missing ? onLocate(path) : !here && onOpen(path)))}
@@ -237,7 +247,7 @@ function ProjectRow({
         <ContextMenuItem disabled={first} onSelect={onMoveToTop}>
           <ArrowUpToLine /> Move to Top
         </ContextMenuItem>
-        <ContextMenuItem disabled={current} onSelect={() => forget(document.querySelector(`[data-project="${CSS.escape(path)}"]`), path, onForget)}>
+        <ContextMenuItem disabled={current} onSelect={() => forget(menuRow.current, path, onForget)}>
           <X /> Remove from List
           <ContextMenuShortcut>⌫</ContextMenuShortcut>
         </ContextMenuItem>
