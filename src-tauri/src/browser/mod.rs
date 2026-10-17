@@ -37,9 +37,8 @@ pub use macos::{
     agent_picture, agent_playing, agent_pointer, agent_running, agent_set_cookies, agent_shown,
     agent_stitch, agent_tab, agent_tabs, agent_text, agent_upload, agent_upload_done, agent_users,
     appearance, cancel_download, clear_data, close, close_all, close_root, configure,
-    console_clear,
-    console_entries, create, find, focus, go, hide, inspect, navigate, network_log, pick, place,
-    set_agent, snapshot, zoom,
+    console_clear, console_entries, create, find, focus, go, hide, inspect, navigate, network_log,
+    pick, place, set_agent, snapshot, zoom,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
@@ -49,9 +48,8 @@ pub use other::{
     agent_picture, agent_playing, agent_pointer, agent_running, agent_set_cookies, agent_shown,
     agent_stitch, agent_tab, agent_tabs, agent_text, agent_upload, agent_upload_done, agent_users,
     appearance, cancel_download, clear_data, close, close_all, close_root, configure,
-    console_clear,
-    console_entries, create, find, focus, go, hide, inspect, navigate, network_log, pick, place,
-    set_agent, snapshot, zoom,
+    console_clear, console_entries, create, find, focus, go, hide, inspect, navigate, network_log,
+    pick, place, set_agent, snapshot, zoom,
 };
 pub use sessions::Shelf;
 
