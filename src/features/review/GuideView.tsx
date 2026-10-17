@@ -135,6 +135,8 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
   }, [guide]);
   const highs = useMemo(() => guide?.sections.filter((s) => s.importance === "high").length ?? 0, [guide]);
   const [picked, setPicked] = useState(() => filters.get(id) ?? ALL);
+  const [foldedFiles, setFoldedFiles] = useState<string[]>([]);
+  const foldFiles = (title: string) => setFoldedFiles((f) => (f.includes(title) ? f.filter((t) => t !== title) : [...f, title]));
   // Only while its button shows: a regenerated guide that has none to pick shows them all.
   const filter = counts.size > 1 && picked.category && counts.has(picked.category) ? picked.category : null;
   const total = guide?.sections.length ?? 0;
@@ -221,7 +223,7 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
   const done = guide && saved ? guide.sections.filter((_, i) => saved.done.includes(i)).length : 0;
   const filesViewed = [...byPath.values()].filter(isViewed).length;
   const drawn = !!guide && (guide.models.length > 0 || guide.flows.length > 0 || !!guide.diagram);
-  const shown = (guide?.sections ?? []).flatMap((section, i) => (fits(section) ? [{ n: i + 1, section, done: !!saved?.done.includes(i), files: placed?.shown[i] ?? [] }] : []));
+  const shown = (guide?.sections ?? []).flatMap((section, i) => (fits(section) ? [{ n: i + 1, section, done: !!saved?.done.includes(i), files: saved?.done.includes(i) ? [] : (placed?.shown[i] ?? []) }] : []));
   const nav = shown.length > 1;
 
   return (
@@ -351,7 +353,7 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
           </>
         ) : (
           <div className={cn(nav && "@6xl:grid @6xl:grid-cols-[220px_minmax(0,1fr)] @6xl:gap-6")}>
-            {nav && <GuideNav items={shown} onGo={goTo} onGoFile={(path) => showFile(byPath.get(path)!)} />}
+            {nav && <GuideNav items={shown} folded={foldedFiles} onFold={foldFiles} onGo={goTo} onGoFile={(path) => showFile(byPath.get(path)!)} />}
             <div className="min-w-0">
               <div className={cn("mb-6 grid gap-5", nav && "mt-4 @6xl:mt-0", drawn && "@4xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]")}>
                 {guide.summary && (

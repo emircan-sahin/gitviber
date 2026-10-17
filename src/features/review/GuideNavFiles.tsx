@@ -1,12 +1,14 @@
+import { useMemo } from "react";
 import { FileIcon, FolderIcon } from "@/components/FileIcon";
 import { IndentGuides, indent } from "@/components/IndentGuides";
 import { pathTree } from "@/lib/ui/pathTree";
 
 /** A section's files under it in the navigator, as folders and files; a file scrolls to its diff. */
 export function GuideNavFiles({ paths, onGo }: { paths: string[]; onGo: (path: string) => void }) {
+  const rows = useMemo(() => pathTree(paths, (p) => p), [paths]);
   return (
     <ul>
-      {pathTree(paths, (p) => p).map((row) =>
+      {rows.map((row) =>
         row.kind === "folder" ? (
           <li key={`d:${row.path}`} style={{ paddingLeft: indent(row.depth + 1) }} className="relative flex h-6 items-center gap-1.5 pr-2 text-[12px] text-muted-foreground">
             <IndentGuides depth={row.depth + 1} />
