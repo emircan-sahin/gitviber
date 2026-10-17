@@ -338,20 +338,13 @@ fn live(app: &AppHandle, route: &Route, url: &str) -> Res<bool> {
 }
 
 /// Past the cap (Settings → Browser), the tabs drawn out of sight longest unused sleep: each
-/// panel is a window's backing store, and its page runs at full rate. One a command runs on, or
-/// `keep` (the one a command is about to), is passed over for the next.
+/// panel is a window's backing store, and its page runs at full rate. One a command runs on,
+/// one holding a key, or `keep` (the one a command is about to), is passed over for the next.
 pub(super) fn sleep_past_cap(keep: &str) {
-    let (drawn, cap) = VIEWS.with_borrow(|r| (r.drawn(), r.awake_drawn()));
-    let mut over = drawn.len().saturating_sub(cap);
-    for id in drawn.iter().filter(|id| *id != keep) {
-        if over == 0 {
-            break;
-        }
-        if let Some(v) = view(id).filter(|v| !busy(v)) {
-            stop_idle(&v);
-            sleep(&v);
-            over -= 1;
-        }
+    let past = VIEWS.with_borrow(|r| r.past_cap(keep, |v| busy(v) || holding(v)));
+    for v in past.iter().filter_map(|id| view(id)) {
+        stop_idle(&v);
+        sleep(&v);
     }
 }
 
@@ -507,11 +500,18 @@ fn running(v: &View) -> bool {
     !v.delegate.ivars().running.borrow().is_empty()
 }
 
-/// Its idle timer is up: asleep, unless a command runs on it.
+/// Its idle timer is up: asleep, unless a command runs on it or it holds a key. Its next command
+/// to end sets the timer again.
 pub(super) fn idle(id: &str) {
-    if let Some(v) = view(id).filter(|v| !busy(v)) {
+    if let Some(v) = view(id).filter(|v| !busy(v) && !holding(v)) {
         sleep(&v);
     }
+}
+
+/// An agent holds a key down on it (`key down`): asleep, its page would lose its focus and its
+/// frames with the key still down, and the key couldn't go down again until it was let go.
+fn holding(v: &View) -> bool {
+    v.web.ivars().held.borrow().any()
 }
 
 /// A command runs on it, or its page reloads after its process ended: then it's neither slept

@@ -154,7 +154,8 @@ script instead (untrusted events), for a page where native input fails
                                own clipboard, never the user's
   key down <key> | key up <key>
                                A key held down until let go, as a game reads W; held modifiers
-                               (key down Shift) go with later keys and clicks
+                               (key down Shift) go with later keys and clicks. A tab holding a
+                               key doesn't sleep
   upload <ref|css> <file>...   Files for the page's file chooser, relative to this folder or
                                absolute: the element clicked (an <input type=file>, its label,
                                the page's own upload button) and the chooser that opens answered

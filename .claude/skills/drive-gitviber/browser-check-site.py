@@ -9,6 +9,8 @@ look for (an SSE stream the client left) to stdout.
   /act    a button whose fetch gets a 500, one that does nothing, a "Sign in" link, a popup
           opener that keeps what the popup posts (window.msg_), and a download link
   /audio  a button that plays a tone through WebAudio, and one that stops it
+  /game   a page that reads keys as a game does: logs each key event with isTrusted, focus and
+          visibility, lets go of its keys when it blurs, and counts the frames one is held through
   /covered, /smooth, /fill, /native, /frames?other=<port>, /inner, /popup: one page per check
   /file   a text file served as an attachment"""
 import json
@@ -122,6 +124,18 @@ function copyOut() {
   const t = document.getElementById('src'); t.select(); document.execCommand('copy');
 }
 </script>""", "<style>#hov { color: rgb(0, 0, 0) } #hov:hover { color: rgb(255, 0, 0) }</style>"),
+    "/game": page("game", """
+<button id="fire" onclick="window.fired_++">Fire</button>
+<script>
+window.log_ = []; window.blurs_ = 0; window.fired_ = 0; window.frames_ = 0; window.moved_ = 0;
+const held = new Set();
+const note = (e) => log_.push([e.type, e.key, e.isTrusted, document.hasFocus(), document.visibilityState].join(':'));
+addEventListener('keydown', (e) => { held.add(e.key); note(e); });
+addEventListener('keyup', (e) => { held.delete(e.key); note(e); });
+addEventListener('blur', () => { window.blurs_++; held.clear(); });
+window.held_ = () => [...held].join(',');
+(function tick() { frames_++; if (held.has('ArrowRight')) moved_++; requestAnimationFrame(tick); })();
+</script>"""),
     "/inner": page("inner", """
 <button id="inner" onclick="document.title = 'inner clicked'">Inner</button>
 <button id="oops" onclick="throw new Error('inner oops')">Oops</button>"""),
