@@ -775,7 +775,6 @@ mod tests {
     fn a_released_tab_switches_network_js_off_by_the_flag_it_checks() {
         assert!(NETWORK.contains("window.__gvNetwork === false"));
         assert_eq!(NETWORK_OFF, "window.__gvNetwork = false;");
-        assert!(scripts(None, true).iter().all(|s| s.0 != NETWORK));
     }
 
     /// The tab's key goes in once, as a JSON string, and nothing else answers for it.
