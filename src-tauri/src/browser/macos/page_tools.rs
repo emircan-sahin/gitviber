@@ -32,13 +32,14 @@ use objc2_web_kit::{
     WKScriptMessageHandlerWithReply, WKSnapshotConfiguration, WKUserContentController,
     WKUserScript, WKUserScriptInjectionTime, WKWebView,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::AppHandle;
 
 const PICKER: &str = include_str!("../scripts/picker.js");
@@ -128,19 +129,24 @@ define_class!(
             reply: &DynBlock<dyn Fn(*mut AnyObject, *mut NSString)>,
         ) {
             let body = unsafe { message.body() };
-            let answer = body
-                .downcast_ref::<NSString>()
-                .and_then(|text| clipboard_answer(&self.ivars().id, &text.to_string()));
+            // A page can post to this handler too: a long message is refused unread.
+            let answer = match body.downcast_ref::<NSString>() {
+                Some(text) if text.length() <= MESSAGE_MAX => {
+                    clipboard_answer(&self.ivars().id, &text.to_string())
+                }
+                Some(_) => Err("gv:size"),
+                None => Err("gv:form"),
+            };
             match answer {
-                Some(text) => {
+                Ok(text) => {
                     let text = NSString::from_str(&text);
                     reply.call((
                         Retained::as_ptr(&text).cast::<AnyObject>().cast_mut(),
                         std::ptr::null_mut(),
                     ));
                 }
-                None => {
-                    let error = NSString::from_str("Not asked of this tab's clipboard");
+                Err(why) => {
+                    let error = NSString::from_str(why);
                     reply.call((std::ptr::null_mut(), Retained::as_ptr(&error).cast_mut()));
                 }
             }
@@ -148,38 +154,86 @@ define_class!(
     }
 );
 
-/// The most a tab's clipboard holds; a bigger copy is left out.
+/// The most a tab's clipboard holds for one origin; a bigger copy is refused.
 const STORE_MAX: usize = 4 << 20;
+/// A message longer than this, in UTF-16 units, is refused before it is read.
+const MESSAGE_MAX: usize = STORE_MAX + 1024;
+/// How many origins' copies a tab keeps at once.
+const ORIGINS_MAX: usize = 8;
+/// What a tab's clipboard answers in a second: the handler is the page's to post to, key or not.
+const ASKS_PER_SECOND: u32 = 100;
 
-#[derive(Deserialize)]
-struct Asked {
-    key: String,
-    op: String,
-    #[serde(default)]
-    text: String,
+/// An agent's tab's clipboard (clipboard.js): what its pages copied, one copy for each origin,
+/// since a copy belongs to the origin of the document that made it and is given back to no other.
+#[derive(Default)]
+pub(super) struct Clipboard {
+    copies: HashMap<String, String>,
+    asked: Option<(Instant, u32)>,
 }
 
-/// What a frame of an agent's tab asked of its clipboard (clipboard.js): `set` and `get` its
-/// one store, and `guard`, whether its calls are still kept to it ("1") or the user's ("0").
-/// None unless the page's script asked with the tab's key.
-fn clipboard_answer(id: &str, body: &str) -> Option<String> {
-    let asked: Asked = serde_json::from_str(body).ok()?;
-    let v = view(id)?;
-    let ivars = v.web.ivars();
-    if asked.key != ivars.clipboard {
-        return None;
-    }
-    match asked.op.as_str() {
-        "get" => Some(ivars.copied.borrow().clone()),
-        "set" => {
-            if asked.text.len() <= STORE_MAX {
-                *ivars.copied.borrow_mut() = asked.text;
-            }
-            Some(String::new())
+impl Clipboard {
+    /// The reply to `body`, "key\nop\norigin\ntext", or why not (the script reads "gv:size").
+    /// `get` and `set` the origin's copy; `guard` says whether the tab's calls are still kept to
+    /// it ("1") or the user's ("0"), and says "1" when asked too often: the safe answer.
+    fn answer(
+        &mut self,
+        now: Instant,
+        key: &str,
+        guarded: bool,
+        body: &str,
+    ) -> Result<String, &'static str> {
+        let over = self.over(now);
+        let mut parts = body.splitn(4, '\n');
+        let (Some(asked), Some(op), Some(origin)) = (parts.next(), parts.next(), parts.next())
+        else {
+            return Err("gv:form");
+        };
+        if asked != key {
+            return Err("gv:key");
         }
-        "guard" => Some(if ivars.guarded.get() { "1" } else { "0" }.into()),
-        _ => None,
+        let text = parts.next().unwrap_or("");
+        match op {
+            "guard" => Ok(if guarded || over { "1" } else { "0" }.into()),
+            _ if over => Err("gv:busy"),
+            "get" => Ok(self.copies.get(origin).cloned().unwrap_or_default()),
+            // Origins that are opaque all read "null": none of them is one to keep a copy for.
+            "set" if origin == "null" => Err("gv:origin"),
+            "set" if text.len() > STORE_MAX => Err("gv:size"),
+            "set" => {
+                if !self.copies.contains_key(origin) && self.copies.len() >= ORIGINS_MAX {
+                    self.copies.clear();
+                }
+                self.copies.insert(origin.into(), text.into());
+                Ok(String::new())
+            }
+            _ => Err("gv:op"),
+        }
     }
+
+    /// Whether this is more than ASKS_PER_SECOND asks in the second it began.
+    fn over(&mut self, now: Instant) -> bool {
+        let (since, n) = match self.asked {
+            Some((since, n)) if now.saturating_duration_since(since) < Duration::from_secs(1) => {
+                (since, n.saturating_add(1))
+            }
+            _ => (now, 1),
+        };
+        self.asked = Some((since, n));
+        n > ASKS_PER_SECOND
+    }
+
+    /// The main frame went to `origin`: other origins' copies are not for the page it is now.
+    pub(super) fn only(&mut self, origin: &str) {
+        self.copies.retain(|o, _| o == origin);
+    }
+}
+
+/// What a frame of an agent's tab asked of its clipboard (clipboard.js).
+fn clipboard_answer(id: &str, body: &str) -> Result<String, &'static str> {
+    let v = view(id).ok_or("gv:gone")?;
+    let ivars = v.web.ivars();
+    let mut clipboard = ivars.copied.borrow_mut();
+    clipboard.answer(Instant::now(), &ivars.clipboard, ivars.guarded.get(), body)
 }
 
 /// The picker's and the console's handlers on a new view's user content controller, and its
@@ -844,24 +898,100 @@ mod tests {
         assert_eq!(NETWORK_OFF, "window.__gvNetwork = false;");
     }
 
-    /// The tab's key goes in once, as a JSON string, and nothing else answers for it.
+    fn ask(
+        c: &mut Clipboard,
+        at: Instant,
+        guarded: bool,
+        op: &str,
+        origin: &str,
+        text: &str,
+    ) -> Result<String, &'static str> {
+        c.answer(at, "k", guarded, &format!("k\n{op}\n{origin}\n{text}"))
+    }
+
     #[test]
-    fn what_the_clipboard_script_asks_is_what_the_tab_answers() {
-        let ask = |body: &str| serde_json::from_str::<Asked>(body).ok();
-        // JSON.stringify leaves out the text of a get and of a guard question.
-        let get = ask(r#"{"key":"k","op":"get"}"#).unwrap();
-        assert_eq!((get.op.as_str(), get.text.as_str()), ("get", ""));
+    fn a_copy_is_given_back_to_the_origin_that_made_it_and_to_no_other() {
+        let (mut c, t) = (Clipboard::default(), Instant::now());
         assert_eq!(
-            ask(r#"{"key":"k","op":"set","text":"a\nb"}"#).unwrap().text,
-            "a\nb"
+            ask(&mut c, t, true, "set", "https://a.test", "line\none"),
+            Ok(String::new())
         );
-        assert!(ask("not json").is_none());
+        assert_eq!(
+            ask(&mut c, t, true, "get", "https://a.test", ""),
+            Ok("line\none".into())
+        );
+        assert_eq!(
+            ask(&mut c, t, true, "get", "https://b.test", ""),
+            Ok(String::new())
+        );
+        // Another origin's copy is its own: it doesn't replace this one.
+        ask(&mut c, t, true, "set", "https://b.test", "b's").unwrap();
+        assert_eq!(
+            ask(&mut c, t, true, "get", "https://a.test", ""),
+            Ok("line\none".into())
+        );
+        // The main frame going to b: a's copy is gone for good.
+        c.only("https://b.test");
+        assert_eq!(
+            ask(&mut c, t, true, "get", "https://a.test", ""),
+            Ok(String::new())
+        );
+        assert_eq!(
+            ask(&mut c, t, true, "get", "https://b.test", ""),
+            Ok("b's".into())
+        );
+        // Origins that are opaque share the name "null": none keeps a copy.
+        assert_eq!(ask(&mut c, t, true, "set", "null", "x"), Err("gv:origin"));
+    }
+
+    #[test]
+    fn only_the_tabs_key_is_answered_and_a_copy_over_the_cap_is_refused_not_dropped() {
+        let (mut c, t) = (Clipboard::default(), Instant::now());
+        assert_eq!(c.answer(t, "k", true, "guess\nguard\no\n"), Err("gv:key"));
+        assert_eq!(c.answer(t, "k", true, "not a message"), Err("gv:form"));
+        assert_eq!(
+            ask(&mut c, t, true, "set", "o", &"x".repeat(STORE_MAX + 1)),
+            Err("gv:size")
+        );
+        assert_eq!(
+            ask(&mut c, t, true, "set", "o", &"x".repeat(STORE_MAX)),
+            Ok(String::new())
+        );
+        assert_eq!(ask(&mut c, t, true, "bogus", "o", ""), Err("gv:op"));
+        // More origins than it keeps: the others' copies go, the new one stays.
+        for i in 0..=ORIGINS_MAX {
+            ask(&mut c, t, true, "set", &format!("https://{i}.test"), "t").unwrap();
+        }
+        assert!(c.copies.len() <= ORIGINS_MAX);
+        let last = format!("https://{ORIGINS_MAX}.test");
+        assert_eq!(ask(&mut c, t, true, "get", &last, ""), Ok("t".into()));
+    }
+
+    #[test]
+    fn a_page_that_floods_it_gets_busy_and_the_guard_stays_on() {
+        let (mut c, t) = (Clipboard::default(), Instant::now());
+        for _ in 0..ASKS_PER_SECOND {
+            assert!(ask(&mut c, t, false, "guard", "o", "") == Ok("0".into()));
+        }
+        // Past the second's share: no copy is read, and the guard is not let down on its word.
+        assert_eq!(ask(&mut c, t, false, "get", "o", ""), Err("gv:busy"));
+        assert_eq!(ask(&mut c, t, false, "guard", "o", ""), Ok("1".into()));
+        // The next second starts afresh.
+        let later = t + Duration::from_millis(1100);
+        assert_eq!(ask(&mut c, later, false, "guard", "o", ""), Ok("0".into()));
+    }
+
+    #[test]
+    fn the_clipboard_script_sends_what_the_tab_reads() {
         for op in ["set", "get", "guard"] {
             assert!(CLIPBOARD.contains(&format!("ask(\"{op}\"")), "{op}");
         }
         assert!(CLIPBOARD.contains("gvClipboard"));
+        // No global the page can replace carries the key: the message is a template string.
+        assert!(!CLIPBOARD.contains("JSON."));
     }
 
+    /// The tab's key goes in once, as a JSON string, and nothing else answers for it.
     #[test]
     fn the_clipboard_script_answers_to_its_tabs_key_only() {
         assert_eq!(CLIPBOARD.matches("__GV_KEY__").count(), 1);

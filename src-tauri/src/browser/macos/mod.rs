@@ -445,8 +445,8 @@ struct WebIvars {
     clipboard: String,
     /// The script keeps the page's clipboard calls to the page (on until the user acts here).
     guarded: Cell<bool>,
-    /// What those calls copied, from any frame: the tab's one clipboard, never the user's.
-    copied: RefCell<String>,
+    /// What those calls copied, for each origin: the tab's clipboard, never the user's.
+    copied: RefCell<page_tools::Clipboard>,
 }
 
 define_class!(
@@ -816,10 +816,14 @@ define_class!(
         fn did_commit(&self, web: &WKWebView, _navigation: Option<&WKNavigation>) {
             self.ivars().failed.take();
             self.ivars().committed.set(true);
-            page_tools::loaded(self, &url_text(unsafe { web.URL() }));
-            // An agent's page loads guarded (scripts/clipboard.js); one released to the user
-            // is let go at once.
+            let url = url_text(unsafe { web.URL() });
+            page_tools::loaded(self, &url);
             if let Some(web) = self.ivars().web.load() {
+                // A copy was for the origin it was made on, not the next site's.
+                let origin = crate::browser::control::origin(&url);
+                web.ivars().copied.borrow_mut().only(&origin);
+                // An agent's page loads guarded (scripts/clipboard.js); one released to the
+                // user is let go at once.
                 page_tools::guard_clipboard(&web, agent::routed(&self.ivars().id));
             }
             self.changed();
