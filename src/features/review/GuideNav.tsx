@@ -1,16 +1,19 @@
-import { Check, Signal } from "lucide-react";
+import { Check, ChevronRight, Signal } from "lucide-react";
 import { type Category, type GuideSection, sectionBadge } from "@/lib/review/guide";
 import { cn } from "@/lib/utils";
 import { CATEGORY_UI, CategoryIcon, IMPORTANCE_UI, ImportanceTag } from "./categories";
+import { GuideNavFiles } from "./GuideNavFiles";
 
 interface Item {
   n: number;
   section: GuideSection;
   done: boolean;
+  /** The changed files it lists: none once reviewed, as its diffs fold away. */
+  files: string[];
 }
 
 /** One section in the navigator: its category, number, title and importance, checked once reviewed. */
-function NavItem({ n, section: s, done, chip, onGo }: Item & { chip: boolean; onGo: (n: number) => void }) {
+function NavItem({ n, section: s, done, chip, onGo }: Pick<Item, "n" | "section" | "done"> & { chip: boolean; onGo: (n: number) => void }) {
   return (
     <button
       onClick={() => onGo(n)}
@@ -37,20 +40,51 @@ function NavItem({ n, section: s, done, chip, onGo }: Item & { chip: boolean; on
 }
 
 /**
- * The sections shown, to jump to: a rail beside them on a wide tab, a row of chips pinned over
- * them on a narrow one (as high as the view's --stick, which keeps the files' headers below it).
+ * The sections shown, to jump to: a rail beside them on a wide tab, with each one's files under
+ * it (folded by its chevron), a row of chips pinned over them on a narrow one (as high as the
+ * view's --stick, which keeps the files' headers below it).
  */
-export function GuideNav({ items, onGo }: { items: Item[]; onGo: (n: number) => void }) {
+export function GuideNav({
+  items,
+  folded,
+  onFold,
+  onGo,
+  onGoFile,
+}: {
+  items: Item[];
+  /** The titles of the sections whose files are folded; kept by the view, as the navigator comes and goes with the filter. */
+  folded: string[];
+  onFold: (title: string) => void;
+  onGo: (n: number) => void;
+  onGoFile: (path: string) => void;
+}) {
   return (
     <>
       <nav aria-label="Sections" className="sticky top-0 hidden max-h-[calc(100vh-7rem)] self-start overflow-y-auto py-1 @6xl:block">
-        {items.map((i) => (
-          <NavItem key={i.n} {...i} chip={false} onGo={onGo} />
-        ))}
+        {items.map(({ files, ...i }) => {
+          const open = !folded.includes(i.section.title);
+          return (
+            <div key={i.n}>
+              <div className="flex items-center">
+                <button
+                  aria-label={`Files of section ${sectionBadge(i.n)}`}
+                  aria-expanded={files.length ? open : undefined}
+                  disabled={!files.length}
+                  onClick={() => onFold(i.section.title)}
+                  className="flex size-5 shrink-0 items-center justify-center rounded-sm text-subtle outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-0"
+                >
+                  <ChevronRight aria-hidden className={cn("size-3 transition-transform duration-100", open && "rotate-90")} />
+                </button>
+                <NavItem n={i.n} section={i.section} done={i.done} chip={false} onGo={onGo} />
+              </div>
+              {open && files.length > 0 && <GuideNavFiles paths={files} onGo={onGoFile} />}
+            </div>
+          );
+        })}
       </nav>
       <nav aria-label="Sections" className="glass-header sticky top-0 z-20 -mx-6 flex h-[var(--stick)] items-center gap-1.5 overflow-x-auto border-b border-border bg-background px-6 @6xl:hidden">
         {items.map((i) => (
-          <NavItem key={i.n} {...i} chip onGo={onGo} />
+          <NavItem key={i.n} n={i.n} section={i.section} done={i.done} chip onGo={onGo} />
         ))}
       </nav>
     </>
