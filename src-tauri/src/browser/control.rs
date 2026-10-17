@@ -173,18 +173,21 @@ Acting by the page's script, setting what a person would and reading it back
 
   Each action waits up to a second for its element, and half a second after for what it set
   off, then ends with one line of what changed: `→ +3 elements, dialog opened, url /lobby, 1
-  console error, POST /api/join 500`, or `→ no visible change`. The same command a third time
-  on an unchanged page says so.
+  console error, POST /api/join 500`, or `→ no DOM change`: the DOM is what it watches, plus
+  `canvas repainted` when a shown <canvas> painted otherwise (screenshot shows what it drew).
+  The same command a third time on an unchanged page says so.
 
 Waiting
   wait <css> | --text <text> | --url <glob> | --fn <js> | --load | --download | --ms <n>
        [--timeout <ms>]
-                               Until an element shows, the text does, the address matches (part
-                               of it; with * or **, all of it, or its path from a leading /), an
-                               expression is true, the page has loaded, a download of the
-                               tab's ends (one that ended since the previous command on the tab
-                               started counts, even if a reply noted it; each is returned once;
-                               prints its path, size and type), or the time is up: one of them;
+                               Until an element shows, the text does (the rendered text, as
+                               innerText has it: Z A F E R isn't ZAFER, `get text` shows what
+                               it is), the address matches (part of it; with * or **, all of it,
+                               or its path from a leading /), an expression is true, the page
+                               has loaded, a download of the tab's ends (one that ended since the
+                               previous command on the tab started counts, even if a reply noted
+                               it; each is returned once; prints its path, size and type), or
+                               the time is up: one of them;
                                10 s at most unless --timeout says (120 s at most). A timeout says
                                what was still not so
 

@@ -205,11 +205,11 @@ typeset -A NEEDS=(
   memory "tab list"
   # Acting as a person could, stable refs, the change line, reading in parts, honest output.
   stale_ref "fails as stale" covered "covered by" smooth_scroll "covered by" fill_honest "check | uncheck"
-  change_line "→ no visible change" find_get "find <|get styles|-o <file>" screenshot_1x "--clip|--scale|--refs"
+  change_line "→ no DOM change" find_get "find <|get styles|-o <file>" screenshot_1x "--clip|--scale|--refs"
   untrusted "--reveal" secret "--secret" frames "frame of the page's origin"
   # Native input.
   trusted "--synthetic" hover "CSS :hover applies" keys "key down <key>|--hold"
-  background_keys "key down <key>|--idle" clipboard_safe "--synthetic"
+  background_keys "key down <key>|--idle|canvas repainted" clipboard_safe "--synthetic"
   ownership "tab release"
   # Popups and downloads.
   popup "named for its opener" download "--download|downloads [--clear]"
@@ -551,11 +551,12 @@ check_background_keys() {
   for t in bk1 bk2; do page $t $URL_A/game || { record background_keys FAIL "tab new $t: $ERR"; return }; done
   page bk3 $URL_A/game --idle 1 && page bk4 $URL_A/game --idle 1 || { record background_keys FAIL "tab new: $ERR"; return }
   gbx --tab bk1 key down ArrowRight
-  local k1=$RC e1=$ERR
+  local k1=$RC e1=$ERR said=$OUT
   gbx --tab bk2 key down ArrowRight; local k2=$RC e2=$ERR
   gbx --tab bk3 key down ArrowRight; local k3=$RC e3=$ERR
   gbx --tab bk4 key down ArrowRight
   pass_if "key down on four tabs, none on show" '(( k1 == 0 && k2 == 0 && k3 == 0 && RC == 0 ))' "$k1 $e1 | $k2 $e2 | $k3 $e3 | $RC $ERR"
+  pass_if "key down on a canvas game says the canvas repainted" '[[ $said == *"canvas repainted"* ]]' "${${(M)${(f)said}:#→*}:-$said}"
   gbx --tab bk2 press a; gbx --tab bk2 click '#fire'
   sleep 1
   local log1=$(value bk1 'log_.join(" ")') log2=$(value bk2 'log_.join(" ")')
@@ -571,6 +572,8 @@ check_background_keys() {
   gbx --tab bk2 key up ArrowRight; local up2=$RC
   held=$(value bk1 'held_()')$(value bk2 'held_()')
   pass_if "key up on each" '(( up == 0 && up2 == 0 )) && [[ -z $held ]]' "$up $up2 held: ${held:-none}"
+  gbx --tab bk2 click '#fire'
+  pass_if "nothing moving: no DOM change" '[[ $OUT == *"→ no DOM change"* ]]' "${${(M)${(f)OUT}:#→*}:-$OUT$ERR}"
   # bk3 holds its key and bk4 holds its own, both idle for a minute; bk4 lets go first.
   gbx --tab bk4 key up ArrowRight
   local t0=$SECONDS

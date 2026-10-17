@@ -68,11 +68,11 @@ class Parsing(unittest.TestCase):
     def test_popup_name(self):
         out = "Clicked button \"Open popup\"\n→ popup opened as tab t1-popup1 (http://127.0.0.1:5/popup)"
         self.assertEqual(check.popup_name(out), "t1-popup1")
-        self.assertIsNone(check.popup_name("→ no visible change"))
+        self.assertIsNone(check.popup_name("→ no DOM change"))
 
     def test_popup_replies_as_the_code_writes_them(self):
         # popups.rs and notes.rs on feat/integration-popups.
-        click = 'Clicked button "Open popup" → no visible change\n→ popup opened as tab t1-popup1 (http://127.0.0.1:5/popup)'
+        click = 'Clicked button "Open popup" → no DOM change\n→ popup opened as tab t1-popup1 (http://127.0.0.1:5/popup)'
         self.assertEqual(check.popup_name(click), "t1-popup1")
         closed = "→ tab t1-popup1 closed: its page called window.close()"
         self.assertTrue(check.closed_note(closed, "t1-popup1"))

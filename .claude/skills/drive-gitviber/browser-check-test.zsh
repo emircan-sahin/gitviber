@@ -158,8 +158,8 @@ expect "a check's needs missing from help are named" "$(py missing $help "key do
   gbx() {
     RC=0 ERR=
     case "$*" in
-      *"click #pop") OUT=$'Clicked button "Open popup" → no visible change\n→ popup opened as tab t1-popup1 (http://127.0.0.1:5/popup)' ;;
-      *"click #closeme") OUT='Clicked button "Close" → no visible change' ;;
+      *"click #pop") OUT=$'Clicked button "Open popup" → no DOM change\n→ popup opened as tab t1-popup1 (http://127.0.0.1:5/popup)' ;;
+      *"click #closeme") OUT='Clicked button "Close" → no DOM change' ;;
       *" url") OUT=$'http://127.0.0.1:5/act\n→ tab t1-popup1 closed: its page called window.close()' ;;
       *"wait --download") OUT="Downloaded gitviber-check.txt (24 B, text/plain): $T/dl/gitviber-check.txt" ;;
       *" downloads") OUT="gitviber-check.txt  24 B  text/plain  $T/dl/gitviber-check.txt" ;;

@@ -10,7 +10,8 @@ look for (an SSE stream the client left) to stdout.
           opener that keeps what the popup posts (window.msg_), and a download link
   /audio  a button that plays a tone through WebAudio, and one that stops it
   /game   a page that reads keys as a game does: logs each key event with isTrusted, focus and
-          visibility, lets go of its keys when it blurs, and counts the frames one is held through
+          visibility, lets go of its keys when it blurs, and draws a square on a canvas that moves
+          while one is held
   /covered, /smooth, /fill, /native, /frames?other=<port>, /inner, /popup: one page per check
   /file   a text file served as an attachment"""
 import json
@@ -126,6 +127,7 @@ function copyOut() {
 </script>""", "<style>#hov { color: rgb(0, 0, 0) } #hov:hover { color: rgb(255, 0, 0) }</style>"),
     "/game": page("game", """
 <button id="fire" onclick="window.fired_++">Fire</button>
+<canvas id="field" width="300" height="100"></canvas>
 <script>
 window.log_ = []; window.blurs_ = 0; window.fired_ = 0; window.frames_ = 0; window.moved_ = 0;
 const held = new Set();
@@ -134,7 +136,13 @@ addEventListener('keydown', (e) => { held.add(e.key); note(e); });
 addEventListener('keyup', (e) => { held.delete(e.key); note(e); });
 addEventListener('blur', () => { window.blurs_++; held.clear(); });
 window.held_ = () => [...held].join(',');
-(function tick() { frames_++; if (held.has('ArrowRight')) moved_++; requestAnimationFrame(tick); })();
+const field = document.getElementById('field').getContext('2d');
+(function tick() {
+  frames_++; if (held.has('ArrowRight')) moved_++;
+  // The player: a square that moves while the key is held, and nothing else on the page does.
+  field.clearRect(0, 0, 300, 100); field.fillRect(moved_ % 240, 40, 40, 20);
+  requestAnimationFrame(tick);
+})();
 </script>"""),
     "/inner": page("inner", """
 <button id="inner" onclick="document.title = 'inner clicked'">Inner</button>

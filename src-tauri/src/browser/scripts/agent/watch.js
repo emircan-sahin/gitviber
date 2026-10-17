@@ -14,6 +14,53 @@ function pageState() {
   return [location.href, document.getElementsByTagName("*").length, Math.round(window.scrollY ?? 0), focused?.localName, value, dialogs()].join("|");
 }
 
+// A page's canvas changes through draw calls in the page's own world, out of this one's reach:
+// a small picture of each shown canvas, before and after, tells whether it repainted.
+const CANVASES = 4;
+const SAMPLE = 48;
+
+/** A hash of `canvas` drawn SAMPLE px square onto `scratch`; null when it can't be read (empty, or tainted by another origin's image). */
+function sample(canvas, scratch) {
+  try {
+    scratch.width = scratch.height = SAMPLE;
+    const ctx = scratch.getContext("2d", { willReadFrequently: true });
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(canvas, 0, 0, SAMPLE, SAMPLE);
+    let hash = 2166136261;
+    for (const byte of ctx.getImageData(0, 0, SAMPLE, SAMPLE).data) hash = Math.imul(hash ^ byte, 16777619);
+    return hash >>> 0;
+  } catch {
+    return null;
+  }
+}
+
+/** The shown canvases of the page and its same-origin frames (CANVASES at most), each with its hash. */
+function pictures() {
+  const out = [];
+  let scratch;
+  for (const doc of documents()) {
+    for (const canvas of doc.querySelectorAll?.("canvas") ?? []) {
+      if (out.length === CANVASES) return out;
+      if (!shows(canvas)) continue;
+      scratch ??= document.createElement("canvas");
+      out.push([canvas, sample(canvas, scratch)]);
+    }
+  }
+  return out;
+}
+
+/** The hash of the first of `was` that paints otherwise now, or null if none does. */
+function repainted(was) {
+  if (!was.length) return null;
+  const scratch = document.createElement("canvas");
+  for (const [canvas, hash] of was) {
+    if (hash === null || !canvas.isConnected) continue;
+    const now = sample(canvas, scratch);
+    if (now !== null && now !== hash) return now;
+  }
+  return null;
+}
+
 /** The page's document and each same-origin frame's, however deep. */
 function documents(doc = document) {
   const frames = [...(doc.querySelectorAll?.("iframe") ?? [])].map(frameDoc).filter(Boolean);
@@ -40,7 +87,7 @@ function watch() {
   };
   const observer = new MutationObserver(count);
   for (const doc of documents()) observer.observe(doc, { subtree: true, childList: true, characterData: true, attributes: true });
-  state.watch = { observer, seen, count, dialogs: dialogs() };
+  state.watch = { observer, seen, count, dialogs: dialogs(), canvases: pictures() };
   return {};
 }
 
@@ -57,5 +104,7 @@ async function changes({ quiet = 100, most = 500 }) {
   w.observer.disconnect();
   state.watch = null;
   const { added, removed, texts, attributes } = w.seen;
-  return { added, removed, texts, attributes, dialogs: dialogs() - w.dialogs, state: pageState() };
+  // In the state too: a canvas game's page is the same to the loop nudge only while it's still.
+  const canvas = repainted(w.canvases);
+  return { added, removed, texts, attributes, canvas, dialogs: dialogs() - w.dialogs, state: pageState() + (canvas === null ? "" : `|canvas:${canvas}`) };
 }

@@ -15,6 +15,8 @@ pub struct Changes {
     pub removed: u64,
     pub texts: u64,
     pub attributes: u64,
+    /// A <canvas> painted otherwise at the end than at the start: the DOM says nothing of it.
+    pub canvas: bool,
     /// Dialogs on show after, less before: <dialog open>, role=dialog, aria-modal.
     pub dialogs: i64,
     pub url_before: String,
@@ -79,6 +81,9 @@ pub fn changed(c: &Changes) -> String {
         "attribute changed",
         "attributes changed",
     ));
+    if c.canvas {
+        said.push("canvas repainted".into());
+    }
     match c.dialogs {
         0 => {}
         1 => said.push("dialog opened".into()),
@@ -108,7 +113,7 @@ pub fn changed(c: &Changes) -> String {
         said.push(format!("+{} more requests", requests.len() - REQUESTS));
     }
     if said.is_empty() {
-        "→ no visible change".into()
+        "→ no DOM change".into()
     } else {
         format!("→ {}", said.join(", "))
     }
@@ -531,7 +536,13 @@ mod tests {
             url: page.into(),
             ..Changes::default()
         };
-        assert_eq!(changed(&quiet), "→ no visible change");
+        assert_eq!(changed(&quiet), "→ no DOM change");
+        // A canvas game moves with no element changing: said, so it isn't read as nothing.
+        let painted = Changes {
+            canvas: true,
+            ..quiet
+        };
+        assert_eq!(changed(&painted), "→ canvas repainted");
     }
 
     #[test]
