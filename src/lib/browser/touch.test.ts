@@ -67,7 +67,7 @@ function page() {
 }
 
 const mouse = (type: string, init: Record<string, unknown> = {}) => {
-  const e = new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, pointerType: "mouse", clientX: 10, clientY: 20, ...init });
+  const e = new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, pointerType: "mouse", button: 0, buttons: 0, clientX: 10, clientY: 20, ...init });
   Object.defineProperty(e, "isTrusted", { value: true });
   return e;
 };
@@ -134,10 +134,39 @@ test("the page's own styles are read for those features, as are rules added late
   assert.deepEqual(p.inserted, ["@media (min-width: 0px) { a { color: red } }"]);
 });
 
+test("a <style> is read again when its text is put in or changed, and an @import when it arrives", () => {
+  const p = page();
+  const rule: Rule = { media: { mediaText: "(hover: hover)" } };
+  const style: any = { nodeType: 1, localName: "style", sheet: { media: { mediaText: "all" }, cssRules: [rule] } };
+  const text = { nodeType: 3, parentNode: style };
+  const observe = (...records: unknown[]) => p.observers[0](records);
+  // Its text set after the element came in: the element is the record's target.
+  observe({ type: "childList", target: style, addedNodes: [text] });
+  assert.equal(rule.media!.mediaText, "(min-width: 100000px)");
+  // Edited in place (hot reload): a new sheet, read through the text's parent.
+  const next: Rule = { media: { mediaText: "(hover: hover)" } };
+  style.sheet = { media: { mediaText: "all" }, cssRules: [next] };
+  observe({ type: "characterData", target: text, addedNodes: [] });
+  assert.equal(next.media!.mediaText, "(min-width: 100000px)");
+  // An element holding a <style> comes in; a text change elsewhere costs nothing.
+  const late: Rule = { media: { mediaText: "(pointer: fine)" } };
+  const holder = { nodeType: 1, localName: "div", firstElementChild: {}, querySelectorAll: () => [{ sheet: { media: { mediaText: "all" }, cssRules: [late] } }] };
+  observe({ type: "childList", target: {}, addedNodes: [holder] }, { type: "characterData", target: { parentNode: { localName: "p" } }, addedNodes: [] });
+  assert.equal(late.media!.mediaText, "(min-width: 100000px)");
+  // A sheet is walked once; its @import is followed once it has loaded.
+  const imported: Rule = { media: { mediaText: "(hover: hover)" } };
+  const link: any = { media: { mediaText: "all" } };
+  p.document.styleSheets.push({ media: { mediaText: "all" }, cssRules: [link, { selectorText: "a" }] });
+  p.document.dispatchEvent(new Event("DOMContentLoaded"));
+  link.styleSheet = { media: { mediaText: "all" }, cssRules: [imported] };
+  p.document.dispatchEvent(new Event("DOMContentLoaded"));
+  assert.equal(imported.media!.mediaText, "(min-width: 100000px)");
+});
+
 /** A page's listeners, logged by type. */
 function watch(p: ReturnType<typeof page>) {
   const log: string[] = [];
-  for (const type of ["pointerdown", "pointermove", "pointerup", "pointerover", "mousemove", "mousedown", "mouseup", "click", "touchstart", "touchmove", "touchend"]) {
+  for (const type of ["pointerdown", "pointermove", "pointerup", "pointerover", "mousemove", "mousedown", "mouseup", "click", "touchstart", "touchmove", "touchend", "touchcancel", "pointercancel", "dragstart"]) {
     p.window.addEventListener(type, (e: any) => log.push(e.isTrusted ? `${type}!` : e.pointerType ? `${type}:${e.pointerType}` : type));
   }
   return log;
@@ -172,24 +201,65 @@ test("the mouse reaches a touch page as a finger: a tap, a drag, no hovering", (
   ]);
 });
 
-test("a touch handler that cancels the tap cancels its click too, once", () => {
+test("a touch handler that cancels the tap cancels the mouse events after it, once", () => {
   const p = page();
   const log = watch(p);
-  p.window.addEventListener("touchend", (e: Event) => e.preventDefault());
+  const cancelOn = (type: string) => p.window.addEventListener(type, (e: Event) => e.preventDefault(), { once: true });
   const tap = () => {
-    p.window.dispatchEvent(mouse("pointerdown"));
-    p.window.dispatchEvent(mouse("pointerup"));
-    const click = mouse("click");
-    p.window.dispatchEvent(click);
-    return click.defaultPrevented;
+    const events = ["pointerdown", "mousedown", "pointerup", "mouseup", "click"].map((t) => mouse(t));
+    for (const e of events) p.window.dispatchEvent(e);
+    return events.map((e) => e.defaultPrevented);
   };
-  assert.equal(tap(), true);
-  assert.equal(log.filter((t) => t === "click!").length, 0, "the click never reached the page");
-  // The next tap is judged on its own.
-  assert.equal(tap(), true);
-  // A click with no touch before it (a key's) is the page's.
+  // Cancelled at touchend: the press already reached the page, what follows doesn't.
+  cancelOn("touchend");
+  assert.deepEqual(tap(), [false, false, false, true, true]);
+  assert.deepEqual(log.filter((t) => t.endsWith("!")), ["mousedown!"]);
+  log.length = 0;
+  // Cancelled at touchstart: none of the mouse events, and mousedown's default (focus) is cancelled.
+  cancelOn("touchstart");
+  assert.deepEqual(tap(), [false, true, false, true, true]);
+  assert.deepEqual(log.filter((t) => t.endsWith("!")), []);
+  // The next tap is judged on its own, and a click with no touch before it (a key's) is the page's.
+  log.length = 0;
+  assert.deepEqual(tap(), [false, false, false, false, false]);
+  assert.deepEqual(log.filter((t) => t.endsWith("!")), ["mousedown!", "mouseup!", "click!"]);
   const key = mouse("click");
   p.window.dispatchEvent(key);
   assert.equal(key.defaultPrevented, false);
-  assert.equal(log.filter((t) => t === "click!").length, 1);
+});
+
+test("only the main button is a finger, and a press the page loses lifts it", () => {
+  const p = page();
+  const log = watch(p);
+  const send = (e: Event) => p.window.dispatchEvent(e);
+  // A right click is a mouse's alone.
+  send(mouse("pointerdown", { button: 2, buttons: 2 }));
+  send(mouse("pointerup", { button: 2 }));
+  assert.deepEqual(log, ["pointerdown!", "pointerup!"]);
+  log.length = 0;
+  // A drag that starts is a touch cancelled; a move after it is no finger's.
+  send(mouse("pointerdown", { button: 0 }));
+  send(mouse("dragstart"));
+  send(mouse("pointermove", { buttons: 1 }));
+  assert.deepEqual(log, ["pointerdown:touch", "touchstart", "pointercancel:touch", "touchcancel", "dragstart!", "pointermove!"]);
+  // A pointer cancelled is the same, and the next press starts afresh.
+  log.length = 0;
+  send(mouse("pointerdown"));
+  send(mouse("pointercancel"));
+  send(mouse("pointerup"));
+  assert.deepEqual(log, ["pointerdown:touch", "touchstart", "pointercancel:touch", "touchcancel", "pointerup!"]);
+});
+
+test("the finger lands on what was hit inside a shadow tree, not its host", () => {
+  const p = page();
+  const inner = new EventTarget();
+  const reached: string[] = [];
+  for (const type of ["pointerdown", "touchstart", "touchend"]) inner.addEventListener(type, () => reached.push(type));
+  const down: any = mouse("pointerdown");
+  down.composedPath = () => [inner, p.window];
+  const up: any = mouse("pointerup");
+  up.composedPath = () => [inner, p.window];
+  p.window.dispatchEvent(down);
+  p.window.dispatchEvent(up);
+  assert.deepEqual(reached, ["pointerdown", "touchstart", "touchend"]);
 });

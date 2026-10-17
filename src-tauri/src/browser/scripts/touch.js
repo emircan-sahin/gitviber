@@ -91,7 +91,9 @@
   }
 
   // The styles: each @media rule, @import and sheet is read for those features, once its sheet
-  // is in; a rule added later through the CSSOM is rewritten on the way in.
+  // is in; a rule added later through the CSSOM is rewritten on the way in. A sheet is walked
+  // once (a <style> whose text changes has a new one), its @imports followed as they load.
+  const seen = new WeakSet();
   const fixMedia = (media) => {
     const was = media?.mediaText;
     if (was && rewrite(was) !== was) media.mediaText = rewrite(was);
@@ -99,17 +101,27 @@
   const fixRules = (rules) => {
     for (const rule of rules) {
       fixMedia(rule.media);
+      if (rule.styleSheet) fixSheet(rule.styleSheet);
       if (rule.cssRules) fixRules(rule.cssRules);
     }
   };
-  const fixSheet = (sheet) => {
+  function fixSheet(sheet) {
     try {
-      fixMedia(sheet.media);
-      fixRules(sheet.cssRules);
+      if (!seen.has(sheet)) {
+        seen.add(sheet);
+        fixMedia(sheet.media);
+        fixRules(sheet.cssRules);
+        return;
+      }
+      // Seen: only an @import that has arrived since, which come before the sheet's styles.
+      for (const rule of sheet.cssRules) {
+        if (rule.styleSheet) fixSheet(rule.styleSheet);
+        else if (rule.selectorText !== undefined) break;
+      }
     } catch {
       // A sheet from another origin can't be read.
     }
-  };
+  }
   for (const proto of [window.CSSStyleSheet?.prototype, window.CSSGroupingRule?.prototype]) {
     const insert = proto?.insertRule;
     if (insert) define(proto, "insertRule", function (text, index) {
@@ -122,29 +134,35 @@
       return original.call(this, rewrite(text));
     });
   }
-  const fixNode = (node) => {
-    if (node?.nodeType !== 1) return;
-    if (node.sheet) fixSheet(node.sheet);
-    node.querySelectorAll("style, link").forEach((inner) => inner.sheet && fixSheet(inner.sheet));
-  };
-  const sheets = () => [...(document.styleSheets ?? [])].forEach(fixSheet);
   if (window.MutationObserver) {
+    // A <style> is read when it comes in, and again when its text is set or changed (a text
+    // node put in, replaced or edited: Tailwind's script, CSS-in-JS, hot reload). A <link>
+    // waits for its load below: its sheet has no rules before.
     new window.MutationObserver((records) => {
+      const styles = new Set();
       for (const r of records) {
-        r.addedNodes.forEach((node) => fixNode(node));
-        // A <style>'s text changed: its sheet is a new one.
-        if (r.type === "characterData") fixNode(r.target.parentNode);
+        if (r.type === "characterData") {
+          if (r.target.parentNode?.localName === "style") styles.add(r.target.parentNode);
+          continue;
+        }
+        if (r.target.localName === "style") styles.add(r.target);
+        for (const node of r.addedNodes) {
+          if (node.nodeType !== 1) continue;
+          if (node.localName === "style") styles.add(node);
+          else if (node.firstElementChild) node.querySelectorAll("style").forEach((inner) => styles.add(inner));
+        }
       }
+      for (const style of styles) if (style.sheet) fixSheet(style.sheet);
     }).observe(document, { childList: true, subtree: true, characterData: true });
   }
-  // A <link>'s sheet is in when it loads; the rest when the document has parsed.
-  document.addEventListener("load", (e) => fixNode(e.target), true);
-  document.addEventListener("DOMContentLoaded", sheets);
+  document.addEventListener("load", (e) => e.target.sheet && fixSheet(e.target.sheet), true);
+  document.addEventListener("DOMContentLoaded", () => [...(document.styleSheets ?? [])].forEach(fixSheet));
 
   // ---- The mouse as a finger. Its trusted events are held back and replaced by a touch's:
   // pointer events of a touch, then touch events, which stay on the element pressed. A tap
   // keeps its mouse events after (the page gets what a touch browser gives it) unless a touch
-  // handler cancelled it, which also cancels the click. There is no hovering with a finger.
+  // handler cancelled it, which also cancels them. Only the main button touches; there is no
+  // hovering with a finger.
   let pressed = null;
   let cancelled = false;
 
@@ -154,7 +172,7 @@
       cancelable: true,
       composed: true,
       view: window,
-      pointerId: e.pointerId,
+      pointerId: e.pointerId ?? 1,
       pointerType: "touch",
       isPrimary: true,
       width: 23,
@@ -172,10 +190,10 @@
 
   const touch = (type, e, target) => {
     const finger = new Touch({ identifier: 1, target, clientX: e.clientX, clientY: e.clientY, pageX: e.pageX, pageY: e.pageY, screenX: e.screenX, screenY: e.screenY });
-    const down = type !== "touchend";
+    const down = type === "touchstart" || type === "touchmove";
     return new TouchEvent(type, {
       bubbles: true,
-      cancelable: true,
+      cancelable: type !== "touchcancel",
       composed: true,
       view: window,
       touches: down ? [finger] : [],
@@ -192,35 +210,53 @@
     e.stopImmediatePropagation();
   };
 
+  // What the event hit, inside a shadow tree too: `target` there is its host.
+  const hit = (e) => e.composedPath?.()[0] ?? e.target;
+
   const listen = (type, fn) => window.addEventListener(type, (e) => e.isTrusted && e.pointerType !== "touch" && fn(e), true);
 
   listen("pointerdown", (e) => {
+    if (e.button !== 0) return;
     held(e);
-    pressed = e.target;
+    pressed = hit(e);
     cancelled = false;
-    e.target.dispatchEvent(pointer("pointerdown", e, { button: 0, buttons: 1, pressure: 0.5 }));
+    pressed.dispatchEvent(pointer("pointerdown", e, { button: 0, buttons: 1, pressure: 0.5 }));
     if (!pressed.dispatchEvent(touch("touchstart", e, pressed))) cancelled = true;
   });
   listen("pointermove", (e) => {
+    if (!pressed) return e.buttons === 0 && held(e);
     held(e);
-    if (!pressed) return;
-    e.target.dispatchEvent(pointer("pointermove", e, { button: -1, buttons: 1, pressure: 0.5 }));
+    hit(e).dispatchEvent(pointer("pointermove", e, { button: -1, buttons: 1, pressure: 0.5 }));
     pressed.dispatchEvent(touch("touchmove", e, pressed));
   });
   listen("pointerup", (e) => {
+    if (!pressed || e.button !== 0) return;
     held(e);
+    const target = pressed;
+    pressed = null;
+    hit(e).dispatchEvent(pointer("pointerup", e, { button: 0, buttons: 0, pressure: 0 }));
+    if (!target.dispatchEvent(touch("touchend", e, target))) cancelled = true;
+  });
+  // The press is taken from the page (a drag begins, the pointer is cancelled): the finger lifts.
+  const cancel = (e) => {
     if (!pressed) return;
     const target = pressed;
     pressed = null;
-    e.target.dispatchEvent(pointer("pointerup", e, { button: 0, buttons: 0, pressure: 0 }));
-    if (!target.dispatchEvent(touch("touchend", e, target))) cancelled = true;
-  });
+    if (e.type === "pointercancel") held(e);
+    target.dispatchEvent(pointer("pointercancel", e, { button: -1, buttons: 0, pressure: 0 }));
+    target.dispatchEvent(touch("touchcancel", e, target));
+  };
+  listen("pointercancel", cancel);
+  listen("dragstart", cancel);
   for (const type of ["pointerover", "pointerenter", "pointerout", "pointerleave"]) listen(type, held);
   listen("mousemove", (e) => pressed && held(e));
-  listen("click", (e) => {
-    if (!cancelled) return;
-    cancelled = false;
-    e.preventDefault();
-    held(e);
-  });
+  // A touch handler that cancelled the tap cancels the mouse events after it, and their defaults.
+  for (const type of ["mousedown", "mouseup", "click"]) {
+    listen(type, (e) => {
+      if (!cancelled || e.button !== 0) return;
+      if (type === "click") cancelled = false;
+      e.preventDefault();
+      held(e);
+    });
+  }
 })();
