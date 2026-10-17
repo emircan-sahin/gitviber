@@ -47,6 +47,13 @@ Off until you turn it on in Settings → Browser.
 
 - **Tabs.** An agent's tabs each keep their cookies in memory, apart from yours, unless the agent
   asks for yours.
+- **Your clipboard.** An agent never reads or writes it, and a page in its tab can't read it. A
+  page's own Copy buttons write to a clipboard of the tab's instead: GitViber replaces the page's
+  copy commands in every frame of the tab, and the page can't see how. That stops ordinary pages,
+  not one written to get around it: WebKit lets a page copy during a click, an agent's click is
+  real input, and nothing native refuses a page's write. So don't point an agent at a page you
+  wouldn't click on yourself. Once you click or type in a tab it's yours, and its pages copy as
+  they would in any browser.
 - **Saved sessions.** Logins an agent saves with `gitviber browser session save`, their cookies and
   site storage, are kept in the app's data folder, readable by you alone, and never printed or sent
   anywhere. Clear Browsing Data deletes them too. A page's IndexedDB is saved only when the agent

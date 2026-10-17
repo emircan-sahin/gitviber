@@ -21,6 +21,12 @@
   const Wrap = Promise;
   const chain = Promise.prototype.then;
   const Text = String;
+  // Taken now, with the others: a script of the page that swaps Function.prototype.call or apply,
+  // Reflect.apply or String.prototype.toLowerCase later, sees none of the calls below, and is not
+  // handed WebKit's own execCommand by them.
+  const apply = Reflect.apply;
+  const lowercase = String.prototype.toLowerCase;
+  const then = (promise, ok, no) => apply(chain, promise, [ok, no]);
   const channel = window.webkit?.messageHandlers?.gvClipboard;
   const post = channel && channel.postMessage.bind(channel);
   const wait = setTimeout.bind(window);
@@ -41,7 +47,7 @@
       if (!post) return reject(new Error("gone"));
       const timer = wait(() => reject(new Error("slow")), 2000);
       try {
-        chain.call(
+        then(
           post(`${key}\n${op}\n${origin}\n${text}`),
           (reply) => (unwait(timer), resolve(reply)),
           (error) => (unwait(timer), reject(error)),
@@ -62,12 +68,12 @@
   };
   const keep = (text) => {
     if (text.length > MAX) return Wrap.reject(refuse(why(new Error("gv:size"))));
-    return chain.call(ask("set", text), () => undefined, (error) => {
+    return then(ask("set", text), () => undefined, (error) => {
       throw refuse(why(error));
     });
   };
   const kept = () =>
-    chain.call(ask("get"), (text) => text ?? "", () => {
+    then(ask("get"), (text) => text ?? "", () => {
       throw denied();
     });
 
@@ -94,7 +100,7 @@
     field.select();
     let ok = false;
     try {
-      ok = exec.call(doc, "copy");
+      ok = apply(exec, doc, ["copy"]);
     } catch {}
     removeEventListener("copy", fill, true);
     field.remove();
@@ -112,24 +118,24 @@
     writeText(text) {
       const given = Text(text);
       if (on) return keep(given);
-      return own.writeText ? own.writeText.call(this, given) : realWrite(given);
+      return own.writeText ? apply(own.writeText, this, [given]) : realWrite(given);
     },
     readText() {
       if (on) return kept();
-      return own.readText ? own.readText.call(this) : Wrap.reject(denied());
+      return own.readText ? apply(own.readText, this, []) : Wrap.reject(denied());
     },
   };
   if (proto) {
     proto.writeText = api.writeText;
     proto.readText = api.readText;
     proto.write = async function (items) {
-      if (!on) return own.write.call(this, items);
+      if (!on) return apply(own.write, this, [items]);
       for (const item of items ?? []) {
         if (item?.types?.includes("text/plain")) return keep(await (await item.getType("text/plain")).text());
       }
     };
     proto.read = async function () {
-      if (!on) return own.read.call(this);
+      if (!on) return apply(own.read, this, []);
       return [new ClipboardItem({ "text/plain": new Blob([await kept()], { type: "text/plain" }) })];
     };
   } else if (window.Navigator && !("clipboard" in navigator)) {
@@ -165,7 +171,7 @@
     const secret = field && target.type === "password";
     const selected = secret ? "" : field ? target.value.slice(target.selectionStart, target.selectionEnd) : Text(doc.getSelection?.() ?? "");
     const text = target?.dispatchEvent(event) === false ? data.getData("text/plain") : selected;
-    if (name === "cut" && !event.defaultPrevented) exec.call(doc, "delete");
+    if (name === "cut" && !event.defaultPrevented) apply(exec, doc, ["delete"]);
     return keep(text);
   };
   // A paste event with the store's text: the text, for GitViber to put in, unless the page took
@@ -185,11 +191,14 @@
     const target = at.el ?? at.doc.body ?? at.doc.documentElement;
     return target?.dispatchEvent(event) === false ? "" : text;
   };
-  Document.prototype.execCommand = function (command, ...rest) {
-    const name = Text(command).toLowerCase();
-    if (!on || (name !== "copy" && name !== "cut" && name !== "paste")) return exec.call(this, command, ...rest);
+  // The command is made a string once, and that string is what is classified and what WebKit
+  // gets: an object whose toString says "bold" to one and "copy" to the other would pass.
+  Document.prototype.execCommand = function (command, showUI, value) {
+    const given = Text(command);
+    const name = apply(lowercase, given, []);
+    if (!on || (name !== "copy" && name !== "cut" && name !== "paste")) return apply(exec, this, [given, showUI, value]);
     if (name === "paste") return false;
-    chain.call(copy(this, this.activeElement, name), undefined, () => {});
+    then(copy(this, this.activeElement, name), undefined, () => {});
     return true;
   };
 
@@ -198,15 +207,31 @@
   Object.defineProperty(window, "__gvClipboard", {
     value: (asked, what) => {
       if (asked !== token) return null;
-      if (what === "on" || what === "off") on = what === "on";
-      else if (what === "copy" || what === "cut") {
+      // "yes" tells GitViber this frame is the one it knows; anything else is a frame it should forget.
+      if (what === "on" || what === "off") {
+        on = what === "on";
+        return "yes";
+      } else if (what === "copy" || what === "cut") {
         const at = focused();
-        return at ? chain.call(copy(at.doc, at.el, what), () => null, () => null) : null;
+        return at ? then(copy(at.doc, at.el, what), () => null, () => null) : null;
       } else if (what === "paste") return paste();
       return null;
     },
   });
   // Hello, so that GitViber can push the guard to this frame: nothing it says comes back through
   // here.
-  if (post) chain.call(ask("hello", token), undefined, () => {});
+  const hello = () => {
+    if (post) then(ask("hello", token), undefined, () => {});
+  };
+  hello();
+  // A page kept for going back to, and brought back: guarded again, until GitViber hears it and
+  // says otherwise. It was let go of when it left, if the tab was the user's.
+  addEventListener("pagehide", () => {
+    on = Boolean(post);
+  });
+  addEventListener("pageshow", (event) => {
+    if (!event.persisted) return;
+    on = Boolean(post);
+    hello();
+  });
 })();

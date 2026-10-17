@@ -164,7 +164,9 @@ script instead (untrusted events), for a page where native input fails
                                sends it: Enter, Tab, Escape, ArrowDown, F5, a, A, ?, Meta+a,
                                Shift+Tab. --hold: down that long. Meta+a, c, x, v and z the page
                                doesn't take do what the Edit menu does; c, x and v on the tab's
-                               own clipboard, never the user's: a copy belongs to the origin that
+                               own clipboard, never the user's (a guard against ordinary pages:
+                               WebKit lets a page copy in a click, so not a wall against one
+                               written to get around it): a copy belongs to the origin that
                                made it (its frames of that origin share it, another origin's frame
                                has its own and gets nothing from these keys), 4 MiB at most, and
                                the page's navigator.clipboard is it too

@@ -197,7 +197,7 @@ finish() {
 
 CHECKS=(visibility fps isolation sessions session_idb unknown_tab device screenshot network sse idle_park tab_close form
   stale_ref covered smooth_scroll fill_honest change_line find_get screenshot_1x screenshot_full touch untrusted secret frames
-  trusted hover keys background_keys clipboard_safe clipboard_tab ownership popup download agent_hide agent_audio agent_show agent_e2e memory)
+  trusted hover keys background_keys clipboard_safe clipboard_bypass clipboard_tab ownership popup download agent_hide agent_audio agent_show agent_e2e memory)
 typeset -A NEEDS=(
   visibility "eval" fps "eval" isolation "eval" sessions "session save|session load|--session"
   session_idb "IndexedDB"
@@ -213,6 +213,7 @@ typeset -A NEEDS=(
   trusted "--synthetic" hover "CSS :hover applies" keys "key down <key>|--hold"
   background_keys "key down <key>|--idle|canvas repainted" clipboard_safe "--synthetic"
   clipboard_tab "frame of the page's origin|--synthetic"
+  clipboard_bypass "--synthetic"
   ownership "tab release"
   # Popups and downloads.
   popup "named for its opener" download "--download|downloads [--clear]"
@@ -747,6 +748,28 @@ check_clipboard_tab() {
   close $popup
   record "tab clipboard: the user's own Copy button" SKIP "manual: click in the tab, then its page's Copy button"
   close ct
+}
+
+# A page that tries to get past the shim (clipbypass in browser-check-site.py) and copy inside the
+# agent's click: the user's clipboard must still be what it was. WebKit itself allows a copy during
+# a click, so this is the shim's alone to hold.
+check_clipboard_bypass() {
+  page cx $URL_A/clipbypass || { record clipboard_bypass FAIL "tab new: $ERR"; return }
+  local before=$(pbpaste 2>/dev/null)
+  gbx --tab cx click '#bypass'
+  sleep 1
+  local after=$(pbpaste 2>/dev/null) res=$(value cx window.res)
+  local note="the page's copy returned: $res; clipboard holds: the user's text, ${#after} characters"
+  if [[ $after == gitviber-bypass-[1-4] ]]; then
+    note="the page's copy returned: $res; clipboard holds: the page's text ($after)"
+    if [[ -n $before && $before != gitviber-bypass-[1-4] ]] && print -rn -- "$before" | pbcopy; then
+      note+="; put back what it held before"
+    fi
+    record "a page past the shim can't write your clipboard" FAIL "$note"
+  else
+    record "a page past the shim can't write your clipboard" PASS "$note"
+  fi
+  close cx
 }
 
 check_ownership() {

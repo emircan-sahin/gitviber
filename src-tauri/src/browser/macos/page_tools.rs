@@ -134,7 +134,7 @@ define_class!(
             let answer = match body.downcast_ref::<NSString>() {
                 Some(text) if text.length() <= MESSAGE_MAX => {
                     let frame = unsafe { message.frameInfo() };
-                    clipboard_answer(&self.ivars().id, &text.to_string(), &frame)
+                    clipboard_answer(&self.ivars().id, text, &frame)
                 }
                 Some(_) => Err("gv:size"),
                 None => Err("gv:form"),
@@ -235,21 +235,64 @@ enum Said {
     Hello(String),
 }
 
-/// A frame of an agent's tab that said hello (clipboard.js), and the token it answers to.
-pub(super) struct Frame {
-    info: Retained<WKFrameInfo>,
-    token: String,
-    main: bool,
+/// The frames of an agent's tab that said hello (clipboard.js) and the token each answers to, to
+/// push the guard to. A frame it doesn't hold stays guarded: that is the safe side to fail on.
+pub(super) struct Frames<T> {
+    list: Vec<(String, bool, T)>,
+}
+
+impl<T> Default for Frames<T> {
+    fn default() -> Self {
+        Self { list: vec![] }
+    }
+}
+
+impl<T> Frames<T> {
+    /// A frame said hello. Again, by its token (a page kept and brought back): held once. The
+    /// main frame's is a new page's, so the frames it had are gone. Past FRAMES_MAX the others
+    /// are refused, none of those held dropped for them: false.
+    pub(super) fn add(&mut self, token: String, main: bool, frame: T) -> bool {
+        self.list.retain(|(t, _, _)| *t != token);
+        if main {
+            self.list.clear();
+        } else if self.list.len() >= FRAMES_MAX {
+            return false;
+        }
+        self.list.push((token, main, frame));
+        true
+    }
+
+    /// A frame that did not answer as itself, or at all: gone.
+    pub(super) fn forget(&mut self, token: &str) {
+        self.list.retain(|(t, _, _)| t != token);
+    }
+
+    fn main(&self) -> Option<&(String, bool, T)> {
+        self.list.iter().find(|(_, main, _)| *main)
+    }
 }
 
 /// What a frame of an agent's tab asked of its clipboard (clipboard.js).
-fn clipboard_answer(id: &str, body: &str, frame: &WKFrameInfo) -> Result<String, &'static str> {
+fn clipboard_answer(
+    id: &str,
+    text: &NSString,
+    frame: &WKFrameInfo,
+) -> Result<String, &'static str> {
     let v = view(id).ok_or("gv:gone")?;
     let ivars = v.web.ivars();
+    // Only the key's length is read before the key is known right: a page without it costs next to
+    // nothing, whatever it posts.
+    let head = ivars.clipboard.len() + 1;
+    let keyed = text.length() >= head
+        && text.substringToIndex(head).to_string() == format!("{}\n", ivars.clipboard);
+    if !keyed {
+        return Err("gv:key");
+    }
+    let body = text.to_string();
     let said = ivars
         .copied
         .borrow_mut()
-        .answer(Instant::now(), &ivars.clipboard, body)?;
+        .answer(Instant::now(), &ivars.clipboard, &body)?;
     match said {
         Said::Text(text) => Ok(text),
         Said::Hello(token) => {
@@ -260,29 +303,17 @@ fn clipboard_answer(id: &str, body: &str, frame: &WKFrameInfo) -> Result<String,
 }
 
 /// A frame to push the guard to from now on, told the guard as it stands: it began guarded, and
-/// is let go at once if the tab is the user's. The main frame's hello is a new page's, so the
-/// frames it had are gone.
+/// is let go at once if the tab is the user's.
 fn hello(web: &WebView, info: &WKFrameInfo, token: String) {
     let main = unsafe { info.isMainFrame() };
-    let frame = Frame {
-        info: info.retain(),
-        token,
-        main,
-    };
-    let guarded = web.ivars().guarded.get();
-    if !guarded {
-        send(web, &frame, "off", |_| {});
+    let held = web
+        .ivars()
+        .frames
+        .borrow_mut()
+        .add(token.clone(), main, info.retain());
+    if held && !web.ivars().guarded.get() {
+        send(web, info, &token, "off", |_| {});
     }
-    let mut frames = web.ivars().frames.borrow_mut();
-    if main {
-        frames.clear();
-    } else if frames.len() >= FRAMES_MAX {
-        // The oldest of the others: the main frame's stays.
-        if let Some(oldest) = frames.iter().position(|f| !f.main) {
-            frames.remove(oldest);
-        }
-    }
-    frames.push(frame);
 }
 
 /// The most frames of a tab it pushes the guard to.
@@ -470,22 +501,31 @@ pub(super) fn release_network(v: &View) {
 /// the frame's token alone. `on` or `off`, its calls kept to the page or the user's again; `copy`,
 /// `cut` or `paste` on the page's own clipboard. `done` gets the answer: for a paste, the text,
 /// unless the page took the paste event. A frame that is gone is forgotten.
-fn send(web: &WebView, frame: &Frame, what: &str, done: impl FnOnce(Option<String>) + 'static) {
+fn send(
+    web: &WebView,
+    info: &WKFrameInfo,
+    token: &str,
+    what: &str,
+    done: impl FnOnce(Option<String>) + 'static,
+) {
     let mtm = web.mtm();
-    let (token, what) = (NSString::from_str(&frame.token), NSString::from_str(what));
+    // A guard push is answered "yes" by the frame it was meant for: any other answer is a frame
+    // whose page was replaced (its token is of one gone), and it is forgotten.
+    let pushing = what == "on" || what == "off";
+    let (token_text, what) = (NSString::from_str(token), NSString::from_str(what));
     let arguments = NSDictionary::<NSString, AnyObject>::from_slices(
         &[ns_string!("token"), ns_string!("what")],
-        &[&*token, &*what],
+        &[&*token_text, &*what],
     );
-    let (done, weak, gone) = (Cell::new(Some(done)), Weak::new(web), frame.token.clone());
+    let (done, weak, gone) = (Cell::new(Some(done)), Weak::new(web), token.to_string());
     let block = RcBlock::new(move |value: *mut AnyObject, error: *mut NSError| {
         // SAFETY: WebKit's answer and error, objects or nil, alive for this call.
         let text = unsafe { value.as_ref() }
             .and_then(|v| v.downcast_ref::<NSString>())
             .map(|s| s.to_string());
-        if !error.is_null() {
+        if !error.is_null() || (pushing && text.as_deref() != Some("yes")) {
             if let Some(web) = weak.load() {
-                web.ivars().frames.borrow_mut().retain(|f| f.token != gone);
+                web.ivars().frames.borrow_mut().forget(&gone);
             }
         }
         if let Some(done) = done.take() {
@@ -500,7 +540,7 @@ fn send(web: &WebView, frame: &Frame, what: &str, done: impl FnOnce(Option<Strin
         web.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
             body,
             Some(&arguments),
-            Some(&frame.info),
+            Some(info),
             &WKContentWorld::pageWorld(mtm),
             Some(&block),
         )
@@ -511,8 +551,8 @@ fn send(web: &WebView, frame: &Frame, what: &str, done: impl FnOnce(Option<Strin
 /// answer. Nothing is asked of a tab whose main frame has not said hello.
 pub(super) fn clipboard(web: &WebView, ask: &str, done: impl FnOnce(Option<String>) + 'static) {
     let frames = web.ivars().frames.borrow();
-    match frames.iter().find(|f| f.main) {
-        Some(main) => send(web, main, ask, done),
+    match frames.main() {
+        Some((token, _, info)) => send(web, info, token, ask, done),
         None => done(None),
     }
 }
@@ -522,8 +562,8 @@ pub(super) fn clipboard(web: &WebView, ask: &str, done: impl FnOnce(Option<Strin
 /// said hello; a frame that says it later is told then.
 pub(super) fn guard_clipboard(web: &WebView, on: bool) {
     web.ivars().guarded.set(on);
-    for frame in web.ivars().frames.borrow().iter() {
-        send(web, frame, if on { "on" } else { "off" }, |_| {});
+    for (token, _, info) in web.ivars().frames.borrow().list.iter() {
+        send(web, info, token, if on { "on" } else { "off" }, |_| {});
     }
 }
 
@@ -1163,6 +1203,30 @@ mod tests {
     }
 
     #[test]
+    fn the_frames_it_holds_are_never_evicted_and_a_full_list_refuses_the_next() {
+        let mut frames = Frames::<u32>::default();
+        assert!(frames.add("main".into(), true, 0));
+        for i in 0..FRAMES_MAX - 1 {
+            assert!(frames.add(format!("f{i}"), false, i as u32), "{i}");
+        }
+        // Full: the next frame is refused, and none held is dropped for it (it would keep the
+        // last guard it was given, with no one to push the next).
+        assert!(!frames.add("late".into(), false, 9));
+        assert_eq!(frames.list.len(), FRAMES_MAX);
+        assert!(frames.list.iter().any(|(t, _, _)| t == "f0"));
+        // The same frame again (a page brought back from the cache) is held once.
+        assert!(frames.add("f0".into(), false, 7));
+        assert_eq!(frames.list.len(), FRAMES_MAX);
+        // One that didn't answer as itself is forgotten, which makes room.
+        frames.forget("f1");
+        assert!(frames.add("late".into(), false, 9));
+        // The main frame's hello is a new page's: the frames of the old one go.
+        assert!(frames.add("main2".into(), true, 1));
+        assert_eq!(frames.list.len(), 1);
+        assert_eq!(frames.main().map(|m| m.0.as_str()), Some("main2"));
+    }
+
+    #[test]
     fn a_frames_hello_says_its_token_and_a_long_or_empty_one_is_refused() {
         let (mut c, t) = (Clipboard::default(), Instant::now());
         assert_eq!(
@@ -1203,11 +1267,11 @@ mod tests {
         assert!(!CLIPBOARD.contains("JSON."));
         assert!(!CLIPBOARD.contains("\"guard\""));
         assert!(!CLIPBOARD.contains("window.length") && !CLIPBOARD.contains("window[i]"));
-        assert_eq!(
-            CLIPBOARD.matches(" on = ").count(),
-            2,
-            "on is set at its start and by a push"
-        );
+        // The guard is set at the start and when a page is left or brought back, always on, and
+        // by a push: nowhere from a reply.
+        assert_eq!(CLIPBOARD.matches(" on = ").count(), 4);
+        assert_eq!(CLIPBOARD.matches("on = Boolean(post);").count(), 3);
+        assert_eq!(CLIPBOARD.matches("on = what === \"on\";").count(), 1);
         assert!(CLIPBOARD.contains("if (asked !== token) return null;"));
     }
 

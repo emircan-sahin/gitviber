@@ -123,8 +123,11 @@ class Doc {
     return this.body;
   }
   // WebKit's own: a copy goes to the user's clipboard, as the copy event lets the page fill it.
+  // It makes the command a string itself, as WebKit does: an object is asked again.
   execCommand(command: string) {
-    if (command === "delete") return void this.deleted++, true;
+    const name = String(command);
+    if (name === "delete") return void this.deleted++, true;
+    if (name !== "copy" && name !== "cut") return true;
     if (Doc.refuse) return false;
     const e = new FakeEvent("copy", { clipboardData: new FakeData() });
     for (const fn of this.window.listeners.copy ?? []) if (!e.stopped) fn(e);
@@ -677,4 +680,92 @@ test("where WebKit has the async API, its calls are the store's while guarded an
   await clip(t).writeText("real");
   assert.equal(host.user, "real");
   assert.equal(await clip(t).readText(), "real");
+});
+
+// What a page can do to the shim's own call of WebKit's execCommand, each a way of making it copy for
+// real inside an agent's click while the tab is guarded.
+test("a command that is an object answering twice is classified and sent once", () => {
+  const host = fresh();
+  const t = page(host);
+  t.doc.selected = "ATTACKER TEXT";
+  Doc.real = host;
+  let n = 0;
+  t.doc.execCommand({ toString: () => (n++ === 0 ? "bold" : "copy") } as unknown as string);
+  assert.equal(host.user, "the user's own text");
+  assert.equal(n, 1, "it was asked once");
+});
+
+test("a page that hooks Function.prototype.call, apply or Reflect.apply is not handed WebKit's execCommand", () => {
+  const host = fresh();
+  const t = page(host);
+  t.doc.selected = "ATTACKER TEXT 2";
+  Doc.real = host;
+  const orig = { call: Function.prototype.call, apply: Function.prototype.apply, reflect: Reflect.apply };
+  let leaked: Function | undefined;
+  const take = (self: unknown) => {
+    if (typeof self === "function" && self.name === "execCommand") leaked = self;
+  };
+  (Function.prototype as any).call = function (this: any, ...a: unknown[]) {
+    take(this);
+    return orig.call.apply(this, a as never);
+  };
+  (Function.prototype as any).apply = function (this: any, ...a: unknown[]) {
+    take(this);
+    return orig.apply.apply(this, a as never);
+  };
+  try {
+    t.doc.execCommand("bold");
+    t.doc.execCommand("copy");
+  } finally {
+    Function.prototype.call = orig.call;
+    Function.prototype.apply = orig.apply;
+  }
+  assert.equal(leaked, undefined, "nothing of WebKit's was handed to the hook");
+  assert.equal(host.user, "the user's own text");
+});
+
+test("a page that swaps String.prototype.toLowerCase still has its copy kept", async () => {
+  const host = fresh();
+  const t = page(host);
+  t.doc.selected = "ATTACKER TEXT 3";
+  Doc.real = host;
+  const orig = String.prototype.toLowerCase;
+  String.prototype.toLowerCase = function () {
+    return "x";
+  };
+  try {
+    t.doc.execCommand("copy");
+    t.doc.execCommand("COPY");
+  } finally {
+    String.prototype.toLowerCase = orig;
+  }
+  await tick();
+  assert.equal(host.user, "the user's own text");
+  assert.equal(host.copied, "ATTACKER TEXT 3");
+});
+
+test("a page brought back from the cache is guarded again and says hello again; a push is answered yes only by its own frame", () => {
+  const host = fresh();
+  const t = page(host);
+  const call = (token: unknown, what: string) => (t.win.__gvClipboard as (t: unknown, w: string) => unknown)(token, what);
+  assert.equal(call("not-its-token", "off"), null);
+  assert.equal(call(t.token, "off"), "yes");
+  Doc.real = host;
+  t.doc.selected = "the user's";
+  t.doc.execCommand("copy");
+  assert.equal(host.user, "the user's");
+  const hellos = host.asked.filter((a) => a === "hello").length;
+  // Left for the cache: guarded. Brought back: guarded, and heard again; not by a page that was not kept.
+  for (const fn of t.win.listeners.pagehide ?? []) fn(new FakeEvent("pagehide"));
+  t.doc.selected = "while kept";
+  t.doc.execCommand("copy");
+  assert.equal(host.user, "the user's");
+  call(t.token, "off");
+  for (const fn of t.win.listeners.pageshow ?? []) fn(new FakeEvent("pageshow", { persisted: false }));
+  assert.equal(host.asked.filter((a) => a === "hello").length, hellos, "a plain show is a new page's: it says hello itself");
+  for (const fn of t.win.listeners.pageshow ?? []) fn(new FakeEvent("pageshow", { persisted: true }));
+  assert.equal(host.asked.filter((a) => a === "hello").length, hellos + 1);
+  t.doc.selected = "brought back";
+  t.doc.execCommand("copy");
+  assert.equal(host.user, "the user's", "guarded again");
 });

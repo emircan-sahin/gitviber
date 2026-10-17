@@ -204,7 +204,8 @@ own, opened in the background without taking yours. `gitviber browser help` list
 **Out of your way**
 
 - **Never yours.** An agent's clicks, keys, hover, drag and scroll reach the page as real input,
-  without moving your pointer or reaching your keyboard or clipboard.
+  without moving your pointer or reaching your keyboard. A page's Copy button writes to the tab's
+  own clipboard, not yours: a guard against ordinary pages (see Privacy), not a wall.
 - **Your tab stays yours.** Click or type in an agent's tab and it's yours: commands that would act
   on it stop and say so, and those that only read it still run, until you press Give back to agent
   or run `gitviber browser tab release`. `tab list` shows each tab's owner.
