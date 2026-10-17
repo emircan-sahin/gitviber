@@ -42,14 +42,14 @@ use objc2::encode::{Encoding, RefEncode};
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, Bool, NSObject, ProtocolObject, Sel};
 use objc2::{
-    available, define_class, msg_send, sel, ClassType, DefinedClass, MainThreadMarker,
+    available, define_class, msg_send, sel, AnyThread, ClassType, DefinedClass, MainThreadMarker,
     MainThreadOnly, Message,
 };
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAutoresizingMaskOptions, NSBitmapImageFileType,
     NSBitmapImageRep, NSColor, NSEvent, NSEventModifierFlags, NSImage, NSImageCompressionFactor,
-    NSModalResponse, NSModalResponseOK, NSOpenPanel, NSView, NSWindow, NSWindowOrderingMode,
-    NSWorkspace,
+    NSModalResponse, NSModalResponseOK, NSOpenPanel, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSWindow, NSWindowOrderingMode, NSWorkspace,
 };
 use objc2_foundation::{
     ns_string, NSArray, NSCopying, NSDataBase64EncodingOptions, NSDate, NSDictionary, NSError,
@@ -119,6 +119,8 @@ thread_local! {
     static EPHEMERAL: OnceCell<Retained<WKWebsiteDataStore>> = const { OnceCell::new() };
     /// A hidden view parks after this many minutes (browserParkAfterMin); 0 never.
     static PARK_AFTER: Cell<u32> = const { Cell::new(10) };
+    /// How many hosts have the pointer over them (Host::over).
+    static POINTER_OVER: Cell<u32> = const { Cell::new(0) };
 }
 
 /// What was asked of a tab, by id, apart from its view: a parked tab made again keeps it. Light or
@@ -205,6 +207,7 @@ define_class!(
     // SAFETY: NSView has no subclassing requirements, and Host has no Drop.
     #[unsafe(super(NSView))]
     #[name = "GitViberBrowserHost"]
+    #[ivars = Cell<bool>]
     struct Host;
 
     impl Host {
@@ -212,15 +215,78 @@ define_class!(
         /// them to the menu bar: a plain J on a page would run Next Changed File.
         #[unsafe(method(keyDown:))]
         fn key_down(&self, _event: &NSEvent) {}
+
+        #[unsafe(method(mouseEntered:))]
+        fn mouse_entered(&self, _event: &NSEvent) {
+            self.over(true);
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _event: &NSEvent) {
+            self.over(false);
+        }
+
+        /// A view hidden, or taken to another window, with the pointer in it gets no exit.
+        #[unsafe(method(viewDidHide))]
+        fn view_did_hide(&self) {
+            self.over(false);
+        }
+
+        #[unsafe(method(viewWillMoveToWindow:))]
+        fn view_will_move_to_window(&self, _window: Option<&NSWindow>) {
+            self.over(false);
+        }
     }
 );
 
 impl Host {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(());
+        let this = Self::alloc(mtm).set_ivars(Cell::new(false));
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
         paint(&this, &NSColor::windowBackgroundColor());
+        // Always, or an exit is missed while the app is in the background.
+        let area = unsafe {
+            NSTrackingArea::initWithRect_options_owner_userInfo(
+                NSTrackingArea::alloc(),
+                NSRect::ZERO,
+                NSTrackingAreaOptions::MouseEnteredAndExited
+                    | NSTrackingAreaOptions::ActiveAlways
+                    | NSTrackingAreaOptions::InVisibleRect,
+                Some(&this),
+                None,
+            )
+        };
+        this.addTrackingArea(&area);
         this
+    }
+
+    /// Whether the pointer is over the page. WebKit's tracking areas aren't clipped by the views
+    /// above them, so the app page under this one hears the same mouse moves, and its own cursor
+    /// (the arrow of what it shows below) races the page's. While a host has the pointer, the app
+    /// page hears none.
+    fn over(&self, on: bool) {
+        if self.ivars().replace(on) == on {
+            return;
+        }
+        let over = POINTER_OVER.with(|n| {
+            n.set(pointers_over(n.get(), on));
+            n.get()
+        });
+        if let Some(page) = app_page(self) {
+            if page.respondsToSelector(sel!(_setIgnoresMouseMoveEvents:)) {
+                let _: () =
+                    unsafe { msg_send![&*page, _setIgnoresMouseMoveEvents: Bool::new(over > 0)] };
+            }
+        }
+    }
+}
+
+/// `count` hosts with the pointer over them, one more or one fewer.
+fn pointers_over(count: u32, on: bool) -> u32 {
+    if on {
+        count + 1
+    } else {
+        count.saturating_sub(1)
     }
 }
 
@@ -1669,6 +1735,12 @@ mod tests {
                 class.verify_sel::<(Bool,), ()>(sel).unwrap();
             }
         }
+        let ignores = sel!(_setIgnoresMouseMoveEvents:);
+        if WKWebView::class().instance_method(ignores).is_some() {
+            WKWebView::class()
+                .verify_sel::<(Bool,), ()>(ignores)
+                .unwrap();
+        }
         let last = sel!(_findLastViewInKeyViewLoop);
         if WKWebView::class().instance_method(last).is_some() {
             WKWebView::class()
@@ -1679,6 +1751,17 @@ mod tests {
             .metaclass()
             .verify_sel::<(*mut SecTrust,), *mut NSURLCredential>(sel!(credentialForTrust:))
             .unwrap();
+    }
+
+    #[test]
+    fn the_app_page_hears_no_mouse_moves_while_any_host_has_the_pointer() {
+        let mut count = 0;
+        for (on, ignoring) in [(true, true), (true, true), (false, true), (false, false)] {
+            count = pointers_over(count, on);
+            assert_eq!(count > 0, ignoring);
+        }
+        // An exit with none counted can't go below zero.
+        assert_eq!(pointers_over(0, false), 0);
     }
 
     #[test]
