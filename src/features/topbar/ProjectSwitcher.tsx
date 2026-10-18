@@ -7,7 +7,6 @@ import { folderName } from "@/lib/path";
 import { openClone } from "@/features/projects/CloneDialog";
 import { ProjectList, ProjectTile } from "@/features/projects/ProjectList";
 import { awayOf } from "@/features/projects/projectAway";
-import { changeTotals } from "@/features/changes/changeList";
 import { openTerminal } from "@/lib/terminal/terminals";
 
 export interface ProjectSwitcherProps {
@@ -26,7 +25,6 @@ export interface ProjectSwitcherProps {
 export function ProjectSwitcher({ repo, root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo }: ProjectSwitcherProps) {
   const [open, setOpen] = useState(false);
   useCommands({ "file.switchProject": () => setOpen(true) });
-  const totals = changeTotals(repo);
   const name = folderName(main);
   const openKey = useShortcut("file.openRepo");
   const pick = (p?: string) => {
@@ -48,11 +46,6 @@ export function ProjectSwitcher({ repo, root, main, recent, onOpenRepo, onForget
         <button className="flex h-7 max-w-64 min-w-0 items-center gap-2 rounded-md px-2 hover:bg-hover focus-visible:bg-hover data-[state=open]:bg-active">
           <ProjectTile name={name} />
           <span className="truncate text-[12.5px] font-semibold">{name}</span>
-          {totals.files > 0 && (
-            <span className="shrink-0 font-mono text-[10.5px]">
-              <span className="text-added">+{totals.add}</span> <span className="text-removed">-{totals.del}</span>
-            </span>
-          )}
           <ChevronsUpDown className="size-3 shrink-0 text-subtle" />
         </button>
       </PopoverTrigger>
