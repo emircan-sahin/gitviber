@@ -332,12 +332,14 @@ pub static COMMANDS: &[Command] = &[
     ),
     // Searches where focus is.
     cmd::<editor::Find>("editor.find", "Find", General, &["cmd+f"]),
+    // From the code too, where the editor would open its Replace on ⇧⌘F.
     cmd::<search::FindInFiles>(
         "search.findInFiles",
         "Find in Files",
         General,
         &["shift+cmd+f"],
-    ),
+    )
+    .over_text(),
     // Where the name, import or path under the cursor is defined; ⌘-click does the same (lib/editor/definitions).
     // In a file's code and in a diff's.
     cmd::<editor::GoToDefinition>(
@@ -346,7 +348,8 @@ pub static COMMANDS: &[Command] = &[
         Editor,
         &["f12", "cmd+enter"],
     )
-    .local("CodeView || DiffView"),
+    .local("CodeView || DiffView")
+    .over_text(),
     cmd::<editor::PeekDefinition>(
         "editor.peekDefinition",
         "Peek Definition",
@@ -425,13 +428,14 @@ pub static COMMANDS: &[Command] = &[
     .other(&["shift+cmd+w"])
     .local("Terminal"),
     // ⇧⌘←/→ page through the panes by their numbers, wrapping; ⌥⌘arrows go by side.
+    // Elsewhere Ctrl+Alt+←/→, "alt+cmd" there: the old app's "ctrl+alt" was Super+Alt.
     cmd::<terminal::PrevPane>(
         "terminal.prevPane",
         "Previous Terminal Pane",
         Terminal,
         &["shift+cmd+left"],
     )
-    .other(&["ctrl+alt+left"])
+    .other(&["alt+cmd+left"])
     .local("Terminal"),
     cmd::<terminal::NextPane>(
         "terminal.nextPane",
@@ -439,7 +443,7 @@ pub static COMMANDS: &[Command] = &[
         Terminal,
         &["shift+cmd+right"],
     )
-    .other(&["ctrl+alt+right"])
+    .other(&["alt+cmd+right"])
     .local("Terminal"),
     // Unbound elsewhere: Ctrl+Shift+arrows select by word in shells (PSReadLine), GNOME takes Ctrl+Alt+Shift+arrows, and Alt+arrows move by word.
     cmd::<terminal::FocusLeft>(
@@ -649,7 +653,8 @@ pub static COMMANDS: &[Command] = &[
     cmd::<git::Discard>("git.discard", "Discard Changes", Git, &["cmd+backspace"]).outside_text(),
     // Local: only `local` listens for it.
     cmd::<git::Commit>("git.commit", "Commit", Git, &["cmd+enter", "ctrl+enter"])
-        .local("CommitMessage"),
+        .local("CommitMessage")
+        .over_text(),
     cmd::<git::RenameBranch>("git.renameBranch", "Rename Branch", Git, &["f2"])
         .local("BranchPicker"),
     cmd::<git::SelectAllChanges>(
@@ -665,7 +670,8 @@ pub static COMMANDS: &[Command] = &[
         Git,
         &["cmd+enter", "ctrl+enter"],
     )
-    .local("TagMessage"),
+    .local("TagMessage")
+    .over_text(),
     // Where "/" takes ⇧ (Turkish, German ⇧7).
     cmd::<history::Find>("history.find", "Find in History", Git, &["/", "shift+/"])
         .local("HistoryList"),
@@ -700,7 +706,8 @@ pub static COMMANDS: &[Command] = &[
         GitHub,
         &["cmd+enter", "ctrl+enter"],
     )
-    .local("IssueComment"),
+    .local("IssueComment")
+    .over_text(),
     // Only while suggestions are set up in Settings.
     cmd::<git::SuggestMessage>("git.suggestMessage", "Suggest Commit Message", Git, &[]),
 ];
@@ -725,19 +732,21 @@ pub static MENU_COMMANDS: &[Command] = &[
 ];
 
 /// The system's own commands: fixed keys, kept out of the palette and of rebinding (macOS takes
-/// these chords before the app sees them).
+/// these chords before the app sees them). Only Quit keeps its keys elsewhere: there Ctrl+H and
+/// Ctrl+M would run while typing, and Super+Ctrl+F is the desktop's.
 pub static SYSTEM_COMMANDS: &[Command] = &[
     cmd::<app::Quit>("app.quit", "Quit GitViber", General, &["cmd+q"]),
-    cmd::<app::Hide>("app.hide", "Hide GitViber", General, &["cmd+h"]),
-    cmd::<app::HideOthers>("app.hideOthers", "Hide Others", General, &["alt+cmd+h"]),
+    cmd::<app::Hide>("app.hide", "Hide GitViber", General, &["cmd+h"]).other(&[]),
+    cmd::<app::HideOthers>("app.hideOthers", "Hide Others", General, &["alt+cmd+h"]).other(&[]),
     cmd::<app::ShowAll>("app.showAll", "Show All", General, &[]),
-    cmd::<window::Minimize>("window.minimize", "Minimize", General, &["cmd+m"]),
+    cmd::<window::Minimize>("window.minimize", "Minimize", General, &["cmd+m"]).other(&[]),
     cmd::<window::Zoom>("window.zoom", "Zoom", General, &[]),
     cmd::<window::ToggleFullScreen>(
         "window.toggleFullScreen",
         "Enter Full Screen",
         General,
         &["ctrl+cmd+f"],
-    ),
+    )
+    .other(&[]),
     cmd::<window::BringAllToFront>("window.bringAllToFront", "Bring All to Front", General, &[]),
 ];

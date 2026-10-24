@@ -4,7 +4,7 @@
 use gpui_kit::Keystroke;
 
 use super::chord::{canonical, format_chord};
-use super::{Command, Overrides, all_commands, bindings_for};
+use super::{Command, Overrides, all_commands, bindings_for, place_name};
 
 /// The digit or symbol a US layout types a shifted character with: macOS reports ⇧⌘] as ⌘}.
 fn unshifted(key: &str) -> Option<&'static str> {
@@ -146,14 +146,19 @@ pub fn clash_note(c: &Command, chord: &str, overrides: &Overrides, mac: bool) ->
         .collect();
     // Two local commands never meet: each listens in its own place.
     if let Some(local) = c.local {
-        return (!global.is_empty())
-            .then(|| format!("{k} also runs {} outside {local}", titles(&global)));
+        return (!global.is_empty()).then(|| {
+            format!(
+                "{k} also runs {} outside {}",
+                titles(&global),
+                place_name(local)
+            )
+        });
     }
     if global.is_empty() {
         let named: Vec<String> = others
             .iter()
-            .map(|o| match o.local {
-                Some(l) => format!("{} in {l}", o.title),
+            .map(|o| match o.place() {
+                Some(place) => format!("{} in {place}", o.title),
                 None => o.title.to_string(),
             })
             .collect();

@@ -20,6 +20,8 @@ use gpui_kit::{
 const HOLD: Duration = Duration::from_millis(1450);
 /// Between two chords: a range (⌘1 … ⌘8) rather than alternatives.
 const THROUGH: &str = "…";
+/// The fade at the list's foot, as tall as the padding under its last row.
+const FADE: f32 = 36.;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shown {
@@ -137,13 +139,13 @@ pub fn groups(
             }
             continue;
         }
-        if let Some(local) = c.local {
+        if let Some(place) = c.place() {
             add(
                 c.category,
                 Row {
                     title: c.title.into(),
                     keys,
-                    place: Some(local),
+                    place: Some(place),
                 },
             );
             continue;
@@ -462,17 +464,39 @@ impl Render for ShortcutOverlay {
                                         .child(hint),
                                 ),
                         )
+                        // No scrollbar shows: in a short window the fade says there's more below.
+                        // Scrolled to the end, or with all of it in view, it only covers padding.
                         .child(
                             div()
-                                .id("shortcut-overlay-list")
+                                .relative()
                                 .flex()
-                                .gap_8()
+                                .flex_col()
                                 .min_h_0()
-                                .overflow_y_scroll()
-                                .px_5()
-                                .pt_3()
-                                .pb_4()
-                                .children(cols),
+                                .child(
+                                    div()
+                                        .id("shortcut-overlay-list")
+                                        .flex()
+                                        .gap_8()
+                                        .min_h_0()
+                                        .overflow_y_scroll()
+                                        .px_5()
+                                        .pt_3()
+                                        .pb(px(FADE))
+                                        .children(cols),
+                                )
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .left_0()
+                                        .right_0()
+                                        .bottom_0()
+                                        .h(px(FADE))
+                                        .bg(gpui_kit::linear_gradient(
+                                            0.,
+                                            gpui_kit::linear_color_stop(t.elevated, 0.),
+                                            gpui_kit::linear_color_stop(t.elevated.opacity(0.), 1.),
+                                        )),
+                                ),
                         ),
                 ),
         )
@@ -516,7 +540,7 @@ mod tests {
         assert!(
             list.iter()
                 .flat_map(|g| &g.rows)
-                .any(|r| r.place == Some("Terminal"))
+                .any(|r| r.place == Some("the terminal"))
         );
     }
 

@@ -81,6 +81,9 @@ pub struct Command {
     pub local: Option<&'static str>,
     /// Never from a text field: they keep ⌘Z, ⌘⌫ and the like for themselves.
     pub outside_text: bool,
+    /// Its keys go before the focused text field's own in its place: the field would take ⌘↵ as
+    /// a new line, and the code editor ⇧⌘F as Replace.
+    pub over_text: bool,
     /// Runs in a file being edited too, where its ⌥ key would type a symbol.
     pub in_editor: bool,
     /// Held down, it runs once: each run changes what the next one acts on. Handlers check it.
@@ -104,6 +107,7 @@ impl Command {
             keys_other: None,
             local: None,
             outside_text: false,
+            over_text: false,
             in_editor: false,
             no_repeat: false,
             new_action,
@@ -125,6 +129,11 @@ impl Command {
         self
     }
 
+    pub const fn over_text(mut self) -> Self {
+        self.over_text = true;
+        self
+    }
+
     pub const fn in_editor(mut self) -> Self {
         self.in_editor = true;
         self
@@ -139,12 +148,39 @@ impl Command {
         (self.new_action)()
     }
 
+    /// Where a local command works, as a person names it ("the terminal").
+    pub fn place(&self) -> Option<&'static str> {
+        self.local.map(place_name)
+    }
+
     /// The platform's defaults.
     pub fn default_keys(&self, mac: bool) -> &'static [&'static str] {
         match self.keys_other {
             Some(other) if !mac => other,
             _ => self.keys,
         }
+    }
+}
+
+/// A local command's key context as the overlay and the shortcut list name it; an unknown one
+/// as it is.
+pub fn place_name(context: &'static str) -> &'static str {
+    match context {
+        "Terminal" => "the terminal",
+        "Browser" => "the browser",
+        "TabStrip" => "the tab strip",
+        "CodeView || DiffView" => "a diff or the code view",
+        "ImageView" => "the image view",
+        "Explorer" => "the explorer",
+        "ChangesList" => "the changes list",
+        "CommitMessage" => "the commit message",
+        "TagMessage" => "the tag message",
+        "BranchPicker" => "the branch picker",
+        "WorktreePicker" => "the worktree picker",
+        "HistoryList" => "the history list",
+        "ProjectList" => "the project list",
+        "IssueComment" => "a comment box",
+        other => other,
     }
 }
 
@@ -201,17 +237,23 @@ pub fn shortcut_label(id: &str, cx: &App) -> Option<String> {
 /// The context predicate a global chord is bound under: out of text fields and the terminal
 /// unless it is a chord they leave alone.
 pub fn context_for(chord: &str, command: &Command, mac: bool) -> String {
-    if let Some(local) = command.local {
-        return local.to_string();
+    let typing = command.local.is_some() || chord::runs_while_typing(chord, command, mac);
+    let place = command.local.unwrap_or(ROOT_CONTEXT);
+    let mut context = place.to_string();
+    if command.local.is_none() {
+        if !typing {
+            context.push_str(" && !");
+            context.push_str(INPUT_CONTEXT);
+        }
+        if !chord::runs_in_terminal(chord, command, mac) {
+            context.push_str(" && !");
+            context.push_str(TERMINAL_CONTEXT);
+        }
     }
-    let mut context = ROOT_CONTEXT.to_string();
-    if !chord::runs_while_typing(chord, command, mac) {
-        context.push_str(" && !");
-        context.push_str(INPUT_CONTEXT);
-    }
-    if !chord::runs_in_terminal(chord, command, mac) {
-        context.push_str(" && !");
-        context.push_str(TERMINAL_CONTEXT);
+    // Matched at the field's depth, the chord outranks the field's own binding of it (GPUI lets
+    // the deepest context win); ours are added after gpui-component's, so a tie goes to us too.
+    if command.over_text && typing {
+        context = format!("({context}) || (({place}) > {INPUT_CONTEXT})");
     }
     context
 }
@@ -335,6 +377,8 @@ mod tests {
                 "{} {context}",
                 command.id
             );
+            // Shown to people: never the raw context.
+            assert_ne!(command.place(), Some(context), "{}", command.id);
         }
     }
 
@@ -371,6 +415,11 @@ mod tests {
             ..ts.find("] as const satisfies").unwrap()];
         // The page's reload: there's no page to reload in the native app.
         const DROPPED: &[&str] = &["window.reload"];
+        // The old app's Linux "ctrl+alt" was Super+Alt, not the Ctrl+Alt its docs named.
+        const MOVED_OFF_SUPER: &[(&str, &str)] = &[
+            ("terminal.prevPane", "alt+cmd+left"),
+            ("terminal.nextPane", "alt+cmd+right"),
+        ];
         let mut seen = 0;
         for line in body
             .lines()
@@ -392,7 +441,10 @@ mod tests {
                     .as_slice(),
                 "{id} keys"
             );
-            let other = ts_list(line, "keysOther");
+            let other = match MOVED_OFF_SUPER.iter().find(|(m, _)| *m == id) {
+                Some((_, key)) => Some(vec![key.to_string()]),
+                None => ts_list(line, "keysOther"),
+            };
             let ours = c
                 .keys_other
                 .map(|k| k.iter().map(|k| k.to_string()).collect::<Vec<_>>());
@@ -467,6 +519,60 @@ mod tests {
             context_for("cmd+z", undo, true),
             "GitViber && !Input && !Terminal"
         );
+    }
+
+    #[test]
+    fn over_text_chords_match_at_the_fields_depth_too() {
+        let commit = command("git.commit").unwrap();
+        assert_eq!(
+            context_for("cmd+enter", commit, true),
+            "(CommitMessage) || ((CommitMessage) > Input)"
+        );
+        let in_files = command("search.findInFiles").unwrap();
+        assert_eq!(
+            context_for("shift+cmd+f", in_files, true),
+            "(GitViber) || ((GitViber) > Input)"
+        );
+        // A chord kept out of text fields stays out of them.
+        assert_eq!(
+            context_for("j", in_files, true),
+            "GitViber && !Input && !Terminal"
+        );
+        for c in all_commands().filter(|c| c.over_text) {
+            for k in c.default_keys(true) {
+                let context = context_for(k, c, true);
+                assert!(
+                    KeyBindingContextPredicate::parse(&context).is_ok(),
+                    "{} {context}",
+                    c.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn linux_keeps_ctrl_alt_and_leaves_macos_system_keys_alone() {
+        let prev = command("terminal.prevPane").unwrap();
+        assert_eq!(
+            chord::to_keystroke(prev.default_keys(false)[0], false),
+            "alt-ctrl-left"
+        );
+        for command in all_commands().chain(SYSTEM_COMMANDS) {
+            for key in command.default_keys(false) {
+                let ks = chord::to_keystroke(key, false);
+                assert!(
+                    !(ks.contains("super") && ks.contains("alt")),
+                    "{} {ks}",
+                    command.id
+                );
+            }
+        }
+        let system: Vec<&str> = SYSTEM_COMMANDS
+            .iter()
+            .filter(|c| !c.default_keys(false).is_empty())
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(system, ["app.quit"]);
     }
 
     #[test]
