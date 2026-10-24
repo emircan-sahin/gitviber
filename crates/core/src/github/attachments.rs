@@ -30,6 +30,8 @@ pub fn attachments(
     let mut paths = vec![format!("{base}/issues/{number}/comments")];
     if thread.get("pull_request").is_some() {
         paths.push(format!("{base}/pulls/{number}/reviews"));
+        // Comments on the diff's lines: not the conversation's, a list of their own.
+        paths.push(format!("{base}/pulls/{number}/comments"));
     }
     for path in paths {
         if let Ok(list) = all_pages(session, repo, &path, HTML) {
@@ -71,7 +73,85 @@ fn signed_images(html: &str, out: &mut HashMap<String, String>) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::client::fake;
     use super::*;
+    use serde_json::json;
+    use std::process::Command;
+
+    /// A repository whose origin is github.com/o/r; nothing more is read from it.
+    fn repo(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("gitviber-attach-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for args in [
+            &["init", "-q"][..],
+            &["remote", "add", "origin", "https://github.com/o/r.git"],
+        ] {
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .status()
+                .unwrap()
+                .success());
+        }
+        dir
+    }
+
+    /// Attachment `n`'s id, and an image of it as GitHub renders one.
+    fn img(n: u32) -> (String, String) {
+        let id = format!("012a2451-fa01-4fe5-8736-33f4a4d179f{n}");
+        let url =
+            format!("https://private-user-images.githubusercontent.com/1/{n}-{id}.png?jwt=x{n}");
+        (id, format!(r#"<img src="{url}">"#))
+    }
+
+    fn list(html: &str) -> String {
+        json!([{ "body_html": html }]).to_string()
+    }
+
+    #[test]
+    fn a_pull_requests_line_comments_are_signed_too() {
+        let dir = repo("pull");
+        let (ids, html): (Vec<_>, Vec<_>) = (1..=4).map(img).unzip();
+        let (session, log) = fake::serve(vec![
+            (
+                "/repos/o/r/issues/7".into(),
+                json!({ "body_html": html[0], "pull_request": {} }).to_string(),
+            ),
+            ("/repos/o/r/issues/7/comments".into(), list(&html[1])),
+            ("/repos/o/r/pulls/7/reviews".into(), list(&html[2])),
+            ("/repos/o/r/pulls/7/comments".into(), list(&html[3])),
+        ]);
+        let out = attachments(&session, &dir, None, 7).unwrap();
+        for id in &ids {
+            assert!(out.contains_key(id), "{id} missing: {out:?}");
+        }
+        let log = log.lock().unwrap();
+        assert!(log.iter().all(|r| r.starts_with("GET ")), "{log:?}");
+        assert!(log
+            .iter()
+            .any(|r| r.starts_with("GET /repos/o/r/pulls/7/comments?")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_issue_asks_for_no_pull_request_lists() {
+        let dir = repo("issue");
+        let (id, html) = img(1);
+        let (session, log) = fake::serve(vec![
+            (
+                "/repos/o/r/issues/3".into(),
+                json!({ "body_html": html }).to_string(),
+            ),
+            ("/repos/o/r/issues/3/comments".into(), "[]".into()),
+        ]);
+        let out = attachments(&session, &dir, None, 3).unwrap();
+        assert_eq!(out.keys().collect::<Vec<_>>(), [&id]);
+        let log = log.lock().unwrap();
+        assert!(!log.iter().any(|r| r.contains("/pulls/")), "{log:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn signed_image_links() {

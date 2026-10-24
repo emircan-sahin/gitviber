@@ -40,6 +40,8 @@ pub struct Session {
     /// each running gh (and, once, the credential store: one Keychain dialog, not several).
     looking: Mutex<()>,
     tools: Box<dyn Tools>,
+    /// Where requests go: api.github.com, or a test's local stand-in.
+    api: String,
 }
 
 /// Where a token is looked for; tests stand in their own and count the calls.
@@ -103,6 +105,7 @@ impl Session {
             store_asked: AtomicBool::new(false),
             looking: Mutex::default(),
             tools,
+            api: API.to_string(),
         }
     }
 
@@ -369,7 +372,7 @@ pub(super) fn request(
     accept: &str,
 ) -> Result<Value, String> {
     let mut token = session.token(repo)?;
-    let url = format!("{API}{path}");
+    let url = format!("{}{path}", session.api);
     let mut auth = format!("Bearer {}", token.value);
     let mut renewed = false;
     let agent = agent(session);
@@ -463,7 +466,7 @@ pub(super) fn text_tail(
 ) -> Result<(String, bool), String> {
     let token = session.token(repo)?;
     let mut resp = agent(session)
-        .get(&format!("{API}{path}"))
+        .get(&format!("{}{path}", session.api))
         .header("Authorization", &format!("Bearer {}", token.value))
         .header("X-GitHub-Api-Version", "2022-11-28")
         .header("User-Agent", "GitViber")
@@ -1010,5 +1013,64 @@ mod tests {
         // No ETag: nothing to revalidate against.
         c.store("/2", None, &json!(2), 10);
         assert!(c.tag("/2").is_none());
+    }
+}
+
+/// A local stand-in for api.github.com: nothing in a test reaches GitHub.
+#[cfg(test)]
+pub(super) mod fake {
+    use super::{Session, Tools};
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
+
+    struct Token(String);
+
+    impl Tools for Token {
+        fn gh(&self, _: Option<&str>) -> Option<String> {
+            Some(self.0.clone())
+        }
+        fn store(&self, _: &Path) -> Option<String> {
+            None
+        }
+    }
+
+    /// Answers each path (query left out) with its JSON, anything else with a 404, and logs every
+    /// request as "METHOD /path?query". The session reads with a fixed token.
+    pub fn serve(routes: Vec<(String, String)>) -> (Session, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let seen = log.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut head = Vec::new();
+                let mut byte = [0u8];
+                while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                    head.push(byte[0]);
+                }
+                let head = String::from_utf8_lossy(&head);
+                let mut words = head.split_whitespace();
+                let (method, target) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
+                seen.lock().unwrap().push(format!("{method} {target}"));
+                let path = target.split('?').next().unwrap_or_default();
+                let (status, body) = routes
+                    .iter()
+                    .find(|(p, _)| p == path)
+                    .map_or((404, r#"{"message":"Not Found"}"#), |(_, b)| {
+                        (200, b.as_str())
+                    });
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        let mut session = Session::with_tools(Box::new(Token("fake-token".into())));
+        session.api = format!("http://{addr}");
+        (session, log)
     }
 }
