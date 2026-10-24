@@ -24,7 +24,7 @@ use gpui::{
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
+use gpui_kit::component::input::{Escape, Input, InputEvent, InputState, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{h_flex, v_flex, Disableable as _, Icon, Selectable as _, Sizable as _};
 use std::cell::Cell;
@@ -130,7 +130,7 @@ struct Find {
 
 struct Ask {
     about: AskAbout,
-    input: Entity<InputState>,
+    input: Entity<TextareaState>,
     include_errors: bool,
     /// The models offered and the one it starts on (Claude Code only).
     model: Option<(Vec<String>, String)>,
@@ -151,6 +151,16 @@ struct Drag {
     scale: f64,
     from: (f64, f64),
     size: (f64, f64),
+}
+
+/// Responsive's Width × Height, typed: taken on ↵ or leaving the field, so "3" on the way to 320
+/// isn't 200.
+struct SizeFields {
+    w: Entity<InputState>,
+    h: Entity<InputState>,
+    /// The size they last showed: a drag or a pick starts them over.
+    shown: (f64, f64),
+    _events: [Subscription; 2],
 }
 
 pub struct BrowserTab {
@@ -187,6 +197,7 @@ pub struct BrowserTab {
     picks: Option<Vec<Pick>>,
     ask: Option<Ask>,
     drag: Option<Drag>,
+    size_fields: Option<SizeFields>,
     ports: Rc<std::cell::RefCell<Vec<Port>>>,
     /// The page area's size as last laid out, for device mode's fit.
     area: Rc<Cell<(f32, f32)>>,
@@ -289,6 +300,7 @@ impl BrowserTab {
             picks: None,
             ask: None,
             drag: None,
+            size_fields: None,
             ports: Rc::default(),
             area: Rc::default(),
             persist: Task::ready(()),
@@ -491,6 +503,92 @@ impl BrowserTab {
             b.y += pad;
         }
         Some((device, choice, f))
+    }
+
+    /// Responsive's size fields, made on its first show and set to `size` when it changed
+    /// elsewhere (a drag), unless one is being typed in.
+    fn size_fields(
+        &mut self,
+        size: (f64, f64),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(Entity<InputState>, Entity<InputState>)> {
+        let text = |n: f64| format!("{}", n.round());
+        if self.size_fields.is_none() {
+            let mut field = |n: f64, cx: &mut Context<Self>| {
+                cx.new(|cx| InputState::new(window, cx).default_value(text(n)))
+            };
+            let (w, h) = (field(size.0, cx), field(size.1, cx));
+            let take = |side: usize| {
+                move |this: &mut Self,
+                      _: &Entity<InputState>,
+                      e: &InputEvent,
+                      window: &mut Window,
+                      cx: &mut Context<Self>| {
+                    if matches!(e, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                        this.take_size(side, window, cx);
+                    }
+                }
+            };
+            let events = [
+                cx.subscribe_in(&w, window, take(0)),
+                cx.subscribe_in(&h, window, take(1)),
+            ];
+            self.size_fields = Some(SizeFields {
+                w,
+                h,
+                shown: size,
+                _events: events,
+            });
+        }
+        let f = self.size_fields.as_mut()?;
+        let typing =
+            f.w.focus_handle(cx).is_focused(window) || f.h.focus_handle(cx).is_focused(window);
+        if f.shown != size && !typing {
+            f.shown = size;
+            let (w, h) = (f.w.clone(), f.h.clone());
+            w.update(cx, |i, cx| i.set_value(text(size.0), window, cx));
+            h.update(cx, |i, cx| i.set_value(text(size.1), window, cx));
+        }
+        Some((f.w.clone(), f.h.clone()))
+    }
+
+    /// A side typed in, kept within Responsive's bounds; anything else shows the size again.
+    fn take_size(&mut self, side: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(f), Some((device, _))) = (self.size_fields.as_ref(), self.device()) else {
+            return;
+        };
+        let field = if side == 0 { f.w.clone() } else { f.h.clone() };
+        let typed = field.read(cx).value().trim().parse::<f64>().ok();
+        match typed.filter(|n| n.is_finite()) {
+            Some(n) => {
+                let n = devices::clamp_side(n);
+                let (w, h) = if side == 0 {
+                    (n, device.h)
+                } else {
+                    (device.w, n)
+                };
+                if let Some(f) = self.size_fields.as_mut() {
+                    // Shown as kept, clamped.
+                    f.shown = (f64::NAN, f64::NAN);
+                }
+                if (w, h) != (device.w, device.h) {
+                    let next = DeviceChoice {
+                        name: devices::RESPONSIVE.into(),
+                        w: Some(w),
+                        h: Some(h),
+                        ..DeviceChoice::default()
+                    };
+                    self.choose_device(Some(next), window, cx);
+                }
+            }
+            None => {
+                if let Some(f) = self.size_fields.as_mut() {
+                    f.shown = (f64::NAN, f64::NAN);
+                }
+            }
+        }
+        cx.notify();
     }
 
     /// A drag of Responsive's edges begins.
@@ -877,6 +975,14 @@ impl BrowserTab {
         });
     }
 
+    fn toggle_match_case(&mut self, cx: &mut Context<Self>) {
+        if let Some(f) = self.find.as_mut() {
+            f.match_case = !f.match_case;
+        }
+        self.run_find(false, cx);
+        cx.notify();
+    }
+
     fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.find = None;
         self.keys_to_page(window, cx);
@@ -1000,12 +1106,19 @@ impl BrowserTab {
         // The keys come back from the page first, or the question's field would get none.
         crate::focus(&self.saved.id, false);
         self.page_had_keys = false;
-        let input = cx
-            .new(|cx| InputState::new(window, cx).placeholder("Your question (optional). ↵ asks."));
+        // Three lines, growing with what's typed to about sixteen; ↵ asks, ⇧↵ is a new line.
+        let input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder("Your question (optional). ↵ asks, ⇧↵ is a new line.")
+                .submit_on_enter(true)
+                .auto_grow(3, 16)
+        });
         let events = cx.subscribe_in(&input, window, |this, input, e: &InputEvent, window, cx| {
             match e {
                 // ↵ asks a question; without one, Skip is the button.
-                InputEvent::PressEnter { .. } if !input.read(cx).value().trim().is_empty() => {
+                InputEvent::PressEnter { shift: false, .. }
+                    if !input.read(cx).value().trim().is_empty() =>
+                {
                     this.send_ask(true, window, cx)
                 }
                 InputEvent::Change => cx.notify(),

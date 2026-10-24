@@ -5,6 +5,7 @@ use super::*;
 use gitviber_ui::Settings;
 use gpui::{MouseButton, ObjectFit, StyledImage as _};
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::input::Textarea;
 
 /// The page's px from its viewport's top left, in the tab's px: where a pick's mark goes.
 struct Mark {
@@ -12,6 +13,28 @@ struct Mark {
     top: f32,
     w: f32,
     h: f32,
+}
+
+const OPTION_CASE: &str = if cfg!(target_os = "macos") {
+    "Match Case (⌥⌘C)"
+} else {
+    "Match Case (Alt+C)"
+};
+
+/// A find box's option key (⌥⌘C, ⌥⌘W, ⌥⌘R; Alt+ elsewhere): its letter.
+fn option_key(k: &gpui::Keystroke) -> Option<char> {
+    let m = &k.modifiers;
+    let held = if cfg!(target_os = "macos") {
+        m.alt && m.platform && !m.control && !m.shift
+    } else {
+        m.alt && !m.control && !m.platform && !m.shift
+    };
+    let c = k
+        .key
+        .chars()
+        .next()
+        .filter(|_| k.key.chars().count() == 1)?;
+    (held && matches!(c, 'c' | 'w' | 'r')).then_some(c)
 }
 
 fn icon_button(id: &'static str, icon: IconName, tip: impl Into<SharedString>) -> Button {
@@ -362,9 +385,20 @@ impl BrowserTab {
             .into_any_element()
     }
 
-    fn device_bar(&mut self, t: &AppTheme, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn device_bar(
+        &mut self,
+        t: &AppTheme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let (device, choice, fitted) = self.fitted()?;
         let responsive = choice.name == devices::RESPONSIVE;
+        let sizes = if responsive {
+            self.size_fields((device.w, device.h), window, cx)
+        } else {
+            self.size_fields = None;
+            None
+        };
         let weak = cx.weak_entity();
         let rotated = choice.rotated;
         let current = choice.name.clone();
@@ -418,6 +452,16 @@ impl BrowserTab {
                 .border_b_1()
                 .border_color(t.border)
                 .child(picker)
+                .children(sizes.map(|(w, h)| {
+                    h_flex()
+                        .gap(px(4.))
+                        .font_family(t.fonts.code.clone())
+                        .text_size(px(11.5))
+                        .text_color(t.muted_foreground)
+                        .child(div().w(px(64.)).child(Input::new(&w).xsmall()))
+                        .child("×")
+                        .child(div().w(px(64.)).child(Input::new(&h).xsmall()))
+                }))
                 .when(!responsive, |bar| {
                     bar.child(
                         icon_button("rotate", IconName::RotateCcwSquare, "Rotate").on_click(
@@ -470,6 +514,17 @@ impl BrowserTab {
                     this.close_find(window, cx);
                     cx.stop_propagation();
                 }))
+                // The find boxes' option keys: ⌥⌘C flips Match Case; WebKit's find has no
+                // whole word or regex, so ⌥⌘W and ⌥⌘R do nothing here.
+                .capture_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, _, cx| {
+                    let Some(key) = option_key(&e.keystroke) else {
+                        return;
+                    };
+                    cx.stop_propagation();
+                    if key == 'c' {
+                        this.toggle_match_case(cx);
+                    }
+                }))
                 .child(div().w(px(240.)).child(Input::new(&f.input).xsmall()))
                 .when(missing, |bar| {
                     bar.child(
@@ -481,14 +536,9 @@ impl BrowserTab {
                     )
                 })
                 .child(
-                    icon_button("find-case", IconName::CaseSensitive, "Match Case")
+                    icon_button("find-case", IconName::CaseSensitive, OPTION_CASE)
                         .selected(f.match_case)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(f) = this.find.as_mut() {
-                                f.match_case = !f.match_case;
-                            }
-                            this.run_find(false, cx);
-                        })),
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_match_case(cx))),
                 )
                 .child(
                     icon_button("find-prev", IconName::ChevronUp, "Previous (⇧⌘G)")
@@ -832,7 +882,7 @@ impl BrowserTab {
     fn ask_box(&self, t: &AppTheme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let ask = self.ask.as_ref()?;
         let area = self.area.get();
-        let (w, h) = (320., 190.);
+        let (w, h) = (320., 230.);
         let left = ask.at.0.clamp(4., (area.0 - w - 4.).max(4.));
         let top = if ask.at.1 + h > area.1 {
             (area.1 - h - 4.).max(4.)
@@ -877,7 +927,7 @@ impl BrowserTab {
                         .text_size(px(12.))
                         .child(format!("Ask {agent} about {}", ask.about.what)),
                 )
-                .child(Input::new(&ask.input).xsmall())
+                .child(Textarea::new(&ask.input))
                 .when(picks && errors > 0, |b| {
                     let label = if errors as usize > format::ERRORS {
                         format!(
@@ -1278,10 +1328,33 @@ impl Render for BrowserTab {
             })
             .text_color(t.foreground)
             .child(self.address_bar(&t, cx))
-            .children(self.device_bar(&t, cx))
+            .children(self.device_bar(&t, window, cx))
             .children(self.find_bar(&t, cx))
             .children(self.download_bar(&t, cx))
             .children(self.console_panel(&t, cx))
             .child(self.page_area(&t, cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::option_key;
+    use gpui::Keystroke;
+
+    #[test]
+    fn a_find_boxs_option_keys_are_its_own_and_nothing_else() {
+        let key = |s: &str| option_key(&Keystroke::parse(s).unwrap());
+        if cfg!(target_os = "macos") {
+            assert_eq!(key("alt-cmd-c"), Some('c'));
+            assert_eq!(key("alt-cmd-w"), Some('w'));
+            assert_eq!(key("alt-cmd-r"), Some('r'));
+            assert_eq!(key("alt-c"), None);
+            assert_eq!(key("alt-shift-cmd-c"), None);
+        } else {
+            assert_eq!(key("alt-c"), Some('c'));
+            assert_eq!(key("ctrl-alt-c"), None);
+        }
+        assert_eq!(key("cmd-c"), None);
+        assert_eq!(key("alt-cmd-x"), None);
     }
 }
