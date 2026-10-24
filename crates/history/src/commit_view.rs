@@ -192,7 +192,10 @@ impl CommitView {
             .scroll_to_item(at, gpui_kit::ScrollStrategy::Nearest);
         let source = DiffSource::from_change(self.compare(), &file);
         match &self.diff {
-            Some(diff) => diff.update(cx, |d, cx| d.set_source(source, cx)),
+            // Refused only over unsaved edits, which a commit's diff never has.
+            Some(diff) => {
+                diff.update(cx, |d, cx| d.set_source(source, cx));
+            }
             None => {
                 let diff = cx.new(|cx| DiffView::new(source, cx));
                 self._diff = Some(cx.subscribe(&diff, |_, _, e: &DiffEvent, cx| {

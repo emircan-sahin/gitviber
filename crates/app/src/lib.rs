@@ -46,9 +46,17 @@ fn first_folder(candidates: Vec<PathBuf>) -> Option<PathBuf> {
 /// placeholders.
 pub fn init(cx: &mut App) {
     gitviber_ui::init(cx);
-    gitviber_ui::start_core(cx);
+    let core = gitviber_ui::start_core(cx);
     windows::install_app_actions(cx);
     placeholders::register(cx);
+    // Features after the placeholders: a panel or chip registered with the same id replaces one.
+    gitviber_diff::set_core(core, cx);
+    gitviber_diff::init(cx);
+    gitviber_terminal::init(cx);
+    gitviber_files::init(cx);
+    gitviber_refs::init(cx);
+    gitviber_history::init(cx);
+    gitviber_github::init(cx);
     settings_window::install(cx);
     menus::install(cx);
 }

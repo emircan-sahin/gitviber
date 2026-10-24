@@ -1,25 +1,24 @@
-//! The top bar: the traffic lights' room, the wordmark, the chips features put there (project,
-//! branch, worktree, pull request), the git actions, and the panel toggles. A button whose
-//! command nothing handles yet shows disabled.
+//! The top bar: the traffic lights' room, the wordmark, the chips and git actions features put
+//! there (project, branch, worktree, pull request; undo, refresh, pull, push), and the panel
+//! toggles. A button whose command nothing handles yet shows disabled.
 
-use gitviber_ui::actions::{git, repo, terminal, view, workbench};
+use gitviber_ui::actions::{terminal, view, workbench};
 use gitviber_ui::assets::LOGO;
 use gitviber_ui::keymap::{self, shortcut_label};
 use gitviber_ui::workspace::{BarSlot, PanelContext, Registry};
 use gitviber_ui::{ActiveAppTheme, windows};
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants as _, DropdownButton};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Disableable as _, Sizable as _, TitleBar};
 use gpui_kit::{
-    Action, AnyElement, App, FocusHandle, IntoElement, ParentElement as _, Styled as _, Window,
-    div, img, prelude::*, px, rems,
+    Action, AnyElement, App, IntoElement, ParentElement as _, Styled as _, Window, div, img,
+    prelude::*, px, rems,
 };
 
 /// What the buttons need to know to draw: the commands that apply where focus is (None before
-/// a frame is drawn, which GPUI tells them from), the app, and where the menus' commands go.
+/// a frame is drawn, which GPUI tells them from), and the app.
 struct Bar<'a> {
     available: Option<Vec<&'static str>>,
-    focus: &'a FocusHandle,
     cx: &'a App,
 }
 
@@ -55,38 +54,6 @@ impl Bar<'_> {
             .disabled(!self.enabled(&action))
             .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
     }
-
-    fn split(
-        &self,
-        id: &'static str,
-        icon: IconName,
-        label: &'static str,
-        command: &str,
-        action: impl Action + Clone,
-        menu: Vec<(&'static str, Box<dyn Action>)>,
-    ) -> AnyElement {
-        let focus = self.focus.clone();
-        DropdownButton::new(id)
-            .button(
-                Button::new((id, 0usize))
-                    .small()
-                    .icon(icon)
-                    .label(label)
-                    .tooltip(self.tip(command))
-                    .disabled(!self.enabled(&action))
-                    .on_click(move |_, window, cx| {
-                        window.dispatch_action(action.boxed_clone(), cx)
-                    }),
-            )
-            .dropdown_menu(move |mut popup, _, _| {
-                popup = popup.action_context(focus.clone());
-                for (name, action) in &menu {
-                    popup = popup.menu(*name, action.boxed_clone());
-                }
-                popup
-            })
-            .into_any_element()
-    }
 }
 
 fn divider(cx: &App) -> AnyElement {
@@ -98,13 +65,7 @@ fn divider(cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-pub fn top_bar(
-    ctx: &PanelContext,
-    focus: &FocusHandle,
-    drawn: bool,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
+pub fn top_bar(ctx: &PanelContext, drawn: bool, window: &mut Window, cx: &mut App) -> AnyElement {
     let chips: Vec<AnyElement> = Registry::get(cx)
         .bar_items(BarSlot::TopChips)
         .into_iter()
@@ -140,51 +101,13 @@ pub fn top_bar(
             .map(|a| a.name())
             .collect()
     });
-    let bar = Bar {
-        available,
-        focus,
-        cx,
-    };
-    let pull = bar.split(
-        "pull",
-        IconName::ArrowDownToLine,
-        "Pull",
-        "git.pull",
-        git::Pull,
-        vec![
-            ("Pull", Box::new(git::Pull)),
-            ("Fetch", Box::new(git::Fetch)),
-            ("Sync (Pull, then Push)", Box::new(git::Sync)),
-        ],
-    );
-    let push = bar.split(
-        "push",
-        IconName::ArrowUpFromLine,
-        "Push",
-        "git.push",
-        git::Push,
-        vec![
-            ("Push", Box::new(git::Push)),
-            ("Sync (Pull, then Push)", Box::new(git::Sync)),
-        ],
-    );
+    let bar = Bar { available, cx };
     let right = div()
         .flex()
         .flex_none()
         .items_center()
         .gap_1()
         .pr_2()
-        .child(bar.icon_button("undo", IconName::Undo2, "git.undo", git::Undo))
-        .child(bar.icon_button("redo", IconName::Redo2, "git.redo", git::Redo))
-        .child(divider(cx))
-        .child(bar.icon_button(
-            "refresh",
-            IconName::RefreshCw,
-            "repo.refresh",
-            repo::Refresh,
-        ))
-        .child(pull)
-        .child(push)
         .children(actions)
         .child(divider(cx))
         .child(bar.icon_button(

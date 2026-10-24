@@ -18,6 +18,12 @@ path = "src/main.rs"
 gpui-kit.workspace = true
 gitviber-ui = { path = "../ui" }
 gitviber-core = { path = "../core" }
+gitviber-diff = { path = "../diff" }
+gitviber-terminal = { path = "../terminal" }
+gitviber-files = { path = "../files" }
+gitviber-history = { path = "../history" }
+gitviber-refs = { path = "../refs" }
+gitviber-github = { path = "../github" }
 
 [features]
 # GITVIBER_SNAPSHOT=out.png draws the main window off screen into a PNG and exits (gitviber-ui's

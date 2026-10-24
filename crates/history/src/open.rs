@@ -13,7 +13,7 @@ use gitviber_refs::points::{ComparePoint, default_points};
 use gitviber_refs::toast::Note;
 use gitviber_ui::Workspace;
 use gitviber_ui::workspace::{
-    ChangesOf, ComparePoint as UiPoint, PullRange, Selection, TabHandle, opener, register_opener,
+    ChangesOf, ComparePoint as UiPoint, PullRange, Selection, TabHandle, register_opener,
 };
 use gpui_kit::{
     App, AppContext as _, ClipboardItem, Context, Entity, SharedString, WeakEntity, Window,
@@ -304,8 +304,7 @@ pub fn file_action(
     }
 }
 
-/// History's openers. "changes" is shared with the Changes panel's lists: the one registered
-/// before keeps its own kinds.
+/// History's openers: a commit's file, a commit's or a range's whole list, and Compare.
 pub fn register(cx: &mut App) {
     register_opener(cx, "commit", |sel, _, cx| {
         let Selection::Commit { commit, file, url } = sel else {
@@ -318,26 +317,30 @@ pub fn register(cx: &mut App) {
         let url = url.clone();
         Some(TabHandle::new(cx.new(|cx| CommitView::new(of, url, cx))))
     });
-    let before = opener("changes", cx);
-    register_opener(cx, "changes", move |sel, window, cx| match sel {
-        Selection::Changes {
+    register_opener(cx, "changes-commit", |sel, _, cx| {
+        let Selection::Changes {
             of: ChangesOf::Commit { commit, url },
-        } => {
-            let of = Of::Commit(Rc::new(Commit::from_core(commit)));
-            let url = url.clone();
-            Some(TabHandle::new(cx.new(|cx| CommitView::new(of, url, cx))))
-        }
-        Selection::Changes {
+        } = sel
+        else {
+            return None;
+        };
+        let of = Of::Commit(Rc::new(Commit::from_core(commit)));
+        let url = url.clone();
+        Some(TabHandle::new(cx.new(|cx| CommitView::new(of, url, cx))))
+    });
+    register_opener(cx, "changes-range", |sel, _, cx| {
+        let Selection::Changes {
             of: ChangesOf::Range { range },
-        } => {
-            let of = Of::Range {
-                base: range.base.clone(),
-                head: range.head.clone(),
-                label: range.label(),
-            };
-            Some(TabHandle::new(cx.new(|cx| CommitView::new(of, None, cx))))
-        }
-        _ => before.as_ref().and_then(|b| b(sel, window, cx)),
+        } = sel
+        else {
+            return None;
+        };
+        let of = Of::Range {
+            base: range.base.clone(),
+            head: range.head.clone(),
+            label: range.label(),
+        };
+        Some(TabHandle::new(cx.new(|cx| CommitView::new(of, None, cx))))
     });
     register_opener(cx, "compare", |sel, window, cx| {
         let Selection::Compare {

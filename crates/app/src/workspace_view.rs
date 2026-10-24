@@ -427,7 +427,7 @@ impl Render for WorkspaceView {
         }
         let ctx = self.context(cx);
         let t = cx.app_theme().clone();
-        let top = top_bar(&ctx, &self.focus, self.drawn, window, cx);
+        let top = top_bar(&ctx, self.drawn, window, cx);
         self.drawn = true;
         let status = status_bar(&ctx, window, cx);
         let viewport = window.viewport_size();

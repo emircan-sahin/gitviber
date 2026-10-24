@@ -2241,8 +2241,25 @@ name = "gitviber"
 version = "0.1.17"
 dependencies = [
  "gitviber-core",
+ "gitviber-diff",
+ "gitviber-files",
+ "gitviber-github",
+ "gitviber-history",
+ "gitviber-refs",
+ "gitviber-terminal",
  "gitviber-ui",
  "gpui-kit",
+]
+
+[[package]]
+name = "gitviber-changes"
+version = "0.1.17"
+dependencies = [
+ "gitviber-core",
+ "gitviber-diff",
+ "gitviber-ui",
+ "gpui-kit",
+ "gpui-pre",
 ]
 
 [[package]]
@@ -2351,6 +2368,7 @@ version = "0.1.17"
 dependencies = [
  "alacritty_terminal",
  "gitviber-core",
+ "gitviber-ui",
  "gpui-kit",
  "gpui-pre",
 ]
