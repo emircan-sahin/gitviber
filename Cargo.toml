@@ -17,9 +17,33 @@ gpui-kit = "=0.8.0"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 chrono = "=0.4.45"
+# Core's events cross to the UI thread over its channel.
+futures = "=0.3.34"
+
+# Line tables keep file:line in backtraces and panics; full debug info only slows the link.
+[profile.dev]
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# The hot loops of the terminal and the diff, optimized even in a debug build, so a debug app
+# keeps up with Claude Code's output. Built once, like any dependency.
+[profile.dev.package.alacritty_terminal]
+opt-level = 3
+[profile.dev.package.vte]
+opt-level = 3
+[profile.dev.package.similar]
+opt-level = 3
+
+# Release speed with symbols and a far quicker build than release's fat LTO: for measuring
+# memory and frame times (Instruments, footprint).
+[profile.profiling]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+debug = "line-tables-only"
+strip = false
 
 [profile.release]
 codegen-units = 1

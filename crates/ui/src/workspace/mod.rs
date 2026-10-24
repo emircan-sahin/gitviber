@@ -1,0 +1,1166 @@
+//! The contract feature crates plug into. A window's `Workspace` holds the open project, the
+//! center's tabs and which panels show; the app draws it. A feature:
+//!
+//! - registers its panels and bar items once at startup (`register_panel`, `register_bar_item`,
+//!   `register_quick_open`), built per project the first time they show;
+//! - registers an opener per `Selection` kind it shows (`register_opener`), and opens tabs with
+//!   `Workspace::open(selection, preview, ..)`: an open one is shown rather than built again,
+//!   a preview open reuses the preview tab, and each worktree's tabs are saved as selections;
+//! - toasts with `Workspace::toast`, shows or focuses panels by id, toggles the terminal;
+//! - follows the project's `ProjectEvent::RepoChanged` to refresh.
+//!
+//! Get the window's workspace with `Workspace::for_window(window, cx)`, or keep the
+//! `PanelContext::workspace` a panel was built with.
+
+mod item;
+mod project;
+mod registry;
+mod selection;
+pub mod tabs;
+
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
+
+use gpui_kit::component::{WindowExt as _, notification::Notification};
+use gpui_kit::{
+    AnyView, AnyWindowHandle, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
+    Global, SharedString, Subscription, WeakEntity, Window,
+};
+
+pub use item::{Panel, PanelHandle, Tab, TabHandle, TabIcon, TabItem};
+pub use project::{Project, ProjectEvent, RepoState};
+pub use registry::{
+    BarItem, BarSlot, PanelContext, PanelSpec, QuickItem, QuickOpenSource, Registry, RenderBarItem,
+    RunItem, Slot, register_bar_item, register_bar_item_default, register_panel,
+    register_panel_default, register_quick_open,
+};
+pub use selection::{
+    ChangeList, ChangesOf, ComparePoint, GuideOf, Opener, PullRange, Selection, opener, page_label,
+    register_opener, selection_key, selection_path,
+};
+pub use tabs::{ClosedTab, Opened, TabEntry, TabGroup, Tabs};
+
+use crate::memory::Live;
+use crate::state::{TabSnapshot, UiState, WorkspaceSnapshot};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToastKind {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+/// A short message in the window's corner.
+#[derive(Clone, Debug)]
+pub struct Toast {
+    pub kind: ToastKind,
+    pub title: Option<SharedString>,
+    pub message: SharedString,
+}
+
+impl Toast {
+    pub fn new(kind: ToastKind, message: impl Into<SharedString>) -> Self {
+        Self {
+            kind,
+            title: None,
+            message: message.into(),
+        }
+    }
+    pub fn info(message: impl Into<SharedString>) -> Self {
+        Self::new(ToastKind::Info, message)
+    }
+    pub fn success(message: impl Into<SharedString>) -> Self {
+        Self::new(ToastKind::Success, message)
+    }
+    pub fn warning(message: impl Into<SharedString>) -> Self {
+        Self::new(ToastKind::Warning, message)
+    }
+    pub fn error(message: impl Into<SharedString>) -> Self {
+        Self::new(ToastKind::Error, message)
+    }
+    pub fn title(mut self, title: impl Into<SharedString>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
+    /// Shows it in `window` now.
+    pub fn show(self, window: &mut Window, cx: &mut App) {
+        let note = match self.kind {
+            ToastKind::Info => Notification::info(self.message),
+            ToastKind::Success => Notification::success(self.message),
+            ToastKind::Warning => Notification::warning(self.message),
+            ToastKind::Error => Notification::error(self.message),
+        };
+        let note = match self.title {
+            Some(title) => note.title(title),
+            None => note,
+        };
+        window.push_notification(note, cx);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorkspaceEvent {
+    /// Another project (or none) is open; tabs and per-project panels started over.
+    ProjectChanged,
+    TabsChanged,
+    /// A panel showed, hid or switched.
+    LayoutChanged,
+}
+
+#[derive(Default)]
+struct Windows(HashMap<AnyWindowHandle, WeakEntity<Workspace>>);
+impl Global for Windows {}
+
+struct SideState {
+    open: bool,
+    active: Option<&'static str>,
+    focus: FocusHandle,
+}
+
+/// Tab views kept while out of sight; older ones go and are built again from their selection
+/// when shown. A tab with unsaved edits, or none to build from, keeps its view.
+const LIVE_TABS: usize = 8;
+/// Closed tabs' selections kept for Reopen Closed Tab, as `Tabs` keeps their places.
+const CLOSED_KEPT: usize = 20;
+
+pub struct Workspace {
+    project: Option<Entity<Project>>,
+    tabs: Tabs<Tab>,
+    /// Tab keys, the latest shown first: which views stay built.
+    shown: Vec<SharedString>,
+    /// What closed tabs showed, for Reopen Closed Tab; never their views.
+    closed: Vec<(SharedString, Selection)>,
+    /// Viewed marks of this worktree: `kind:path` → the file's content signature when marked.
+    viewed: BTreeMap<String, String>,
+    /// The full ref the branch is reviewed against, while Changes shows that review.
+    review: Option<String>,
+    left: SideState,
+    right: SideState,
+    bottom: SideState,
+    /// The terminal over the whole workspace (⌘↵ in it).
+    bottom_maximized: bool,
+    center_focus: FocusHandle,
+    panels: HashMap<&'static str, PanelHandle>,
+    toasts: Vec<Toast>,
+    _project_events: Option<Subscription>,
+    _live: Live,
+}
+
+impl EventEmitter<WorkspaceEvent> for Workspace {}
+
+impl Workspace {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        let sizes = UiState::get(cx).panels.clone();
+        let side = |open: bool, cx: &mut Context<Self>| SideState {
+            open,
+            active: None,
+            focus: cx.focus_handle(),
+        };
+        Self {
+            project: None,
+            tabs: Tabs::default(),
+            shown: Vec::new(),
+            closed: Vec::new(),
+            viewed: BTreeMap::new(),
+            review: None,
+            left: side(!sizes.left.collapsed, cx),
+            right: side(!sizes.right.collapsed, cx),
+            // The terminal starts as it was left; hidden the first time.
+            bottom: side(sizes.bottom.size.is_some() && !sizes.bottom.collapsed, cx),
+            bottom_maximized: false,
+            center_focus: cx.focus_handle(),
+            panels: HashMap::new(),
+            toasts: Vec::new(),
+            _project_events: None,
+            _live: Live::new("Workspace"),
+        }
+    }
+
+    /// Makes `workspace` the one `for_window` finds for `window`, until it's released.
+    pub fn register_window(workspace: &Entity<Workspace>, window: &Window, cx: &mut App) {
+        let handle = window.window_handle();
+        cx.default_global::<Windows>()
+            .0
+            .insert(handle, workspace.downgrade());
+        cx.observe_release(workspace, move |_, cx| {
+            cx.default_global::<Windows>().0.remove(&handle);
+        })
+        .detach();
+    }
+
+    pub fn for_window(window: &Window, cx: &App) -> Option<Entity<Workspace>> {
+        cx.try_global::<Windows>()?
+            .0
+            .get(&window.window_handle())?
+            .upgrade()
+    }
+
+    pub fn context(&self, cx: &Context<Self>) -> PanelContext {
+        PanelContext {
+            workspace: cx.weak_entity(),
+            project: self.project.clone(),
+        }
+    }
+
+    /// For what outlives a project (a per-window panel): the workspace only, so it never keeps a
+    /// project alive past a switch; it reads the current one from the workspace.
+    fn window_context(&self, cx: &Context<Self>) -> PanelContext {
+        PanelContext {
+            workspace: cx.weak_entity(),
+            project: None,
+        }
+    }
+
+    // MARK: Project
+
+    pub fn project(&self) -> Option<&Entity<Project>> {
+        self.project.as_ref()
+    }
+
+    fn root_key(&self, cx: &App) -> Option<String> {
+        Some(
+            self.project
+                .as_ref()?
+                .read(cx)
+                .root()
+                .to_string_lossy()
+                .into_owned(),
+        )
+    }
+
+    /// Opens `root` in this window: the old project's tabs are saved and closed, its per-project
+    /// panels dropped, the new one's saved workspace restored.
+    pub fn open_project(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .project
+            .as_ref()
+            .is_some_and(|p| p.read(cx).root() == root)
+        {
+            return;
+        }
+        self.drop_project(cx);
+        let key = root.to_string_lossy().into_owned();
+        let project = cx.new(|cx| Project::new(root, cx));
+        self._project_events = Some(cx.subscribe_in(&project, window, Self::on_project_event));
+        self.project = Some(project);
+        UiState::update(cx, |s| s.add_recent_project(&key));
+        let snapshot = UiState::get(cx)
+            .workspace(&key)
+            .cloned()
+            .unwrap_or_default();
+        self.restore(snapshot, cx);
+        cx.emit(WorkspaceEvent::ProjectChanged);
+        cx.notify();
+    }
+
+    fn on_project_event(
+        &mut self,
+        _: &Entity<Project>,
+        event: &ProjectEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            // Another worktree's workspace: this one's tabs are saved under its root, the other's come back.
+            ProjectEvent::Switched { from, to } => {
+                self.save_snapshot_as(&from.to_string_lossy(), cx);
+                self.clear_tabs();
+                let snapshot = UiState::get(cx)
+                    .workspace(&to.to_string_lossy())
+                    .cloned()
+                    .unwrap_or_default();
+                self.restore(snapshot, cx);
+                self.changed(WorkspaceEvent::TabsChanged, cx);
+            }
+            ProjectEvent::Failed(err) => self.toast(
+                Toast::error(err.clone()).title("Couldn't open the repository"),
+                cx,
+            ),
+            ProjectEvent::Opened | ProjectEvent::RepoChanged(_) => {}
+        }
+    }
+
+    /// Opens another worktree of the open repo in this window (the worktree picker).
+    pub fn switch_worktree(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        if let Some(project) = &self.project {
+            project.update(cx, |p, cx| p.switch_worktree(root, cx));
+        }
+    }
+
+    /// Closes the project: its tabs and per-project panels go, with all they held.
+    pub fn close_project(&mut self, cx: &mut Context<Self>) {
+        if self.project.is_none() {
+            return;
+        }
+        self.drop_project(cx);
+        cx.emit(WorkspaceEvent::ProjectChanged);
+        cx.notify();
+    }
+
+    fn drop_project(&mut self, cx: &mut Context<Self>) {
+        self.save_snapshot(cx);
+        let per_project: Vec<&'static str> = Registry::get(cx)
+            .all_panels()
+            .iter()
+            .filter(|p| p.per_project)
+            .map(|p| p.id)
+            .collect();
+        self.panels.retain(|id, _| !per_project.contains(id));
+        self.clear_tabs();
+        self._project_events = None;
+        self.project = None;
+    }
+
+    fn clear_tabs(&mut self) {
+        self.tabs = Tabs::default();
+        self.shown.clear();
+        self.closed.clear();
+        self.viewed.clear();
+        self.review = None;
+    }
+
+    /// Puts a saved workspace back: its tabs as selections only, built as they're shown. A tab
+    /// this build can't read is left out.
+    fn restore(&mut self, snapshot: WorkspaceSnapshot, cx: &mut Context<Self>) {
+        let pick = |id: Option<String>, slot: Slot, cx: &App| {
+            let panels = Registry::get(cx).panels(slot);
+            id.and_then(|id| panels.iter().find(|p| p.id == id).map(|p| p.id))
+                .or_else(|| panels.first().map(|p| p.id))
+        };
+        self.left.active = pick(snapshot.list_tab, Slot::Left, cx);
+        self.right.active = pick(snapshot.right_panel, Slot::Right, cx);
+        self.bottom.active = pick(None, Slot::Bottom, cx);
+        for tab in snapshot.tabs {
+            let Ok(selection) = serde_json::from_value::<Selection>(tab.sel) else {
+                continue;
+            };
+            // Keys are derived again: their format can change, and a stale one would stop a
+            // list row from finding its tab.
+            let key: SharedString = selection_key(&selection).into();
+            self.tabs.open(key, tab.preview, || Tab {
+                handle: None,
+                selection: Some(selection),
+            });
+        }
+        match snapshot.active {
+            Some(active) if self.tabs.activate(&active) => {}
+            _ => self.tabs.go_to(0),
+        }
+        self.viewed = snapshot.viewed.into_iter().collect();
+        self.review = snapshot.review;
+    }
+
+    /// This workspace as it would be restored: the tabs that have a selection.
+    pub fn snapshot(&self) -> WorkspaceSnapshot {
+        WorkspaceSnapshot {
+            tabs: self
+                .tabs
+                .tabs()
+                .iter()
+                .filter_map(|t| {
+                    let sel = serde_json::to_value(t.item.selection.as_ref()?).ok()?;
+                    Some(TabSnapshot {
+                        key: t.key.to_string(),
+                        sel,
+                        preview: t.preview,
+                    })
+                })
+                .collect(),
+            active: self.tabs.active_key().map(|k| k.to_string()),
+            list_tab: self.left.active.map(str::to_string),
+            right_panel: self.right.active.map(str::to_string),
+            viewed: self
+                .viewed
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            review: self.review.clone(),
+        }
+    }
+
+    fn save_snapshot(&self, cx: &mut App) {
+        if let Some(root) = self.root_key(cx) {
+            self.save_snapshot_as(&root, cx);
+        }
+    }
+
+    fn save_snapshot_as(&self, root: &str, cx: &mut App) {
+        let snapshot = self.snapshot();
+        let root = root.to_string();
+        let panels = (!self.left.open, !self.right.open, !self.bottom.open);
+        UiState::update_later(cx, move |s| {
+            s.save_workspace(&root, snapshot);
+            (
+                s.panels.left.collapsed,
+                s.panels.right.collapsed,
+                s.panels.bottom.collapsed,
+            ) = panels;
+        });
+    }
+
+    fn changed(&mut self, event: WorkspaceEvent, cx: &mut Context<Self>) {
+        self.save_snapshot(cx);
+        cx.emit(event);
+        cx.notify();
+    }
+
+    // MARK: Viewed marks
+
+    /// The signature a file had when it was marked viewed, under `key` (`kind:path`).
+    pub fn viewed(&self, key: &str) -> Option<&str> {
+        self.viewed.get(key).map(String::as_str)
+    }
+
+    pub fn viewed_marks(&self) -> &BTreeMap<String, String> {
+        &self.viewed
+    }
+
+    /// Marks a file viewed at its `signature`, or not (None). Saved with the worktree.
+    pub fn set_viewed(
+        &mut self,
+        key: impl Into<String>,
+        signature: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let key = key.into();
+        match signature {
+            Some(sig) => self.viewed.insert(key, sig),
+            None => self.viewed.remove(&key),
+        };
+        self.changed(WorkspaceEvent::TabsChanged, cx);
+    }
+
+    pub fn review_base(&self) -> Option<&str> {
+        self.review.as_deref()
+    }
+
+    pub fn set_review_base(&mut self, base: Option<String>, cx: &mut Context<Self>) {
+        self.review = base;
+        self.changed(WorkspaceEvent::TabsChanged, cx);
+    }
+
+    // MARK: Tabs
+
+    pub fn tabs(&self) -> &Tabs<Tab> {
+        &self.tabs
+    }
+
+    /// Opens what `selection` shows, by its key: an open tab is shown (and kept when `preview`
+    /// is false) and takes the fresher selection; else the opener registered for its kind builds
+    /// the view. False when no opener knows the kind or it couldn't build one.
+    pub fn open(
+        &mut self,
+        selection: Selection,
+        preview: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let key: SharedString = selection_key(&selection).into();
+        if self.tabs.get(&key).is_some() {
+            self.tabs.open(key.clone(), preview, || unreachable!());
+            self.tabs.set(&key, |tab| tab.selection = Some(selection));
+            self.shown_now(&key, window, cx);
+            self.changed(WorkspaceEvent::TabsChanged, cx);
+            return true;
+        }
+        let Some(open) = opener(selection.kind(), cx) else {
+            return false;
+        };
+        let Some(handle) = open(&selection, window, cx) else {
+            return false;
+        };
+        self.tabs.open(key.clone(), preview, || Tab {
+            handle: Some(handle),
+            selection: Some(selection),
+        });
+        self.shown_now(&key, window, cx);
+        self.changed(WorkspaceEvent::TabsChanged, cx);
+        true
+    }
+
+    /// The tab showing `selection`, when one is open.
+    pub fn tab_for(&self, selection: &Selection) -> Option<&TabEntry<Tab>> {
+        self.tabs.get(&selection_key(selection))
+    }
+
+    /// Opens a center tab under `key` that no selection describes (it isn't saved or reopened),
+    /// or shows it when it's open already, without building it again. `preview`: a single
+    /// click's tab, which the next preview open replaces; false keeps it.
+    pub fn open_tab<V: TabItem>(
+        &mut self,
+        key: impl Into<SharedString>,
+        preview: bool,
+        build: impl FnOnce(&mut Window, &mut Context<Self>) -> Entity<V>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = key.into();
+        if self.tabs.get(&key).is_some() {
+            self.tabs.open(key.clone(), preview, || unreachable!());
+        } else {
+            let handle = TabHandle::new(build(window, cx));
+            self.tabs.open(key.clone(), preview, || Tab {
+                handle: Some(handle),
+                selection: None,
+            });
+        }
+        self.shown_now(&key, window, cx);
+        self.changed(WorkspaceEvent::TabsChanged, cx);
+    }
+
+    /// Opens a tab already built; an open `key` is shown and `item` dropped.
+    pub fn open_item(
+        &mut self,
+        key: impl Into<SharedString>,
+        preview: bool,
+        item: impl Into<TabHandle>,
+        cx: &mut Context<Self>,
+    ) {
+        let item = item.into();
+        self.tabs.open(key.into(), preview, || Tab {
+            handle: Some(item),
+            selection: None,
+        });
+        self.changed(WorkspaceEvent::TabsChanged, cx);
+    }
+
+    /// A tab at the end, the active one left as it is (one an agent opened).
+    pub fn add_tab(
+        &mut self,
+        key: impl Into<SharedString>,
+        item: impl Into<TabHandle>,
+        selection: Option<Selection>,
+        cx: &mut Context<Self>,
+    ) {
+        let item = item.into();
+        self.tabs.add(key.into(), || Tab {
+            handle: Some(item),
+            selection,
+        });
+        self.changed(WorkspaceEvent::TabsChanged, cx);
+    }
+
+    pub fn activate_tab(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.activate(key) {
+            let key = SharedString::from(key.to_string());
+            self.shown_now(&key, window, cx);
+            self.changed(WorkspaceEvent::TabsChanged, cx);
+        }
+    }
+
+    /// Keeps a preview tab (it was typed into, or double-clicked).
+    pub fn pin_tab(&mut self, key: &str, cx: &mut Context<Self>) {
+        self.tabs.pin(key);
+        self.changed(WorkspaceEvent::TabsChanged, cx);
+    }
+
+    /// The active tab is shown: its view is built if it has none, it goes first among the
+    /// shown, and views past LIVE_TABS that can be built again are let go.
+    fn shown_now(&mut self, key: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_built(key, window, cx);
+        self.shown.retain(|k| k != key);
+        self.shown.insert(0, key.clone());
+        let app: &App = cx;
+        let release: Vec<SharedString> = self
+            .shown
+            .iter()
+            .skip(LIVE_TABS)
+            .filter(|k| {
+                self.tabs
+                    .get(k)
+                    .is_some_and(|t| t.item.selection.is_some() && !t.item.is_dirty(app))
+            })
+            .cloned()
+            .collect();
+        for k in &release {
+            self.tabs.set(k, |tab| tab.handle = None);
+        }
+        self.shown
+            .retain(|k| !release.contains(k) && self.tabs.get(k).is_some());
+        self.focus_active_tab(window, cx);
+    }
+
+    /// Builds the view of the tab under `key` from its selection, when it has none.
+    pub fn ensure_built(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(key) else {
+            return;
+        };
+        if tab.item.handle.is_some() {
+            return;
+        }
+        let Some(selection) = tab.item.selection.clone() else {
+            return;
+        };
+        let Some(open) = opener(selection.kind(), cx) else {
+            return;
+        };
+        if let Some(handle) = open(&selection, window, cx) {
+            self.tabs.set(key, |tab| tab.handle = Some(handle));
+        }
+    }
+
+    /// The active tab's view, built now if it was let go or restored.
+    pub fn active_view(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyView> {
+        let key = self.tabs.active_key()?.clone();
+        self.ensure_built(&key, window, cx);
+        self.tabs.get(&key)?.item.view()
+    }
+
+    pub fn close_tabs(&mut self, keys: &[SharedString], cx: &mut Context<Self>) {
+        let app: &App = cx;
+        let mut again = Vec::new();
+        let mut once = Vec::new();
+        for t in self.tabs.tabs().iter().filter(|t| keys.contains(&t.key)) {
+            let reopenable = t.item.selection.is_some()
+                && t.item.handle.as_ref().is_none_or(|h| h.reopenable(app));
+            if reopenable {
+                again.push(t.key.clone())
+            } else {
+                once.push(t.key.clone())
+            }
+        }
+        let kept: Vec<(SharedString, Selection)> = again
+            .iter()
+            .filter_map(|k| Some((k.clone(), self.tabs.get(k)?.item.selection.clone()?)))
+            .collect();
+        // The views go here: nothing keeps a closed tab's entity.
+        drop(self.tabs.close(&again, true));
+        drop(self.tabs.close(&once, false));
+        self.closed.retain(|(k, _)| !keys.contains(k));
+        self.closed.extend(kept);
+        let overflow = self.closed.len().saturating_sub(CLOSED_KEPT);
+        self.closed.drain(..overflow);
+        self.shown.retain(|k| !keys.contains(k));
+        self.changed(WorkspaceEvent::TabsChanged, cx);
+    }
+
+    pub fn close_tab(&mut self, key: &str, cx: &mut Context<Self>) {
+        self.close_tabs(&[SharedString::from(key.to_string())], cx);
+    }
+
+    pub fn close_active_tab(&mut self, cx: &mut Context<Self>) {
+        if let Some(key) = self.tabs.active_key().cloned() {
+            self.close_tabs(&[key], cx);
+        }
+    }
+
+    /// Close Others, to the Left, to the Right, All, around the active tab.
+    pub fn close_group(&mut self, which: TabGroup, cx: &mut Context<Self>) {
+        let Some(at) = self.tabs.active_index() else {
+            return;
+        };
+        let keys = self.tabs.group(at, which);
+        self.close_tabs(&keys, cx);
+    }
+
+    pub fn can_reopen_tab(&self) -> bool {
+        self.tabs.can_reopen() && !self.closed.is_empty()
+    }
+
+    /// Opens the last closed tab again where it was, from what it showed.
+    pub fn reopen_closed_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        while let Some(closed) = self.tabs.take_reopen() {
+            let Some(at) = self.closed.iter().rposition(|(k, _)| *k == closed.key) else {
+                continue;
+            };
+            let (key, selection) = self.closed.remove(at);
+            let Some(open) = opener(selection.kind(), cx) else {
+                continue;
+            };
+            let Some(handle) = open(&selection, window, cx) else {
+                continue;
+            };
+            self.tabs.insert(
+                closed.index,
+                key.clone(),
+                Tab {
+                    handle: Some(handle),
+                    selection: Some(selection),
+                },
+            );
+            self.shown_now(&key, window, cx);
+            self.changed(WorkspaceEvent::TabsChanged, cx);
+            return;
+        }
+    }
+
+    pub fn step_tab(&mut self, dir: isize, window: &mut Window, cx: &mut Context<Self>) {
+        self.tabs.step(dir);
+        self.after_switch(window, cx);
+    }
+
+    pub fn go_to_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.tabs.go_to(index);
+        self.after_switch(window, cx);
+    }
+
+    pub fn go_to_last_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.tabs.go_to_last();
+        self.after_switch(window, cx);
+    }
+
+    fn after_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(key) = self.tabs.active_key().cloned() {
+            self.shown_now(&key, window, cx);
+        }
+        self.changed(WorkspaceEvent::TabsChanged, cx);
+    }
+
+    pub fn move_tab(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        self.tabs.move_tab(from, to);
+        self.changed(WorkspaceEvent::TabsChanged, cx);
+    }
+
+    pub fn move_active_tab(&mut self, dir: isize, cx: &mut Context<Self>) {
+        self.tabs.move_active(dir);
+        self.changed(WorkspaceEvent::TabsChanged, cx);
+    }
+
+    fn focus_active_tab(&self, window: &mut Window, cx: &mut App) {
+        if !self.center_focus.contains_focused(window, cx) {
+            return;
+        }
+        let handle = self.tabs.active().and_then(|t| t.item.focus_handle(cx));
+        handle
+            .unwrap_or_else(|| self.center_focus.clone())
+            .focus(window, cx);
+    }
+
+    // MARK: Panels
+
+    fn side(&self, slot: Slot) -> &SideState {
+        match slot {
+            Slot::Left => &self.left,
+            Slot::Right => &self.right,
+            Slot::Bottom => &self.bottom,
+        }
+    }
+
+    fn side_mut(&mut self, slot: Slot) -> &mut SideState {
+        match slot {
+            Slot::Left => &mut self.left,
+            Slot::Right => &mut self.right,
+            Slot::Bottom => &mut self.bottom,
+        }
+    }
+
+    pub fn is_open(&self, slot: Slot) -> bool {
+        self.side(slot).open
+    }
+
+    /// The panel the slot shows, by id; the slot's first when none was picked.
+    pub fn active_panel(&self, slot: Slot, cx: &App) -> Option<&'static str> {
+        self.side(slot)
+            .active
+            .or_else(|| Registry::get(cx).panels(slot).first().map(|p| p.id))
+    }
+
+    /// The focus handle the app tracks on a slot's container, for F6 and focus commands.
+    pub fn slot_focus(&self, slot: Slot) -> &FocusHandle {
+        &self.side(slot).focus
+    }
+
+    pub fn center_focus(&self) -> &FocusHandle {
+        &self.center_focus
+    }
+
+    pub fn set_open(&mut self, slot: Slot, open: bool, cx: &mut Context<Self>) {
+        if self.side(slot).open != open {
+            self.side_mut(slot).open = open;
+            if slot == Slot::Bottom && !open {
+                self.bottom_maximized = false;
+            }
+            self.changed(WorkspaceEvent::LayoutChanged, cx);
+        }
+    }
+
+    pub fn toggle(&mut self, slot: Slot, cx: &mut Context<Self>) {
+        let open = !self.is_open(slot);
+        self.set_open(slot, open, cx);
+    }
+
+    /// Shows a panel by id: its slot opens and switches to it.
+    pub fn show_panel(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(spec) = Registry::get(cx).panel(id).cloned() else {
+            return;
+        };
+        let side = self.side_mut(spec.slot);
+        side.open = true;
+        side.active = Some(spec.id);
+        self.changed(WorkspaceEvent::LayoutChanged, cx);
+    }
+
+    /// A panel's view, built the first time it's asked for.
+    pub fn panel(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<PanelHandle> {
+        if let Some(panel) = self.panels.get(id) {
+            return Some(panel.clone());
+        }
+        let spec = Registry::get(cx).panel(id).cloned()?;
+        if spec.per_project && self.project.is_none() {
+            return None;
+        }
+        let ctx = if spec.per_project {
+            self.context(cx)
+        } else {
+            self.window_context(cx)
+        };
+        let panel = spec.build(&ctx, window, cx);
+        self.panels.insert(spec.id, panel.clone());
+        Some(panel)
+    }
+
+    /// The panel's view if it was built; no building.
+    pub fn built_panel(&self, id: &str) -> Option<&PanelHandle> {
+        self.panels.get(id)
+    }
+
+    /// Opens a slot and moves focus into its panel.
+    pub fn focus_slot(&mut self, slot: Slot, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_open(slot, true, cx);
+        let panel = self
+            .active_panel(slot, cx)
+            .and_then(|id| self.panel(id, window, cx));
+        let handle = panel
+            .and_then(|p| p.focus_handle(cx))
+            .unwrap_or_else(|| self.side(slot).focus.clone());
+        handle.focus(window, cx);
+    }
+
+    /// Moves focus into the active tab (⌘E).
+    pub fn focus_center(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let handle = self.tabs.active().and_then(|t| t.item.focus_handle(cx));
+        handle
+            .unwrap_or_else(|| self.center_focus.clone())
+            .focus(window, cx);
+    }
+
+    /// Which part holds focus now, in F6 order.
+    pub fn focused_part(&self, window: &Window, cx: &App) -> Option<Part> {
+        Part::ORDER.into_iter().find(|part| match part {
+            Part::Center => self.center_focus.contains_focused(window, cx),
+            Part::Slot(slot) => self.side(*slot).focus.contains_focused(window, cx),
+        })
+    }
+
+    /// F6 and ⇧F6: the next open part after the focused one, wrapping.
+    pub fn focus_next_part(&mut self, dir: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let order = Part::ORDER;
+        let at = self
+            .focused_part(window, cx)
+            .and_then(|p| order.iter().position(|o| *o == p))
+            .unwrap_or(1);
+        for step in 1..=order.len() as isize {
+            let next = order[(at as isize + dir * step).rem_euclid(order.len() as isize) as usize];
+            match next {
+                Part::Center => return self.focus_center(window, cx),
+                Part::Slot(slot) if self.is_open(slot) => return self.focus_slot(slot, window, cx),
+                _ => {}
+            }
+        }
+    }
+
+    pub fn terminal_maximized(&self) -> bool {
+        self.bottom_maximized && self.bottom.open
+    }
+
+    pub fn set_terminal_maximized(&mut self, maximized: bool, cx: &mut Context<Self>) {
+        self.bottom_maximized = maximized;
+        if maximized {
+            self.bottom.open = true;
+        }
+        self.changed(WorkspaceEvent::LayoutChanged, cx);
+    }
+
+    // MARK: Toasts
+
+    /// Shows a toast in this workspace's window at its next frame; needs no window to call.
+    pub fn toast(&mut self, toast: Toast, cx: &mut Context<Self>) {
+        self.toasts.push(toast);
+        cx.notify();
+    }
+
+    /// For the app's view, which shows them.
+    pub fn take_toasts(&mut self) -> Vec<Toast> {
+        std::mem::take(&mut self.toasts)
+    }
+}
+
+/// A part of the workspace focus moves between.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    Center,
+    Slot(Slot),
+}
+
+impl Part {
+    /// F6 order: git, code, explorer, terminal.
+    pub const ORDER: [Part; 4] = [
+        Part::Slot(Slot::Left),
+        Part::Center,
+        Part::Slot(Slot::Right),
+        Part::Slot(Slot::Bottom),
+    ];
+}
+
+pub(crate) fn init(cx: &mut App) {
+    cx.default_global::<Registry>();
+    cx.default_global::<Windows>();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::{IntoElement, Render, TestAppContext, VisualTestContext, div};
+
+    struct Doc;
+    impl Render for Doc {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+    impl TabItem for Doc {
+        fn tab_title(&self, _: &App) -> SharedString {
+            "doc".into()
+        }
+    }
+
+    /// Keeps what it was built with, as a real panel does.
+    struct Side(#[allow(dead_code)] PanelContext);
+    impl Render for Side {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+    impl Panel for Side {}
+
+    struct Host(Entity<Workspace>);
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    fn setup(cx: &mut TestAppContext) {
+        let dir =
+            std::env::temp_dir().join(format!("gitviber-workspace-test-{}", std::process::id()));
+        // SAFETY: the tests that read the config dir all point it at a temporary folder.
+        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        cx.update(|cx| {
+            crate::settings::init(cx);
+            crate::state::init(cx);
+            init(cx);
+            register_panel(
+                cx,
+                PanelSpec::new("side", Slot::Left, "Side", |ctx, _, cx| {
+                    cx.new(|_| Side(ctx.clone()))
+                }),
+            );
+            register_panel(
+                cx,
+                PanelSpec::new("term", Slot::Bottom, "Term", |ctx, _, cx| {
+                    cx.new(|_| Side(ctx.clone()))
+                })
+                .per_window(),
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn tabs_panels_and_projects_give_their_entities_back(cx: &mut TestAppContext) {
+        setup(cx);
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        // A per-window panel outlives projects; it must not keep one alive.
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.panel("term", window, cx)));
+        let snapshot = cx.update(|_, cx| cx.leak_detector_snapshot());
+        for round in 0..6 {
+            cx.update(|window, cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.open_project(
+                        PathBuf::from(format!("/tmp/gitviber-project-{}", round % 2)),
+                        window,
+                        cx,
+                    );
+                    assert!(ws.panel("side", window, cx).is_some());
+                    for i in 0..4 {
+                        ws.open_tab(
+                            format!("tab-{i}"),
+                            i % 2 == 0,
+                            |_, cx| cx.new(|_| Doc),
+                            window,
+                            cx,
+                        );
+                    }
+                    ws.close_tab("tab-1", cx);
+                    ws.close_group(TabGroup::All, cx);
+                    ws.open_tab("kept", false, |_, cx| cx.new(|_| Doc), window, cx);
+                })
+            });
+        }
+        cx.update(|_, cx| ws.update(cx, |ws, cx| ws.close_project(cx)));
+        cx.run_until_parked();
+        cx.update(|_, cx| cx.assert_no_new_leaks(&snapshot));
+    }
+
+    #[gpui_kit::test]
+    fn a_per_window_panel_lets_the_old_project_go(cx: &mut TestAppContext) {
+        setup(cx);
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        let first = cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_project(PathBuf::from("/tmp/gitviber-project-a"), window, cx);
+                ws.panel("term", window, cx);
+                ws.panel("side", window, cx);
+                let first = ws.project().unwrap().downgrade();
+                ws.open_project(PathBuf::from("/tmp/gitviber-project-b"), window, cx);
+                first
+            })
+        });
+        cx.run_until_parked();
+        first.assert_released();
+    }
+
+    #[gpui_kit::test]
+    fn a_tab_opens_once_and_closed_ones_keep_only_keys(cx: &mut TestAppContext) {
+        setup(cx);
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        let built = std::rc::Rc::new(std::cell::Cell::new(0));
+        let weak = cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_project(PathBuf::from("/tmp/gitviber-project-x"), window, cx);
+                let doc = cx.new(|_| Doc);
+                let weak = doc.downgrade();
+                ws.open_item("same", true, doc, cx);
+                for _ in 0..3 {
+                    let built = built.clone();
+                    let build = move |_: &mut Window, cx: &mut Context<Workspace>| {
+                        built.set(built.get() + 1);
+                        cx.new(|_| Doc)
+                    };
+                    ws.open_tab("same", true, build, window, cx);
+                }
+                assert_eq!(ws.tabs().len(), 1);
+                ws.close_tab("same", cx);
+                assert!(ws.tabs().is_empty());
+                // It has no selection: nothing can build it again, so ⇧⌘T doesn't apply.
+                assert!(!ws.can_reopen_tab());
+                weak
+            })
+        });
+        assert_eq!(built.get(), 0);
+        cx.run_until_parked();
+        weak.assert_released();
+    }
+
+    fn file_tab(path: &str) -> Selection {
+        serde_json::from_value(serde_json::json!({ "kind": "file", "path": path })).unwrap()
+    }
+
+    fn register_file_opener(
+        cx: &mut VisualTestContext,
+        built: std::rc::Rc<std::cell::Cell<usize>>,
+    ) {
+        cx.update(|_, cx| {
+            register_opener(cx, "file", move |_, _, cx| {
+                built.set(built.get() + 1);
+                Some(TabHandle::new(cx.new(|_| Doc)))
+            })
+        });
+    }
+
+    #[gpui_kit::test]
+    fn selections_open_once_save_and_come_back_lazily(cx: &mut TestAppContext) {
+        setup(cx);
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        let built = std::rc::Rc::new(std::cell::Cell::new(0));
+        register_file_opener(cx, built.clone());
+        let root = PathBuf::from("/tmp/gitviber-project-sel");
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_project(root.clone(), window, cx);
+                assert!(ws.open(file_tab("src/a.rs"), false, window, cx));
+                assert!(ws.open(file_tab("src/a.rs"), true, window, cx));
+                assert!(ws.open(file_tab("src/b.rs"), true, window, cx));
+                assert!(!ws.open(
+                    Selection::Compare {
+                        base: ComparePoint {
+                            reference: "a".into(),
+                            label: "a".into()
+                        },
+                        head: ComparePoint {
+                            reference: "b".into(),
+                            label: "b".into()
+                        },
+                        merge_base: true,
+                    },
+                    false,
+                    window,
+                    cx
+                ));
+                assert_eq!(ws.tabs().len(), 2);
+                ws.close_tab("file::src/b.rs", cx);
+                assert!(ws.can_reopen_tab());
+                ws.reopen_closed_tab(window, cx);
+                assert_eq!(ws.tabs().len(), 2);
+                ws.activate_tab("file::src/a.rs", window, cx);
+            })
+        });
+        assert_eq!(built.get(), 3);
+        // Away and back: the tabs come back from the saved selections, built only when shown.
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_project(PathBuf::from("/tmp/gitviber-project-other"), window, cx);
+                assert!(ws.tabs().is_empty());
+                ws.open_project(root.clone(), window, cx);
+                assert_eq!(ws.tabs().len(), 2);
+                assert_eq!(ws.tabs().active_key().unwrap(), "file::src/a.rs");
+                assert!(ws.tabs().tabs().iter().all(|t| t.item.handle().is_none()));
+                assert_eq!(
+                    ws.tabs().get("file::src/b.rs").unwrap().item.title(cx),
+                    "b.rs"
+                );
+                assert!(ws.active_view(window, cx).is_some());
+            })
+        });
+        assert_eq!(built.get(), 4);
+    }
+
+    #[gpui_kit::test]
+    fn only_the_latest_shown_tabs_keep_their_views(cx: &mut TestAppContext) {
+        setup(cx);
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        register_file_opener(cx, std::rc::Rc::new(std::cell::Cell::new(0)));
+        let first = cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_project(PathBuf::from("/tmp/gitviber-project-live"), window, cx);
+                ws.open(file_tab("f0"), false, window, cx);
+                let first = ws.tabs().active().unwrap().item.view().unwrap().downgrade();
+                for i in 1..=LIVE_TABS {
+                    ws.open(file_tab(&format!("f{i}")), false, window, cx);
+                }
+                let built = ws
+                    .tabs()
+                    .tabs()
+                    .iter()
+                    .filter(|t| t.item.handle().is_some())
+                    .count();
+                assert_eq!(built, LIVE_TABS);
+                assert!(ws.tabs().get("file::f0").unwrap().item.handle().is_none());
+                first
+            })
+        });
+        cx.run_until_parked();
+        assert!(first.upgrade().is_none());
+    }
+}

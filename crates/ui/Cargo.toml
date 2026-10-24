@@ -1,0 +1,32 @@
+[package]
+name = "gitviber-ui"
+description = "GitViber's shared UI: theme, settings, commands and keymap, widgets, and the workspace contract features plug into."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "gitviber_ui"
+
+[dependencies]
+gitviber-core = { path = "../core" }
+gpui-kit.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+# `snapshot`: the same gpui with its headless Metal renderer, and PNG output.
+gpui-test = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"], optional = true }
+gpui-snapshot-platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["test-support"], optional = true }
+image = { version = "=0.25.10", default-features = false, features = ["png"], optional = true }
+
+[features]
+# dev::run renders off screen into a PNG when GITVIBER_SNAPSHOT is set. For examples only:
+# enable it from a crate's [dev-dependencies], never in the app.
+snapshot = ["dep:gpui-test", "dep:gpui-snapshot-platform", "dep:image"]
+
+[dev-dependencies]
+# Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.
+gpui-test = { package = "gpui-pre", version = "=0.3.9", features = ["test-support", "leak-detection"] }

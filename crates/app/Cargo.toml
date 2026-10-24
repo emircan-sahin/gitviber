@@ -1,0 +1,20 @@
+[package]
+name = "gitviber"
+description = "GitViber, the native app: windows, layout, menus, palette and settings."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "gitviber_app"
+
+[[bin]]
+name = "gitviber"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit.workspace = true
+gitviber-ui = { path = "../ui" }
+gitviber-core = { path = "../core" }
