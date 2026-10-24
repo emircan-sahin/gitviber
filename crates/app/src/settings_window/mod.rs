@@ -6,6 +6,7 @@
 mod fields;
 mod git;
 mod pages;
+mod shell;
 mod shortcuts;
 
 use std::collections::HashMap;
@@ -21,52 +22,79 @@ use gitviber_ui::theme::{self, appearance_floor};
 use gitviber_ui::workspace::Toast;
 use gitviber_ui::{ActiveAppTheme, Settings, windows};
 use gpui_kit::assets::IconName;
-use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::InputState;
-use gpui_kit::component::setting::{SelectIndex, Settings as SettingsView};
+use gpui_kit::component::highlighter::SyntaxHighlighter;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::slider::{SliderEvent, SliderState};
+use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Context, Entity, Global, InteractiveElement as _,
-    IntoElement, Keystroke, ParentElement as _, PathPromptOptions, Render, SharedString,
-    Styled as _, Subscription, Task, WeakEntity, Window, div, px, size,
+    IntoElement, Keystroke, ParentElement as _, PathPromptOptions, Render, ScrollHandle,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
+    prelude::FluentBuilder as _, px, rems, size,
 };
 
 pub use git::Which;
+use shell::Page;
 
-/// The sections, in the sidebar's order.
+/// The sections, most used first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
     Appearance,
-    Shortcuts,
-    OpenIn,
-    Notifications,
-    Updates,
     Editor,
     Diff,
     Terminal,
-    Obsidian,
-    Browser,
     Git,
     Commit,
     Review,
+    Shortcuts,
+    OpenIn,
+    Notifications,
+    Obsidian,
+    Browser,
+    Updates,
 }
+
+/// The sidebar's groups, each under its heading.
+pub const GROUPS: [(&str, &[Section]); 3] = [
+    (
+        "Workspace",
+        &[
+            Section::Appearance,
+            Section::Editor,
+            Section::Diff,
+            Section::Terminal,
+        ],
+    ),
+    ("Git", &[Section::Git, Section::Commit, Section::Review]),
+    (
+        "App",
+        &[
+            Section::Shortcuts,
+            Section::OpenIn,
+            Section::Notifications,
+            Section::Obsidian,
+            Section::Browser,
+            Section::Updates,
+        ],
+    ),
+];
 
 impl Section {
     pub const ALL: [Section; 13] = [
         Section::Appearance,
-        Section::Shortcuts,
-        Section::OpenIn,
-        Section::Notifications,
-        Section::Updates,
         Section::Editor,
         Section::Diff,
         Section::Terminal,
-        Section::Obsidian,
-        Section::Browser,
         Section::Git,
         Section::Commit,
         Section::Review,
+        Section::Shortcuts,
+        Section::OpenIn,
+        Section::Notifications,
+        Section::Obsidian,
+        Section::Browser,
+        Section::Updates,
     ];
 
     /// As the old app named them (its settings window's section ids).
@@ -88,14 +116,46 @@ impl Section {
         }
     }
 
+    pub fn title(self) -> &'static str {
+        match self {
+            Section::Appearance => "Appearance",
+            Section::Shortcuts => "Keyboard Shortcuts",
+            Section::OpenIn => "Open In",
+            Section::Notifications => "Notifications",
+            Section::Updates => "Updates",
+            Section::Editor => "Editor",
+            Section::Diff => "Diff",
+            Section::Terminal => "Terminal",
+            Section::Obsidian => "Obsidian",
+            Section::Browser => "Browser",
+            Section::Git => "Git",
+            Section::Commit => "Commit Messages",
+            Section::Review => "Guided Review",
+        }
+    }
+
+    fn icon(self) -> IconName {
+        match self {
+            Section::Appearance => IconName::Palette,
+            Section::Shortcuts => IconName::Keyboard,
+            Section::OpenIn => IconName::SquareArrowOutUpRight,
+            Section::Notifications => IconName::Bell,
+            Section::Updates => IconName::CircleArrowUp,
+            Section::Editor => IconName::Code,
+            Section::Diff => IconName::GitCompareArrows,
+            Section::Terminal => IconName::SquareTerminal,
+            Section::Obsidian => IconName::Gem,
+            Section::Browser => IconName::Globe,
+            Section::Git => IconName::GitBranch,
+            Section::Commit => IconName::Sparkles,
+            Section::Review => IconName::ScanSearch,
+        }
+    }
+
     pub fn parse(id: &str) -> Option<Section> {
         Section::ALL
             .into_iter()
             .find(|s| s.id().eq_ignore_ascii_case(id))
-    }
-
-    fn index(self) -> usize {
-        Section::ALL.iter().position(|s| *s == self).unwrap_or(0)
     }
 }
 
@@ -196,8 +256,9 @@ pub struct Data {
 pub struct SettingsWindow {
     weak: WeakEntity<SettingsWindow>,
     section: Section,
-    /// Goes up to show `section`: the settings view is built again, on it.
-    nav: usize,
+    search: Entity<InputState>,
+    /// The open section's rows; back to the top on another section.
+    scroll: ScrollHandle,
     opacity: Entity<SliderState>,
     pub data: Data,
     identity_inputs: Option<(Entity<InputState>, Entity<InputState>)>,
@@ -210,6 +271,13 @@ pub struct SettingsWindow {
     /// Guided Review's own command from before "Same as" was picked, until the app quits.
     last_review_command: Option<String>,
     recording: Option<Recording>,
+    /// Keyboard Shortcuts' own filter: a name or a key, and a category.
+    shortcut_filter: Entity<InputState>,
+    shortcut_category: Option<keymap::Category>,
+    /// Commit Messages' and Guided Review's "Show what the command gets" is open.
+    show_prompt: [bool; 2],
+    /// The Editor preview's code, parsed once it's first shown.
+    sample: Option<SyntaxHighlighter>,
     _intercept: Option<Subscription>,
     loads: HashMap<&'static str, Task<()>>,
     _live: Live,
@@ -227,6 +295,21 @@ impl SettingsWindow {
                 .default_value(s.window_opacity)
         });
         let mut subs = theme::attach(window, cx);
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
+        let shortcut_filter = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(format!(
+                "Filter by name or key (e.g. {})",
+                keymap::format_chord("cmd+b", IS_MAC)
+            ))
+        });
+        for input in [&search, &shortcut_filter] {
+            subs.push(cx.subscribe(input, |this, _, e: &InputEvent, cx| {
+                if matches!(e, InputEvent::Change) {
+                    this.scroll.set_offset(gpui_kit::Point::default());
+                    cx.notify();
+                }
+            }));
+        }
         subs.push(cx.subscribe(&opacity, |_, _, e: &SliderEvent, cx| {
             if let SliderEvent::Change(v) = e {
                 let floor = appearance_floor(Settings::get(cx));
@@ -266,7 +349,8 @@ impl SettingsWindow {
         let mut this = Self {
             weak: cx.weak_entity(),
             section,
-            nav: 0,
+            search,
+            scroll: ScrollHandle::new(),
             opacity,
             data: Data::default(),
             identity_inputs: None,
@@ -276,6 +360,10 @@ impl SettingsWindow {
             custom_language: false,
             last_review_command: None,
             recording: None,
+            shortcut_filter,
+            shortcut_category: None,
+            show_prompt: [false; 2],
+            sample: None,
             _intercept: None,
             loads: HashMap::new(),
             _live: Live::new("SettingsWindow"),
@@ -288,14 +376,35 @@ impl SettingsWindow {
             this.load_git(cx);
             this.load_skill(cx);
         }
+        this.load_sample(cx);
         this
     }
 
     /// Shows `section`, as a menu item or a button elsewhere asks.
     pub fn show(&mut self, section: Section, cx: &mut Context<Self>) {
+        if section != self.section {
+            self.scroll.set_offset(gpui_kit::Point::default());
+        }
         self.section = section;
-        self.nav += 1;
+        self.load_sample(cx);
         cx.notify();
+    }
+
+    /// Parses the Editor preview's code off the UI thread, the first time Editor shows.
+    fn load_sample(&mut self, cx: &mut Context<Self>) {
+        if self.section != Section::Editor || self.loads.contains_key("sample") {
+            return;
+        }
+        let task = cx.spawn(async move |this, cx| {
+            let parsed = cx
+                .background_spawn(async move { pages::parse_sample() })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.sample = Some(parsed);
+                cx.notify();
+            });
+        });
+        self.loads.insert("sample", task);
     }
 
     /// Runs `work` with core off the UI thread, then `done` with its answer; one load per name.
@@ -898,25 +1007,131 @@ pub fn send_test_notification(cx: &mut App) {
     .detach();
 }
 
+impl SettingsWindow {
+    fn page(&self, section: Section, cx: &App) -> Page {
+        match section {
+            Section::Appearance => pages::appearance(self, cx),
+            Section::Editor => pages::editor(self, cx),
+            Section::Diff => pages::diff(),
+            Section::Terminal => pages::terminal(cx),
+            Section::Git => git::git(self, cx),
+            Section::Commit => git::commit(self, cx),
+            Section::Review => git::review(self, cx),
+            Section::Shortcuts => shortcuts::page(self, cx),
+            Section::OpenIn => pages::open_in(cx),
+            Section::Notifications => pages::notifications(self, cx),
+            Section::Obsidian => pages::obsidian(self, cx),
+            Section::Browser => pages::browser(self, cx),
+            Section::Updates => pages::updates(cx),
+        }
+    }
+
+    fn sidebar(&self, shown: &[Section], cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.app_theme().clone();
+        let groups = GROUPS.iter().filter_map(|(name, sections)| {
+            let items: Vec<_> = sections
+                .iter()
+                .copied()
+                .filter(|s| shown.contains(s))
+                .map(|section| {
+                    let active = section == self.section;
+                    div()
+                        .id(section.id())
+                        .h(px(28.))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .text_size(rems(shell::TITLE_TEXT))
+                        .when(active, |d| d.bg(t.active).text_color(t.foreground))
+                        .when(!active, |d| {
+                            d.text_color(t.muted_foreground)
+                                .hover(|s| s.bg(t.hover).text_color(t.foreground))
+                        })
+                        .child(Icon::new(section.icon()).small())
+                        .child(section.title())
+                        .on_click(cx.listener(move |this, _, _, cx| this.show(section, cx)))
+                })
+                .collect();
+            (!items.is_empty()).then(|| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(shell::heading((*name).into(), &t).px_2().pt_3().pb_1())
+                    .children(items)
+            })
+        });
+        div()
+            .w(px(208.))
+            .flex_none()
+            .h_full()
+            .flex()
+            .flex_col()
+            .border_r_1()
+            .border_color(t.border)
+            .bg(t.chrome(t.sidebar))
+            .child(
+                div().flex_none().p_2().child(
+                    Input::new(&self.search)
+                        .small()
+                        .prefix(Icon::new(IconName::Search).xsmall())
+                        .cleanable(true),
+                ),
+            )
+            .child(
+                div()
+                    .id("settings-nav")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .px_2()
+                    .pb_2()
+                    .children(groups),
+            )
+    }
+}
+
 impl Render for SettingsWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.app_theme().clone();
-        let sidebar = gpui_kit::StyleRefinement::default().bg(t.chrome(t.sidebar));
-        let pages = [
-            pages::appearance(self, cx),
-            shortcuts::page(self, cx),
-            pages::open_in(self, cx),
-            pages::notifications(self, cx),
-            pages::updates(cx),
-            pages::editor(cx),
-            pages::diff(cx),
-            pages::terminal(cx),
-            pages::obsidian(self, cx),
-            pages::browser(self, cx),
-            git::git(self, cx),
-            git::commit(self, cx),
-            git::review(self, cx),
-        ];
+        let query = self.search.read(cx).value().trim().to_lowercase();
+        // Only the open section is built, unless a search needs every row to look in.
+        let (shown, page) = if query.is_empty() {
+            (
+                Section::ALL.to_vec(),
+                Some((self.section, self.page(self.section, cx))),
+            )
+        } else {
+            let mut found: Vec<(Section, Page)> = Section::ALL
+                .into_iter()
+                .filter_map(|s| {
+                    let mut page = self.page(s, cx);
+                    page.filter(&query, cx).then_some((s, page))
+                })
+                .collect();
+            let shown: Vec<Section> = found.iter().map(|(s, _)| *s).collect();
+            let at = found
+                .iter()
+                .position(|(s, _)| *s == self.section)
+                .unwrap_or(0);
+            let page = (!found.is_empty()).then(|| found.swap_remove(at));
+            (shown, page)
+        };
+        let content = match page {
+            Some((section, page)) => page.view(section.title(), &self.scroll).into_any_element(),
+            None => div()
+                .flex_1()
+                .flex()
+                .justify_center()
+                .pt(px(48.))
+                .text_size(rems(shell::TITLE_TEXT))
+                .text_color(t.subtle)
+                .child(format!("No settings match “{query}”"))
+                .into_any_element(),
+        };
         div()
             .id("settings-window")
             .key_context(keymap::ROOT_CONTEXT)
@@ -965,17 +1180,12 @@ impl Render for SettingsWindow {
                     ),
             )
             .child(
-                div().flex_1().min_h_0().child(
-                    SettingsView::new(SharedString::from(format!("settings-{}", self.nav)))
-                        .small()
-                        .sidebar_width(px(220.))
-                        .sidebar_style(&sidebar)
-                        .default_selected_index(SelectIndex {
-                            page_ix: self.section.index(),
-                            group_ix: None,
-                        })
-                        .pages(pages),
-                ),
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(self.sidebar(&shown, cx))
+                    .child(content),
             )
     }
 }
@@ -991,5 +1201,11 @@ mod tests {
         }
         assert_eq!(Section::parse("SHORTCUTS"), Some(Section::Shortcuts));
         assert_eq!(Section::parse("nope"), None);
+    }
+
+    #[test]
+    fn the_sidebar_groups_list_every_section_once_in_order() {
+        let listed: Vec<Section> = GROUPS.iter().flat_map(|(_, s)| s.iter().copied()).collect();
+        assert_eq!(listed, Section::ALL);
     }
 }

@@ -1,5 +1,5 @@
 //! The sections that set what the app looks like and how its views and terminals behave:
-//! Appearance, Open In, Notifications, Updates, Editor, Diff, Terminal, Obsidian and Browser.
+//! Appearance, Editor, Diff, Terminal, Open In, Notifications, Obsidian, Browser and Updates.
 
 use gitviber_core::notifications::Permission;
 use gitviber_ui::actions::browser as browser_cmds;
@@ -8,20 +8,22 @@ use gitviber_ui::settings::*;
 use gitviber_ui::theme::{ThemeId, appearance_floor};
 use gitviber_ui::{ActiveAppTheme, Settings};
 use gpui_kit::assets::IconName;
+use gpui_kit::base::input::Rope;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::highlighter::SyntaxHighlighter;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_kit::component::slider::{Slider, SliderState};
 use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Entity, IntoElement, ParentElement as _, SharedString,
-    Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px, rems,
+    Styled as _, StyledText, Subscription, Window, div, prelude::FluentBuilder as _, px, rems,
 };
 
 use super::SettingsWindow;
 use super::fields::{
-    action, choice, note, options, pre, segmented, stepper, switch, text, with_keys,
+    action, choice, note, options, pre, segmented, stepper, switch, text, toggle, with_keys,
 };
+use super::shell::{Group, Page, Row};
 
 /// What the System theme follows.
 const DESKTOP: &str = if IS_MAC { "macOS" } else { "your desktop" };
@@ -73,12 +75,12 @@ fn slider_row(slider: &Entity<SliderState>, label: String, disabled: bool) -> An
 /// What Background blur stores when switched on: the old app's middle radius.
 const BLUR_ON: f32 = 20.;
 
-pub fn appearance(w: &SettingsWindow, cx: &App) -> SettingPage {
+pub fn appearance(w: &SettingsWindow, cx: &App) -> Page {
     let s = Settings::get(cx);
     let mut theme = vec![segmented(
         "appearance",
         "Theme",
-        format!("System follows {DESKTOP} between the light and dark themes below."),
+        format!("System follows {DESKTOP} between your light and dark themes."),
         vec![
             ("system".into(), "System".into()),
             ("light".into(), "Light".into()),
@@ -117,21 +119,20 @@ pub fn appearance(w: &SettingsWindow, cx: &App) -> SettingPage {
         ));
     }
     // macOS only: elsewhere the window can't be made clear this way.
+    let mut glass = Vec::new();
     if IS_MAC {
         let floor = appearance_floor(s);
         let opacity = w.opacity.clone();
-        theme.push(
-            SettingItem::new(
-                "Window opacity",
-                SettingField::render(move |_, _, cx| {
-                    let floor = appearance_floor(Settings::get(cx));
-                    let v = Settings::get(cx).window_opacity.max(floor);
-                    slider_row(&opacity, format!("{v:.0}%"), false)
-                })
-                .on_reset(
-                    |cx| Settings::get(cx).window_opacity != 100.,
-                    |_, cx| Settings::update(cx, |s| s.window_opacity = 100.),
-                ),
+        let solid = s.window_opacity >= 100.;
+        glass.push(
+            Row::new("Window opacity", move |_, _, cx| {
+                let floor = appearance_floor(Settings::get(cx));
+                let v = Settings::get(cx).window_opacity.max(floor);
+                slider_row(&opacity, format!("{v:.0}%"), false)
+            })
+            .on_reset(
+                |cx| Settings::get(cx).window_opacity != 100.,
+                |cx| Settings::update(cx, |s| s.window_opacity = 100.),
             )
             .description(format!(
                 "Below 100%, the desktop shows through the whole window, down to {floor:.0}%, the \
@@ -141,16 +142,16 @@ pub fn appearance(w: &SettingsWindow, cx: &App) -> SettingPage {
         );
         // macOS blurs at one strength (an NSVisualEffectView): on or off. The setting keeps the
         // old app's radius, any of which is on.
-        theme.push(
+        glass.push(
             switch(
                 "Background blur",
                 "Blurs the desktop behind a see-through window. Off, it shows sharp.",
                 |s| s.background_blur > 0.,
                 |s, v| s.background_blur = if v { BLUR_ON } else { 0. },
             )
-            .disabled(s.window_opacity >= 100.),
+            .disabled_because(solid, SOLID),
         );
-        theme.push(
+        glass.push(
             switch(
                 "Terminal too",
                 "Lets the desktop show through the terminal at the same opacity and blur. Colored \
@@ -158,7 +159,7 @@ pub fn appearance(w: &SettingsWindow, cx: &App) -> SettingPage {
                 |s| s.terminal_glass,
                 |s, v| s.terminal_glass = v,
             )
-            .disabled(s.window_opacity >= 100.),
+            .disabled_because(solid, SOLID),
         );
     }
     let t = cx.app_theme();
@@ -198,7 +199,6 @@ pub fn appearance(w: &SettingsWindow, cx: &App) -> SettingPage {
             with_keys(
                 "Zooms the whole window. The code and terminal font sizes stay their own settings.",
                 &["view.zoomIn", "view.zoomOut", "view.zoomReset"],
-                cx,
             ),
             options(UI_SCALES, |z| format!("{:.0}%", z * 100.)),
             |s| s.ui_scale.to_string(),
@@ -212,35 +212,44 @@ pub fn appearance(w: &SettingsWindow, cx: &App) -> SettingPage {
             |s, v| s.sidebar_projects = v,
         ),
     ]);
-    SettingPage::new("Appearance")
-        .icon(IconName::Palette)
-        .groups([
-            SettingGroup::new().title("Theme").items(theme),
-            // Each appearance keeps its own syntax theme, so switching back restores it.
-            SettingGroup::new().title("Code colors").items([
-                choice(
-                    "Dark syntax theme",
-                    "Code colors while the app is dark.",
-                    pairs(SYNTAX_THEMES),
-                    |s| s.syntax_theme.clone(),
-                    |s, v| s.syntax_theme = v.into(),
-                ),
-                choice(
-                    "Light syntax theme",
-                    "Code colors while the app is light.",
-                    pairs(LIGHT_SYNTAX_THEMES),
-                    |s| s.light_syntax_theme.clone(),
-                    |s, v| s.light_syntax_theme = v.into(),
-                ),
-            ]),
-            SettingGroup::new().title("Interface").items(interface),
-        ])
+    let mut page = Page::new().groups([
+        Group::new().title("Theme").items(theme),
+        Group::new().title("Interface").items(interface),
+    ]);
+    // Last: set once, if ever.
+    if !glass.is_empty() {
+        page = page.group(Group::new().title("Transparency").items(glass));
+    }
+    page
 }
+
+const SOLID: &str = "Needs Window opacity below 100%.";
 
 const CODE_SAMPLE: &str = "const total = items.filter((x) => x.price >= 10)\n  .reduce((sum, x) => sum + x.price, 0); // != === =>";
 
-/// The code or terminal font as set, on a sample.
-fn sample(text: &'static str, terminal: bool, cx: &App) -> AnyElement {
+/// The Editor preview's code parsed for its colors; blocking, so run it in the background.
+pub fn parse_sample() -> SyntaxHighlighter {
+    let mut h = SyntaxHighlighter::new("javascript");
+    h.update(None, &Rope::from(CODE_SAMPLE), None);
+    h
+}
+
+/// The code or terminal font as set, on a sample; the code in the syntax theme in use.
+fn sample(text: &'static str, terminal: bool, w: Option<&SettingsWindow>, cx: &App) -> Row {
+    let colors = w.and_then(|w| w.sample.as_ref()).map(|h| {
+        let theme = gitviber_ui::theme::syntax::current(cx);
+        let styles = h.styles(&(0..text.len()), &*theme);
+        (theme.style.editor_foreground, styles)
+    });
+    Row::custom(move |_, cx| sample_text(text, terminal, colors.clone(), cx))
+}
+
+type Colors = (
+    Option<gpui_kit::Hsla>,
+    Vec<(std::ops::Range<usize>, gpui_kit::HighlightStyle)>,
+);
+
+fn sample_text(text: &'static str, terminal: bool, colors: Option<Colors>, cx: &App) -> AnyElement {
     let t = cx.app_theme();
     let s = Settings::get(cx);
     let (family, size, height) = if terminal {
@@ -260,20 +269,20 @@ fn sample(text: &'static str, terminal: bool, cx: &App) -> AnyElement {
         .border_1()
         .border_color(t.border)
         .bg(t.code(t.background))
-        .text_color(t.muted_foreground)
         .font_family(family)
         .font_weight(t.fonts.code_weight)
         .text_size(size)
         .line_height(size * height)
-        .child(text)
+        .map(|d| match colors {
+            Some((fg, styles)) => d
+                .text_color(fg.unwrap_or(t.foreground))
+                .child(StyledText::new(text).with_highlights(styles)),
+            None => d.text_color(t.muted_foreground).child(text),
+        })
         .into_any_element()
 }
 
-fn sample_item(text: &'static str, terminal: bool) -> SettingItem {
-    SettingItem::render(move |_, _, cx| sample(text, terminal, cx))
-}
-
-pub fn editor(cx: &App) -> SettingPage {
+pub fn editor(w: &SettingsWindow, cx: &App) -> Page {
     let s = Settings::get(cx);
     let t = cx.app_theme();
     let mut font = vec![choice(
@@ -305,7 +314,6 @@ pub fn editor(cx: &App) -> SettingPage {
                     "editor.fontZoomOut",
                     "editor.fontZoomReset",
                 ],
-                cx,
             ),
             |s| s.code_font_size,
             |s, v| s.code_font_size = v,
@@ -342,16 +350,34 @@ pub fn editor(cx: &App) -> SettingPage {
             |s, v| s.ligatures = v,
         ),
     ]);
-    SettingPage::new("Editor").icon(IconName::Code).groups([
-        SettingGroup::new().item(sample_item(CODE_SAMPLE, false)),
-        SettingGroup::new().title("Font").items(font),
-        SettingGroup::new().title("Behavior").items([
+    let dark = cx.app_theme().dark;
+    let in_use = |on: bool| if on { " The preview shows it." } else { "" };
+    Page::new().groups([
+        Group::new().plain().item(sample(CODE_SAMPLE, false, Some(w), cx)),
+        // Each appearance keeps its own syntax theme, so switching back restores it.
+        Group::new().title("Code colors").items([
+            choice(
+                "Dark syntax theme",
+                format!("Code colors while the app is dark.{}", in_use(dark)),
+                pairs(SYNTAX_THEMES),
+                |s| s.syntax_theme.clone(),
+                |s, v| s.syntax_theme = v.into(),
+            ),
+            choice(
+                "Light syntax theme",
+                format!("Code colors while the app is light.{}", in_use(!dark)),
+                pairs(LIGHT_SYNTAX_THEMES),
+                |s| s.light_syntax_theme.clone(),
+                |s, v| s.light_syntax_theme = v.into(),
+            ),
+        ]),
+        Group::new().title("Font").items(font),
+        Group::new().title("Behavior").items([
             switch(
                 "Word wrap",
                 with_keys(
                     "Wrap long lines instead of scrolling sideways.",
                     &["editor.toggleWrap"],
-                    cx,
                 ),
                 |s| s.word_wrap,
                 |s, v| s.word_wrap = v,
@@ -366,67 +392,62 @@ pub fn editor(cx: &App) -> SettingPage {
     ])
 }
 
-pub fn diff(cx: &App) -> SettingPage {
-    SettingPage::new("Diff")
-        .icon(IconName::GitCompareArrows)
-        .group(SettingGroup::new().items([
-            segmented(
-                "diff-layout",
-                "Layout",
-                with_keys(
-                    "Unified shows one column, split shows before and after side by side.",
-                    &["diff.toggleSplit"],
-                    cx,
-                ),
-                vec![
-                    ("unified".into(), "Unified".into()),
-                    ("split".into(), "Split".into()),
-                ],
-                |s| if s.side_by_side { "split" } else { "unified" }.into(),
-                |s, v| s.side_by_side = v == "split",
+pub fn diff() -> Page {
+    Page::new().group(Group::new().items([
+        segmented(
+            "diff-layout",
+            "Layout",
+            with_keys(
+                "Unified shows one column, split shows before and after side by side.",
+                &["diff.toggleSplit"],
             ),
-            switch(
-                "Collapse unchanged lines",
-                with_keys(
-                    "Fold long runs of unchanged code between changes.",
-                    &["diff.toggleCollapse"],
-                    cx,
-                ),
-                |s| s.hide_unchanged,
-                |s, v| s.hide_unchanged = v,
+            vec![
+                ("unified".into(), "Unified".into()),
+                ("split".into(), "Split".into()),
+            ],
+            |s| if s.side_by_side { "split" } else { "unified" }.into(),
+            |s, v| s.side_by_side = v == "split",
+        ),
+        switch(
+            "Collapse unchanged lines",
+            with_keys(
+                "Fold long runs of unchanged code between changes.",
+                &["diff.toggleCollapse"],
             ),
-            segmented(
-                "whitespace",
-                "Ignore whitespace",
-                with_keys(
-                    "Changes hides re-indented lines and trailing spaces, like git diff -b. All \
+            |s| s.hide_unchanged,
+            |s, v| s.hide_unchanged = v,
+        ),
+        segmented(
+            "whitespace",
+            "Ignore whitespace",
+            with_keys(
+                "Changes hides re-indented lines and trailing spaces, like git diff -b. All \
                      ignores every space, like git diff -w.",
-                    &["diff.toggleWhitespace"],
-                    cx,
-                ),
-                vec![
-                    ("off".into(), "Off".into()),
-                    ("amount".into(), "Changes".into()),
-                    ("all".into(), "All".into()),
-                ],
-                |s| match s.diff_whitespace() {
-                    None => "off".into(),
-                    Some(w) => w.as_str().into(),
-                },
-                |s, v| match Whitespace::parse(v) {
-                    Some(w) => {
-                        s.ignore_whitespace = true;
-                        s.whitespace_mode = w;
-                    }
-                    None => s.ignore_whitespace = false,
-                },
+                &["diff.toggleWhitespace"],
             ),
-        ]))
+            vec![
+                ("off".into(), "Off".into()),
+                ("amount".into(), "Changes".into()),
+                ("all".into(), "All".into()),
+            ],
+            |s| match s.diff_whitespace() {
+                None => "off".into(),
+                Some(w) => w.as_str().into(),
+            },
+            |s, v| match Whitespace::parse(v) {
+                Some(w) => {
+                    s.ignore_whitespace = true;
+                    s.whitespace_mode = w;
+                }
+                None => s.ignore_whitespace = false,
+            },
+        ),
+    ]))
 }
 
 const TERMINAL_SAMPLE: &str = "~/project main ❯ git status --short\n M src/app.ts\n?? notes.md";
 
-pub fn terminal(cx: &App) -> SettingPage {
+pub fn terminal(cx: &App) -> Page {
     let s = Settings::get(cx);
     let t = cx.app_theme();
     let fonts: Vec<(String, String)> = TerminalFont::ALL
@@ -472,7 +493,6 @@ pub fn terminal(cx: &App) -> SettingPage {
                     "terminal.fontZoomOut",
                     "terminal.fontZoomReset",
                 ],
-                cx,
             ),
             |s| s.terminal_font_size,
             |s, v| s.terminal_font_size = v,
@@ -498,7 +518,6 @@ pub fn terminal(cx: &App) -> SettingPage {
                  between them, and Copy Last Command Output. fish marks its own. Terminals opened \
                  after a change pick it up.",
                 &["terminal.prevCommand", "terminal.nextCommand"],
-                cx,
             ),
             |s| s.shell_integration,
             |s, v| s.shell_integration = v,
@@ -543,71 +562,68 @@ pub fn terminal(cx: &App) -> SettingPage {
             |s, v| s.option_as_meta = OptionKey::parse(v).unwrap_or(s.option_as_meta),
         ));
     }
-    SettingPage::new("Terminal")
-        .icon(IconName::SquareTerminal)
-        .groups([
-            SettingGroup::new().item(sample_item(TERMINAL_SAMPLE, true)),
-            SettingGroup::new().title("Font").items(font),
-            SettingGroup::new().title("Cursor").items([
-                segmented(
-                    "cursor",
-                    "Style",
-                    "",
-                    vec![
-                        ("block".into(), "Block".into()),
-                        ("bar".into(), "Bar".into()),
-                        ("underline".into(), "Underline".into()),
-                    ],
-                    |s| s.terminal_cursor.as_str().into(),
-                    |s, v| {
-                        s.terminal_cursor = TerminalCursor::parse(v).unwrap_or(s.terminal_cursor)
-                    },
-                ),
-                switch(
-                    "Blink",
-                    "",
-                    |s| s.terminal_cursor_blink,
-                    |s, v| s.terminal_cursor_blink = v,
-                ),
-            ]),
-            SettingGroup::new().title("Panes").items([
-                segmented(
-                    "dim",
-                    "Dim unfocused panes",
-                    with_keys(
-                        "In a split terminal, the panes other than the one you type into fade, \
+    Page::new().groups([
+        Group::new()
+            .plain()
+            .item(sample(TERMINAL_SAMPLE, true, None, cx)),
+        Group::new().title("Font").items(font),
+        Group::new().title("Cursor").items([
+            segmented(
+                "cursor",
+                "Style",
+                "",
+                vec![
+                    ("block".into(), "Block".into()),
+                    ("bar".into(), "Bar".into()),
+                    ("underline".into(), "Underline".into()),
+                ],
+                |s| s.terminal_cursor.as_str().into(),
+                |s, v| s.terminal_cursor = TerminalCursor::parse(v).unwrap_or(s.terminal_cursor),
+            ),
+            switch(
+                "Blink",
+                "",
+                |s| s.terminal_cursor_blink,
+                |s, v| s.terminal_cursor_blink = v,
+            ),
+        ]),
+        Group::new().title("Panes").items([
+            segmented(
+                "dim",
+                "Dim unfocused panes",
+                with_keys(
+                    "In a split terminal, the panes other than the one you type into fade, \
                          so it's clear where the keys go.",
-                        &["terminal.split", "terminal.splitDown"],
-                        cx,
-                    ),
-                    options(DIM_LEVELS, |d| {
-                        if *d == 0 {
-                            "Off".into()
-                        } else {
-                            format!("{d}%")
-                        }
-                    }),
-                    |s| s.terminal_inactive_dim.to_string(),
-                    |s, v| s.terminal_inactive_dim = v.parse().unwrap_or(s.terminal_inactive_dim),
+                    &["terminal.split", "terminal.splitDown"],
                 ),
-                choice(
-                    "Scrollback",
-                    "Lines of history each terminal keeps. After a restart, a terminal comes back \
+                options(DIM_LEVELS, |d| {
+                    if *d == 0 {
+                        "Off".into()
+                    } else {
+                        format!("{d}%")
+                    }
+                }),
+                |s| s.terminal_inactive_dim.to_string(),
+                |s, v| s.terminal_inactive_dim = v.parse().unwrap_or(s.terminal_inactive_dim),
+            ),
+            choice(
+                "Scrollback",
+                "Lines of history each terminal keeps. After a restart, a terminal comes back \
                      with its last 1,000.",
-                    options(SCROLLBACK_LINES, |n| format!("{} lines", thousands(*n))),
-                    |s| s.terminal_scrollback.to_string(),
-                    |s, v| s.terminal_scrollback = v.parse().unwrap_or(s.terminal_scrollback),
-                ),
-            ]),
-            SettingGroup::new().title("Shell").items(shell),
-            SettingGroup::new().title("Accessibility").items([switch(
-                "Screen reader mode",
-                "Lets VoiceOver read the terminal's output and the line you type. Open terminals \
+                options(SCROLLBACK_LINES, |n| format!("{} lines", thousands(*n))),
+                |s| s.terminal_scrollback.to_string(),
+                |s, v| s.terminal_scrollback = v.parse().unwrap_or(s.terminal_scrollback),
+            ),
+        ]),
+        Group::new().title("Shell").items(shell),
+        Group::new().title("Accessibility").items([switch(
+            "Screen reader mode",
+            "Lets VoiceOver read the terminal's output and the line you type. Open terminals \
                  switch at once.",
-                |s| s.terminal_screen_reader,
-                |s, v| s.terminal_screen_reader = v,
-            )]),
-        ])
+            |s| s.terminal_screen_reader,
+            |s, v| s.terminal_screen_reader = v,
+        )]),
+    ])
 }
 
 /// 100000 → 100,000.
@@ -706,84 +722,80 @@ fn custom_app_row(i: usize, app: CustomApp, window: &mut Window, cx: &mut App) -
         .into_any_element()
 }
 
-pub fn open_in(w: &SettingsWindow, cx: &App) -> SettingPage {
-    let _ = w;
+pub fn open_in(cx: &App) -> Page {
     let choices = open_in_choices(&gitviber_ui::open_in::apps(cx), Settings::get(cx));
-    SettingPage::new("Open In")
-        .icon(IconName::SquareArrowOutUpRight)
-        .groups([
-            SettingGroup::new().title("Default").items([
-                choice(
-                    "Default app",
-                    with_keys(
-                        "What a click on Open in (in the status bar) runs. It opens the worktree \
+    Page::new().groups([
+        Group::new().title("Default").items([
+            choice(
+                "Default app",
+                with_keys(
+                    "What a click on Open in (in the status bar) runs. It opens the worktree \
                          as a project, and editors that can also show the open file in it. \
                          Picking an app from its list makes that one the default.",
-                        &["file.openIn"],
-                        cx,
-                    ),
-                    choices,
-                    |s| s.open_in_app.clone(),
-                    |s, v| s.open_in_app = v.into(),
+                    &["file.openIn"],
                 ),
-                switch(
-                    "Show detected apps",
-                    "Editors, terminals and git clients found on this computer. Turn off to list \
+                choices,
+                |s| s.open_in_app.clone(),
+                |s, v| s.open_in_app = v.into(),
+            ),
+            switch(
+                "Show detected apps",
+                "Editors, terminals and git clients found on this computer. Turn off to list \
                      only your own apps.",
-                    |s| !s.open_in_hide_builtins,
-                    |s, v| s.open_in_hide_builtins = !v,
-                ),
-            ]),
-            SettingGroup::new().title("Your apps").items([
-                SettingItem::render(|_, _, cx| {
-                    note(
-                        "A command run directly, not through a shell. {path} is the worktree, \
+                |s| !s.open_in_hide_builtins,
+                |s, v| s.open_in_hide_builtins = !v,
+            ),
+        ]),
+        Group::new().title("Your apps").items([
+            Row::custom(|_, cx| {
+                note(
+                    "A command run directly, not through a shell. {path} is the worktree, \
                          {file} the open file (the worktree when none is), {line} the line in \
                          view. With none of them, the worktree goes last, or from a file's \
                          right-click menu, that file. Example: code -g {file}:{line}",
-                        cx,
+                    cx,
+                )
+            })
+            .keywords(["custom", "command", "path", "file", "line"]),
+            Row::custom(|window, cx| {
+                let list = Settings::get(cx).open_in_custom.clone();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1p5()
+                    .w_full()
+                    .children(
+                        list.into_iter()
+                            .enumerate()
+                            .map(|(i, app)| custom_app_row(i, app, window, cx)),
                     )
-                })
-                .keywords(["custom", "command", "path", "file", "line"]),
-                SettingItem::render(|_, window, cx| {
-                    let list = Settings::get(cx).open_in_custom.clone();
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1p5()
-                        .w_full()
-                        .children(
-                            list.into_iter()
-                                .enumerate()
-                                .map(|(i, app)| custom_app_row(i, app, window, cx)),
-                        )
-                        .child(
-                            div().child(
-                                Button::new("open-in-add")
-                                    .small()
-                                    .outline()
-                                    .icon(IconName::Plus)
-                                    .label("Add app")
-                                    .on_click(|_, _, cx| {
-                                        let ms = std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .map_or(0, |d| d.as_millis() as u64);
-                                        let id = format!("custom:{}", radix36(ms));
-                                        Settings::update(cx, move |s| {
-                                            s.open_in_custom.push(CustomApp {
-                                                id,
-                                                name: String::new(),
-                                                command: String::new(),
-                                            })
+                    .child(
+                        div().flex().child(
+                            Button::new("open-in-add")
+                                .small()
+                                .outline()
+                                .icon(IconName::Plus)
+                                .label("Add app")
+                                .on_click(|_, _, cx| {
+                                    let ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map_or(0, |d| d.as_millis() as u64);
+                                    let id = format!("custom:{}", radix36(ms));
+                                    Settings::update(cx, move |s| {
+                                        s.open_in_custom.push(CustomApp {
+                                            id,
+                                            name: String::new(),
+                                            command: String::new(),
                                         })
-                                    }),
-                            ),
-                        )
-                        .into_any_element()
-                })
-                .keywords(["add app"]),
-            ]),
-        ])
+                                    })
+                                }),
+                        ),
+                    )
+                    .into_any_element()
+            })
+            .keywords(["add app"]),
+        ]),
+    ])
 }
 
 /// `n` in base 36, as the old app made an app's id from the time.
@@ -834,7 +846,7 @@ pub fn permission_notice(
     })
 }
 
-pub fn notifications(w: &SettingsWindow, cx: &App) -> SettingPage {
+pub fn notifications(w: &SettingsWindow, cx: &App) -> Page {
     let s = Settings::get(cx);
     let weak = w.weak.clone();
     let mut desktop = String::from(
@@ -850,25 +862,31 @@ pub fn notifications(w: &SettingsWindow, cx: &App) -> SettingPage {
     };
     let mut top = vec![{
         let weak = weak.clone();
-        SettingItem::new(
-            "Desktop notifications",
-            SettingField::switch(
-                |cx| Settings::get(cx).notify,
+        Row::new("Desktop notifications", move |off, _, cx| {
+            let weak = weak.clone();
+            toggle(
+                "Desktop notifications".into(),
+                Settings::get(cx).notify,
+                off,
                 move |v, cx| {
                     Settings::update(cx, |s| s.notify = v);
                     if v {
                         let _ = weak.update(cx, |w, cx| w.ask_notifications(true, cx));
                     }
                 },
+                cx,
             )
-            .default_value(false),
-        )
+        })
         .description(desktop)
+        .on_reset(
+            |cx| Settings::get(cx).notify,
+            |cx| Settings::update(cx, |s| s.notify = false),
+        )
     }];
     if let Some((text, fix)) = notice {
         let weak = weak.clone();
         top.push(
-            SettingItem::render(move |_, _, cx| {
+            Row::custom(move |_, cx| {
                 let t = cx.app_theme();
                 let weak = weak.clone();
                 div()
@@ -919,31 +937,40 @@ pub fn notifications(w: &SettingsWindow, cx: &App) -> SettingPage {
         "Send Test",
         move |_, cx| super::send_test_notification(cx),
     ));
+    // These only post notifications; a long command also marks its tab, so it stays on.
+    let off = !s.notify;
+    const OFF: &str = "Desktop notifications are off.";
     let mut when = vec![
         switch(
             "An agent finishes",
             "Claude Code, or another agent that reports its state, stops working in a terminal.",
             |s| s.notify_agent_done,
             |s, v| s.notify_agent_done = v,
-        ),
+        )
+        .disabled_because(off, OFF),
         switch(
             "An agent asks for you",
             "It waits for an answer or a permission before it goes on.",
             |s| s.notify_agent_waiting,
             |s, v| s.notify_agent_waiting = v,
-        ),
+        )
+        .disabled_because(off, OFF),
         switch(
             "A terminal rings or notifies",
             "Any other program ringing the bell or sending a notification (OSC 9, 777 or 99). An \
              agent that reports its state goes by the two switches above.",
             |s| s.notify_terminal,
             |s, v| s.notify_terminal = v,
-        ),
+        )
+        .disabled_because(off, OFF),
         switch(
             "A long command finishes",
-            "A command in a terminal you aren't looking at ends after running longer than the \
-             time below; its tab gets a dot too. Needs shell integration (zsh, bash 4.4+). An \
-             agent goes by the switches above.",
+            format!(
+                "A command in a terminal you aren't looking at ends after running longer than {}: \
+                 its tab gets a dot, and a notification while they're on. Needs shell integration \
+                 (zsh, bash 4.4+). An agent goes by the switches above.",
+                duration(s.long_command_seconds)
+            ),
             |s| s.notify_long_command,
             |s, v| s.notify_long_command = v,
         ),
@@ -958,18 +985,19 @@ pub fn notifications(w: &SettingsWindow, cx: &App) -> SettingPage {
             |s, v| s.long_command_seconds = v.parse().unwrap_or(s.long_command_seconds),
         ));
     }
-    when.push(switch(
-        "A git command ends",
-        "A push, pull, fetch, clone or commit finishes or fails.",
-        |s| s.notify_git,
-        |s, v| s.notify_git = v,
-    ));
-    SettingPage::new("Notifications")
-        .icon(IconName::Bell)
-        .groups([
-            SettingGroup::new().items(top),
-            SettingGroup::new().title("Notify when").items(when),
-        ])
+    when.push(
+        switch(
+            "A git command ends",
+            "A push, pull, fetch, clone or commit finishes or fails.",
+            |s| s.notify_git,
+            |s, v| s.notify_git = v,
+        )
+        .disabled_because(off, OFF),
+    );
+    Page::new().groups([
+        Group::new().items(top),
+        Group::new().title("Notify when").items(when),
+    ])
 }
 
 /// 5 → "5 s", 300 → "5 min".
@@ -981,45 +1009,43 @@ fn duration(seconds: u32) -> String {
     }
 }
 
-pub fn updates(cx: &App) -> SettingPage {
+pub fn updates(cx: &App) -> Page {
     let status = crate::updates::status_line(cx);
     let available = crate::updates::available(cx);
     let enabled = crate::updates::enabled(cx);
-    SettingPage::new("Updates")
-        .icon(IconName::CircleArrowUp)
-        .group(
-            SettingGroup::new().items([
-                switch(
-                    "Check for updates automatically",
-                    "At launch, every few hours and when this page opens, GitViber asks GitHub \
+    Page::new().group(
+        Group::new().items([
+            switch(
+                "Check for updates automatically",
+                "At launch, every few hours and when this page opens, GitViber asks GitHub \
                  Releases whether a newer version is out. Nothing downloads until you choose to \
                  update.",
-                    |s| s.auto_update,
-                    |s, v| s.auto_update = v,
-                ),
-                SettingItem::new(
-                    format!("GitViber {}", env!("CARGO_PKG_VERSION")),
-                    SettingField::render(move |_, _, _| {
-                        let button = if available {
-                            Button::new("whats-new")
-                                .small()
-                                .outline()
-                                .label("What's New…")
-                                .on_click(|_, _, cx| crate::updates::show(cx))
-                        } else {
-                            Button::new("check-now")
-                                .small()
-                                .outline()
-                                .label("Check Now")
-                                .disabled(!enabled)
-                                .on_click(|_, _, cx| crate::updates::check(true, cx))
-                        };
-                        button.into_any_element()
-                    }),
-                )
-                .description(status),
-            ]),
-        )
+                |s| s.auto_update,
+                |s, v| s.auto_update = v,
+            ),
+            Row::new(
+                format!("GitViber {}", env!("CARGO_PKG_VERSION")),
+                move |_, _, _| {
+                    let button = if available {
+                        Button::new("whats-new")
+                            .small()
+                            .outline()
+                            .label("What's New…")
+                            .on_click(|_, _, cx| crate::updates::show(cx))
+                    } else {
+                        Button::new("check-now")
+                            .small()
+                            .outline()
+                            .label("Check Now")
+                            .disabled(!enabled)
+                            .on_click(|_, _, cx| crate::updates::check(true, cx))
+                    };
+                    button.into_any_element()
+                },
+            )
+            .description(status),
+        ]),
+    )
 }
 
 /// Where Obsidian keeps its vault list, as shown when it has none.
@@ -1031,9 +1057,9 @@ const VAULT_LIST: &str = if IS_MAC {
     "~/.config/obsidian/obsidian.json"
 };
 
-pub fn obsidian(w: &SettingsWindow, cx: &App) -> SettingPage {
+pub fn obsidian(w: &SettingsWindow, cx: &App) -> Page {
     let s = Settings::get(cx);
-    let mut groups = vec![SettingGroup::new().item(switch(
+    let mut groups = vec![Group::new().item(switch(
         "Show vaults in the explorer",
         "A section beside the files lists your Obsidian vault. Its notes open in a tab, rendered \
          as Obsidian shows them.",
@@ -1041,16 +1067,19 @@ pub fn obsidian(w: &SettingsWindow, cx: &App) -> SettingPage {
         |s, v| s.obsidian = v,
     ))];
     if s.obsidian {
-        let items: Vec<SettingItem> = match &w.data.vaults {
+        let items: Vec<Row> = match &w.data.vaults {
             Some(vaults) if !vaults.is_empty() => vaults
                 .iter()
                 .map(|v| {
                     let path = v.path.clone();
                     let shown = path.clone();
-                    SettingItem::new(
-                        v.name.clone(),
-                        SettingField::switch(
-                            move |cx| !Settings::get(cx).hidden_vaults.contains(&shown),
+                    let name = SharedString::from(v.name.clone());
+                    Row::new(name.clone(), move |off, _, cx| {
+                        let path = path.clone();
+                        toggle(
+                            name.clone(),
+                            !Settings::get(cx).hidden_vaults.contains(&shown),
+                            off,
                             move |on, cx| {
                                 let path = path.clone();
                                 Settings::update(cx, move |s| {
@@ -1060,8 +1089,9 @@ pub fn obsidian(w: &SettingsWindow, cx: &App) -> SettingPage {
                                     }
                                 })
                             },
-                        ),
-                    )
+                            cx,
+                        )
+                    })
                     .description(v.path.clone())
                 })
                 .collect(),
@@ -1074,14 +1104,12 @@ pub fn obsidian(w: &SettingsWindow, cx: &App) -> SettingPage {
                 } else {
                     "Looking for vaults…".into()
                 };
-                vec![SettingItem::render(move |_, _, cx| note(text.clone(), cx))]
+                vec![Row::custom(move |_, cx| note(text.clone(), cx))]
             }
         };
-        groups.push(SettingGroup::new().title("Vaults").items(items));
+        groups.push(Group::new().title("Vaults").items(items));
     }
-    SettingPage::new("Obsidian")
-        .icon(IconName::Gem)
-        .groups(groups)
+    Page::new().groups(groups)
 }
 
 fn minutes(n: u32) -> String {
@@ -1092,61 +1120,26 @@ fn minutes(n: u32) -> String {
     }
 }
 
-pub fn browser(w: &SettingsWindow, cx: &App) -> SettingPage {
+pub fn browser(w: &SettingsWindow, cx: &App) -> Page {
     if cfg!(target_os = "linux") {
-        return SettingPage::new("Browser")
-            .icon(IconName::Globe)
-            .group(SettingGroup::new().item(SettingItem::render(|_, _, cx| {
-                note(
-                    "The browser tab needs macOS for now. The settings here are for macOS, \
+        return Page::new().group(Group::new().item(Row::custom(|_, cx| {
+            note(
+                "The browser tab needs macOS for now. The settings here are for macOS, \
                      where each tab has a browser of its own.",
-                    cx,
-                )
-            })));
+                cx,
+            )
+        })));
     }
     let s = Settings::get(cx);
-    let mut agents = vec![
-        switch(
-            "Reload when an agent finishes",
-            "When an agent in a terminal finishes its turn, the pages of its worktree load again. \
-             A page its dev server already reloads by itself (Vite, webpack, Next) is left as it is.",
-            |s| s.browser_reload_on_agent_done,
-            |s, v| s.browser_reload_on_agent_done = v,
-        ),
-        switch(
-            "Let agents use the browser",
-            "An agent in a terminal can open pages, read them, click, type and take screenshots \
+    let mut agents = vec![switch(
+        "Let agents use the browser",
+        "An agent in a terminal can open pages, read them, click, type and take screenshots \
              with the gitviber browser command. A terminal pane's agents get tabs of their own, \
              opened in the background without taking your active tab. Off, the command says so \
              and does nothing, except that an agent can still open a page for you with --show.",
-            |s| s.browser_agent_control,
-            |s, v| s.browser_agent_control = v,
-        ),
-        segmented(
-            "agent-drawn",
-            "Agent tabs drawing at once",
-            "Agents' tabs out of sight keep drawing while they're used, each like an open page: \
-             more uses more memory and energy. Past this many, the one an agent used longest ago \
-             sleeps until its next command.",
-            options(BROWSER_AGENT_DRAWN, |n| n.to_string()),
-            |s| s.browser_agent_drawn.to_string(),
-            |s, v| s.browser_agent_drawn = v.parse().unwrap_or(s.browser_agent_drawn),
-        ),
-        switch(
-            "Show agents' tabs",
-            "The tabs agents open appear in the tab strip. Off, they stay out of it and keep \
-             running as they were; one you took over stays, and turning this on brings the rest back.",
-            |s| s.browser_show_agent_tabs,
-            |s, v| s.browser_show_agent_tabs = v,
-        ),
-        switch(
-            "Mute agents' tabs",
-            "Agent tabs make no sound for you; the page still plays. Tabs you open or take over \
-             are never muted.",
-            |s| s.browser_mute_agent_tabs,
-            |s, v| s.browser_mute_agent_tabs = v,
-        ),
-    ];
+        |s| s.browser_agent_control,
+        |s, v| s.browser_agent_control = v,
+    )];
     if s.browser_agent_control {
         let mut hint = String::from(
             "A skill on when and how to use the browser, rewritten as GitViber updates and deleted \
@@ -1167,7 +1160,7 @@ pub fn browser(w: &SettingsWindow, cx: &App) -> SettingPage {
         let agent_note = w.data.skill.as_ref().map(|s| s.note.clone());
         if let Some(text) = agent_note {
             agents.push(
-                SettingItem::render(move |_, _, cx| {
+                Row::custom(move |_, cx| {
                     let text = text.clone();
                     let copy = text.clone();
                     div()
@@ -1211,8 +1204,42 @@ pub fn browser(w: &SettingsWindow, cx: &App) -> SettingPage {
             );
         }
     }
-    SettingPage::new("Browser").icon(IconName::Globe).groups([
-        SettingGroup::new().title("Memory").items([
+    agents.extend([
+        segmented(
+            "agent-drawn",
+            "Agent tabs drawing at once",
+            "Agents' tabs out of sight keep drawing while they're used, each like an open page: \
+             more uses more memory and energy. Past this many, the one an agent used longest ago \
+             sleeps until its next command.",
+            options(BROWSER_AGENT_DRAWN, |n| n.to_string()),
+            |s| s.browser_agent_drawn.to_string(),
+            |s, v| s.browser_agent_drawn = v.parse().unwrap_or(s.browser_agent_drawn),
+        ),
+        switch(
+            "Show agents' tabs",
+            "The tabs agents open appear in the tab strip. Off, they stay out of it and keep \
+             running as they were; one you took over stays, and turning this on brings the rest back.",
+            |s| s.browser_show_agent_tabs,
+            |s, v| s.browser_show_agent_tabs = v,
+        ),
+        switch(
+            "Mute agents' tabs",
+            "Agent tabs make no sound for you; the page still plays. Tabs you open or take over \
+             are never muted.",
+            |s| s.browser_mute_agent_tabs,
+            |s, v| s.browser_mute_agent_tabs = v,
+        ),
+        switch(
+            "Reload when an agent finishes",
+            "When an agent in a terminal finishes its turn, the pages of its worktree load again. \
+             A page its dev server already reloads by itself (Vite, webpack, Next) is left as it is.",
+            |s| s.browser_reload_on_agent_done,
+            |s, v| s.browser_reload_on_agent_done = v,
+        ),
+    ]);
+    Page::new().groups([
+        Group::new().title("Agents").items(agents),
+        Group::new().title("Memory").items([
             segmented(
                 "live-hidden",
                 "Pages kept alive out of sight",
@@ -1232,15 +1259,14 @@ pub fn browser(w: &SettingsWindow, cx: &App) -> SettingPage {
                 |s, v| s.browser_park_after_min = v.parse().unwrap_or(s.browser_park_after_min),
             ),
         ]),
-        SettingGroup::new().title("Console").item(switch(
+        Group::new().title("Console").item(switch(
             "Keep the page's console",
             "A browser tab keeps what its page logs as errors and warnings, shows how many, and \
              sends the errors to the worktree's agent on request. Off, pages load without it.",
             |s| s.browser_console,
             |s, v| s.browser_console = v,
         )),
-        SettingGroup::new().title("Agents").items(agents),
-        SettingGroup::new().title("Data").item(action(
+        Group::new().title("Data").item(action(
             "clear-browsing",
             "Browsing data",
             "The browser tabs keep their own cookies, site storage and cache, apart from \

@@ -1,5 +1,6 @@
-//! Settings → Keyboard Shortcuts: every command by category, its keys as keycaps. A click on a
-//! key records a new one in its place, + adds one; Esc cancels. Rebinds are kept in settings'
+//! Settings → Keyboard Shortcuts: every command by category, its keys as keycaps, filtered by a
+//! name or a key and by category. A click on a key records a new one in its place, + adds one;
+//! Esc cancels. Rebinds are kept in settings'
 //! `keybindings` (command id → chords, an empty list unbinds), only while they differ from the
 //! default, as the old app kept them.
 
@@ -8,7 +9,7 @@ use gitviber_ui::keymap::{self, IS_MAC, bindings_for, chord_keys, format_chord};
 use gitviber_ui::{ActiveAppTheme, Settings};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::setting::{SettingGroup, SettingItem, SettingPage};
+use gpui_kit::component::input::Input;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _};
 use gpui_kit::{
@@ -17,7 +18,8 @@ use gpui_kit::{
     rems,
 };
 
-use super::fields::{note, switch, with_keys};
+use super::fields::{note, segments, switch, with_keys};
+use super::shell::{Group, HINT_TEXT, Page, Row, TITLE_TEXT};
 use super::{Recording, SettingsWindow};
 
 /// The categories in the order they first appear, which puts General first.
@@ -95,8 +97,8 @@ fn recorder(
         .flex()
         .items_center()
         .justify_center()
-        .h(px(26.))
-        .min_w(px(26.))
+        .h(px(24.))
+        .min_w(px(24.))
         .px_1()
         .rounded(px(5.))
         .cursor_pointer()
@@ -134,37 +136,35 @@ fn row(c: &'static keymap::Command, w: &WeakEntity<SettingsWindow>, cx: &App) ->
     let adding = recording
         .as_ref()
         .is_some_and(|r| r.id == c.id && r.index == keys.len());
-    caps.push(if keys.is_empty() && !adding {
-        let weak = w.clone();
-        let index = keys.len();
-        div()
-            .id(SharedString::from(format!("unbound-{}", c.id)))
-            .px_1()
-            .h(px(26.))
-            .flex()
-            .items_center()
-            .rounded(px(5.))
-            .cursor_pointer()
-            .hover(|s| s.bg(t.active))
-            .text_size(rems(0.71875))
-            .text_color(t.subtle)
-            .child("Unbound")
-            .on_click(move |_, window, cx| {
-                let _ = weak.update(cx, |w, cx| w.start_recording(c.id, index, window, cx));
-            })
-            .into_any_element()
-    } else {
-        recorder(w, c.id, keys.len(), None, recording.as_ref(), cx)
-    });
+    if keys.is_empty() && !adding {
+        caps.push(
+            div()
+                .px_1()
+                .text_size(rems(HINT_TEXT))
+                .text_color(t.subtle)
+                .child("Unbound")
+                .into_any_element(),
+        );
+    }
+    caps.push(recorder(w, c.id, keys.len(), None, recording.as_ref(), cx));
     let (reset, clear) = (w.clone(), w.clone());
     let note_text = clashes.join(". ");
     div()
+        .group("shortcut-row")
         .flex()
         .items_center()
         .gap_3()
         .w_full()
-        .min_h(px(34.))
-        .child(div().flex_1().min_w_0().truncate().child(c.title))
+        .min_h(px(32.))
+        .py(px(2.))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(rems(TITLE_TEXT))
+                .child(c.title),
+        )
         .when(!clashes.is_empty(), |d| {
             d.child(
                 div()
@@ -191,7 +191,7 @@ fn row(c: &'static keymap::Command, w: &WeakEntity<SettingsWindow>, cx: &App) ->
                 .flex_none()
                 .justify_end()
                 .gap_0p5()
-                .w(px(56.))
+                .w(px(48.))
                 .when(overridden, |d| {
                     d.child(
                         Button::new(SharedString::from(format!("reset-{}", c.id)))
@@ -205,19 +205,36 @@ fn row(c: &'static keymap::Command, w: &WeakEntity<SettingsWindow>, cx: &App) ->
                     )
                 })
                 .when(!keys.is_empty(), |d| {
+                    // Out of the way until the row is pointed at, as on every row it was noise.
                     d.child(
-                        Button::new(SharedString::from(format!("unbind-{}", c.id)))
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::X)
-                            .tooltip("Remove all keys")
-                            .on_click(move |_, _, cx| {
-                                let _ = clear.update(cx, |_, cx| set_keys(c.id, Some(vec![]), cx));
-                            }),
+                        div()
+                            .invisible()
+                            .group_hover("shortcut-row", |s| s.visible())
+                            .child(
+                                Button::new(SharedString::from(format!("unbind-{}", c.id)))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::X)
+                                    .tooltip("Remove all keys")
+                                    .on_click(move |_, _, cx| {
+                                        let _ = clear
+                                            .update(cx, |_, cx| set_keys(c.id, Some(vec![]), cx));
+                                    }),
+                            ),
                     )
                 }),
         )
         .into_any_element()
+}
+
+/// Whether `c` is what the filter asks for: its name, category, id or one of its keys.
+fn matches(c: &keymap::Command, keys: &[String], q: &str) -> bool {
+    let hit = |s: &str| s.to_lowercase().contains(q);
+    q.is_empty()
+        || hit(c.title)
+        || hit(c.category.label())
+        || hit(c.id)
+        || keys.iter().any(|k| hit(k) || hit(&format_chord(k, IS_MAC)))
 }
 
 /// Binds command `id` to `keys`; None goes back to its defaults.
@@ -239,7 +256,7 @@ pub fn refusal(chord: &str) -> Option<String> {
         .then(|| format!("{} is reserved by macOS", format_chord(chord, IS_MAC)))
 }
 
-pub fn page(w: &SettingsWindow, cx: &App) -> SettingPage {
+pub fn page(w: &SettingsWindow, cx: &App) -> Page {
     let hold = if IS_MAC { "⌘" } else { "Ctrl" };
     let weak = w.weak.clone();
     let any_rebound = !Settings::get(cx).keybindings.is_empty();
@@ -248,53 +265,31 @@ pub fn page(w: &SettingsWindow, cx: &App) -> SettingPage {
     } else {
         "Ctrl or an F-key apply (not Ctrl+arrows, which move by word)"
     };
-    let mut groups = vec![SettingGroup::new().items([
-        switch(
-            &format!("Hold {hold} to show shortcuts"),
-            with_keys(
-                "Hold it by itself for a second to see the shortcuts that work where you are. The \
-                 key below shows them too.",
-                &["workbench.shortcutOverlay"],
-                cx,
-            ),
-            |s| s.shortcut_overlay,
-            |s, v| s.shortcut_overlay = v,
+    let q = w.shortcut_filter.read(cx).value().trim().to_lowercase();
+    let picked = w.shortcut_category;
+    let mut groups = vec![Group::new().item(switch(
+        &format!("Hold {hold} to show shortcuts"),
+        with_keys(
+            "Hold it by itself for a second to see the shortcuts that work where you are. The \
+             key beside the title shows them too.",
+            &["workbench.shortcutOverlay"],
         ),
-        SettingItem::render(move |_, _, cx| {
-            div()
-                .flex()
-                .items_center()
-                .gap_3()
-                .w_full()
-                .child(div().flex_1().min_w_0().child(note(
-                    format!(
-                        "Click a key to change it, or + to add one; Esc cancels. When two \
-                         commands share a key, the warning next to them names the one that runs. \
-                         While you type in a text field, only shortcuts with {typing}, and Commit \
-                         only applies in the commit message."
-                    ),
-                    cx,
-                )))
-                .child(
-                    Button::new("shortcuts-reset-all")
-                        .small()
-                        .outline()
-                        .icon(IconName::RotateCcw)
-                        .label("Reset all")
-                        .disabled(!any_rebound)
-                        .on_click(|_, _, cx| Settings::update(cx, |s| s.keybindings.clear())),
-                )
-                .into_any_element()
-        })
-        .keywords(["reset all"]),
-    ])];
-    for category in categories() {
-        let items: Vec<SettingItem> = keymap::all_commands()
+        |s| s.shortcut_overlay,
+        |s, v| s.shortcut_overlay = v,
+    ))];
+    let overrides = &Settings::get(cx).keybindings;
+    for category in categories()
+        .into_iter()
+        .filter(|c| picked.is_none_or(|p| p == *c))
+    {
+        let rows: Vec<Row> = keymap::all_commands()
             .filter(|c| c.category == category)
-            .map(|c| {
-                let weak = weak.clone();
-                let overrides = &Settings::get(cx).keybindings;
+            .filter_map(|c| {
                 let keys = bindings_for(c, overrides, IS_MAC);
+                if !matches(c, &keys, &q) {
+                    return None;
+                }
+                let weak = weak.clone();
                 let mut words: Vec<SharedString> =
                     vec![c.title.into(), c.id.into(), category.label().into()];
                 words.extend(keys.iter().map(|k| SharedString::from(k.clone())));
@@ -302,14 +297,95 @@ pub fn page(w: &SettingsWindow, cx: &App) -> SettingPage {
                     keys.iter()
                         .map(|k| SharedString::from(format_chord(k, IS_MAC))),
                 );
-                SettingItem::render(move |_, _, cx| row(c, &weak, cx)).keywords(words)
+                Some(
+                    Row::custom(move |_, cx| row(c, &weak, cx))
+                        .keywords(words)
+                        .tight(),
+                )
             })
             .collect();
-        groups.push(SettingGroup::new().title(category.label()).items(items));
+        if !rows.is_empty() {
+            groups.push(Group::new().title(category.label()).items(rows));
+        }
     }
-    SettingPage::new("Keyboard Shortcuts")
-        .icon(IconName::Keyboard)
+    if groups.len() == 1 {
+        groups.push(Group::new().item(Row::custom(|_, cx| note("No matching commands.", cx))));
+    }
+    groups.push(Group::new().plain().item(Row::custom(move |_, cx| {
+        note(
+            format!(
+                "Click a key to change it, or + to add one; Esc cancels. When two commands share \
+                 a key, the warning next to them names the one that runs. While you type in a \
+                 text field, only shortcuts with {typing}, and Commit only applies in the commit \
+                 message."
+            ),
+            cx,
+        )
+    })));
+    let filter = w.shortcut_filter.clone();
+    let chips: Vec<(String, String)> = std::iter::once(("all".to_string(), "All".to_string()))
+        .chain(
+            categories()
+                .into_iter()
+                .map(|c| (c.label().to_string(), c.label().to_string())),
+        )
+        .collect();
+    let current = picked.map_or("all", |c| c.label()).to_string();
+    Page::new()
         .resettable(false)
+        .pinned(move |_, _| {
+            let pick = weak.clone();
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div().flex_1().child(
+                                Input::new(&filter)
+                                    .small()
+                                    .prefix(Icon::new(IconName::Search).xsmall())
+                                    .cleanable(true),
+                            ),
+                        )
+                        .child(
+                            Button::new("shortcuts-reset-all")
+                                .small()
+                                .outline()
+                                .icon(IconName::RotateCcw)
+                                .label("Reset all")
+                                .disabled(!any_rebound)
+                                .on_click(|_, _, cx| {
+                                    Settings::update(cx, |s| s.keybindings.clear())
+                                }),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("shortcut-categories")
+                        .flex()
+                        .overflow_x_scroll()
+                        .child(div().flex_none().child(segments(
+                            "shortcut-category",
+                            &chips,
+                            &current,
+                            false,
+                            move |v, _, cx| {
+                                let category = categories().into_iter().find(|c| c.label() == v);
+                                let _ = pick.update(cx, |w, cx| {
+                                    w.shortcut_category = category;
+                                    w.scroll.set_offset(gpui_kit::Point::default());
+                                    cx.notify();
+                                });
+                            },
+                        ))),
+                )
+                .into_any_element()
+        })
         .groups(groups)
 }
 

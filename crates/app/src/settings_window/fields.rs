@@ -3,46 +3,91 @@
 
 use std::rc::Rc;
 
-use gitviber_ui::keymap::shortcut_label;
 use gitviber_ui::{ActiveAppTheme, Settings};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::setting::{SettingField, SettingItem};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Entity, Focusable as _, IntoElement, ParentElement as _,
-    SharedString, Styled as _, Subscription, Window, div, px, rems,
+    Anchor, AnyElement, App, AppContext as _, Entity, Focusable as _, IntoElement,
+    ParentElement as _, SharedString, Styled as _, Subscription, Window, div,
+    prelude::FluentBuilder as _, px, rems,
 };
+
+pub use super::shell::{Hint, Row};
 
 pub type Get<T> = fn(&Settings) -> T;
 pub type Set<T> = fn(&mut Settings, T);
 pub type SetStr = for<'a> fn(&mut Settings, &'a str);
 
-/// `hint`, then the keys of `commands` as they're bound now.
-pub fn with_keys(hint: &str, commands: &[&str], cx: &App) -> String {
-    let keys: Vec<String> = commands
-        .iter()
-        .filter_map(|id| shortcut_label(id, cx))
-        .collect();
-    match (hint.is_empty(), keys.is_empty()) {
-        (_, true) => hint.to_string(),
-        (true, false) => keys.join("  "),
-        (false, false) => format!("{hint}  {}", keys.join("  ")),
+/// `hint`, with the keys of `commands` as they're bound now beside the row's title.
+pub fn with_keys(hint: &str, commands: &'static [&'static str]) -> Hint {
+    Hint {
+        text: SharedString::from(hint.to_string()),
+        keys: commands,
     }
 }
 
-pub fn switch(title: &str, hint: impl Into<String>, get: Get<bool>, set: Set<bool>) -> SettingItem {
+/// A switch. Disabled, it's drawn as an outline: gpui-component's fades the track by half,
+/// which left an off switch nearly invisible on a light theme.
+pub fn toggle(
+    title: SharedString,
+    checked: bool,
+    disabled: bool,
+    on: impl Fn(bool, &mut App) + 'static,
+    cx: &App,
+) -> AnyElement {
+    if !disabled {
+        return Switch::new("switch")
+            .small()
+            .accessibility_label(title)
+            .checked(checked)
+            .on_click(move |v: &bool, _, cx: &mut App| on(*v, cx))
+            .into_any_element();
+    }
+    let t = cx.app_theme();
+    div()
+        .w(px(28.))
+        .h(px(16.))
+        .p(px(1.))
+        .flex()
+        .items_center()
+        .when(checked, |d| d.justify_end())
+        .rounded_full()
+        .border_1()
+        .border_color(t.border_strong)
+        .bg(if checked {
+            t.primary.opacity(0.35)
+        } else {
+            gpui_kit::transparent_black()
+        })
+        .child(div().size(px(10.)).rounded_full().bg(if checked {
+            t.primary_foreground
+        } else {
+            t.subtle
+        }))
+        .into_any_element()
+}
+
+pub fn switch(title: &str, hint: impl Into<Hint>, get: Get<bool>, set: Set<bool>) -> Row {
     let default = get(&Settings::default());
-    SettingItem::new(
-        title.to_string(),
-        SettingField::switch(
-            move |cx| get(Settings::get(cx)),
+    let name = SharedString::from(title.to_string());
+    Row::new(name.clone(), move |off, _, cx| {
+        toggle(
+            name.clone(),
+            get(Settings::get(cx)),
+            off,
             move |v, cx| Settings::update(cx, |s| set(s, v)),
+            cx,
         )
-        .default_value(default),
+    })
+    .description(hint)
+    .on_reset(
+        move |cx| get(Settings::get(cx)) != default,
+        move |cx| Settings::update(cx, |s| set(s, default)),
     )
-    .description(hint.into())
 }
 
 pub fn options<T>(values: &[T], label: impl Fn(&T) -> String) -> Vec<(String, String)>
@@ -52,61 +97,112 @@ where
     values.iter().map(|v| (v.to_string(), label(v))).collect()
 }
 
+/// A dropdown's (value, label) pairs, and what takes the value picked.
+type Choices = Rc<Vec<(SharedString, SharedString)>>;
+type Picked = Rc<dyn Fn(SharedString, &mut App)>;
+
+/// A button showing `current`'s label that drops down `options`.
+fn dropdown(
+    title: SharedString,
+    options: Choices,
+    current: SharedString,
+    disabled: bool,
+    pick: Picked,
+) -> AnyElement {
+    let label = options
+        .iter()
+        .find(|(v, _)| *v == current)
+        .map_or_else(|| current.clone(), |(_, l)| l.clone());
+    Button::new("dropdown")
+        .small()
+        .outline()
+        .accessibility_label(format!("{title}: {label}"))
+        .label(label)
+        .dropdown_caret(true)
+        .disabled(disabled)
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+            let menu = options.iter().fold(menu, |menu, (value, label)| {
+                let (value, pick) = (value.clone(), pick.clone());
+                menu.item(
+                    PopupMenuItem::new(label.clone())
+                        .checked(value == current)
+                        .on_click(move |_, _, cx| pick(value.clone(), cx)),
+                )
+            });
+            menu.scrollable(true)
+        })
+        .into_any_element()
+}
+
+/// A dropdown row of its own: `get` the value shown, `set` the one picked.
+pub fn pick(
+    title: impl Into<SharedString>,
+    options: Vec<(SharedString, SharedString)>,
+    get: impl Fn(&App) -> SharedString + 'static,
+    set: impl Fn(SharedString, &mut App) + 'static,
+) -> Row {
+    let title = title.into();
+    let options = Rc::new(options);
+    let set: Picked = Rc::new(set);
+    Row::new(title.clone(), move |off, _, cx| {
+        dropdown(title.clone(), options.clone(), get(cx), off, set.clone())
+    })
+}
+
 /// A dropdown of `options` (value, label).
 pub fn choice(
     title: &str,
-    hint: impl Into<String>,
+    hint: impl Into<Hint>,
     options: Vec<(String, String)>,
     get: Get<String>,
     set: SetStr,
-) -> SettingItem {
+) -> Row {
     let default = get(&Settings::default());
+    let reset = default.clone();
     let options = options
         .into_iter()
         .map(|(v, l)| (SharedString::from(v), SharedString::from(l)))
         .collect();
-    SettingItem::new(
+    pick(
         title.to_string(),
-        SettingField::scrollable_dropdown(
-            options,
-            move |cx| get(Settings::get(cx)).into(),
-            move |v, cx| Settings::update(cx, |s| set(s, &v)),
-        )
-        .default_value(SharedString::from(default)),
+        options,
+        move |cx| get(Settings::get(cx)).into(),
+        move |v, cx| Settings::update(cx, |s| set(s, &v)),
     )
-    .description(hint.into())
+    .description(hint)
+    .on_reset(
+        move |cx| get(Settings::get(cx)) != default,
+        move |cx| Settings::update(cx, |s| set(s, &reset)),
+    )
 }
 
 /// A row of buttons, one lit: the old app's segmented control, for a few short choices.
 pub fn segmented(
     id: &'static str,
     title: &str,
-    hint: impl Into<String>,
+    hint: impl Into<Hint>,
     options: Vec<(String, String)>,
     get: Get<String>,
     set: SetStr,
-) -> SettingItem {
+) -> Row {
     let default = get(&Settings::default());
-    SettingItem::new(
-        title.to_string(),
-        SettingField::render(move |opts, _, cx| {
-            segments(
-                id,
-                &options,
-                &get(Settings::get(cx)),
-                opts.is_disabled(),
-                move |v, _, cx| Settings::update(cx, |s| set(s, v)),
-            )
-        })
-        .on_reset(
-            move |cx| get(Settings::get(cx)) != default,
-            move |_, cx| {
-                let d = get(&Settings::default());
-                Settings::update(cx, |s| set(s, &d))
-            },
-        ),
+    Row::new(title.to_string(), move |off, _, cx| {
+        segments(
+            id,
+            &options,
+            &get(Settings::get(cx)),
+            off,
+            move |v, _, cx| Settings::update(cx, |s| set(s, v)),
+        )
+    })
+    .description(hint)
+    .on_reset(
+        move |cx| get(Settings::get(cx)) != default,
+        move |cx| {
+            let d = get(&Settings::default());
+            Settings::update(cx, |s| set(s, &d))
+        },
     )
-    .description(hint.into())
 }
 
 /// The buttons of a segmented control; `pick` gets the value clicked.
@@ -149,22 +245,19 @@ pub type SetText = Rc<dyn Fn(&mut Settings, &str)>;
 pub fn text(
     key: &'static str,
     title: &str,
-    hint: impl Into<String>,
+    hint: impl Into<Hint>,
     placeholder: &'static str,
     on_blur: bool,
     get: Get<String>,
     set: SetStr,
-) -> SettingItem {
-    SettingItem::new(
-        title.to_string(),
-        SettingField::render(move |_, window, cx| {
-            let field = TextField::new(key, Rc::new(get), Rc::new(set))
-                .placeholder(placeholder)
-                .on_blur(on_blur);
-            field.render(window, cx)
-        }),
-    )
-    .description(hint.into())
+) -> Row {
+    Row::new(title.to_string(), move |_, window, cx| {
+        TextField::new(key, Rc::new(get), Rc::new(set))
+            .placeholder(placeholder)
+            .on_blur(on_blur)
+            .render(window, cx)
+    })
+    .description(hint)
 }
 
 /// A text input bound to a setting, for a row of its own.
@@ -253,77 +346,71 @@ impl TextField {
 pub fn stepper(
     id: &'static str,
     title: &str,
-    hint: impl Into<String>,
+    hint: impl Into<Hint>,
     get: Get<f32>,
     set: Set<f32>,
     step: f32,
     min: f32,
     max: f32,
-) -> SettingItem {
+) -> Row {
     let default = get(&Settings::default());
-    SettingItem::new(
-        title.to_string(),
-        SettingField::render(move |_, _, cx| {
-            let v = get(Settings::get(cx));
-            let t = cx.app_theme();
-            div()
-                .flex()
-                .items_center()
-                .gap_1()
-                .child(
-                    Button::new((id, 0usize))
-                        .small()
-                        .label("−")
-                        .disabled(v <= min)
-                        .on_click(move |_, _, cx| Settings::update(cx, |s| set(s, v - step))),
-                )
-                .child(
-                    div()
-                        .w(px(40.))
-                        .text_center()
-                        .font_family(t.fonts.code.clone())
-                        .text_size(rems(0.75))
-                        .child(format!("{v}")),
-                )
-                .child(
-                    Button::new((id, 1usize))
-                        .small()
-                        .label("+")
-                        .disabled(v >= max)
-                        .on_click(move |_, _, cx| Settings::update(cx, |s| set(s, v + step))),
-                )
-                .into_any_element()
-        })
-        .on_reset(
-            move |cx| get(Settings::get(cx)) != default,
-            move |_, cx| Settings::update(cx, |s| set(s, default)),
-        ),
+    Row::new(title.to_string(), move |_, _, cx| {
+        let v = get(Settings::get(cx));
+        let t = cx.app_theme();
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(
+                Button::new((id, 0usize))
+                    .small()
+                    .label("−")
+                    .disabled(v <= min)
+                    .on_click(move |_, _, cx| Settings::update(cx, |s| set(s, v - step))),
+            )
+            .child(
+                div()
+                    .w(px(40.))
+                    .text_center()
+                    .font_family(t.fonts.code.clone())
+                    .text_size(rems(0.75))
+                    .child(format!("{v}")),
+            )
+            .child(
+                Button::new((id, 1usize))
+                    .small()
+                    .label("+")
+                    .disabled(v >= max)
+                    .on_click(move |_, _, cx| Settings::update(cx, |s| set(s, v + step))),
+            )
+            .into_any_element()
+    })
+    .description(hint)
+    .on_reset(
+        move |cx| get(Settings::get(cx)) != default,
+        move |cx| Settings::update(cx, |s| set(s, default)),
     )
-    .description(hint.into())
 }
 
 /// A row with a button on its right.
 pub fn action(
     id: &'static str,
     title: &str,
-    hint: impl Into<String>,
+    hint: impl Into<Hint>,
     label: &'static str,
     run: impl Fn(&mut Window, &mut App) + 'static,
-) -> SettingItem {
-    let run = std::rc::Rc::new(run);
-    SettingItem::new(
-        title.to_string(),
-        SettingField::render(move |_, _, _| {
-            let run = run.clone();
-            Button::new(id)
-                .small()
-                .outline()
-                .label(label)
-                .on_click(move |_, window, cx| run(window, cx))
-                .into_any_element()
-        }),
-    )
-    .description(hint.into())
+) -> Row {
+    let run = Rc::new(run);
+    Row::new(title.to_string(), move |_, _, _| {
+        let run = run.clone();
+        Button::new(id)
+            .small()
+            .outline()
+            .label(label)
+            .on_click(move |_, window, cx| run(window, cx))
+            .into_any_element()
+    })
+    .description(hint)
 }
 
 /// Text under a group's rows: what a command gets, where something lives.

@@ -6,10 +6,10 @@ use std::rc::Rc;
 
 use gitviber_ui::settings::*;
 use gitviber_ui::{ActiveAppTheme, Settings};
+use gpui_kit::WeakEntity;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
-use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::{
@@ -18,35 +18,32 @@ use gpui_kit::{
 };
 
 use super::SettingsWindow;
-use super::fields::{GetText, SetText, TextField, note, options, pre, segments, switch};
+use super::fields::{GetText, SetText, TextField, note, options, pick, pre, segments, switch};
+use super::shell::{Group, Page, Row};
 
-pub fn git(w: &SettingsWindow, cx: &App) -> SettingPage {
-    let mut groups =
-        vec![
-        SettingGroup::new().title("Background").item(
-            SettingItem::new(
-                "Fetch in the background",
-                SettingField::render(|opts, _, cx| {
-                    let list = options(FETCH_INTERVALS, |m| {
-                        if *m == 0 {
-                            "Off".into()
-                        } else {
-                            format!("{m} min")
-                        }
-                    });
-                    let current = Settings::get(cx).background_fetch.to_string();
-                    segments("fetch", &list, &current, opts.is_disabled(), |v, _, cx| {
-                        let v = v.parse().unwrap_or(0);
-                        Settings::update(cx, |s| s.background_fetch = v)
-                    })
-                }),
-            )
+pub fn git(w: &SettingsWindow, cx: &App) -> Page {
+    let mut groups = vec![
+        Group::new().title("Background").item(
+            Row::new("Fetch in the background", |off, _, cx| {
+                let list = options(FETCH_INTERVALS, |m| {
+                    if *m == 0 {
+                        "Off".into()
+                    } else {
+                        format!("{m} min")
+                    }
+                });
+                let current = Settings::get(cx).background_fetch.to_string();
+                segments("fetch", &list, &current, off, |v, _, cx| {
+                    let v = v.parse().unwrap_or(0);
+                    Settings::update(cx, |s| s.background_fetch = v)
+                })
+            })
             .description(
                 "Keeps ahead / behind and the remote branches current for the open repository. A \
                  fetch that fails, say while offline, stays quiet.",
             ),
         ),
-        SettingGroup::new().title("Worktrees").item(worktree_root(w)),
+        Group::new().title("Worktrees").item(worktree_root(w)),
     ];
     if w.data.git.identity.is_some() || w.data.git.remotes.is_some() {
         let mut repo = Vec::new();
@@ -59,20 +56,16 @@ pub fn git(w: &SettingsWindow, cx: &App) -> SettingPage {
         if w.data.git.remotes.is_some() {
             repo.push(remotes(w));
         }
-        groups.push(SettingGroup::new().title("This repository").items(repo));
+        groups.push(Group::new().title("This repository").items(repo));
     }
-    SettingPage::new("Git")
-        .icon(IconName::GitBranch)
-        .groups(groups)
+    Page::new().groups(groups)
 }
 
 /// Off by default: worktrees go in `<project>.worktrees` beside the project. Turning it on is
 /// picking the folder; a cancelled picker leaves it as it was.
-fn worktree_root(w: &SettingsWindow) -> SettingItem {
+fn worktree_root(w: &SettingsWindow) -> Row {
     let weak = w.weak.clone();
-    SettingItem::new(
-        "One folder for all worktrees",
-        SettingField::render(move |_, _, cx| {
+    Row::new("One folder for all worktrees", move |_, _, cx| {
             let t = cx.app_theme();
             let root = Settings::get(cx).worktree_root.clone();
             let (pick, toggle) = (weak.clone(), weak.clone());
@@ -102,6 +95,7 @@ fn worktree_root(w: &SettingsWindow) -> SettingItem {
                 })
                 .child(
                     Switch::new("worktree-root")
+                    .small()
                         .checked(root.is_some())
                         .on_click(move |on, _, cx| {
                             if *on {
@@ -112,8 +106,7 @@ fn worktree_root(w: &SettingsWindow) -> SettingItem {
                         }),
                 )
                 .into_any_element()
-        }),
-    )
+        })
     .description(
         "New worktrees go in a subfolder named after the project, instead of a .worktrees folder \
          beside each project. A folder picked for a project when making a worktree still comes first.",
@@ -132,63 +125,60 @@ fn who(name: &Option<String>, email: &Option<String>) -> String {
 }
 
 /// Commit here as someone else than everywhere else.
-fn identity(w: &SettingsWindow, _cx: &App) -> SettingItem {
+fn identity(w: &SettingsWindow, _cx: &App) -> Row {
     let id = w.data.git.identity.clone().unwrap_or_default();
     let weak = w.weak.clone();
     let inputs = w.identity_inputs.clone();
     let own = w.data.git.own;
-    SettingItem::new(
-        "Commit as",
-        SettingField::render(move |_, _, cx| {
-            let pick = weak.clone();
-            let list = vec![
-                ("global".to_string(), "Global".to_string()),
-                ("own".to_string(), "This repository".to_string()),
-            ];
-            let picker = segments(
-                "identity-scope",
-                &list,
-                if own { "own" } else { "global" },
-                false,
-                move |v, window, cx| {
-                    let own = v == "own";
-                    let _ = pick.update(cx, |w, cx| w.set_identity_scope(own, window, cx));
-                },
-            );
-            let form = inputs.clone().filter(|_| own).map(|(name, email)| {
-                let save = weak.clone();
-                let typed_name = name.read(cx).value().trim().to_string();
-                let typed_email = email.read(cx).value().trim().to_string();
-                let changed = typed_name != id.own_name.clone().unwrap_or_default()
-                    || typed_email != id.own_email.clone().unwrap_or_default();
-                let ready = changed && !typed_name.is_empty() && !typed_email.is_empty();
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(Input::new(&name).small())
-                    .child(Input::new(&email).small())
-                    .child(
-                        Button::new("identity-save")
-                            .small()
-                            .primary()
-                            .label("Save")
-                            .disabled(!ready)
-                            .on_click(move |_, _, cx| {
-                                let _ = save.update(cx, |w, cx| w.save_identity(cx));
-                            }),
-                    )
-            });
+    Row::new("Commit as", move |_, _, cx| {
+        let pick = weak.clone();
+        let list = vec![
+            ("global".to_string(), "Global".to_string()),
+            ("own".to_string(), "This repository".to_string()),
+        ];
+        let picker = segments(
+            "identity-scope",
+            &list,
+            if own { "own" } else { "global" },
+            false,
+            move |v, window, cx| {
+                let own = v == "own";
+                let _ = pick.update(cx, |w, cx| w.set_identity_scope(own, window, cx));
+            },
+        );
+        let form = inputs.clone().filter(|_| own).map(|(name, email)| {
+            let save = weak.clone();
+            let typed_name = name.read(cx).value().trim().to_string();
+            let typed_email = email.read(cx).value().trim().to_string();
+            let changed = typed_name != id.own_name.clone().unwrap_or_default()
+                || typed_email != id.own_email.clone().unwrap_or_default();
+            let ready = changed && !typed_name.is_empty() && !typed_email.is_empty();
             div()
                 .flex()
                 .flex_col()
                 .gap_2()
-                .w(px(256.))
-                .child(picker)
-                .children(form)
-                .into_any_element()
-        }),
-    )
+                .child(Input::new(&name).small())
+                .child(Input::new(&email).small())
+                .child(
+                    Button::new("identity-save")
+                        .small()
+                        .primary()
+                        .label("Save")
+                        .disabled(!ready)
+                        .on_click(move |_, _, cx| {
+                            let _ = save.update(cx, |w, cx| w.save_identity(cx));
+                        }),
+                )
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .w(px(256.))
+            .child(picker)
+            .children(form)
+            .into_any_element()
+    })
     .description(format!(
         "Who commits in this repository. Everywhere else: {} (your global git config).",
         who(
@@ -208,7 +198,7 @@ fn identity(w: &SettingsWindow, _cx: &App) -> SettingItem {
 
 /// With more than one account signed in to gh, which one this project's GitHub calls use. Also
 /// while one is picked, even if gh has fewer now (or is gone), so the pick can be undone.
-fn github_account(w: &SettingsWindow) -> Option<SettingItem> {
+fn github_account(w: &SettingsWindow) -> Option<Row> {
     let main = w.data.git.main.clone()?;
     let accounts = w.data.git.accounts.clone();
     let picked = w.data.git.picked_account.clone();
@@ -247,21 +237,19 @@ fn github_account(w: &SettingsWindow) -> Option<SettingItem> {
     }
     let weak = w.weak.clone();
     Some(
-        SettingItem::new(
+        pick(
             "GitHub account",
-            SettingField::scrollable_dropdown(
-                list,
-                move |cx| {
-                    gitviber_github::store::Store::get(cx)
-                        .account(&main)
-                        .unwrap_or_default()
-                        .into()
-                },
-                move |v: SharedString, cx| {
-                    let login = (!v.is_empty()).then(|| v.to_string());
-                    let _ = weak.update(cx, |w, cx| w.pick_account(login, cx));
-                },
-            ),
+            list,
+            move |cx| {
+                gitviber_github::store::Store::get(cx)
+                    .account(&main)
+                    .unwrap_or_default()
+                    .into()
+            },
+            move |v: SharedString, cx| {
+                let login = (!v.is_empty()).then(|| v.to_string());
+                let _ = weak.update(cx, |w, cx| w.pick_account(login, cx));
+            },
         )
         .description(
             "Pull requests, issues and checks here use this gh account. Push and fetch sign in \
@@ -271,157 +259,149 @@ fn github_account(w: &SettingsWindow) -> Option<SettingItem> {
 }
 
 /// The repository's remotes: add, rename, repoint or remove one.
-fn remotes(w: &SettingsWindow) -> SettingItem {
+fn remotes(w: &SettingsWindow) -> Row {
     let list = w.data.git.remotes.clone().unwrap_or_default();
     let editing = w.data.git.editing.clone();
     let inputs = w.remote_inputs.clone();
     let weak = w.weak.clone();
-    SettingItem::new(
-        "Remotes",
-        SettingField::render(move |_, _, cx| {
-            let t = cx.app_theme().clone();
-            let form = |cx: &App| -> AnyElement {
-                let Some((name, url)) = inputs.clone() else {
-                    return div().into_any_element();
-                };
-                let ready = !name.read(cx).value().trim().is_empty()
-                    && !url.read(cx).value().trim().is_empty();
-                let (cancel, save) = (weak.clone(), weak.clone());
-                let adding = editing.as_deref() == Some("");
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .p_2()
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(t.border)
-                    .child(Input::new(&name).small())
-                    .child(Input::new(&url).small())
-                    .child(
-                        div()
-                            .flex()
-                            .justify_end()
-                            .gap_2()
-                            .child(
-                                Button::new("remote-cancel")
-                                    .small()
-                                    .label("Cancel")
-                                    .on_click(move |_, window, cx| {
-                                        let _ = cancel
-                                            .update(cx, |w, cx| w.edit_remote(None, window, cx));
-                                    }),
-                            )
-                            .child(
-                                Button::new("remote-save")
-                                    .small()
-                                    .primary()
-                                    .label(if adding { "Add" } else { "Save" })
-                                    .disabled(!ready)
-                                    .on_click(move |_, _, cx| {
-                                        let _ = save.update(cx, |w, cx| w.save_remote(cx));
-                                    }),
-                            ),
-                    )
-                    .into_any_element()
+    Row::new("Remotes", move |_, _, cx| {
+        let t = cx.app_theme().clone();
+        let form = |cx: &App| -> AnyElement {
+            let Some((name, url)) = inputs.clone() else {
+                return div().into_any_element();
             };
-            let rows: Vec<AnyElement> = list
-                .iter()
-                .enumerate()
-                .map(|(i, r)| {
-                    if editing.as_deref() == Some(r.name.as_str()) {
-                        return form(cx);
-                    }
-                    let (edit, remove) = (weak.clone(), weak.clone());
-                    let (name, gone, url) = (r.name.clone(), r.name.clone(), r.url.clone());
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .text_size(rems(0.75))
-                        .child(
-                            div()
-                                .flex_none()
-                                .font_weight(gpui_kit::FontWeight::MEDIUM)
-                                .child(r.name.clone()),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .font_family(t.fonts.code.clone())
-                                .text_size(rems(0.6875))
-                                .text_color(t.muted_foreground)
-                                .child(r.url.clone()),
-                        )
-                        .child(
-                            Button::new(("remote-edit", i))
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Pencil)
-                                .tooltip("Edit")
-                                .on_click(move |_, window, cx| {
-                                    let name = name.clone();
-                                    let _ = edit
-                                        .update(cx, |w, cx| w.edit_remote(Some(name), window, cx));
-                                }),
-                        )
-                        .child(
-                            Button::new(("remote-remove", i))
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Trash)
-                                .tooltip("Remove…")
-                                .on_click(move |_, window, cx| {
-                                    let (name, url) = (gone.clone(), url.clone());
-                                    let _ = remove
-                                        .update(cx, |w, cx| w.remove_remote(name, url, window, cx));
-                                }),
-                        )
-                        .into_any_element()
-                })
-                .collect();
-            let add = if editing.as_deref() == Some("") {
-                form(cx)
-            } else {
-                let add = weak.clone();
-                div()
-                    .child(
-                        Button::new("remote-add")
-                            .small()
-                            .outline()
-                            .icon(IconName::Plus)
-                            .label("Add remote")
-                            .on_click(move |_, window, cx| {
-                                let _ = add.update(cx, |w, cx| {
-                                    w.edit_remote(Some(String::new()), window, cx)
-                                });
-                            }),
-                    )
-                    .into_any_element()
-            };
+            let ready =
+                !name.read(cx).value().trim().is_empty() && !url.read(cx).value().trim().is_empty();
+            let (cancel, save) = (weak.clone(), weak.clone());
+            let adding = editing.as_deref() == Some("");
             div()
                 .flex()
                 .flex_col()
-                .gap_1p5()
-                .w(px(272.))
-                .children(rows)
-                .child(add)
+                .gap_2()
+                .p_2()
+                .rounded(px(6.))
+                .border_1()
+                .border_color(t.border)
+                .child(Input::new(&name).small())
+                .child(Input::new(&url).small())
+                .child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new("remote-cancel")
+                                .small()
+                                .label("Cancel")
+                                .on_click(move |_, window, cx| {
+                                    let _ =
+                                        cancel.update(cx, |w, cx| w.edit_remote(None, window, cx));
+                                }),
+                        )
+                        .child(
+                            Button::new("remote-save")
+                                .small()
+                                .primary()
+                                .label(if adding { "Add" } else { "Save" })
+                                .disabled(!ready)
+                                .on_click(move |_, _, cx| {
+                                    let _ = save.update(cx, |w, cx| w.save_remote(cx));
+                                }),
+                        ),
+                )
                 .into_any_element()
-        }),
-    )
+        };
+        let rows: Vec<AnyElement> = list
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                if editing.as_deref() == Some(r.name.as_str()) {
+                    return form(cx);
+                }
+                let (edit, remove) = (weak.clone(), weak.clone());
+                let (name, gone, url) = (r.name.clone(), r.name.clone(), r.url.clone());
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_size(rems(0.75))
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_weight(gpui_kit::FontWeight::MEDIUM)
+                            .child(r.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .font_family(t.fonts.code.clone())
+                            .text_size(rems(0.6875))
+                            .text_color(t.muted_foreground)
+                            .child(r.url.clone()),
+                    )
+                    .child(
+                        Button::new(("remote-edit", i))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Pencil)
+                            .tooltip("Edit")
+                            .on_click(move |_, window, cx| {
+                                let name = name.clone();
+                                let _ =
+                                    edit.update(cx, |w, cx| w.edit_remote(Some(name), window, cx));
+                            }),
+                    )
+                    .child(
+                        Button::new(("remote-remove", i))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Trash)
+                            .tooltip("Remove…")
+                            .on_click(move |_, window, cx| {
+                                let (name, url) = (gone.clone(), url.clone());
+                                let _ = remove
+                                    .update(cx, |w, cx| w.remove_remote(name, url, window, cx));
+                            }),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+        let add = if editing.as_deref() == Some("") {
+            form(cx)
+        } else {
+            let add = weak.clone();
+            div()
+                .flex()
+                .child(
+                    Button::new("remote-add")
+                        .small()
+                        .outline()
+                        .icon(IconName::Plus)
+                        .label("Add remote")
+                        .on_click(move |_, window, cx| {
+                            let _ = add
+                                .update(cx, |w, cx| w.edit_remote(Some(String::new()), window, cx));
+                        }),
+                )
+                .into_any_element()
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_1p5()
+            .w(px(272.))
+            .children(rows)
+            .child(add)
+            .into_any_element()
+    })
     .description("Where this repository fetches from and pushes to.")
 }
 
 /// The agent CLI picker: a preset types its command; Custom stays picked while its text happens
 /// to match one.
-fn agent_item(
-    w: &SettingsWindow,
-    which: Which,
-    title: &'static str,
-    hint: &'static str,
-) -> SettingItem {
+fn agent_item(w: &SettingsWindow, which: Which, title: &'static str, hint: &'static str) -> Row {
     let weak = w.weak.clone();
     let custom = w.custom_agent[which as usize];
     let mut list: Vec<(SharedString, SharedString)> = AGENT_PRESETS
@@ -431,21 +411,19 @@ fn agent_item(
     list.push(("custom".into(), "Custom".into()));
     let command = which.getter();
     let get = command.clone();
-    SettingItem::new(
+    pick(
         title,
-        SettingField::scrollable_dropdown(
-            list,
-            move |cx| {
-                let c = get(Settings::get(cx));
-                match AgentPreset::of(&c) {
-                    Some(p) if !custom => p.key.into(),
-                    _ => "custom".into(),
-                }
-            },
-            move |v: SharedString, cx| {
-                let _ = weak.update(cx, |w, cx| w.pick_agent(which, &v, cx));
-            },
-        ),
+        list,
+        move |cx| {
+            let c = get(Settings::get(cx));
+            match AgentPreset::of(&c) {
+                Some(p) if !custom => p.key.into(),
+                _ => "custom".into(),
+            }
+        },
+        move |v: SharedString, cx| {
+            let _ = weak.update(cx, |w, cx| w.pick_agent(which, &v, cx));
+        },
     )
     .description(hint)
 }
@@ -477,23 +455,20 @@ impl Which {
     }
 }
 
-fn command_field(which: Which, hint: &'static str) -> SettingItem {
-    SettingItem::new(
-        "Command",
-        SettingField::render(move |_, window, cx| {
-            TextField::new(
-                match which {
-                    Which::Suggest => "suggest-command",
-                    Which::Review => "review-command",
-                },
-                which.getter(),
-                Rc::new(move |s, v| which.set(s, v)),
-            )
-            .placeholder("claude -p")
-            .width(px(320.))
-            .render(window, cx)
-        }),
-    )
+fn command_field(which: Which, hint: &'static str) -> Row {
+    Row::new("Command", move |_, window, cx| {
+        TextField::new(
+            match which {
+                Which::Suggest => "suggest-command",
+                Which::Review => "review-command",
+            },
+            which.getter(),
+            Rc::new(move |s, v| which.set(s, v)),
+        )
+        .placeholder("claude -p")
+        .width(px(320.))
+        .render(window, cx)
+    })
     .description(hint)
 }
 
@@ -502,16 +477,12 @@ fn models_link(id: &'static str, (label, url): (&'static str, &'static str)) -> 
 }
 
 /// The models field of a preset: an id typed, empty for the CLI's own default.
-fn model_field(p: &'static AgentPreset, which: Which) -> SettingItem {
+fn model_field(p: &'static AgentPreset, which: Which) -> Row {
+    // The flags themselves are in the command shown under "Show what the command gets".
     let lean = if p.lean.is_none() {
-        String::new()
+        ""
     } else {
-        format!(
-            " Every run also gets {} (a guided review --tools Read,Grep,Glob, to read the patch): \
-             no MCP servers, skills, saved session or tools beyond reading files, so it starts and \
-             answers faster.",
-            p.lean_flags(false)
-        )
+        " Runs start without your MCP servers, skills or saved session, so they answer faster."
     };
     let hint = match which {
         Which::Suggest => format!(
@@ -523,72 +494,65 @@ fn model_field(p: &'static AgentPreset, which: Which) -> SettingItem {
             "Empty runs Commit Messages' model for it. The link has the current IDs.".to_string()
         }
     };
-    SettingItem::new(
-        "Model",
-        SettingField::render(move |_, window, cx| {
-            let key = p.key;
-            let (get, set): (GetText, SetText) = match which {
-                Which::Suggest => (
-                    Rc::new(move |s: &Settings| p.model_in(&s.suggest_models)),
-                    Rc::new(move |s: &mut Settings, v: &str| {
-                        let v: String = v.chars().filter(|c| !c.is_whitespace()).collect();
-                        s.suggest_models.insert(key.into(), v);
-                    }),
-                ),
-                Which::Review => (
-                    Rc::new(move |s: &Settings| {
-                        s.review_models.get(key).cloned().unwrap_or_default()
-                    }),
-                    Rc::new(move |s: &mut Settings, v: &str| {
-                        let v: String = v.chars().filter(|c| !c.is_whitespace()).collect();
-                        if v.is_empty() {
-                            s.review_models.remove(key);
-                        } else {
-                            s.review_models.insert(key.into(), v);
-                        }
-                    }),
-                ),
-            };
-            let placeholder: SharedString = match which {
-                Which::Suggest => "CLI default".into(),
-                Which::Review => {
-                    let m = p.model_in(&Settings::get(cx).suggest_models);
-                    format!(
-                        "Same as Commit Messages: {}",
-                        if m.is_empty() { "CLI default" } else { &m }
-                    )
-                    .into()
-                }
-            };
-            let field_key: SharedString = format!("{which:?}-model-{key}").into();
-            div()
-                .flex()
-                .flex_col()
-                .items_end()
-                .gap_1()
-                .child(
-                    TextField::new(field_key, get, set)
-                        .placeholder(placeholder)
-                        .width(px(320.))
-                        .render(window, cx),
+    Row::new("Model", move |_, window, cx| {
+        let key = p.key;
+        let (get, set): (GetText, SetText) = match which {
+            Which::Suggest => (
+                Rc::new(move |s: &Settings| p.model_in(&s.suggest_models)),
+                Rc::new(move |s: &mut Settings, v: &str| {
+                    let v: String = v.chars().filter(|c| !c.is_whitespace()).collect();
+                    s.suggest_models.insert(key.into(), v);
+                }),
+            ),
+            Which::Review => (
+                Rc::new(move |s: &Settings| s.review_models.get(key).cloned().unwrap_or_default()),
+                Rc::new(move |s: &mut Settings, v: &str| {
+                    let v: String = v.chars().filter(|c| !c.is_whitespace()).collect();
+                    if v.is_empty() {
+                        s.review_models.remove(key);
+                    } else {
+                        s.review_models.insert(key.into(), v);
+                    }
+                }),
+            ),
+        };
+        let placeholder: SharedString = match which {
+            Which::Suggest => "CLI default".into(),
+            Which::Review => {
+                let m = p.model_in(&Settings::get(cx).suggest_models);
+                format!(
+                    "Same as Commit Messages: {}",
+                    if m.is_empty() { "CLI default" } else { &m }
                 )
-                .child(models_link("models-link", p.models))
-                .into_any_element()
-        }),
-    )
+                .into()
+            }
+        };
+        let field_key: SharedString = format!("{which:?}-model-{key}").into();
+        div()
+            .flex()
+            .flex_col()
+            .items_end()
+            .gap_1()
+            .child(
+                TextField::new(field_key, get, set)
+                    .placeholder(placeholder)
+                    .width(px(320.))
+                    .render(window, cx),
+            )
+            .child(models_link("models-link", p.models))
+            .into_any_element()
+    })
     .description(hint)
 }
 
 /// A custom command's model, which goes in the command itself.
-fn custom_model() -> SettingItem {
-    SettingItem::new(
-        "Model",
-        SettingField::render(|_, _, _| models_link("all-models", ALL_MODELS)),
+fn custom_model() -> Row {
+    Row::new("Model", |_, _, _| models_link("all-models", ALL_MODELS)).description(
+        "Goes in the command itself. models.dev lists every provider's current model IDs.",
     )
-    .description("Goes in the command itself. models.dev lists every provider's current model IDs.")
 }
 
-fn effort_field(p: &'static AgentPreset, which: Which) -> Option<SettingItem> {
+fn effort_field(p: &'static AgentPreset, which: Which) -> Option<Row> {
     let (flag, levels, default) = p.effort?;
     let key = p.key;
     let mut list: Vec<(SharedString, SharedString)> = Vec::new();
@@ -623,36 +587,34 @@ fn effort_field(p: &'static AgentPreset, which: Which) -> Option<SettingItem> {
     };
     let _ = flag;
     Some(
-        SettingItem::new(
+        pick(
             "Effort",
-            SettingField::scrollable_dropdown(
-                list,
-                move |cx| {
-                    let s = Settings::get(cx);
-                    match which {
-                        Which::Suggest => p.effort_in(&s.suggest_efforts).into(),
-                        Which::Review => s
-                            .review_efforts
-                            .get(key)
-                            .cloned()
-                            .unwrap_or_else(|| "same".into())
-                            .into(),
+            list,
+            move |cx| {
+                let s = Settings::get(cx);
+                match which {
+                    Which::Suggest => p.effort_in(&s.suggest_efforts).into(),
+                    Which::Review => s
+                        .review_efforts
+                        .get(key)
+                        .cloned()
+                        .unwrap_or_else(|| "same".into())
+                        .into(),
+                }
+            },
+            move |v: SharedString, cx| {
+                Settings::update(cx, |s| match which {
+                    Which::Suggest => {
+                        s.suggest_efforts.insert(key.into(), v.to_string());
                     }
-                },
-                move |v: SharedString, cx| {
-                    Settings::update(cx, |s| match which {
-                        Which::Suggest => {
-                            s.suggest_efforts.insert(key.into(), v.to_string());
-                        }
-                        Which::Review if v.as_ref() == "same" => {
-                            s.review_efforts.remove(key);
-                        }
-                        Which::Review => {
-                            s.review_efforts.insert(key.into(), v.to_string());
-                        }
-                    })
-                },
-            ),
+                    Which::Review if v.as_ref() == "same" => {
+                        s.review_efforts.remove(key);
+                    }
+                    Which::Review => {
+                        s.review_efforts.insert(key.into(), v.to_string());
+                    }
+                })
+            },
         )
         .description(hint),
     )
@@ -661,7 +623,7 @@ fn effort_field(p: &'static AgentPreset, which: Which) -> Option<SettingItem> {
 const SUGGEST_LIMIT_KB: usize = gitviber_core::suggest::MAX_DIFF / 1024;
 const GUIDE_LIMIT_KB: usize = gitviber_core::suggest::MAX_GUIDE_INPUT / 1024;
 
-pub fn commit(w: &SettingsWindow, cx: &App) -> SettingPage {
+pub fn commit(w: &SettingsWindow, cx: &App) -> Page {
     let s = Settings::get(cx);
     let preset = AgentPreset::of(&s.suggest_command).filter(|_| !w.custom_agent[0]);
     let mut items = vec![
@@ -696,49 +658,93 @@ pub fn commit(w: &SettingsWindow, cx: &App) -> SettingPage {
     }
     let prompt = gitviber_changes::model::text::SUGGEST_PROMPT;
     let pull = gitviber_github::logic::suggest::PULL_PROMPT;
-    SettingPage::new("Commit Messages")
-        .icon(IconName::Sparkles)
-        .groups([
-            SettingGroup::new().title("Suggestions").items(items),
-            SettingGroup::new().title("What the command gets").item(
-                SettingItem::render(move |_, _, cx| {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .w_full()
-                        .child(note(
-                            "Only when you click ✦, and nothing else from the app (Guided Review \
-                             shows what a guided review gets):",
-                            cx,
-                        ))
-                        .child(pre(
-                            format!(
-                                "{prompt}\n\n[the diff: the staged changes, or every change when \
-                                 nothing is staged (Commit all), or the whole commit when \
-                                 amending; up to {SUGGEST_LIMIT_KB} KB, with a note in the prompt \
-                                 when it's cut]"
-                            ),
-                            cx,
-                        ))
-                        .child(note("For a pull request:", cx))
-                        .child(pre(
-                            format!(
-                                "{pull}\n\n[the subjects of the branch's commits, the \
-                                 repository's pull request template if it has one, and the \
-                                 branch's diff since it left the base; up to {SUGGEST_LIMIT_KB} KB \
-                                 in all]"
-                            ),
-                            cx,
-                        ))
-                        .into_any_element()
-                })
-                .keywords(["prompt", "diff"]),
-            ),
-        ])
+    let line = gitviber_changes::model::text::command_line(
+        &s.suggest_command,
+        &s.suggest_models,
+        &s.suggest_efforts,
+    );
+    let (open, weak) = (w.show_prompt[0], w.weak.clone());
+    Page::new().groups([
+        Group::new().title("Suggestions").items(items),
+        Group::new().item(
+            Row::custom(move |_, cx| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .w_full()
+                    .child(note(
+                        "It runs only when you click ✦, and gets nothing else from the app \
+                             (Guided Review shows what a guided review gets).",
+                        cx,
+                    ))
+                    .child(disclosure("suggest-prompt", 0, open, &weak))
+                    .when(open, |d| {
+                        d.child(note("The command as it runs:", cx))
+                            .child(pre(line.clone(), cx))
+                            .child(note("What it reads, for a commit message:", cx))
+                            .child(pre(
+                                format!(
+                                    "{prompt}\n\n[the diff: the staged changes, or every \
+                                         change when nothing is staged (Commit all), or the whole \
+                                         commit when amending; up to {SUGGEST_LIMIT_KB} KB, with a \
+                                         note in the prompt when it's cut]"
+                                ),
+                                cx,
+                            ))
+                            .child(note("For a pull request:", cx))
+                            .child(pre(
+                                format!(
+                                    "{pull}\n\n[the subjects of the branch's commits, the \
+                                         repository's pull request template if it has one, and \
+                                         the branch's diff since it left the base; up to \
+                                         {SUGGEST_LIMIT_KB} KB in all]"
+                                ),
+                                cx,
+                            ))
+                    })
+                    .into_any_element()
+            })
+            .keywords(["prompt", "diff", "command"]),
+        ),
+    ])
 }
 
-pub fn review(w: &SettingsWindow, cx: &App) -> SettingPage {
+/// "Show what the command gets": the command line and the prompt, open below it.
+fn disclosure(
+    id: &'static str,
+    which: usize,
+    open: bool,
+    weak: &WeakEntity<SettingsWindow>,
+) -> AnyElement {
+    let weak = weak.clone();
+    div()
+        .flex()
+        .child(
+            Button::new(id)
+                .ghost()
+                .small()
+                .icon(if open {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                })
+                .label(if open {
+                    "Hide what the command gets"
+                } else {
+                    "Show what the command gets"
+                })
+                .on_click(move |_, _, cx| {
+                    let _ = weak.update(cx, |w, cx| {
+                        w.show_prompt[which] = !w.show_prompt[which];
+                        cx.notify();
+                    });
+                }),
+        )
+        .into_any_element()
+}
+
+pub fn review(w: &SettingsWindow, cx: &App) -> Page {
     let s = Settings::get(cx);
     let command = s
         .review_command
@@ -754,10 +760,7 @@ pub fn review(w: &SettingsWindow, cx: &App) -> SettingPage {
     .into();
     let weak = w.weak.clone();
     let mut agent =
-        vec![SettingItem::new(
-        "Run with",
-        SettingField::scrollable_dropdown(
-            vec![
+        vec![pick("Run with", vec![
                 ("same".into(), same),
                 ("own".into(), "Its own command".into()),
             ],
@@ -770,9 +773,7 @@ pub fn review(w: &SettingsWindow, cx: &App) -> SettingPage {
             },
             move |v: SharedString, cx| {
                 let _ = weak.update(cx, |w, cx| w.set_review_own(v.as_ref() == "own", cx));
-            },
-        ),
-    )
+            })
     .description(
         "The agent CLI that writes Explain Commit (History) and Guided Review (branch review).",
     )];
@@ -801,10 +802,7 @@ pub fn review(w: &SettingsWindow, cx: &App) -> SettingPage {
         .collect();
     list.push(("custom".into(), "Custom…".into()));
     let mut writing =
-        vec![SettingItem::new(
-        "Language",
-        SettingField::scrollable_dropdown(
-            list,
+        vec![pick("Language", list,
             move |cx| {
                 if custom_language {
                     "custom".into()
@@ -814,84 +812,82 @@ pub fn review(w: &SettingsWindow, cx: &App) -> SettingPage {
             },
             move |v: SharedString, cx| {
                 let _ = weak.update(cx, |w, cx| w.pick_language(&v, cx));
-            },
-        ),
-    )
+            })
     .description(
         "Guides and risks are written in it, and Ask Agent asks for replies in it; code, paths \
          and names stay as they are. Commit messages and pull requests stay in English.",
     )];
     if custom_language {
         writing.push(
-            SettingItem::new(
-                "Custom language",
-                SettingField::render(|_, window, cx| {
-                    TextField::new(
-                        "review-language",
-                        Rc::new(|s: &Settings| s.review_language.clone()),
-                        Rc::new(|s: &mut Settings, v: &str| {
-                            s.review_language = v.chars().take(40).collect()
-                        }),
-                    )
-                    .placeholder("English")
-                    .width(px(320.))
-                    .render(window, cx)
-                }),
-            )
+            Row::new("Custom language", |_, window, cx| {
+                TextField::new(
+                    "review-language",
+                    Rc::new(|s: &Settings| s.review_language.clone()),
+                    Rc::new(|s: &mut Settings, v: &str| {
+                        s.review_language = v.chars().take(40).collect()
+                    }),
+                )
+                .placeholder("English")
+                .width(px(320.))
+                .render(window, cx)
+            })
             .description(
                 "Its name, as you'd say it to the agent: Ukrainian, Brazilian Portuguese, Bahasa \
                  Indonesia.",
             ),
         );
     }
-    SettingPage::new("Guided Review")
-        .icon(IconName::ScanSearch)
-        .groups([
-            SettingGroup::new().title("Agent").items(agent),
-            SettingGroup::new().title("Writing").items(writing),
-            SettingGroup::new().title("What the command gets").item(
-                SettingItem::render(|_, _, cx| {
-                    let language = Settings::get(cx).review_language.clone();
-                    let guide = gitviber_review::model::guide::guide_prompt(&language);
-                    let risks = gitviber_review::model::risks::risks_prompt(&language);
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .w_full()
-                        .child(note(
-                            "Only when you click Explain Commit, Guided Review or Find Risks, and \
-                             nothing else from the app:",
-                            cx,
-                        ))
-                        .child(pre(
-                            format!(
-                                "{guide}\n\n[a commit's message, the subjects of the branch's or \
-                                 pull request's commits since it left the base, or for uncommitted \
-                                 changes what they're against; a list of every changed file; then \
-                                 as many whole diffs as fit in {GUIDE_LIMIT_KB} KB, lockfiles and \
-                                 generated files left out. When any diff is left out, the whole \
-                                 patch goes in a temporary file only you can read, named in the \
-                                 prompt and deleted when the run ends.]"
-                            ),
-                            cx,
-                        ))
-                        .child(note(
-                            "Find Risks sends the same change after this instead:",
-                            cx,
-                        ))
-                        .child(pre(risks, cx))
-                        .child(note(
-                            "Ask Agent takes your question, or Skip, then opens a new terminal tab \
-                             where Claude Code starts with that part of the review and the \
-                             question sent, with this page's model and effort; Send to Agent \
-                             sends a risk right away. codex, opencode and pi start with it on the \
-                             clipboard.",
-                            cx,
-                        ))
-                        .into_any_element()
-                })
-                .keywords(["prompt", "risks"]),
-            ),
-        ])
+    let line = gitviber_review::model::agent::ReviewAgent::from_settings(s).line(true);
+    let (open, weak) = (w.show_prompt[1], w.weak.clone());
+    Page::new().groups([
+        Group::new().title("Agent").items(agent),
+        Group::new().title("Writing").items(writing),
+        Group::new().item(
+            Row::custom(move |_, cx| {
+                let language = Settings::get(cx).review_language.clone();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .w_full()
+                    .child(note(
+                        "It runs only when you click Explain Commit, Guided Review or Find \
+                             Risks, and gets nothing else from the app. Ask Agent takes your \
+                             question, or Skip, then opens a new terminal tab where Claude Code \
+                             starts with that part of the review and the question sent, with this \
+                             page's model and effort; Send to Agent sends a risk right away. \
+                             codex, opencode and pi start with it on the clipboard.",
+                        cx,
+                    ))
+                    .child(disclosure("review-prompt", 1, open, &weak))
+                    .when(open, |d| {
+                        let guide = gitviber_review::model::guide::guide_prompt(&language);
+                        let risks = gitviber_review::model::risks::risks_prompt(&language);
+                        d.child(note("The command as it runs:", cx))
+                            .child(pre(line.clone(), cx))
+                            .child(note("What it reads:", cx))
+                            .child(pre(
+                                format!(
+                                    "{guide}\n\n[a commit's message, the subjects of the \
+                                         branch's or pull request's commits since it left the \
+                                         base, or for uncommitted changes what they're against; a \
+                                         list of every changed file; then as many whole diffs as \
+                                         fit in {GUIDE_LIMIT_KB} KB, lockfiles and generated \
+                                         files left out. When any diff is left out, the whole \
+                                         patch goes in a temporary file only you can read, named \
+                                         in the prompt and deleted when the run ends.]"
+                                ),
+                                cx,
+                            ))
+                            .child(note(
+                                "Find Risks sends the same change after this instead:",
+                                cx,
+                            ))
+                            .child(pre(risks, cx))
+                    })
+                    .into_any_element()
+            })
+            .keywords(["prompt", "risks", "command"]),
+        ),
+    ])
 }
