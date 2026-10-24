@@ -3,5 +3,6 @@ fn main() {
     if let Some(code) = gitviber_core::askpass::helper() {
         std::process::exit(code);
     }
+    gitviber_core::malloc::return_freed_blocks();
     gitviber_app::run(|_| {});
 }
