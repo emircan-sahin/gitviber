@@ -4,8 +4,10 @@
 
 use gitviber_core::api;
 use gitviber_terminal::{TerminalPane, TerminalPanel};
+use gitviber_ui::settings::AgentPreset;
 use gitviber_ui::workspace::{Toast, Workspace};
 use gpui::{App, AppContext as _, ClipboardItem, Entity, Window};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// The terminal panel's id, as the terminal crate registers it.
@@ -45,52 +47,143 @@ pub fn ptys_in(root: &str, window: &mut Window, cx: &mut App) -> Vec<u32> {
         .collect()
 }
 
-/// What's asked, with what it's about, as one prompt.
-fn prompt(content: &str, question: &str) -> (String, bool) {
-    let q = question.trim();
-    if q.is_empty() {
-        (content.to_string(), false)
-    } else {
-        (format!("{content}\n\nMy question: {q}"), true)
+/// Claude Code's own names for its newest models of each size; Settings takes any id.
+const CLAUDE_MODELS: [&str; 3] = ["opus", "sonnet", "haiku"];
+
+/// The agent CLI Ask Agent runs (Settings → Guided Review's, else the suggest command), its
+/// preset if it's one, and the models and efforts typed per preset.
+struct Agent {
+    command: String,
+    preset: Option<&'static AgentPreset>,
+    models: BTreeMap<String, String>,
+    efforts: BTreeMap<String, String>,
+}
+
+fn agent(cx: &App) -> Agent {
+    let s = gitviber_ui::Settings::get(cx);
+    let command = s
+        .review_command
+        .clone()
+        .unwrap_or_else(|| s.suggest_command.clone());
+    let mut models = s.suggest_models.clone();
+    models.extend(s.review_models.clone());
+    let mut efforts = s.suggest_efforts.clone();
+    efforts.extend(s.review_efforts.clone());
+    Agent {
+        preset: AgentPreset::of(&command),
+        command,
+        models,
+        efforts,
     }
 }
 
-/// `content` to the agent in a new terminal tab of `root`, named `name`.
+fn program_of(command: &str) -> String {
+    command
+        .split_whitespace()
+        .next()
+        .and_then(|w| w.rsplit('/').next())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The agent's name for the question's label.
+pub fn agent_name(cx: &App) -> String {
+    let program = program_of(&agent(cx).command);
+    if program.eq_ignore_ascii_case("claude") {
+        "Claude Code".into()
+    } else if program.is_empty() {
+        "the agent".into()
+    } else {
+        program
+    }
+}
+
+/// The models the question's box offers and the one it starts on: the last picked, else
+/// Settings'. Only for Claude Code, the one agent that starts with the question in hand.
+pub fn model_choices(last: Option<&str>, cx: &App) -> Option<(Vec<String>, String)> {
+    let a = agent(cx);
+    let preset = a.preset.filter(|p| p.key == "claude")?;
+    let settings = preset.model_in(&a.models);
+    let value = last.map_or_else(|| settings.clone(), str::to_string);
+    let mut choices = vec![value.clone(), settings];
+    choices.extend(CLAUDE_MODELS.map(String::from));
+    let mut seen = std::collections::HashSet::new();
+    choices.retain(|c| seen.insert(c.clone()));
+    Some((choices, value))
+}
+
+/// What goes into a terminal: no control characters, no trailing blank lines.
+fn for_terminal(text: &str) -> String {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let clean: String = text
+        .chars()
+        .filter(|&c| c == '\n' || c == '\t' || !c.is_control())
+        .collect();
+    clean.trim_end_matches('\n').to_string()
+}
+
+/// What's asked, with what it's about, as one prompt; and whether it's sent at once.
+fn prompt(content: &str, question: &str) -> (String, bool) {
+    let q = question.trim();
+    let ask = if q.is_empty() {
+        "My question follows. If none does, just say in one line that you're ready, and wait for it."
+            .to_string()
+    } else {
+        format!("My question: {q}")
+    };
+    (format!("{}\n\n{ask}", for_terminal(content)), !q.is_empty())
+}
+
+/// `content` to the agent in a new terminal tab of `root`, named `name`: Claude Code with it in
+/// its prompt box (sent with a question), started on `model` (None: Settings'); another CLI with
+/// it on the clipboard, its own session started when it has one.
 pub fn ask_agent(
     root: &str,
     content: &str,
     name: String,
     question: &str,
+    model: Option<String>,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let settings = gitviber_ui::Settings::get(cx);
-    let command = settings
-        .review_command
-        .clone()
-        .unwrap_or_else(|| settings.suggest_command.clone());
-    let program = command
-        .split_whitespace()
-        .next()
-        .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
-        .unwrap_or_default();
+    let a = agent(cx);
     let (text, send) = prompt(content, question);
     let root = PathBuf::from(root);
-    if !program.eq_ignore_ascii_case("claude") {
+    if !program_of(&a.command).eq_ignore_ascii_case("claude") {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
+        let session = a
+            .preset
+            .filter(|p| p.session)
+            .map(|_| program_of(&a.command));
+        let detail = match &session {
+            Some(program) => format!("Paste it into {program}, starting in the terminal."),
+            None => "Paste it into your agent.".into(),
+        };
         toast(
-            Toast::info("Paste it into your agent.").title("Copied for the agent"),
+            Toast::info(detail).title("Copied for the agent"),
             window,
             cx,
         );
+        if let (Some(program), Some(panel)) = (session, terminal(window, cx, true)) {
+            panel.update(cx, |p, cx| p.open_terminal(root, Some(program), window, cx));
+        }
         return;
     }
+    let settings_model = a.preset.map(|p| p.model_in(&a.models));
+    // Settings' effort is for Settings' model: another may not take it (haiku has no max).
+    let effort = a
+        .preset
+        .filter(|_| model.is_none() || model == settings_model)
+        .map(|p| p.effort_in(&a.efforts))
+        .filter(|e| !e.is_empty());
+    let model = model.or(settings_model).filter(|m| !m.is_empty());
     let core = gitviber_ui::core(cx);
+    let command = a.command;
     window
         .spawn(cx, async move |cx| {
             let line = cx
                 .background_spawn(async move {
-                    api::changes::handoff_command(&core, command, None, None, name, text, send)
+                    api::changes::handoff_command(&core, command, model, effort, name, text, send)
                 })
                 .await;
             let _ = cx.update(|window, cx| match line {
@@ -100,13 +193,32 @@ pub fn ask_agent(
                     }
                     None => toast(
                         Toast::error("This window has no terminal.")
-                            .title("Couldn't ask the agent"),
+                            .title("Couldn't hand it to Claude Code"),
                         window,
                         cx,
                     ),
                 },
-                Err(e) => toast(Toast::error(e).title("Couldn't ask the agent"), window, cx),
+                Err(e) => toast(
+                    Toast::error(e).title("Couldn't hand it to Claude Code"),
+                    window,
+                    cx,
+                ),
             });
         })
         .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_prompt_is_sent_only_with_a_question_and_carries_no_control_characters() {
+        let (text, send) = prompt("a\x1b[31m\r\nb\n\n", "  why?  ");
+        assert_eq!(text, "a[31m\nb\n\nMy question: why?");
+        assert!(send);
+        let (text, send) = prompt("x", " ");
+        assert!(!send);
+        assert!(text.ends_with("and wait for it."));
+    }
 }

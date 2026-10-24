@@ -132,9 +132,25 @@ struct Ask {
     about: AskAbout,
     input: Entity<InputState>,
     include_errors: bool,
+    /// The models offered and the one it starts on (Claude Code only).
+    model: Option<(Vec<String>, String)>,
     /// Where it's anchored in the page area, its px.
     at: (f32, f32),
     _events: Subscription,
+}
+
+/// Room around a device's body: Responsive's drag handles sit in it.
+const PAD: f32 = 16.;
+
+/// Responsive's right edge (`dx`), bottom edge (`dy`) or corner being dragged: where the drag
+/// began, the scale then, and the size so far.
+struct Drag {
+    dx: f64,
+    dy: f64,
+    start: (f32, f32),
+    scale: f64,
+    from: (f64, f64),
+    size: (f64, f64),
 }
 
 pub struct BrowserTab {
@@ -170,6 +186,7 @@ pub struct BrowserTab {
     last_pick: Option<Pick>,
     picks: Option<Vec<Pick>>,
     ask: Option<Ask>,
+    drag: Option<Drag>,
     ports: Rc<std::cell::RefCell<Vec<Port>>>,
     /// The page area's size as last laid out, for device mode's fit.
     area: Rc<Cell<(f32, f32)>>,
@@ -271,6 +288,7 @@ impl BrowserTab {
             last_pick: None,
             picks: None,
             ask: None,
+            drag: None,
             ports: Rc::default(),
             area: Rc::default(),
             persist: Task::ready(()),
@@ -452,6 +470,76 @@ impl BrowserTab {
     fn device(&self) -> Option<(devices::Device, DeviceChoice)> {
         let choice = self.saved.device.clone()?;
         devices::device_of(&choice).map(|d| (d, choice))
+    }
+
+    /// The device as laid out in the page area, Responsive at its size as dragged so far.
+    fn fitted(&self) -> Option<(devices::Device, DeviceChoice, Fitted)> {
+        let mut choice = self.saved.device.clone()?;
+        if let Some(d) = &self.drag {
+            (choice.w, choice.h) = (Some(d.size.0), Some(d.size.1));
+        }
+        let device = devices::device_of(&choice)?;
+        let area = self.area.get();
+        let room = (
+            f64::from((area.0 - 2. * PAD).max(0.)),
+            f64::from((area.1 - 2. * PAD).max(0.)),
+        );
+        let mut f = devices::fit(&device, choice.rotated, room);
+        let pad = f64::from(PAD);
+        for b in [&mut f.frame, &mut f.screen, &mut f.page] {
+            b.x += pad;
+            b.y += pad;
+        }
+        Some((device, choice, f))
+    }
+
+    /// A drag of Responsive's edges begins.
+    fn start_drag(&mut self, dx: f64, dy: f64, at: gpui::Point<Pixels>, cx: &mut Context<Self>) {
+        let Some((device, _, f)) = self.fitted() else {
+            return;
+        };
+        self.drag = Some(Drag {
+            dx,
+            dy,
+            start: (f32::from(at.x), f32::from(at.y)),
+            scale: f.scale.max(0.01),
+            from: (device.w, device.h),
+            size: (device.w, device.h),
+        });
+        cx.notify();
+    }
+
+    /// Twice the pointer's move: the screen stays centered, so each edge goes half the way.
+    fn drag_to(&mut self, at: gpui::Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(d) = self.drag.as_mut() else {
+            return;
+        };
+        let moved = (
+            f64::from(f32::from(at.x) - d.start.0),
+            f64::from(f32::from(at.y) - d.start.1),
+        );
+        d.size = (
+            devices::clamp_side(d.from.0 + d.dx * 2. * moved.0 / d.scale),
+            devices::clamp_side(d.from.1 + d.dy * 2. * moved.1 / d.scale),
+        );
+        cx.notify();
+    }
+
+    /// Let go: the size is kept with the tab.
+    fn end_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(d) = self.drag.take() else {
+            return;
+        };
+        if d.size != d.from {
+            let next = DeviceChoice {
+                name: devices::RESPONSIVE.into(),
+                w: Some(d.size.0),
+                h: Some(d.size.1),
+                ..DeviceChoice::default()
+            };
+            self.choose_device(Some(next), window, cx);
+        }
+        cx.notify();
     }
 
     // MARK: Events
@@ -810,13 +898,7 @@ impl BrowserTab {
     }
 
     fn page_shown_as(&self) -> Option<ShownAs> {
-        let (device, choice) = self.device()?;
-        let area = self.area.get();
-        let f = devices::fit(
-            &device,
-            choice.rotated,
-            (f64::from(area.0), f64::from(area.1)),
-        );
+        let (device, _, f) = self.fitted()?;
         Some(ShownAs {
             name: device.name,
             viewport: f.viewport,
@@ -884,11 +966,15 @@ impl BrowserTab {
         self.last_pick = None;
         let shown = self.page_shown_as();
         if let Some(about) = format::picks_about(&done, shown.as_ref()) {
+            // In the area's px: below the last pick, past the device's frame in device mode.
+            let origin = self
+                .fitted()
+                .map_or((0., 0.), |(_, _, f)| (f.page.x, f.page.y));
             let at = done.last().map_or((8., 8.), |p| {
                 let factor = self.factor();
                 (
-                    (p.bounds.x * factor) as f32,
-                    ((p.bounds.y + p.bounds.h) * factor) as f32 + 6.,
+                    (origin.0 + p.bounds.x * factor) as f32,
+                    (origin.1 + (p.bounds.y + p.bounds.h) * factor) as f32 + 6.,
                 )
             });
             self.picks = Some(done);
@@ -898,11 +984,8 @@ impl BrowserTab {
 
     /// A page px in the tab's px: the device's scale in device mode, else the page's zoom.
     fn factor(&self) -> f64 {
-        match self.device() {
-            Some((d, c)) => {
-                let area = self.area.get();
-                devices::fit(&d, c.rotated, (f64::from(area.0), f64::from(area.1))).scale
-            }
+        match self.fitted() {
+            Some((_, _, f)) => f.scale,
             None => self.saved.zoom,
         }
     }
@@ -917,20 +1000,38 @@ impl BrowserTab {
         // The keys come back from the page first, or the question's field would get none.
         crate::focus(&self.saved.id, false);
         self.page_had_keys = false;
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Ask the agent… (↵)"));
-        let events = cx.subscribe_in(&input, window, |this, _, e: &InputEvent, window, cx| {
-            if let InputEvent::PressEnter { .. } = e {
-                this.send_ask(true, window, cx);
+        let input = cx
+            .new(|cx| InputState::new(window, cx).placeholder("Your question (optional). ↵ asks."));
+        let events = cx.subscribe_in(&input, window, |this, input, e: &InputEvent, window, cx| {
+            match e {
+                // ↵ asks a question; without one, Skip is the button.
+                InputEvent::PressEnter { .. } if !input.read(cx).value().trim().is_empty() => {
+                    this.send_ask(true, window, cx)
+                }
+                InputEvent::Change => cx.notify(),
+                _ => {}
             }
         });
         input.update(cx, |i, cx| i.focus(window, cx));
+        let last = super::store::ask_model(cx);
+        let model = super::ask::model_choices(last.as_deref(), cx);
         self.ask = Some(Ask {
             about,
             input,
             include_errors: false,
+            model,
             at,
             _events: events,
         });
+        cx.notify();
+    }
+
+    /// The model picked to ask with, remembered for the next question of a page.
+    fn pick_model(&mut self, model: String, cx: &mut Context<Self>) {
+        super::store::set_ask_model(&model, cx);
+        if let Some((_, m)) = self.ask.as_mut().and_then(|a| a.model.as_mut()) {
+            *m = model;
+        }
         cx.notify();
     }
 
@@ -957,11 +1058,13 @@ impl BrowserTab {
                 content = format!("{content}\n\n{errors}");
             }
         }
+        let model = ask.model.map(|(_, m)| m);
         super::ask::ask_agent(
             &self.root,
             &content,
             ask.about.name.clone(),
             &question,
+            model,
             window,
             cx,
         );

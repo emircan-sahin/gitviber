@@ -18,8 +18,14 @@ pub use agents::open_new_tab;
 pub use tab::{BrowserTab, Saved};
 
 use gitviber_ui::actions::browser as act;
-use gitviber_ui::workspace::{register_opener, Selection, TabHandle, Workspace};
-use gpui::{App, AppContext as _, Window};
+use gitviber_ui::workspace::{
+    register_bar_item, register_opener, BarItem, BarSlot, PanelContext, Selection, TabHandle,
+    Workspace,
+};
+use gpui::{AnyElement, App, AppContext as _, IntoElement as _, Window};
+use gpui_kit::assets::IconName;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::Sizable as _;
 
 /// A new tab's id: a page's view is kept by it, whatever it loads.
 pub fn new_id() -> String {
@@ -83,7 +89,25 @@ pub fn init(cx: &mut App) {
             let _ = handle.run_on_main_thread(move || crate::agent_pane_closed(id));
         }
     }));
+    // A terminal pane's menu opens what its dev server serves, lowest port first.
+    gitviber_terminal::set_ports_reader(
+        cx,
+        std::rc::Rc::new(|shells| {
+            let mut ports: Vec<u16> = crate::ports::listening(shells)
+                .into_iter()
+                .map(|p| p.port)
+                .collect();
+            ports.sort_unstable();
+            ports.dedup();
+            ports
+        }),
+    );
     register_opener(cx, "browser", open);
+    // After the agents' menu, before the terminal and panel toggles, as the old top bar had it.
+    register_bar_item(
+        cx,
+        BarItem::new("browser", BarSlot::TopActions, globe).order(6),
+    );
     cx.on_action(|_: &act::Open, cx| {
         if let Some(w) = cx.active_window() {
             let _ = w.update(cx, |_, window, cx| open_new_tab(window, cx));
@@ -100,6 +124,23 @@ pub fn init(cx: &mut App) {
         let folder = crate::picks::folder(&cache);
         std::thread::spawn(move || crate::picks::prune(&folder, std::time::SystemTime::now()));
     }
+}
+
+/// The top bar's globe: a new browser tab beside the code.
+fn globe(_: &PanelContext, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    let tip = match gitviber_ui::keymap::shortcut_label("browser.open", cx) {
+        Some(keys) => format!("Open browser  {keys}"),
+        None => "Open browser".into(),
+    };
+    Some(
+        Button::new("open-browser")
+            .ghost()
+            .small()
+            .icon(IconName::Globe)
+            .tooltip(tip)
+            .on_click(|_, window, cx| open_new_tab(window, cx))
+            .into_any_element(),
+    )
 }
 
 /// A tab's view from its selection. Runs inside the workspace's update: nothing here reads it.

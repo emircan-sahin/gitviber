@@ -363,13 +363,7 @@ impl BrowserTab {
     }
 
     fn device_bar(&mut self, t: &AppTheme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (device, choice) = self.device()?;
-        let area = self.area.get();
-        let fitted = devices::fit(
-            &device,
-            choice.rotated,
-            (f64::from(area.0), f64::from(area.1)),
-        );
+        let (device, choice, fitted) = self.fitted()?;
         let responsive = choice.name == devices::RESPONSIVE;
         let weak = cx.weak_entity();
         let rotated = choice.rotated;
@@ -838,7 +832,7 @@ impl BrowserTab {
     fn ask_box(&self, t: &AppTheme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let ask = self.ask.as_ref()?;
         let area = self.area.get();
-        let (w, h) = (320., 150.);
+        let (w, h) = (320., 190.);
         let left = ask.at.0.clamp(4., (area.0 - w - 4.).max(4.));
         let top = if ask.at.1 + h > area.1 {
             (area.1 - h - 4.).max(4.)
@@ -848,6 +842,9 @@ impl BrowserTab {
         let errors = self.page_info(cx).map_or(0, |p| p.errors);
         let picks = self.picks.is_some();
         let include = ask.include_errors;
+        let model = ask.model.clone();
+        let empty = ask.input.read(cx).value().trim().is_empty();
+        let agent = super::super::ask::agent_name(cx);
         Some(
             v_flex()
                 .id("ask")
@@ -874,6 +871,11 @@ impl BrowserTab {
                         .text_size(px(11.))
                         .text_color(t.muted_foreground)
                         .child(ask.about.summary.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .child(format!("Ask {agent} about {}", ask.about.what)),
                 )
                 .child(Input::new(&ask.input).xsmall())
                 .when(picks && errors > 0, |b| {
@@ -903,7 +905,49 @@ impl BrowserTab {
                 .child(
                     h_flex()
                         .gap(px(4.))
-                        .justify_end()
+                        .child(match model {
+                            Some((choices, value)) => {
+                                let weak = cx.weak_entity();
+                                let label = if value.is_empty() {
+                                    "Default".to_string()
+                                } else {
+                                    value.clone()
+                                };
+                                Button::new("ask-model")
+                                    .ghost()
+                                    .xsmall()
+                                    .label(label)
+                                    .tooltip("The model it starts with")
+                                    .dropdown_caret(true)
+                                    .dropdown_menu(move |mut menu, _, _| {
+                                        for m in &choices {
+                                            let (weak, m) = (weak.clone(), m.clone());
+                                            let label = if m.is_empty() {
+                                                "Default".to_string()
+                                            } else {
+                                                m.clone()
+                                            };
+                                            menu = menu.item(
+                                                PopupMenuItem::new(label)
+                                                    .checked(m == value)
+                                                    .on_click(move |_, _, cx| {
+                                                        let _ = weak.update(cx, |this, cx| {
+                                                            this.pick_model(m.clone(), cx)
+                                                        });
+                                                    }),
+                                            );
+                                        }
+                                        menu
+                                    })
+                                    .into_any_element()
+                            }
+                            None => div()
+                                .text_size(px(11.))
+                                .text_color(t.subtle)
+                                .child("↵ asks")
+                                .into_any_element(),
+                        })
+                        .child(div().flex_1())
                         .child(
                             Button::new("ask-close")
                                 .ghost()
@@ -925,7 +969,8 @@ impl BrowserTab {
                             Button::new("ask-send")
                                 .primary()
                                 .xsmall()
-                                .label("Ask ↵")
+                                .label("Ask")
+                                .disabled(empty)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.send_ask(true, window, cx)
                                 })),
@@ -989,7 +1034,7 @@ impl BrowserTab {
         }
         let made = self.made.is_some();
         let live = made && self.restoring.is_none();
-        let Some((device, choice)) = self.device() else {
+        let Some((device, choice, fitted)) = self.fitted() else {
             return area
                 .child(self.page_canvas(None, live, cx))
                 .children(self.picture())
@@ -997,12 +1042,6 @@ impl BrowserTab {
                 .children(self.ask_box(t, cx))
                 .into_any_element();
         };
-        let size = self.area.get();
-        let fitted = devices::fit(
-            &device,
-            choice.rotated,
-            (f64::from(size.0), f64::from(size.1)),
-        );
         if !fitted.fits {
             return area
                 .child(placeholder(
@@ -1034,7 +1073,72 @@ impl BrowserTab {
                     .children(self.marks(t)),
             )
             .children(self.ask_box(t, cx))
+            .children((choice.name == devices::RESPONSIVE).then(|| self.handles(t, &fitted, cx)))
+            .children(self.drag.is_some().then(|| self.dragging(cx)))
             .into_any_element()
+    }
+
+    /// Responsive's right and bottom edges and corner, outside the screen so they show.
+    fn handles(&self, t: &AppTheme, f: &Fitted, cx: &mut Context<Self>) -> AnyElement {
+        let s = f.screen;
+        let (right, bottom) = ((s.x + s.w) as f32 + 4., (s.y + s.h) as f32 + 4.);
+        let grip = |id: &'static str, dx: f64, dy: f64, x: f32, y: f32, w: f32, h: f32| {
+            div()
+                .id(id)
+                .absolute()
+                .left(px(x))
+                .top(px(y))
+                .w(px(w))
+                .h(px(h))
+                .rounded_full()
+                .bg(t.border_strong)
+                .hover(|d| d.bg(t.primary))
+                .occlude()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, e: &gpui::MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.start_drag(dx, dy, e.position, cx)
+                    }),
+                )
+        };
+        let (cx_mid, cy_mid) = ((s.x + s.w / 2.) as f32, (s.y + s.h / 2.) as f32);
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .child(grip("grip-right", 1., 0., right, cy_mid - 20., 5., 40.).cursor_ew_resize())
+            .child(grip("grip-bottom", 0., 1., cx_mid - 20., bottom, 40., 5.).cursor_ns_resize())
+            .child(grip("grip-corner", 1., 1., right, bottom, 8., 8.).cursor_nwse_resize())
+            .into_any_element()
+    }
+
+    /// While an edge is dragged: the pointer followed wherever it goes, and let go anywhere.
+    fn dragging(&self, cx: &mut Context<Self>) -> AnyElement {
+        let weak = cx.weak_entity();
+        canvas(
+            |_, _, _| {},
+            move |_, _, window, _| {
+                let moving = weak.clone();
+                window.on_mouse_event(move |e: &gpui::MouseMoveEvent, phase, _, cx| {
+                    if phase == gpui::DispatchPhase::Capture {
+                        let _ = moving.update(cx, |this, cx| this.drag_to(e.position, cx));
+                    }
+                });
+                let up = weak.clone();
+                window.on_mouse_event(move |_: &gpui::MouseUpEvent, phase, window, cx| {
+                    if phase == gpui::DispatchPhase::Capture {
+                        let _ = up.update(cx, |this, cx| this.end_drag(window, cx));
+                    }
+                });
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .into_any_element()
     }
 
     /// The device's body and screen around the page: its bezel, status bar, cutout and home
