@@ -54,6 +54,9 @@ pub type Output = Box<dyn FnMut(&[u8]) -> bool + Send>;
 pub type Ended = Box<dyn FnOnce(Option<Exit>) + Send>;
 /// More variables for a session's shell, by its id: the browser's socket for `gitviber browser`.
 pub type ExtraEnv = Box<dyn Fn(u32) -> Vec<(String, String)> + Send + Sync>;
+/// Told a session's id once `kill` ended it (not `kill_all`, at quit): the browser closes that
+/// pane's agent tabs.
+pub type Killed = Box<dyn Fn(u32) + Send + Sync>;
 
 /// Output handed over that the terminal hasn't parsed yet (`Ptys::ack`), past which the reader
 /// stops reading. In the webview a flood (`cat` of a huge file, `yes`) queued tens of MB
@@ -156,6 +159,7 @@ pub struct Ptys {
     sessions: Arc<Mutex<HashMap<u32, Session>>>,
     next: AtomicU32,
     extra_env: OnceLock<ExtraEnv>,
+    killed: OnceLock<Killed>,
 }
 
 fn size(cols: u16, rows: u16) -> PtySize {
@@ -200,6 +204,16 @@ impl Ptys {
     /// Set once, before the first shell starts; a second call is ignored.
     pub fn set_extra_env(&self, env: ExtraEnv) {
         let _ = self.extra_env.set(env);
+    }
+
+    pub fn on_killed(&self, killed: Killed) {
+        let _ = self.killed.set(killed);
+    }
+
+    fn tell_killed(&self, id: u32) {
+        if let Some(killed) = self.killed.get() {
+            killed(id);
+        }
     }
 
     /// Starts the user's login shell in `cwd`, for the pane opened in `pane`, with the shell
@@ -351,6 +365,7 @@ impl Ptys {
         let session = self.sessions.lock().unwrap().remove(&id);
         if let Some(s) = session {
             s.kill();
+            self.tell_killed(id);
         }
     }
 
@@ -409,7 +424,7 @@ impl Ptys {
 
 #[cfg(test)]
 mod tests {
-    use super::{input_bytes, start_dir, Flow, ACK_WAIT, HIGH_WATER, LOW_WATER};
+    use super::{input_bytes, start_dir, Flow, Ptys, ACK_WAIT, HIGH_WATER, LOW_WATER};
     use std::io::Write;
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
@@ -552,5 +567,28 @@ mod tests {
         assert_eq!(with_last(&out, bin), out);
         let middle = format!("{}:{}:{}", &path[..1000], bin.display(), &path[1000..]);
         assert_eq!(with_last(middle.as_ref(), bin), *middle);
+    }
+
+    #[test]
+    fn a_killed_session_is_told_once_and_an_unknown_id_never() {
+        let ptys = Ptys::default();
+        let (tx, rx) = mpsc::channel();
+        ptys.on_killed(Box::new(move |id| tx.send(id).unwrap()));
+        let dir = std::env::temp_dir();
+        let spawned = ptys
+            .spawn(
+                &dir,
+                &dir,
+                80,
+                24,
+                None,
+                Box::new(|_| true),
+                Box::new(|_| {}),
+            )
+            .unwrap();
+        ptys.kill(spawned.id + 1000);
+        ptys.kill(spawned.id);
+        ptys.kill(spawned.id);
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec![spawned.id]);
     }
 }
