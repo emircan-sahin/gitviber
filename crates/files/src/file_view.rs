@@ -471,6 +471,15 @@ impl FileView {
     }
 
     fn show(&mut self, loaded: Loaded, window: &mut Window, cx: &mut Context<Self>) {
+        // The tab took the keyboard while it loaded (⌘P): it goes into what shows now.
+        let had_focus = self.focus.is_focused(window);
+        self.show_loaded(loaded, window, cx);
+        if had_focus && let Some(focus) = self.tab_focus(cx) {
+            focus.focus(window, cx);
+        }
+    }
+
+    fn show_loaded(&mut self, loaded: Loaded, window: &mut Window, cx: &mut Context<Self>) {
         self.lfs = false;
         let (head, file, rows) = match loaded {
             Loaded::Failed(e) => return self.notice("Could not read the file", e, false, cx),

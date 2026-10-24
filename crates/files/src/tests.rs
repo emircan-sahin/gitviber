@@ -277,6 +277,152 @@ fn explorer_lists_creates_and_renames_and_quick_open_lists_files(cx: &mut TestAp
     _ = std::fs::remove_dir_all(&repo);
 }
 
+/// At launch the explorer is built while the repo is still opening: it lists once it's open,
+/// with no "No repository is open" toast, and a root that can't be listed still says so.
+#[gpui_kit::test]
+fn explorer_built_while_the_repo_opens_lists_once_open(cx: &mut TestAppContext) {
+    setup(cx);
+    let repo = temp_repo("explorer-launch");
+    cx.update(|cx| {
+        gitviber_ui::install_core(cx);
+    });
+    let (host, cx) = cx.add_window_view(|_, cx| WsHost(cx.new(Workspace::new)));
+    let ws = host.read_with(cx, |h, _| h.0.clone());
+    let panel = cx
+        .update(|window, cx| {
+            Workspace::register_window(&ws, window, cx);
+            ws.update(cx, |ws, cx| {
+                ws.open_project(repo.clone(), window, cx);
+                ws.panel(crate::explorer::PANEL_ID, window, cx)
+            })
+        })
+        .unwrap();
+    let panel = panel.view().downcast::<crate::ExplorerPanel>().unwrap();
+    // Nothing lists yet: on real threads that listing beats the open and fails, while this
+    // executor happens to run the open first.
+    cx.update(|_, cx| {
+        let project = ws.read(cx).project().unwrap().read(cx);
+        assert!(!project.is_open() && !panel.read(cx).is_listing());
+    });
+    cx.run_until_parked();
+    assert_eq!(cx.update(|_, cx| panel.read(cx).row_paths()), vec!["src"]);
+    let titles = |cx: &mut gpui_kit::VisualTestContext| -> Vec<String> {
+        cx.update(|_, cx| ws.update(cx, |ws, _| ws.take_toasts()))
+            .into_iter()
+            .filter_map(|t| t.title.map(|t| t.to_string()))
+            .collect()
+    };
+    assert!(titles(cx).is_empty());
+    std::fs::rename(&repo, repo.with_extension("moved")).unwrap();
+    cx.update(|_, cx| panel.update(cx, |p, cx| p.refresh(cx)));
+    cx.run_until_parked();
+    assert!(
+        titles(cx).contains(&"Could not list repository".to_string()),
+        "a real failure still shows"
+    );
+    _ = std::fs::remove_dir_all(repo.with_extension("moved"));
+}
+
+/// ⌘P's files and how they stand, as the palette asks for them.
+fn quick_open(
+    ws: &gpui_kit::Entity<Workspace>,
+    cx: &mut gpui_kit::VisualTestContext,
+) -> (Vec<String>, crate::quick_open::QuickOpenStatus) {
+    cx.update(|_, cx| {
+        let ctx = ws.update(cx, |ws, cx| ws.context(cx));
+        let source = gitviber_ui::workspace::Registry::get(cx)
+            .quick_open()
+            .unwrap();
+        let files = source(&ctx, cx)
+            .into_iter()
+            .map(|q| q.label.to_string())
+            .collect();
+        (files, crate::quick_open::status(&ctx, cx))
+    })
+}
+
+/// ⌘P never runs git on the UI thread: the first ask starts a read and gets none, observers hear
+/// when the list lands, and a failed read is kept and said rather than run again on each ask.
+#[gpui_kit::test]
+fn quick_open_reads_in_the_background_and_keeps_a_failure(cx: &mut TestAppContext) {
+    use crate::quick_open::{QuickOpenFiles, QuickOpenStatus};
+
+    setup(cx);
+    let repo = temp_repo("quick-open");
+    let broken = temp_repo("quick-open-broken");
+    // Opens (rev-parse doesn't read the index), but ls-files fails.
+    std::fs::write(broken.join(".git/index"), "not an index").unwrap();
+    cx.update(|cx| {
+        gitviber_ui::install_core(cx);
+    });
+    let (host, cx) = cx.add_window_view(|_, cx| WsHost(cx.new(Workspace::new)));
+    let ws = host.read_with(cx, |h, _| h.0.clone());
+    let heard = std::rc::Rc::new(std::cell::Cell::new(0));
+    let count = heard.clone();
+    cx.update(|window, cx| {
+        cx.observe_global::<QuickOpenFiles>(move |_| count.set(count.get() + 1))
+            .detach();
+        Workspace::register_window(&ws, window, cx);
+        ws.update(cx, |ws, cx| ws.open_project(repo.clone(), window, cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(quick_open(&ws, cx), (vec![], QuickOpenStatus::Listing));
+    cx.run_until_parked();
+    assert!(heard.get() > 0);
+    let (files, status) = quick_open(&ws, cx);
+    assert!(files.contains(&"src/big.rs".to_string()), "{files:?}");
+    assert_eq!(status, QuickOpenStatus::Listed);
+
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(broken.clone(), window, cx)));
+    cx.run_until_parked();
+    assert_eq!(quick_open(&ws, cx), (vec![], QuickOpenStatus::Listing));
+    cx.run_until_parked();
+    for _ in 0..2 {
+        let (files, status) = quick_open(&ws, cx);
+        assert!(files.is_empty());
+        assert!(
+            matches!(&status, QuickOpenStatus::Failed(e) if e.contains("index")),
+            "{status:?}"
+        );
+    }
+    _ = std::fs::remove_dir_all(&repo);
+    _ = std::fs::remove_dir_all(&broken);
+}
+
+/// A file opened with the keyboard (⌘P) has it in its code once the text is read, not on the
+/// tab that took it while loading.
+#[gpui_kit::test]
+fn a_file_opened_with_focus_has_it_in_its_code_once_loaded(cx: &mut TestAppContext) {
+    setup(cx);
+    let repo = temp_repo("focus");
+    cx.update(|cx| {
+        gitviber_ui::install_core(cx);
+    });
+    let (host, cx) = cx.add_window_view(|_, cx| WsHost(cx.new(Workspace::new)));
+    let ws = host.read_with(cx, |h, _| h.0.clone());
+    cx.update(|window, cx| {
+        Workspace::register_window(&ws, window, cx);
+        ws.update(cx, |ws, cx| ws.open_project(repo.clone(), window, cx));
+    });
+    cx.run_until_parked();
+    let weak = ws.downgrade();
+    cx.update(|window, cx| {
+        let opts = crate::OpenOptions {
+            focus: true,
+            ..Default::default()
+        };
+        crate::open_file(&weak, "src/big.rs", opts, window, cx)
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        let view = ws.read(cx).tabs().active().unwrap().item.handle().unwrap();
+        let code = view.view().downcast::<crate::FileView>().unwrap();
+        let code = code.read(cx).code().expect("the text shows");
+        assert!(code.read(cx).editor_focus(cx).is_focused(window));
+    });
+    _ = std::fs::remove_dir_all(&repo);
+}
+
 #[gpui_kit::test]
 fn blame_names_each_lines_commit_and_new_lines(cx: &mut TestAppContext) {
     setup(cx);

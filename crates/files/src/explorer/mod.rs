@@ -148,10 +148,12 @@ impl ExplorerPanel {
                 |this, project: Entity<Project>, e: &ProjectEvent, cx| match e {
                     ProjectEvent::RepoChanged(_) => this.refresh(cx),
                     ProjectEvent::Opened | ProjectEvent::Switched { .. } => {
+                        let revision = project.read(cx).revision();
                         this.root = project.read(cx).root().to_path_buf();
                         this.tree = LazyTree::new();
                         this.rebuild(cx);
                         this.refresh(cx);
+                        crate::quick_open::warm(&this.root, revision, cx);
                     }
                     ProjectEvent::Failed(_) => {}
                 },
@@ -192,8 +194,13 @@ impl ExplorerPanel {
             _subs: subs,
             _live: Live::new("ExplorerPanel"),
         };
-        panel.refresh(cx);
-        crate::quick_open::warm(&panel.root, cx);
+        // A panel built while the repo is still opening (launch) lists on `Opened`: listing now
+        // fails with "No repository is open".
+        if let Some(project) = ctx.project.as_ref().filter(|p| p.read(cx).is_open()) {
+            let revision = project.read(cx).revision();
+            panel.refresh(cx);
+            crate::quick_open::warm(&panel.root, revision, cx);
+        }
         panel
     }
 
@@ -308,6 +315,11 @@ impl ExplorerPanel {
     #[cfg(test)]
     pub(crate) fn row_paths(&self) -> Vec<String> {
         self.rows.iter().map(|r| r.node.path.to_string()).collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_listing(&self) -> bool {
+        !self.listings.is_empty()
     }
 
     #[cfg(test)]

@@ -1,20 +1,18 @@
-//! The explorer beside a file tab of a repo, for screenshots and memory checks.
+//! The explorer beside a file tab of a repo, for screenshots.
 //!
-//! files-demo [REPO] [--file PATH] [--md] [--search TEXT] [--reveal LINE] [--cycles N]
+//! files-demo [REPO] [--file PATH] [--md] [--search TEXT] [--reveal LINE]
 //!
 //! Opens PATH (crates/core/src/patch.rs) once the repo is open; `--md` opens README.md after it,
 //! rendered; `--search` shows the Search panel with TEXT searched instead of the explorer.
-//! `--cycles N` opens and closes PATH's tab N times and prints the process's memory before and
-//! after. GITVIBER_BACKGROUND=1 opens the window behind the others without taking the keyboard.
-
-use std::time::Duration;
+//! GITVIBER_BACKGROUND=1 opens the window behind the others without taking the keyboard. Memory
+//! over open-close cycles: examples/cycles.rs.
 
 use gitviber_files::{OpenOptions, Reveal, SearchPanel};
 use gitviber_ui::workspace::{Project, ProjectEvent, Workspace};
-use gitviber_ui::{ActiveAppTheme as _, dev, memory};
+use gitviber_ui::{ActiveAppTheme as _, dev};
 use gpui_kit::{
     AnyView, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
-    Styled as _, Subscription, Task, Window, div, px,
+    Styled as _, Subscription, Window, div, px,
 };
 
 #[derive(Clone)]
@@ -23,7 +21,6 @@ struct Args {
     md: bool,
     search: Option<String>,
     reveal: Option<u32>,
-    cycles: usize,
 }
 
 fn args() -> Args {
@@ -32,7 +29,6 @@ fn args() -> Args {
         md: false,
         search: None,
         reveal: None,
-        cycles: 0,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -41,53 +37,21 @@ fn args() -> Args {
             "--md" => a.md = true,
             "--search" => a.search = it.next(),
             "--reveal" => a.reveal = it.next().and_then(|n| n.parse().ok()),
-            "--cycles" => a.cycles = it.next().and_then(|n| n.parse().ok()).unwrap_or(0),
             _ => {}
         }
     }
     a
 }
 
-fn footprint() -> String {
-    memory::footprint()
-        .map(memory::format_bytes)
-        .unwrap_or_else(|| "?".into())
-}
-
 struct Host {
     workspace: Entity<Workspace>,
     side: AnyView,
     _subs: Vec<Subscription>,
-    _cycle: Task<()>,
 }
 
 impl Host {
     fn opened(&mut self, a: &Args, window: &mut Window, cx: &mut Context<Self>) {
         let ws = self.workspace.downgrade();
-        if a.cycles > 0 {
-            let (file, cycles) = (a.file.clone(), a.cycles);
-            self._cycle = cx.spawn_in(window, async move |_, cx| {
-                eprintln!("demo: before {}", footprint());
-                for i in 0..=cycles {
-                    _ = cx.update(|window, cx| {
-                        gitviber_files::open_file(&ws, &file, OpenOptions::default(), window, cx)
-                    });
-                    cx.background_executor()
-                        .timer(Duration::from_millis(2500))
-                        .await;
-                    eprintln!("demo: open {i} {}", footprint());
-                    if i < cycles {
-                        _ = cx.update(|_, cx| ws.update(cx, |ws, cx| ws.close_active_tab(cx)));
-                        cx.background_executor()
-                            .timer(Duration::from_millis(200))
-                            .await;
-                    }
-                }
-                eprintln!("demo: after {cycles} open-close cycles {}", footprint());
-                eprintln!("demo: live {:?}", memory::live_counts());
-            });
-            return;
-        }
         let reveal = a.reveal.map(|line| Reveal::Line { line, column: 0 });
         gitviber_files::open_file(
             &ws,
@@ -229,7 +193,6 @@ fn main() {
                 workspace: workspace.clone(),
                 side,
                 _subs: subs,
-                _cycle: Task::ready(()),
             }
         })
         .into()

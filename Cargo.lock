@@ -2382,6 +2382,7 @@ dependencies = [
  "gitviber-ui",
  "gpui-kit",
  "gpui-pre",
+ "gpui-pre-platform",
  "image",
  "lsp-types",
  "objc2 0.6.4",

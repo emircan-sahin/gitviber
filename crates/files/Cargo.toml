@@ -37,10 +37,16 @@ raw-window-handle = "=0.6.2"
 gitviber-ui = { path = "../ui", features = ["snapshot"] }
 # Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.
 gpui-test.workspace = true
+# examples/cycles.rs draws off screen with gpui's headless renderer.
+gpui-snapshot-platform.workspace = true
 
 [[example]]
 name = "files-demo"
 path = "examples/demo.rs"
+
+[[example]]
+name = "files-cycles"
+path = "examples/cycles.rs"
 
 [[example]]
 name = "files-mem-probe"
