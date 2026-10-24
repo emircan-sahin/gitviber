@@ -6,6 +6,8 @@ use std::time::Instant;
 
 use gitviber_core::api;
 use gitviber_core::github::IssueDetail;
+use gitviber_markdown::MarkdownView;
+use gitviber_ui::actions::editor;
 use gitviber_ui::actions::github::PostComment;
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{TabIcon, TabItem, Toast, Workspace};
@@ -13,7 +15,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Enter, Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::input::{Enter, Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight,
@@ -32,6 +34,8 @@ use crate::ui::common::{
 };
 use crate::ui::dialogs::confirm;
 use crate::ui::labels::LabelPicker;
+use crate::ui::markdown_input::MarkdownInput;
+use crate::ui::page_find::PageFind;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CloseReason {
@@ -86,10 +90,10 @@ pub struct IssueView {
     blocks: Blocks,
     text_stale: bool,
     attachments: Attachments,
-    editing: Option<(Entity<InputState>, Entity<TextareaState>)>,
+    editing: Option<(Entity<InputState>, Entity<MarkdownInput>)>,
     /// Enter in the title being edited saves; replaced by the next edit.
     _editing: Option<Subscription>,
-    comment: Entity<TextareaState>,
+    comment: Entity<MarkdownInput>,
     comment_clear: bool,
     /// The labels being picked, shown in place of the issue's until they're saved.
     picking: Option<Vec<LabelItem>>,
@@ -98,6 +102,7 @@ pub struct IssueView {
     generation: u64,
     focus: FocusHandle,
     scroll: ScrollHandle,
+    find: PageFind,
     _detail: Task<()>,
     _action: Task<()>,
     _signed: Task<()>,
@@ -120,14 +125,17 @@ impl IssueView {
             .and_then(|n| n.parse().ok())
             .unwrap_or_default();
         let repo = repo_of(&url);
+        let web = format!("https://github.com/{repo}");
         let comment = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .rows(4)
-                .placeholder("Leave a comment (markdown)")
+            MarkdownInput::new(web.clone(), url.clone(), window, cx, |t| {
+                t.rows(4).placeholder("Leave a comment (markdown)")
+            })
+            .small()
         });
+        let input = comment.read(cx).input().clone();
         let subs = vec![
             // Text in the box keeps the tab: a preview would be replaced, a hidden tab released.
-            cx.subscribe(&comment, |this: &mut Self, c, ev: &InputEvent, cx| {
+            cx.subscribe(&input, |this: &mut Self, c, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Change) && !c.read(cx).value().trim().is_empty() {
                     this.pin(cx);
                 }
@@ -145,7 +153,7 @@ impl IssueView {
             }),
         ];
         let mut view = IssueView {
-            web: format!("https://github.com/{repo}"),
+            web,
             target: Some(repo),
             url,
             number,
@@ -167,6 +175,7 @@ impl IssueView {
             generation: Cache::generation(cx),
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
+            find: PageFind::default(),
             _detail: Task::ready(()),
             _action: Task::ready(()),
             _signed: Task::ready(()),
@@ -233,6 +242,21 @@ impl IssueView {
             .ok();
         });
         cx.notify();
+    }
+
+    /// What ⌘F looks through, in the page's order: the title and description unless they're
+    /// being edited, then the comments.
+    fn find_parts(&self) -> (String, Vec<Entity<MarkdownView>>) {
+        let editing = self.editing.is_some();
+        let title = self.item().filter(|_| !editing).map(|i| i.title);
+        let views = self.blocks.views().skip(usize::from(editing)).collect();
+        (title.unwrap_or_default(), views)
+    }
+
+    fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (title, views) = self.find_parts();
+        self.find
+            .open(&self.scroll, &self.focus, &title, views, window, cx);
     }
 
     fn texts(d: &IssueDetail) -> Vec<&str> {
@@ -320,7 +344,7 @@ impl IssueView {
     }
 
     fn text(&self, cx: &App) -> String {
-        self.comment.read(cx).value().trim().to_string()
+        self.comment.read(cx).value(cx).trim().to_string()
     }
 
     fn post(&mut self, cx: &mut Context<Self>) {
@@ -375,10 +399,11 @@ impl IssueView {
                 .default_value(title)
         });
         let body = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .rows(12)
-                .placeholder("Description (markdown)")
-                .default_value(body)
+            MarkdownInput::new(self.web.clone(), self.url.clone(), window, cx, |t| {
+                t.rows(12)
+                    .placeholder("Description (markdown)")
+                    .default_value(body)
+            })
         });
         title.update(cx, |t, cx| t.focus(window, cx));
         self._editing = Some(cx.subscribe(&title, |this, _, ev: &InputEvent, cx| {
@@ -398,7 +423,7 @@ impl IssueView {
         };
         let (title, body) = (
             title.read(cx).value().trim().to_string(),
-            body.read(cx).value().to_string(),
+            body.read(cx).value(cx).to_string(),
         );
         if title.is_empty() {
             return;
@@ -593,6 +618,7 @@ impl Render for IssueView {
             self.blocks
                 .sync(&Self::texts(&d), &web, &url, &signed, window, cx);
         }
+        self.find.sync(|| self.find_parts(), cx);
         let Some(i) = self.item() else {
             let text = self
                 .detail_error
@@ -627,7 +653,7 @@ impl Render for IssueView {
                 .flex_col()
                 .gap(px(8.))
                 .child(Input::new(title))
-                .child(Textarea::new(body))
+                .child(body.clone())
                 .child(
                     div()
                         .flex()
@@ -709,7 +735,7 @@ impl Render for IssueView {
                                 .gap_x(px(6.))
                                 .text_size(rems(1.06))
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child(i.title.clone())
+                                .child(self.find.title(i.title.clone(), cx))
                                 .child(
                                     div()
                                         .text_color(t.subtle)
@@ -947,7 +973,7 @@ impl Render for IssueView {
                             }
                         }
                     }))
-                    .child(Textarea::new(&self.comment).small())
+                    .child(self.comment.clone())
                     .child(
                         div().mt(px(8.)).flex().justify_end().child(
                             Button::new("post")
@@ -961,12 +987,19 @@ impl Render for IssueView {
             ),
         );
         div()
-            .id("issue")
-            .track_focus(&self.focus)
+            .relative()
             .size_full()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .child(page)
+            .on_action(cx.listener(|this, _: &editor::Find, window, cx| this.open_find(window, cx)))
+            .child(
+                div()
+                    .id("issue")
+                    .track_focus(&self.focus)
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .child(page),
+            )
+            .children(self.find.bar(cx))
             .into_any_element()
     }
 }

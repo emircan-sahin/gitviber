@@ -12,7 +12,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
 use gpui_kit::{
@@ -29,6 +29,7 @@ use crate::logic::suggest::{PULL_PROMPT, command_line, parse_suggestion, program
 use crate::model::{Access, IssueItem, PullItem, Target};
 use crate::store::Store;
 use crate::ui::common::theme;
+use crate::ui::markdown_input::MarkdownInput;
 use crate::ui::pull_view::PullView;
 use crate::ui::pulls_panel::BranchStatus;
 
@@ -73,7 +74,7 @@ fn toast_in(ws: &WeakEntity<Workspace>, toast: Toast, cx: &mut App) {
 /// lands; a refused one keeps it for another try.
 pub struct ReviewDialog {
     pull: WeakEntity<PullView>,
-    body: Entity<TextareaState>,
+    body: Entity<MarkdownInput>,
     pick: ReviewEvent,
     /// Your own PR: GitHub refuses approving it or requesting changes.
     own: bool,
@@ -86,13 +87,14 @@ pub struct ReviewDialog {
 impl ReviewDialog {
     pub fn open(
         pull: Entity<PullView>,
-        body: Entity<TextareaState>,
+        body: Entity<MarkdownInput>,
         pick: Option<ReviewEvent>,
         own: bool,
         counts: bool,
         window: &mut Window,
         cx: &mut App,
     ) {
+        let input = body.read(cx).input().clone();
         let view = cx.new(|cx| {
             let done = pull.read(cx).reviews_done();
             let subs = vec![
@@ -103,7 +105,7 @@ impl ReviewDialog {
                         cx.notify();
                     }
                 }),
-                cx.subscribe(&body, |_, _, _: &InputEvent, cx| cx.notify()),
+                cx.subscribe(&input, |_, _, _: &InputEvent, cx| cx.notify()),
             ];
             let pick = pick
                 .filter(|p| !own || *p == ReviewEvent::Comment)
@@ -139,7 +141,7 @@ impl ReviewDialog {
 impl Render for ReviewDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx);
-        let body = self.body.read(cx).value().trim().to_string();
+        let body = self.body.read(cx).value(cx).trim().to_string();
         let busy = self.pull.upgrade().is_some_and(|p| p.read(cx).is_busy());
         let ready = !busy && (!self.pick.needs_body() || !body.is_empty());
         let choices: Vec<AnyElement> = ReviewEvent::ALL
@@ -202,7 +204,7 @@ impl Render for ReviewDialog {
             .flex()
             .flex_col()
             .gap(px(8.))
-            .child(Textarea::new(&self.body).small())
+            .child(self.body.clone())
             .children(choices)
             .child(
                 div().flex().justify_end().child(
@@ -246,7 +248,7 @@ pub struct CreatePullDialog {
     head: String,
     status: BranchStatus,
     title: Entity<InputState>,
-    body: Entity<TextareaState>,
+    body: Entity<MarkdownInput>,
     /// Once typed in, the fields are the user's; the draft and a suggestion stop filling them.
     typed: (bool, bool),
     bases: Vec<String>,
@@ -321,11 +323,13 @@ impl CreatePullDialog {
                 .placeholder("Title")
                 .default_value(head.clone())
         });
+        let repo = format!("https://github.com/{}", target.full_name());
         let body = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .rows(8)
-                .placeholder("Description (markdown)")
+            MarkdownInput::new(repo.clone(), repo, window, cx, |t| {
+                t.rows(8).placeholder("Description (markdown)")
+            })
         });
+        let input = body.read(cx).input().clone();
         let subs = vec![
             cx.subscribe_in(
                 &title,
@@ -339,7 +343,7 @@ impl CreatePullDialog {
                     _ => {}
                 },
             ),
-            cx.subscribe(&body, |this: &mut Self, _, ev: &InputEvent, _| {
+            cx.subscribe(&input, |this: &mut Self, _, ev: &InputEvent, _| {
                 if matches!(ev, InputEvent::Change) {
                     this.typed.1 = true;
                 }
@@ -377,7 +381,7 @@ impl CreatePullDialog {
         };
         let closing = view.closing("");
         view.body
-            .update(cx, |b, cx| b.set_value(closing, window, cx));
+            .update(cx, |b, cx| b.set_value(&closing, window, cx));
         view.read_bases(cx);
         view.read_draft(window, cx);
         view
@@ -469,7 +473,7 @@ impl CreatePullDialog {
                     } else {
                         String::new()
                     });
-                    this.body.update(cx, |b, cx| b.set_value(body, window, cx));
+                    this.body.update(cx, |b, cx| b.set_value(&body, window, cx));
                 }
                 cx.notify();
             })
@@ -512,7 +516,7 @@ impl CreatePullDialog {
                         // A field typed into keeps its text; cleared, it's free again.
                         let mine = (
                             this.typed.0 && !this.title.read(cx).value().trim().is_empty(),
-                            this.typed.1 && !this.body.read(cx).value().trim().is_empty(),
+                            this.typed.1 && !this.body.read(cx).value(cx).trim().is_empty(),
                         );
                         if !mine.0 {
                             this.title
@@ -520,7 +524,7 @@ impl CreatePullDialog {
                         }
                         if !mine.1 {
                             let body = this.closing(&body);
-                            this.body.update(cx, |b, cx| b.set_value(body, window, cx));
+                            this.body.update(cx, |b, cx| b.set_value(&body, window, cx));
                         }
                     }
                     Ok(None) => toast_in(
@@ -576,7 +580,7 @@ impl CreatePullDialog {
             return;
         }
         self.busy = true;
-        let body = self.body.read(cx).value().to_string();
+        let body = self.body.read(cx).value(cx).to_string();
         let target: Target = self.upstream().then(|| self.target.full_name());
         let (core, head, base, draft, edits) = (
             crate::core(cx),
@@ -720,7 +724,7 @@ impl Render for CreatePullDialog {
                         )
                     }),
             )
-            .child(Textarea::new(&self.body))
+            .child(self.body.clone())
             .child(
                 div()
                     .flex()
@@ -773,7 +777,7 @@ pub struct CreateIssueDialog {
     target: Target,
     repo: String,
     title: Entity<InputState>,
-    body: Entity<TextareaState>,
+    body: Entity<MarkdownInput>,
     busy: bool,
     _sub: Subscription,
     _live: Live,
@@ -797,16 +801,18 @@ impl CreateIssueDialog {
                     _ => cx.notify(),
                 },
             );
+            let web = format!("https://github.com/{repo}");
+            let body = cx.new(|cx| {
+                MarkdownInput::new(web.clone(), web, window, cx, |t| {
+                    t.rows(8).placeholder("Description (markdown)")
+                })
+            });
             CreateIssueDialog {
                 ws,
                 target,
                 repo,
                 title,
-                body: cx.new(|cx| {
-                    TextareaState::new(window, cx)
-                        .rows(8)
-                        .placeholder("Description (markdown)")
-                }),
+                body,
                 busy: false,
                 _sub: sub,
                 _live: Live::new("CreateIssueDialog"),
@@ -833,7 +839,7 @@ impl CreateIssueDialog {
         let (core, target, body) = (
             crate::core(cx),
             self.target.clone(),
-            self.body.read(cx).value().to_string(),
+            self.body.read(cx).value(cx).to_string(),
         );
         let (ws, me) = (self.ws.clone(), cx.weak_entity());
         window
@@ -889,7 +895,7 @@ impl Render for CreateIssueDialog {
                     .child(place),
             )
             .child(Input::new(&self.title))
-            .child(Textarea::new(&self.body))
+            .child(self.body.clone())
             .child(
                 div().flex().justify_end().child(
                     Button::new("create-issue")

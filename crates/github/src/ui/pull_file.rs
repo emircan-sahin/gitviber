@@ -18,11 +18,11 @@ use gitviber_ui::workspace::{
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Enter, Escape, InputEvent, Textarea, TextareaState};
+use gpui_kit::component::input::{Enter, Escape, InputEvent};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
     prelude::FluentBuilder as _, px, rems,
 };
@@ -30,6 +30,7 @@ use gpui_kit::{
 use crate::cache::{Cache, Wakes};
 use crate::model::{Target, repo_of};
 use crate::ui::common::{Attachments, Blocks, ago, text_button, theme};
+use crate::ui::markdown_input::MarkdownInput;
 
 /// Comments are kept fresh a minute at a time while the file shows.
 const AGE: Duration = Duration::from_secs(60);
@@ -69,7 +70,7 @@ pub struct PullFileView {
     comments_at: Option<Instant>,
     comments_error: Option<String>,
     draft: Option<Draft>,
-    composer: Entity<TextareaState>,
+    composer: Entity<MarkdownInput>,
     /// What was written for another thread or line, back when the box goes there again.
     drafts: Vec<(Draft, String)>,
     folded: bool,
@@ -127,11 +128,15 @@ impl PullFileView {
             .as_ref()
             .map(|t| format!("https://github.com/{t}"))
             .unwrap_or_default();
+        let page = range.pull_url.clone().unwrap_or_default();
         let composer = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .rows(3)
-                .placeholder(format!("Leave a comment (markdown; {POST_KEY} to post)"))
+            MarkdownInput::new(web.clone(), page, window, cx, |t| {
+                t.rows(3)
+                    .placeholder(format!("Leave a comment (markdown; {POST_KEY} to post)"))
+            })
+            .small()
         });
+        let input = composer.read(cx).input().clone();
         let subs = vec![
             cx.subscribe_in(
                 &diff,
@@ -143,7 +148,7 @@ impl PullFileView {
                 },
             ),
             // Text in the box keeps the tab: a preview would be replaced, a hidden tab released.
-            cx.subscribe(&composer, |this: &mut Self, c, ev: &InputEvent, cx| {
+            cx.subscribe(&input, |this: &mut Self, c, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Change) {
                     if !c.read(cx).value().trim().is_empty() {
                         let key = this.key();
@@ -282,7 +287,7 @@ impl PullFileView {
         if self.range.pull_url.is_none() || self.draft == Some(draft) {
             return;
         }
-        let text = self.composer.read(cx).value().to_string();
+        let text = self.composer.read(cx).value(cx).to_string();
         if let Some(was) = self.draft {
             keep_draft(&mut self.drafts, was, text);
         }
@@ -295,7 +300,7 @@ impl PullFileView {
         self.draft = Some(draft);
         self.folded = false;
         self.composer.update(cx, |c, cx| {
-            c.set_value(back, window, cx);
+            c.set_value(&back, window, cx);
             c.focus(window, cx);
         });
         cx.notify();
@@ -309,7 +314,7 @@ impl PullFileView {
     }
 
     fn post(&mut self, cx: &mut Context<Self>) {
-        let body = self.composer.read(cx).value().trim().to_string();
+        let body = self.composer.read(cx).value(cx).trim().to_string();
         let (Some(draft), Some(number)) = (self.draft, self.range.number) else {
             return;
         };
@@ -366,7 +371,7 @@ impl PullFileView {
 
     fn composer(&self, label: String, cx: &mut Context<Self>) -> AnyElement {
         let t = theme(cx);
-        let empty = self.composer.read(cx).value().trim().is_empty();
+        let empty = self.composer.read(cx).value(cx).trim().is_empty();
         div()
             .key_context("IssueComment")
             .on_action(cx.listener(|this, _: &PostComment, _, cx| this.post(cx)))
@@ -381,6 +386,13 @@ impl PullFileView {
                 cx.stop_propagation();
                 this.cancel(window, cx);
             }))
+            // The preview showing has the focus, and no binding for Esc.
+            .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                if e.keystroke.key == "escape" && !e.keystroke.modifiers.modified() {
+                    cx.stop_propagation();
+                    this.cancel(window, cx);
+                }
+            }))
             .flex()
             .flex_col()
             .gap(px(6.))
@@ -391,7 +403,7 @@ impl PullFileView {
                     .text_color(t.subtle)
                     .child(label),
             )
-            .child(Textarea::new(&self.composer).small())
+            .child(self.composer.clone())
             .child(
                 div()
                     .flex()
@@ -611,7 +623,7 @@ impl TabItem for PullFileView {
 
     /// A comment being written, here or set aside for another thread.
     fn is_dirty(&self, cx: &App) -> bool {
-        (self.draft.is_some() && !self.composer.read(cx).value().trim().is_empty())
+        (self.draft.is_some() && !self.composer.read(cx).value(cx).trim().is_empty())
             || !self.drafts.is_empty()
     }
 }

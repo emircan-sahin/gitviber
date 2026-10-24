@@ -7,6 +7,8 @@ mod issue_view;
 mod issues_panel;
 mod labels;
 mod list;
+mod markdown_input;
+mod page_find;
 mod pull_file;
 pub(crate) mod pull_view;
 mod pulls_panel;

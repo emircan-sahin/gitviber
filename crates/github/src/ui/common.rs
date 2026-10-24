@@ -271,6 +271,11 @@ impl Blocks {
     pub fn get(&self, i: usize) -> Option<Entity<MarkdownView>> {
         self.items.get(i).map(|(_, v)| v.clone())
     }
+
+    /// Every block's view, in the page's order.
+    pub fn views(&self) -> impl Iterator<Item = Entity<MarkdownView>> + '_ {
+        self.items.iter().map(|(_, v)| v.clone())
+    }
 }
 
 /// Signed links for a private repo's attachments (`github.com/user-attachments/...` needs a

@@ -10,14 +10,16 @@ use std::time::{Duration, Instant};
 use gitviber_core::api;
 use gitviber_core::git::FileChange;
 use gitviber_core::github::{CheckFailure, PullDetail, PullFiles};
+use gitviber_markdown::MarkdownView;
 use gitviber_ui::AppTheme;
+use gitviber_ui::actions::editor;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{FileIcon, LineCounts, PathLabel, StatusLetter};
 use gitviber_ui::workspace::{PullRange, TabIcon, TabItem, Toast, Workspace};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{InputEvent, TextareaState};
+use gpui_kit::component::input::InputEvent;
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
@@ -45,6 +47,8 @@ use crate::ui::common::{
     theme,
 };
 use crate::ui::dialogs::{ReviewDialog, confirm};
+use crate::ui::markdown_input::MarkdownInput;
+use crate::ui::page_find::PageFind;
 
 /// The files only change with the two commits: rarely worth reading again.
 const FILES_AGE: Duration = Duration::from_secs(600);
@@ -101,7 +105,9 @@ pub struct PullView {
     /// What a finished write asks of another feature, sent at the next frame.
     pending_request: Option<GithubRequest>,
     /// The review being written: kept here, so a refused review or a closed dialog keeps it.
-    review: Option<Entity<TextareaState>>,
+    review: Option<Entity<MarkdownInput>>,
+    /// The review box's: text in it keeps the tab. Replaced with the box.
+    _review: Option<Subscription>,
     review_pick: Option<ReviewEvent>,
     /// Goes up when a review lands; the dialog closes on it.
     reviews_done: u64,
@@ -110,6 +116,7 @@ pub struct PullView {
     generation: u64,
     focus: FocusHandle,
     scroll: ScrollHandle,
+    find: PageFind,
     /// The commits list's keys: the row they're on, by its sha.
     commits_focus: FocusHandle,
     commits_scroll: ScrollHandle,
@@ -182,6 +189,7 @@ impl PullView {
             busy: None,
             pending_request: None,
             review: None,
+            _review: None,
             review_pick: None,
             reviews_done: 0,
             polls: 0,
@@ -189,6 +197,7 @@ impl PullView {
             generation: Cache::generation(cx),
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
+            find: PageFind::default(),
             commits_focus: cx.focus_handle(),
             commits_scroll: ScrollHandle::new(),
             commit_cursor: None,
@@ -323,6 +332,18 @@ impl PullView {
         let (web, url) = (self.web.clone(), self.url.clone());
         let signed = self.attachments.signed.clone();
         self.blocks.sync(&texts, &web, &url, &signed, window, cx);
+    }
+
+    /// What ⌘F looks through, in the page's order: the title, the description, the comments.
+    fn find_parts(&self) -> (String, Vec<Entity<MarkdownView>>) {
+        let title = self.item().map(|p| p.title).unwrap_or_default();
+        (title, self.blocks.views().collect())
+    }
+
+    fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (title, views) = self.find_parts();
+        self.find
+            .open(&self.scroll, &self.focus, &title, views, window, cx);
     }
 
     /// Signed links for the attachments the text holds, asked once per new one.
@@ -829,18 +850,20 @@ impl PullView {
             Some(b) => b.clone(),
             None => {
                 let b = cx.new(|cx| {
-                    TextareaState::new(window, cx)
-                        .rows(4)
-                        .placeholder("Leave a comment (markdown)")
+                    MarkdownInput::new(self.web.clone(), self.url.clone(), window, cx, |t| {
+                        t.rows(4).placeholder("Leave a comment (markdown)")
+                    })
+                    .small()
                 });
                 // Text in it keeps the tab: a preview tab would be replaced, a hidden one released.
-                let sub = cx.subscribe(&b, |this: &mut Self, b, ev: &InputEvent, cx| {
+                let input = b.read(cx).input().clone();
+                let sub = cx.subscribe(&input, |this: &mut Self, b, ev: &InputEvent, cx| {
                     if matches!(ev, InputEvent::Change) && !b.read(cx).value().trim().is_empty() {
                         let key = this.key();
                         this.ws.update(cx, |ws, cx| ws.pin_tab(&key, cx)).ok();
                     }
                 });
-                self._subs.push(sub);
+                self._review = Some(sub);
                 self.review = Some(b.clone());
                 b
             }
@@ -862,7 +885,7 @@ impl PullView {
             return;
         };
         self.review_pick = Some(event);
-        let text = body.read(cx).value().trim().to_string();
+        let text = body.read(cx).value(cx).trim().to_string();
         let (target, number) = (self.target.clone(), self.number);
         // The head reviewed: an approval stays on what was read.
         let commit = self.detail.as_ref().map(|d| d.pull.head_sha.clone());
@@ -882,6 +905,7 @@ impl PullView {
             |this, cx| {
                 this.reviews_done += 1;
                 this.review = None;
+                this._review = None;
                 this.review_pick = None;
                 cx.notify();
             },
@@ -1038,7 +1062,7 @@ impl TabItem for PullView {
     fn is_dirty(&self, cx: &App) -> bool {
         self.review
             .as_ref()
-            .is_some_and(|b| !b.read(cx).value().trim().is_empty())
+            .is_some_and(|b| !b.read(cx).value(cx).trim().is_empty())
     }
 }
 
@@ -2050,6 +2074,7 @@ impl Render for PullView {
         if self.text_stale {
             self.sync_text(window, cx);
         }
+        self.find.sync(|| self.find_parts(), cx);
         if let Some(req) = self.pending_request.take() {
             window.defer(cx, move |window, cx| request(req, window, cx));
         }
@@ -2265,7 +2290,7 @@ impl Render for PullView {
                                     .gap_x(px(6.))
                                     .text_size(rems(1.06))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(p.title.clone())
+                                    .child(self.find.title(p.title.clone(), cx))
                                     .child(
                                         div()
                                             .text_color(t.subtle)
@@ -2307,7 +2332,7 @@ impl Render for PullView {
         if let Some(d) = &d {
             page = page.children(self.conversation(d, cx));
         }
-        div()
+        let scroller = div()
             .id("pull")
             .key_context("PullView")
             .track_focus(&self.focus)
@@ -2328,7 +2353,13 @@ impl Render for PullView {
                 }
                 cx.stop_propagation();
             }))
-            .child(page)
+            .child(page);
+        div()
+            .relative()
+            .size_full()
+            .on_action(cx.listener(|this, _: &editor::Find, window, cx| this.open_find(window, cx)))
+            .child(scroller)
+            .children(self.find.bar(cx))
             .into_any_element()
     }
 }
