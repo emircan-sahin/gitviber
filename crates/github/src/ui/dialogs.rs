@@ -327,12 +327,18 @@ impl CreatePullDialog {
                 .placeholder("Description (markdown)")
         });
         let subs = vec![
-            cx.subscribe(&title, |this: &mut Self, _, ev: &InputEvent, cx| {
-                if matches!(ev, InputEvent::Change) {
-                    this.typed.0 = true;
-                    cx.notify();
-                }
-            }),
+            cx.subscribe_in(
+                &title,
+                window,
+                |this: &mut Self, _, ev, window, cx| match ev {
+                    InputEvent::Change => {
+                        this.typed.0 = true;
+                        cx.notify();
+                    }
+                    InputEvent::PressEnter { .. } => this.submit(window, cx),
+                    _ => {}
+                },
+            ),
             cx.subscribe(&body, |this: &mut Self, _, ev: &InputEvent, _| {
                 if matches!(ev, InputEvent::Change) {
                     this.typed.1 = true;
@@ -783,7 +789,14 @@ impl CreateIssueDialog {
     ) {
         let view = cx.new(|cx| {
             let title = cx.new(|cx| InputState::new(window, cx).placeholder("Title"));
-            let sub = cx.subscribe(&title, |_, _, _: &InputEvent, cx| cx.notify());
+            let sub = cx.subscribe_in(
+                &title,
+                window,
+                |this: &mut Self, _, ev, window, cx| match ev {
+                    InputEvent::PressEnter { .. } => this.submit(window, cx),
+                    _ => cx.notify(),
+                },
+            );
             CreateIssueDialog {
                 ws,
                 target,

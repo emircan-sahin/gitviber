@@ -33,6 +33,7 @@ use crate::logic::actions::{
     MergeMethod, ReviewEvent, allowed_methods, pull_rights, pull_source, review_badge,
 };
 use crate::logic::checks::{check_note, checks_summary, failure_report, is_failing, sort_checks};
+use crate::logic::keys::move_target;
 use crate::logic::pull_commits::{
     CommitRun, by_day, is_whole_pr, pick_label, picked_commits, run_to,
 };
@@ -47,6 +48,8 @@ use crate::ui::dialogs::{ReviewDialog, confirm};
 
 /// The files only change with the two commits: rarely worth reading again.
 const FILES_AGE: Duration = Duration::from_secs(600);
+/// Commits a PgUp/PgDn moves in the commits list.
+const COMMIT_PAGE: usize = 10;
 /// What a merge or cherry-pick that stopped on conflicts says.
 const CONFLICTS: &str = "Stopped on conflicts: resolve them in Changes, then push.";
 
@@ -107,6 +110,10 @@ pub struct PullView {
     generation: u64,
     focus: FocusHandle,
     scroll: ScrollHandle,
+    /// The commits list's keys: the row they're on, by its sha.
+    commits_focus: FocusHandle,
+    commits_scroll: ScrollHandle,
+    commit_cursor: Option<String>,
     _ci: Option<CiWatch>,
     _detail: Task<()>,
     _files: Task<()>,
@@ -182,6 +189,9 @@ impl PullView {
             generation: Cache::generation(cx),
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
+            commits_focus: cx.focus_handle(),
+            commits_scroll: ScrollHandle::new(),
+            commit_cursor: None,
             _ci: None,
             _detail: Task::ready(()),
             _files: Task::ready(()),
@@ -468,6 +478,7 @@ impl PullView {
     }
 
     fn click_commit(&mut self, sha: String, extend: bool, cx: &mut Context<Self>) {
+        self.commit_cursor = Some(sha.clone());
         let anchor = if extend {
             self.pick
                 .as_ref()
@@ -478,6 +489,82 @@ impl PullView {
         };
         let run = run_to(self.commits(), anchor.as_deref(), &sha);
         self.set_pick(Some(run), cx);
+    }
+
+    /// Where the commits list's keys are: the row last landed on, else the picked end, else the
+    /// first.
+    fn commit_at(&self) -> Option<usize> {
+        let commits = self.commits();
+        let find = |sha: &str| commits.iter().position(|c| c.sha == sha);
+        self.commit_cursor
+            .as_deref()
+            .and_then(find)
+            .or_else(|| self.pick.as_ref().and_then(|p| find(&p.to)))
+            .or((!commits.is_empty()).then_some(0))
+    }
+
+    /// The list's child that shows commit `ix`: each day's header is one, an open message too.
+    fn commit_child(&self, ix: usize) -> usize {
+        let mut child = 0;
+        for (_, range) in by_day(self.commits()) {
+            child += 1;
+            for i in range {
+                if i == ix {
+                    return child;
+                }
+                child += 1 + usize::from(self.open_bodies.contains(&self.commits()[i].sha));
+            }
+        }
+        child
+    }
+
+    /// ↑/↓, Home/End, PgUp/PgDn land on a commit as a click does (its changes alone), Space
+    /// picks the one the keys are on, ⇧↑/⇧↓ widen or narrow the run as ⇧-click does, Esc shows
+    /// every commit's changes again.
+    fn commit_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
+        let m = ev.keystroke.modifiers;
+        let Some(at) = self
+            .commit_at()
+            .filter(|_| !(m.alt || m.platform || m.control))
+        else {
+            return;
+        };
+        let n = self.commits().len();
+        let key = ev.keystroke.key.as_str();
+        let sha = |this: &Self, i: usize| this.commits()[i].sha.clone();
+        if m.shift {
+            let to = match key {
+                "up" => at.checked_sub(1),
+                "down" => (at + 1 < n).then_some(at + 1),
+                _ => return,
+            };
+            cx.stop_propagation();
+            let Some(to) = to else { return };
+            let anchor = self
+                .pick
+                .as_ref()
+                .filter(|_| self.picked().is_some())
+                .map_or_else(|| sha(self, at), |p| p.anchor.clone());
+            let run = run_to(self.commits(), Some(&anchor), &sha(self, to));
+            self.commit_cursor = Some(sha(self, to));
+            self.commits_scroll.scroll_to_item(self.commit_child(to));
+            self.set_pick(Some(run), cx);
+            return;
+        }
+        match key {
+            "escape" if self.pick.is_some() => self.set_pick(None, cx),
+            "space" => self.click_commit(sha(self, at), false, cx),
+            key => {
+                let Some(to) = move_target(key, at, n, COMMIT_PAGE) else {
+                    return;
+                };
+                if to != at || self.pick.is_none() {
+                    self.commits_scroll.scroll_to_item(self.commit_child(to));
+                    self.click_commit(sha(self, to), false, cx);
+                }
+            }
+        }
+        cx.stop_propagation();
     }
 
     /// The one before or after what's picked.
@@ -881,14 +968,9 @@ impl PullView {
     }
 }
 
-/// "Check out in new worktree…" without the worktree dialog: core makes it in `dir` (None:
-/// beside the main one), and the window switches to it.
-pub(crate) fn checkout_worktree(
-    source: PullSource,
-    dir: Option<String>,
-    window: &mut Window,
-    cx: &mut App,
-) {
+/// "Check out in new worktree…" without the worktree dialog (no handler set): core makes it
+/// beside the main one, and the window switches to it.
+pub(crate) fn checkout_worktree(source: PullSource, window: &mut Window, cx: &mut App) {
     let core = crate::core(cx);
     let ws = Workspace::for_window(window, cx).map(|w| w.downgrade());
     let PullSource {
@@ -907,7 +989,7 @@ pub(crate) fn checkout_worktree(
                     number,
                     head_ref,
                     same_repo,
-                    dir,
+                    None,
                     format!("pr-worktree-{number}"),
                     |_| {},
                 )
@@ -1425,7 +1507,12 @@ impl PullView {
         .into_any_element()
     }
 
-    fn commits_section(&self, total: u64, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn commits_section(
+        &self,
+        total: u64,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let commits = self.commits();
         if commits.is_empty() {
             return None;
@@ -1440,6 +1527,9 @@ impl PullView {
         let picked = self.picked().map(|(r, _)| r);
         let shas: Vec<String> = commits.iter().map(|c| c.sha.clone()).collect();
         let states = ci::states(cx, &self.target, &shas);
+        let cursor = self
+            .commit_at()
+            .filter(|_| self.commits_focus.is_focused(window));
         let mut rows: Vec<AnyElement> = Vec::new();
         for (day, range) in by_day(commits) {
             rows.push(
@@ -1459,6 +1549,7 @@ impl PullView {
             for ix in range {
                 let c = &commits[ix];
                 let on = picked.as_ref().is_some_and(|r| r.contains(&ix));
+                let keys_here = cursor == Some(ix);
                 let open = self.open_bodies.contains(&c.sha);
                 let (sha, body_sha, copy_sha, menu_sha) =
                     (c.sha.clone(), c.sha.clone(), c.sha.clone(), c.sha.clone());
@@ -1494,6 +1585,8 @@ impl PullView {
                             )
                         })
                         .when(!on, |d| d.hover(move |s| s.bg(hover)))
+                        .when(keys_here && !on, |d| d.bg(hover))
+                        .when(keys_here, |d| d.border_1().border_color(t.ring))
                         .child(
                             Icon::new(IconName::GitCommitHorizontal)
                                 .xsmall()
@@ -1588,20 +1681,37 @@ impl PullView {
                             .item(
                                 PopupMenuItem::new("Checkout commit")
                                     .icon(IconName::GitCommitHorizontal)
-                                    .on_click(move |_, _, cx| {
-                                        let sha = sha.clone();
-                                        weak.update(cx, |this, cx| {
-                                            this.act(
-                                                "Checkout",
-                                                format!("Checked out {}", &sha[..sha.len().min(7)]),
-                                                move |core| {
-                                                    done(api::history::checkout_commit(core, sha))
-                                                },
-                                                |_, _| {},
-                                                cx,
-                                            )
-                                        })
-                                        .ok();
+                                    .on_click(move |_, window, cx| {
+                                        let (sha, weak) = (sha.clone(), weak.clone());
+                                        let short = sha[..sha.len().min(7)].to_string();
+                                        confirm(
+                                            "Checkout commit",
+                                            format!(
+                                                "Check out {short} without a branch (detached HEAD)? \
+                                                 New commits made there belong to no branch until \
+                                                 you create one."
+                                            ),
+                                            "Checkout",
+                                            window,
+                                            cx,
+                                            move |_, cx| {
+                                                let sha = sha.clone();
+                                                weak.update(cx, |this, cx| {
+                                                    this.act(
+                                                        "Checkout",
+                                                        format!("Checked out {short}"),
+                                                        move |core| {
+                                                            done(api::history::checkout_commit(
+                                                                core, sha,
+                                                            ))
+                                                        },
+                                                        |_, _| {},
+                                                        cx,
+                                                    )
+                                                })
+                                                .ok();
+                                            },
+                                        );
                                     }),
                             )
                             // Your branch has it already (the PR's own, checked out): picking it changes nothing.
@@ -1668,8 +1778,14 @@ impl PullView {
             s.child(
                 div()
                     .id("commits")
+                    .track_focus(&self.commits_focus)
+                    .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+                        this.commit_key(ev, cx);
+                        cx.notify();
+                    }))
                     .max_h(px(360.))
                     .overflow_y_scroll()
+                    .track_scroll(&self.commits_scroll)
                     .children(rows),
             )
             .into_any_element(),
@@ -2168,7 +2284,8 @@ impl Render for PullView {
             page = page.children(self.checks_section(d, cx));
         }
         let total = d.as_ref().map_or(0, |d| d.commits);
-        page = page.children(self.commits_section(total.max(self.commits().len() as u64), cx));
+        page =
+            page.children(self.commits_section(total.max(self.commits().len() as u64), window, cx));
         page = page.child(self.files_section(d.as_deref(), cx));
         let body = d
             .as_ref()

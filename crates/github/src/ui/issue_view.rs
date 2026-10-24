@@ -13,7 +13,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::input::{Enter, Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight,
@@ -87,6 +87,8 @@ pub struct IssueView {
     text_stale: bool,
     attachments: Attachments,
     editing: Option<(Entity<InputState>, Entity<TextareaState>)>,
+    /// Enter in the title being edited saves; replaced by the next edit.
+    _editing: Option<Subscription>,
     comment: Entity<TextareaState>,
     comment_clear: bool,
     /// The labels being picked, shown in place of the issue's until they're saved.
@@ -168,6 +170,7 @@ impl IssueView {
             _detail: Task::ready(()),
             _action: Task::ready(()),
             _signed: Task::ready(()),
+            _editing: None,
             _subs: subs,
             _live: Live::new("IssueView"),
         };
@@ -378,6 +381,11 @@ impl IssueView {
                 .default_value(body)
         });
         title.update(cx, |t, cx| t.focus(window, cx));
+        self._editing = Some(cx.subscribe(&title, |this, _, ev: &InputEvent, cx| {
+            if matches!(ev, InputEvent::PressEnter { .. }) {
+                this.save(cx);
+            }
+        }));
         self.editing = Some((title, body));
         // An edit in progress keeps the tab.
         self.pin(cx);
@@ -927,6 +935,16 @@ impl Render for IssueView {
                     .on_action(cx.listener(move |this, _: &PostComment, _, cx| {
                         if can_post {
                             this.post(cx);
+                        }
+                    }))
+                    // The box's own ⌘↵ wins over PostComment's binding and adds a newline:
+                    // taken before it sees it.
+                    .capture_action(cx.listener(move |this, e: &Enter, _, cx| {
+                        if e.secondary {
+                            cx.stop_propagation();
+                            if can_post {
+                                this.post(cx);
+                            }
                         }
                     }))
                     .child(Textarea::new(&self.comment).small())

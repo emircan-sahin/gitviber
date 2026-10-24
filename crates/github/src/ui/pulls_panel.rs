@@ -35,13 +35,12 @@ use crate::ui::labels::LabelPicker;
 use crate::ui::list::{
     ListControls, ListPanel, filter_tabs, find_box, narrow_bar, selected_labels,
 };
-use crate::ui::rows::{RowKey, Rows, focus_page, row_key};
+use crate::ui::rows::{ROW, RowKey, Rows, focus_page, row_key};
 
 /// github/client.rs reads at most this many pages; a search stops at GitHub's 1000 results.
 const MAX_PAGES: usize = 30;
 const MAX_SEARCH_PAGES: usize = 10;
 const PAGE: usize = 100;
-const ROW: f32 = 44.;
 
 /// What the branch status says that the panel needs.
 #[derive(Clone, Default)]
@@ -500,6 +499,10 @@ impl PullsPanel {
             RowKey::More => {
                 self.pages[pane as usize] += 1;
                 self.ask(false, cx);
+            }
+            RowKey::Menu => {
+                nav.put(&urls, at);
+                nav.open_menu(at, window, cx);
             }
         }
         cx.notify();

@@ -10,6 +10,7 @@ use gitviber_core::api;
 use gitviber_core::git::FileChange;
 use gitviber_core::github::ReviewComment;
 use gitviber_diff::{Compare, DiffEvent, DiffSource, DiffView, LinePos, LineRange, Side};
+use gitviber_ui::actions::github::PostComment;
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{
     PullRange, Selection, TabIcon, TabItem, Toast, Workspace, selection_key,
@@ -17,7 +18,7 @@ use gitviber_ui::workspace::{
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
+use gpui_kit::component::input::{Enter, Escape, InputEvent, Textarea, TextareaState};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight,
@@ -34,6 +35,11 @@ use crate::ui::common::{Attachments, Blocks, ago, text_button, theme};
 const AGE: Duration = Duration::from_secs(60);
 /// Drafts kept aside for other threads and lines, the latest.
 const DRAFTS: usize = 16;
+const POST_KEY: &str = if cfg!(target_os = "macos") {
+    "⌘↵"
+} else {
+    "Ctrl+Enter"
+};
 
 /// Where a comment box is: a new comment on lines, or a reply in a thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -124,7 +130,7 @@ impl PullFileView {
         let composer = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .rows(3)
-                .placeholder("Leave a comment (markdown)")
+                .placeholder(format!("Leave a comment (markdown; {POST_KEY} to post)"))
         });
         let subs = vec![
             cx.subscribe_in(
@@ -362,6 +368,19 @@ impl PullFileView {
         let t = theme(cx);
         let empty = self.composer.read(cx).value().trim().is_empty();
         div()
+            .key_context("IssueComment")
+            .on_action(cx.listener(|this, _: &PostComment, _, cx| this.post(cx)))
+            // Taken before the box sees them: its own ⌘↵ would put a newline in the comment.
+            .capture_action(cx.listener(|this, e: &Enter, _, cx| {
+                if e.secondary {
+                    cx.stop_propagation();
+                    this.post(cx);
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &Escape, window, cx| {
+                cx.stop_propagation();
+                this.cancel(window, cx);
+            }))
             .flex()
             .flex_col()
             .gap(px(6.))

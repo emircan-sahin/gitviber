@@ -12,8 +12,6 @@ pub(crate) mod pull_view;
 mod pulls_panel;
 mod rows;
 
-pub(crate) use dialogs::confirm;
-
 use std::sync::Arc;
 
 use gitviber_core::git::FileChange;

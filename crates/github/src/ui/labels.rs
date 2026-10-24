@@ -11,8 +11,9 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, div, prelude::FluentBuilder as _, px, rems,
+    KeyDownEvent, ParentElement as _, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
+    prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::cache::Cache;
@@ -33,6 +34,9 @@ pub struct LabelPicker {
     /// Selected as of opening: they go first, without reordering under the pointer.
     first: Vec<LabelItem>,
     query: Entity<InputState>,
+    /// The row ↑/↓ are on, which ↵ toggles.
+    index: usize,
+    scroll: ScrollHandle,
     hint: Option<SharedString>,
     on_change: OnLabels,
     stamp: u64,
@@ -87,10 +91,14 @@ impl LabelPicker {
             &query,
             window,
             |this: &mut Self, _, ev: &InputEvent, window, cx| match ev {
-                InputEvent::Change => cx.notify(),
+                InputEvent::Change => {
+                    this.index = 0;
+                    cx.notify()
+                }
                 InputEvent::PressEnter { .. } => {
-                    if let Some(first) = this.shown(cx).into_iter().next() {
-                        this.toggle(first, window, cx);
+                    let shown = this.shown(cx);
+                    if let Some(l) = shown.get(this.index.min(shown.len().saturating_sub(1))) {
+                        this.toggle(l.clone(), window, cx);
                     }
                 }
                 _ => {}
@@ -115,6 +123,8 @@ impl LabelPicker {
             first: selected.clone(),
             selected,
             query,
+            index: 0,
+            scroll: ScrollHandle::new(),
             hint,
             on_change,
             stamp: 0,
@@ -169,6 +179,24 @@ impl LabelPicker {
         all
     }
 
+    /// ↑/↓ in the search box walk the rows, round from either end.
+    fn key_down(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
+        let m = ev.keystroke.modifiers;
+        let n = self.shown(cx).len();
+        if m.alt || m.platform || m.control || m.shift || n == 0 {
+            return;
+        }
+        let at = self.index.min(n - 1);
+        self.index = match ev.keystroke.key.as_str() {
+            "down" => (at + 1) % n,
+            "up" => (at + n - 1) % n,
+            _ => return,
+        };
+        self.scroll.scroll_to_item(self.index);
+        cx.stop_propagation();
+        cx.notify();
+    }
+
     fn toggle(&mut self, label: LabelItem, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected.iter().any(|m| m.name == label.name) {
             self.selected.retain(|m| m.name != label.name);
@@ -186,6 +214,7 @@ impl Render for LabelPicker {
         let (_, loaded, error) = self.defined(cx);
         let shown = self.shown(cx);
         let q = !self.query.read(cx).value().trim().is_empty();
+        let index = self.index.min(shown.len().saturating_sub(1));
         let rows: Vec<AnyElement> = shown
             .iter()
             .enumerate()
@@ -202,7 +231,13 @@ impl Render for LabelPicker {
                     .py(px(6.))
                     .rounded(px(3.))
                     .cursor_pointer()
-                    .hover(move |s| s.bg(hover))
+                    .when(i == index, |d| d.bg(hover))
+                    .on_mouse_move(cx.listener(move |this, _, _, cx| {
+                        if this.index != i {
+                            this.index = i;
+                            cx.notify();
+                        }
+                    }))
                     .child(div().w(px(14.)).flex_none().when(on, |d| {
                         d.child(Icon::new(IconName::Check).xsmall().text_color(t.primary))
                     }))
@@ -246,12 +281,14 @@ impl Render for LabelPicker {
             .flex()
             .flex_col()
             .gap(px(6.))
+            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| this.key_down(ev, cx)))
             .child(Input::new(&self.query).small())
             .child(
                 div()
                     .id("labels")
                     .max_h(px(320.))
                     .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
                     .children(rows)
                     .when_some(empty, |d, e| {
                         d.child(
@@ -275,7 +312,7 @@ impl Render for LabelPicker {
                         div().flex_1().truncate().child(
                             self.hint
                                 .clone()
-                                .unwrap_or_else(|| "↵ picks the first".into()),
+                                .unwrap_or_else(|| "↑↓ navigate · ↵ select".into()),
                         ),
                     )
                     .when(has, |d| {

@@ -33,9 +33,7 @@ use crate::ui::list::{
     ListControls, ListPanel, filter_tabs, find_box, narrow_bar, selected_labels,
 };
 use crate::ui::pulls_panel::{main_of, use_project};
-use crate::ui::rows::{RowKey, Rows, focus_page, row_key};
-
-const ROW: f32 = 44.;
+use crate::ui::rows::{ROW, RowKey, Rows, focus_page, row_key};
 
 pub struct IssuesPanel {
     ctx: PanelContext,
@@ -257,6 +255,10 @@ impl IssuesPanel {
                 focus_page(&self.ctx.workspace, window, cx);
             }
             RowKey::More => {}
+            RowKey::Menu => {
+                nav.put(&urls, at);
+                nav.open_menu(at, window, cx);
+            }
         }
         cx.notify();
     }

@@ -64,7 +64,7 @@ pub(crate) fn request(req: GithubRequest, window: &mut Window, cx: &mut App) {
     let what = match &req {
         GithubRequest::OfferWorktreeRemoval { .. } => return,
         GithubRequest::NewWorktreeForPull(source) => {
-            return crate::ui::pull_view::checkout_worktree(source.clone(), None, window, cx);
+            return crate::ui::pull_view::checkout_worktree(source.clone(), window, cx);
         }
         GithubRequest::StartIssue { .. } => "Starting an issue in a worktree",
         GithubRequest::OpenFile { .. } => "Opening the file",

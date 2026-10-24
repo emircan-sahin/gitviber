@@ -7,13 +7,15 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gitviber_core::api;
+use gitviber_history::Fork;
 use gitviber_refs::hooks::{BranchPull, Checks, PullState as RefsPull};
-use gitviber_ui::workspace::{GuideOf, Selection, Toast, Workspace};
+use gitviber_refs::worktrees::{IssueAsk, PullAsk, Remember};
+use gitviber_ui::workspace::{GuideOf, Selection, Workspace};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, FontWeight, IntoElement, ParentElement as _, Styled as _,
-    Window, div, px, rems,
+    AnyElement, App, FontWeight, Global, IntoElement, ParentElement as _, Styled as _, Window, div,
+    px, rems,
 };
 
 use crate::cache::Cache;
@@ -29,7 +31,47 @@ const SETTLED: Duration = Duration::from_secs(600);
 pub fn install_bridges(cx: &mut App) {
     gitviber_refs::hooks::set_pull_provider(cx, Rc::new(pull_of), Rc::new(open_pull_url));
     gitviber_history::set_commit_checks(cx, Rc::new(commit_checks));
+    gitviber_refs::hooks::set_push_access(cx, Rc::new(push_access));
+    gitviber_history::set_fork_of(cx, Rc::new(fork_of));
+    // Every read lands in the cache: History hears only when the fork itself changed.
+    cx.observe_global::<Cache>(|cx| {
+        let now = fork_of(cx);
+        if cx.try_global::<LastFork>().map(|l| &l.0) != Some(&now) {
+            cx.set_global(LastFork(now));
+            gitviber_history::fork_news(cx);
+        }
+    })
+    .detach();
     set_request_handler(cx, Rc::new(handle));
+}
+
+/// The fork History was last told of.
+struct LastFork(Option<Fork>);
+impl Global for LastFork {}
+
+/// What History's fork pane needs: origin's original on GitHub and both default branches. Sync
+/// fork pushes origin's, so it needs push rights there.
+fn fork_of(cx: &App) -> Option<Fork> {
+    let a = crate::account::account(cx)?;
+    let parent = a.parent.as_ref()?;
+    let origin = a.origin.as_ref();
+    let fork_branch = origin.and_then(|o| o.default_branch.clone());
+    Some(Fork {
+        original: parent.full_name(),
+        branch: parent.default_branch.clone(),
+        can_sync: origin.is_some_and(|o| o.push) && fork_branch.is_some(),
+        fork_branch,
+    })
+}
+
+/// Whether the account may push to `repo` (owner/name): known for origin and its original only.
+fn push_access(repo: &str, cx: &App) -> Option<bool> {
+    let a = crate::account::account(cx)?;
+    [a.origin.as_ref(), a.parent.as_ref()]
+        .into_iter()
+        .flatten()
+        .find(|r| r.full_name().eq_ignore_ascii_case(repo))
+        .map(|r| r.push)
 }
 
 fn checks(state: Option<CiState>) -> Option<Checks> {
@@ -178,19 +220,6 @@ fn commit_checks(sha: &str, header: bool, _: &mut Window, cx: &mut App) -> Optio
     Some(col.into_any_element())
 }
 
-/// The main worktree of the window's project, where new worktrees' folder is kept by.
-fn main_of(window: &Window, cx: &App) -> Option<String> {
-    let ws = Workspace::for_window(window, cx)?;
-    let project = ws.read(cx).project()?.read(cx);
-    Some(
-        project
-            .main_worktree()
-            .unwrap_or(project.root())
-            .to_string_lossy()
-            .into_owned(),
-    )
-}
-
 fn handle(req: GithubRequest, window: &mut Window, cx: &mut App) {
     match req {
         GithubRequest::OfferWorktreeRemoval {
@@ -198,10 +227,15 @@ fn handle(req: GithubRequest, window: &mut Window, cx: &mut App) {
             number,
             head_sha,
         } => gitviber_refs::worktrees::offer_worktree_removal(branch, number, head_sha, window, cx),
-        GithubRequest::NewWorktreeForPull(source) => {
-            let dir =
-                main_of(window, cx).and_then(|main| gitviber_refs::ops::worktree_dir(&main, cx));
-            crate::ui::pull_view::checkout_worktree(source, dir, window, cx);
+        GithubRequest::NewWorktreeForPull(s) => {
+            let ask = PullAsk {
+                target: s.target,
+                number: s.number,
+                head_ref: s.head_ref,
+                same_repo: s.same_repo,
+                branch: s.branch,
+            };
+            gitviber_refs::worktrees::open_worktree_for_pull(ask, window, cx);
         }
         GithubRequest::StartIssue {
             number,
@@ -209,7 +243,19 @@ fn handle(req: GithubRequest, window: &mut Window, cx: &mut App) {
             url,
             origin,
             branch,
-        } => start_issue(number, title, url, origin, branch, window, cx),
+        } => {
+            // Remembered as the issue's branch: a PR from it then closes the issue.
+            let remember: Remember = Rc::new(move |branch, cx| {
+                crate::store::Store::update(cx, |s| s.set_branch_issue(&origin, branch, &url))
+            });
+            let ask = IssueAsk {
+                number,
+                title,
+                branch,
+                remember: Some(remember),
+            };
+            gitviber_refs::worktrees::open_worktree_for_issue(ask, window, cx);
+        }
         GithubRequest::OpenFile { path, line: _ } => {
             if let Some(ws) = Workspace::for_window(window, cx) {
                 ws.update(cx, |ws, cx| {
@@ -222,70 +268,4 @@ fn handle(req: GithubRequest, window: &mut Window, cx: &mut App) {
             gitviber_review::open_guide(GuideOf::Pull { pull, target }, window, cx);
         }
     }
-}
-
-/// "Start in a worktree…": the issue's branch, made from origin's default branch in a worktree
-/// of its own, remembered as the issue's (a PR from it closes the issue), and switched to.
-fn start_issue(
-    number: u64,
-    title: String,
-    url: String,
-    origin: String,
-    branch: String,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    let dir = main_of(window, cx).and_then(|main| gitviber_refs::ops::worktree_dir(&main, cx));
-    let base = crate::account::account(cx)
-        .and_then(|a| a.origin.as_ref()?.default_branch.clone())
-        .map_or_else(|| "HEAD".to_string(), |b| format!("origin/{b}"));
-    let message = format!(
-        "Start #{number} \"{title}\" on a new branch, {branch}, from {base}, in a worktree of its own?"
-    );
-    crate::ui::confirm(
-        "Start in a worktree",
-        message,
-        "Start",
-        window,
-        cx,
-        move |window, cx| {
-            let (core, branch, base, dir, url, origin) = (
-                crate::core(cx),
-                branch.clone(),
-                base.clone(),
-                dir.clone(),
-                url.clone(),
-                origin.clone(),
-            );
-            let ws = Workspace::for_window(window, cx).map(|w| w.downgrade());
-            cx.spawn(async move |cx| {
-                let b = branch.clone();
-                let made = cx
-                    .background_spawn(async move {
-                        api::worktrees::add_worktree(&core, b, Some(base), false, dir)
-                    })
-                    .await;
-                cx.update(|cx| {
-                    if made.is_ok() {
-                        crate::store::Store::update(cx, |s| {
-                            s.set_branch_issue(&origin, &branch, &url)
-                        });
-                    }
-                    let Some(ws) = ws.and_then(|w| w.upgrade()) else {
-                        return;
-                    };
-                    ws.update(cx, |ws, cx| match made {
-                        Ok(path) => {
-                            ws.toast(Toast::success(format!("#{number} starts in {path}")), cx);
-                            ws.switch_worktree(path.into(), cx);
-                        }
-                        Err(e) => {
-                            ws.toast(Toast::error(e).title("Could not make the worktree"), cx)
-                        }
-                    });
-                });
-            })
-            .detach();
-        },
-    );
 }
