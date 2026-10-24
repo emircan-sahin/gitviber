@@ -3,7 +3,7 @@
 //! and the app observes them to save the settings.
 
 use gpui_kit::component::highlighter::HighlightTheme;
-use gpui_kit::{App, Global, Hsla, Pixels, Rgba, SharedString, px};
+use gpui_kit::{App, Font, FontFeatures, Global, Hsla, Pixels, Rgba, SharedString, font, px};
 use std::sync::Arc;
 
 /// The diff's colors: the old app's tokens of the same names.
@@ -154,6 +154,15 @@ impl DiffStyle {
         (self.font_size * self.line_height).round()
     }
 
+    /// The code font, with ligatures as Settings → Editor has them (off: `->` and `!=` draw as
+    /// their characters).
+    pub fn code_font(&self, cx: &App) -> Font {
+        Font {
+            features: code_features(cx),
+            ..font(self.font_family.clone())
+        }
+    }
+
     pub fn get(cx: &App) -> &DiffStyle {
         cx.try_global::<DiffStyle>()
             .unwrap_or_else(|| default_style())
@@ -163,6 +172,18 @@ impl DiffStyle {
     pub fn set(style: DiffStyle, cx: &mut App) {
         cx.set_global(style);
         cx.refresh_windows();
+    }
+}
+
+/// Ligatures only when the settings ask (a diff shown without them has none, their default).
+pub(crate) fn code_features(cx: &App) -> FontFeatures {
+    if cx
+        .try_global::<gitviber_ui::Settings>()
+        .is_some_and(|s| s.ligatures)
+    {
+        FontFeatures::default()
+    } else {
+        FontFeatures::disable_ligatures()
     }
 }
 

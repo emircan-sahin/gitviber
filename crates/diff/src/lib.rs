@@ -15,12 +15,14 @@ pub mod data;
 mod edit;
 mod highlight;
 mod image;
+pub mod language;
 mod list;
 pub mod model;
 mod overview;
 mod paint;
 pub mod source;
 mod stacked;
+mod status;
 pub mod style;
 mod view;
 
@@ -32,6 +34,7 @@ pub use model::{LinePos, LineRange, Side};
 pub use paint::status_pill;
 pub use source::{Compare, DiffSource, FileFacts};
 pub use stacked::{StackedDiff, StackedEvent, StackedFile, is_media};
+pub use status::shown_language;
 pub use style::{DiffColors, DiffOptions, DiffStyle, ImageMode, Layout, Whitespace};
 pub use view::{DiffEvent, DiffView, LineAction, Notice, NoticeLevel, set_file_opener};
 
@@ -56,7 +59,9 @@ pub fn init(cx: &mut gpui_kit::App) {
     actions::init(cx);
 }
 
-/// Binds only the keys the app's commands don't cover; the app hands the rest to the views.
+/// Binds only the keys the app's commands don't cover (the app hands the rest to the views), and
+/// puts the shown diff's language in the status bar.
 pub fn init_local(cx: &mut gpui_kit::App) {
     actions::init_local(cx);
+    status::register(cx);
 }

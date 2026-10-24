@@ -8,8 +8,8 @@ use crate::model::{ADDED, REMOVED, Row, Side, emphasis};
 use crate::style::DiffStyle;
 use gpui_kit::component::h_flex;
 use gpui_kit::{
-    AnyElement, Div, HighlightStyle, Hsla, IntoElement, ParentElement as _, Pixels, SharedString,
-    Styled as _, StyledText, TextRun, Window, div, font, prelude::FluentBuilder as _, px,
+    AnyElement, App, Div, Font, HighlightStyle, Hsla, IntoElement, ParentElement as _, Pixels,
+    SharedString, Styled as _, StyledText, TextRun, Window, div, prelude::FluentBuilder as _, px,
 };
 use std::ops::Range;
 
@@ -45,8 +45,9 @@ pub fn tone(k: u8, style: &DiffStyle) -> Tone {
     }
 }
 
-/// Sizes of one frame's rows.
+/// Sizes of one frame's rows, and their code's font.
 pub struct Metrics {
+    pub font: Font,
     pub line: Pixels,
     pub char_w: Pixels,
     pub number_w: Pixels,
@@ -57,16 +58,23 @@ pub struct Metrics {
 
 impl Metrics {
     /// `lines`: the most lines either side has, for the number column's width.
-    pub fn new(window: &Window, style: &DiffStyle, lines: u32, line: Pixels, left: Pixels) -> Self {
-        let font_id = window
-            .text_system()
-            .resolve_font(&font(style.font_family.clone()));
+    pub fn new(
+        window: &Window,
+        cx: &App,
+        style: &DiffStyle,
+        lines: u32,
+        line: Pixels,
+        left: Pixels,
+    ) -> Self {
+        let font = style.code_font(cx);
+        let font_id = window.text_system().resolve_font(&font);
         let char_w = window
             .text_system()
             .ch_advance(font_id, style.font_size)
             .unwrap_or(style.font_size * 0.6);
         let digits = lines.max(1).ilog10() as f32 + 2.;
         Metrics {
+            font,
             line,
             char_w,
             number_w: char_w * digits + px(6.),
@@ -91,6 +99,7 @@ pub fn code(
     side: Side,
     row: &Row,
     style: &DiffStyle,
+    base: &Font,
     marks: &[(Range<usize>, Hsla)],
 ) -> StyledText {
     let line = if side == Side::Old { row.o } else { row.n };
@@ -106,7 +115,6 @@ pub fn code(
         vec![]
     };
     let tone = tone(row.k, style);
-    let base = font(style.font_family.clone());
     let mut runs = Vec::new();
     for (range, token, emphasized) in emphasis::cut(text.len(), tokens, &emph) {
         let len = shown.offset(range.end) - shown.offset(range.start);

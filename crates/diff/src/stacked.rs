@@ -8,9 +8,10 @@ use crate::actions::{AddNote, Command, NextFile, PrevFile, STACKED_CONTEXT, Togg
 use crate::annotate::{self, Annotation};
 use crate::data::DiffData;
 use crate::highlight::{self, Highlighted};
+use crate::language;
 use crate::list::{Heights, Place, Scroll, vlist};
 use crate::model::display::{self, CONTEXT as CONTEXT_LINES, FOLD_MIN, Item};
-use crate::model::overview::{Mark, item_marks};
+use crate::model::overview::{Mark, counted_marks, item_marks};
 use crate::model::{LinePos, LineRange, REMOVED, Side};
 use crate::overview::{self, Marks};
 use crate::paint::{self, Metrics};
@@ -140,6 +141,19 @@ impl Slot {
             .unwrap_or(self.file.source.compare != Compare::Staged && self.file.viewed)
     }
 
+    /// Its changes on the overview before it's read, from its line counts: none for one that
+    /// will show a message instead of its lines (an image, a large diff).
+    fn counted_marks(&self) -> impl Iterator<Item = (Mark, Range<u32>)> {
+        let (a, d) = (
+            self.file.additions.unwrap_or(0),
+            self.file.deletions.unwrap_or(0),
+        );
+        let shown = (a + d) as usize <= LARGE && !is_media(&self.file.source.path);
+        counted_marks(a, d)
+            .into_iter()
+            .filter(move |(_, lines)| shown && !lines.is_empty())
+    }
+
     fn estimate(&self, line: Pixels) -> Pixels {
         let lines = (self.file.additions.unwrap_or(0) + self.file.deletions.unwrap_or(0)) as usize;
         line * (lines.min(LARGE) + 2 * CONTEXT_LINES + 1) as f32
@@ -218,6 +232,7 @@ impl StackedDiff {
             overview: Rc::default(),
         };
         view.set_files(files, cx);
+        crate::status::track(&view.focus, cx.weak_entity().into(), cx);
         view
     }
 
@@ -412,6 +427,17 @@ impl StackedDiff {
         self.rows.get(ix).map(Row::file)
     }
 
+    /// The language of the file on top, while its lines show.
+    pub(crate) fn shown_language(&self) -> Option<&str> {
+        let slot = &self.slots[self.top_file()?];
+        match &slot.body {
+            Body::Ready(l) if l.data.placeholder.is_none() && !is_media(&slot.file.source.path) => {
+                Some(language::of_source(&slot.file.source, &l.data))
+            }
+            _ => None,
+        }
+    }
+
     /// Where the view is, to come back to: the top file's key and how far into it.
     pub fn scroll_position(&self) -> Option<(String, Pixels)> {
         let f = self.top_file()?;
@@ -546,9 +572,10 @@ impl StackedDiff {
         };
         let id = self.slots[f].id;
         self.loaded(id, Ok(data), cx);
-        let language = highlight::language_for(&self.slots[f].file.source.path);
         let theme = DiffStyle::get(cx).syntax.clone();
-        if parse_now && let Body::Ready(l) = &mut self.slots[f].body {
+        let slot = &mut self.slots[f];
+        if parse_now && let Body::Ready(l) = &mut slot.body {
+            let language = language::of_source(&slot.file.source, &l.data);
             for (i, side) in [&l.data.old, &l.data.new].into_iter().enumerate() {
                 if side.exists
                     && side.textual()
@@ -616,10 +643,7 @@ impl StackedDiff {
             Ok(data) => {
                 let collapse = self.options.collapse;
                 let items = file_items(&data, collapse, &slot.revealed, &slot.annotations);
-                let language =
-                    slot.file.source.language.clone().unwrap_or_else(|| {
-                        highlight::language_for(&slot.file.source.path).to_string()
-                    });
+                let language = language::of_source(&slot.file.source, &data).to_string();
                 let ropes = [&data.old, &data.new]
                     .map(|s| (s.exists && s.textual()).then(|| s.rope.clone()));
                 let theme = DiffStyle::get(cx).syntax.clone();
@@ -776,6 +800,14 @@ impl StackedDiff {
                     heights.push(room);
                     if slot.height.is_some() {
                         marks.extend(&slot.marks, y);
+                    } else {
+                        for (mark, lines) in slot.counted_marks() {
+                            marks.push(
+                                mark,
+                                y + line * lines.start as f32,
+                                y + line * lines.end as f32,
+                            );
+                        }
                     }
                     y += room;
                     continue;
@@ -901,7 +933,7 @@ impl StackedDiff {
             })
             .max()
             .unwrap_or(1);
-        let m = Metrics::new(window, &style, lines, self.line, self.scroll.left());
+        let m = Metrics::new(window, cx, &style, lines, self.line, self.scroll.left());
         range
             .map(|ix| {
                 let row = self.render_row(ix, &m, &style, cx);
@@ -1016,7 +1048,7 @@ impl StackedDiff {
                     ))
                     .child(paint::sign(&t, style, m))
                     .child(paint::code_cell(
-                        paint::code(&l.data, &l.hl, side, row, style, &[]),
+                        paint::code(&l.data, &l.hl, side, row, style, &m.font, &[]),
                         m,
                     ))
                     .on_mouse_move(cx.listener(move |this, _: &MouseMoveEvent, _, cx| {
@@ -1258,7 +1290,7 @@ impl Render for StackedDiff {
             })
             .max()
             .unwrap_or(0);
-        let m = Metrics::new(window, &style, 9999, self.line, px(0.));
+        let m = Metrics::new(window, cx, &style, 9999, self.line, px(0.));
         self.scroll
             .set_max_left(m.max_left(widest, self.scroll.viewport().size.width, 1., 2.));
         // The top file's header stays at the top while its lines scroll under it.

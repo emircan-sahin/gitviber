@@ -2,7 +2,6 @@
 //! editor, its lines that differ from the index tinted as the diff tints them, worked out again
 //! off the main thread a moment after typing stops.
 
-use crate::highlight::language_for;
 use crate::model::ADDED;
 use crate::style::DiffStyle;
 use futures::channel::oneshot;
@@ -54,14 +53,15 @@ pub struct DiffEditor {
 impl EventEmitter<EditEvent> for DiffEditor {}
 
 impl DiffEditor {
+    /// `language`: the diff's, so the editor colors as the lines did.
     pub fn new(
         path: String,
+        language: &str,
         base: &str,
         text: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let language = language_for(&path);
         let initial = text.to_string();
         let state = cx.new(|cx| {
             EditorState::new(window, cx)
@@ -288,10 +288,12 @@ fn changed_lines(base: &str, text: &str) -> Vec<std::ops::Range<usize>> {
 }
 
 impl Render for DiffEditor {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .child(Editor::new(&self.state).size_full())
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child(
+            Editor::new(&self.state)
+                .size_full()
+                .font_features(crate::style::code_features(cx)),
+        )
     }
 }
 

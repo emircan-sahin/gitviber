@@ -314,6 +314,7 @@ impl DiffView {
         let style = DiffStyle::get(cx);
         let m = Metrics::new(
             window,
+            cx,
             style,
             data.old.lines.max(data.new.lines),
             self.line,
@@ -552,6 +553,7 @@ impl DiffView {
     ) -> Option<AnyElement> {
         let p = self.places.as_ref()?;
         let c = &style.colors;
+        let features = crate::style::code_features(cx);
         let (path, _) = definition_side(&self.source, p.side);
         let side = p.side;
         let peeking = p.peek.as_ref().map(|k| k.at);
@@ -632,6 +634,7 @@ impl DiffView {
                         .bg(c.background)
                         .cursor_pointer()
                         .font_family(style.font_family.clone())
+                        .font_features(features)
                         .text_size(style.font_size)
                         .line_height(self.line)
                         .when(k.lines.is_empty(), |el| {

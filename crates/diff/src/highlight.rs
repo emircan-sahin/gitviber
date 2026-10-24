@@ -18,61 +18,6 @@ const KEEP_CHUNKS: usize = 256;
 /// A line's styles: byte ranges into the line, as the file has it.
 pub type LineStyles = Rc<[(Range<usize>, HighlightStyle)]>;
 
-/// The highlighter language for a path ("text" when there's none).
-pub fn language_for(path: &str) -> &'static str {
-    let name = path
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(path)
-        .to_ascii_lowercase();
-    match name.as_str() {
-        "makefile" | "gnumakefile" => return "make",
-        "cmakelists.txt" => return "cmake",
-        "cargo.lock" | "pipfile" => return "toml",
-        ".bashrc" | ".zshrc" | ".profile" | ".bash_profile" | ".zprofile" | ".envrc" => {
-            return "bash";
-        }
-        _ => {}
-    }
-    match name.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("") {
-        "rs" => "rust",
-        "ts" | "mts" | "cts" => "typescript",
-        "tsx" => "tsx",
-        "js" | "mjs" | "cjs" | "jsx" => "javascript",
-        "json" | "jsonc" | "json5" => "json",
-        "py" | "pyi" => "python",
-        "go" => "go",
-        "rb" | "rake" | "gemspec" => "ruby",
-        "java" => "java",
-        "kt" | "kts" => "kotlin",
-        "swift" => "swift",
-        "c" | "h" => "c",
-        "cc" | "cpp" | "cxx" | "hpp" | "hxx" | "hh" => "cpp",
-        "cs" => "csharp",
-        "css" | "scss" => "css",
-        "html" | "htm" => "html",
-        "md" | "mdx" | "markdown" => "markdown",
-        "toml" => "toml",
-        "yaml" | "yml" => "yaml",
-        "sh" | "bash" | "zsh" => "bash",
-        "sql" => "sql",
-        "lua" => "lua",
-        "zig" => "zig",
-        "scala" | "sc" => "scala",
-        "ex" | "exs" => "elixir",
-        "erb" => "erb",
-        "ejs" => "ejs",
-        "graphql" | "gql" => "graphql",
-        "proto" => "proto",
-        "svelte" => "svelte",
-        "astro" => "astro",
-        "php" | "phtml" => "php",
-        "cmake" => "cmake",
-        "diff" | "patch" => "diff",
-        _ => "text",
-    }
-}
-
 /// Parses `rope` as `language`; blocking, so run it in the background.
 pub fn parse(language: &str, rope: &Rope) -> Option<SyntaxHighlighter> {
     if language == "text" || rope.len() > MAX_BYTES {
@@ -159,18 +104,5 @@ impl Highlighted {
 
     pub fn theme(&self) -> &Arc<HighlightTheme> {
         &self.theme
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn languages_by_name_and_extension() {
-        assert_eq!(language_for("src/a/B.TSX"), "tsx");
-        assert_eq!(language_for("Makefile"), "make");
-        assert_eq!(language_for("x/Cargo.lock"), "toml");
-        assert_eq!(language_for("README"), "text");
     }
 }

@@ -2,8 +2,9 @@
 //! side on its half. Worked out from the rows and what folds, never from what's laid out, so it's
 //! right before anything scrolls.
 
-use super::display::Item;
+use super::display::{CONTEXT, Item};
 use super::{ADDED, REMOVED, Row, Side};
+use std::ops::Range;
 
 /// A mark's kind; each kind is drawn on one half.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +61,18 @@ pub fn item_marks(rows: &[Row], item: &Item, found: &[u32]) -> ItemMarks {
     m
 }
 
+/// The changes of a file not read yet, from its line counts alone, in lines from the top of its
+/// body: after the leading context its removed lines, then its added ones. Right for a file of
+/// one hunk, near enough for more until it's read.
+pub fn counted_marks(additions: u32, deletions: u32) -> [(Mark, Range<u32>); 2] {
+    let start = CONTEXT as u32;
+    let added = start + deletions;
+    [
+        (Mark::Removed, start..added),
+        (Mark::Added, added..added + additions),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,6 +114,14 @@ mod tests {
         // Split pairs the removed line with the added one: both changes on one item.
         let m = marked(&split(&rows, &shown), &rows, &[2]);
         assert_eq!(m, vec![[false; 4], [true, true, false, true], [false; 4]]);
+    }
+
+    #[test]
+    fn counts_alone_mark_one_hunk_after_its_context() {
+        let [removed, added] = counted_marks(5, 2);
+        assert_eq!(removed, (Mark::Removed, 3..5));
+        assert_eq!(added, (Mark::Added, 5..10));
+        assert!(counted_marks(4, 0)[0].1.is_empty());
     }
 
     #[test]

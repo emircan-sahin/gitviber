@@ -8,6 +8,7 @@ use crate::data::DiffData;
 use crate::edit::{DiffEditor, EditEvent};
 use crate::highlight::{self, Highlighted};
 use crate::image::{ImageCompare, image_format};
+use crate::language;
 use crate::list::{Heights, Place, Scroll, vlist};
 use crate::model::display::{self, CONTEXT as CONTEXT_LINES, FOLD_MIN, Item};
 use crate::model::overview::item_marks;
@@ -263,7 +264,7 @@ impl DiffView {
             let source = source.clone();
             cx.new(|cx| ImageCompare::new(source, cx))
         });
-        DiffView {
+        let view = DiffView {
             core: crate::core(cx),
             source,
             focus: cx.focus_handle(),
@@ -312,11 +313,21 @@ impl DiffView {
             _peek: Task::ready(()),
             _link: Task::ready(()),
             _web: Task::ready(()),
-        }
+        };
+        crate::status::track(&view.focus, cx.weak_entity().into(), cx);
+        view
     }
 
     pub fn source(&self) -> &DiffSource {
         &self.source
+    }
+
+    /// The language its lines are colored as, while they show (not a preview, an image or a
+    /// placeholder).
+    pub(crate) fn shown_language(&self) -> Option<&str> {
+        let data = self.data.as_ref()?;
+        (self.preview.is_none() && self.image.is_none() && data.placeholder.is_none())
+            .then(|| language::of_source(&self.source, data))
     }
 
     /// Shows another file in this view; nothing of the last one stays. False, and nothing
@@ -581,8 +592,9 @@ impl DiffView {
         };
         let (base, text) = (data.old.text(), data.new.text());
         let path = self.source.path.clone();
+        let language = language::of_source(&self.source, data).to_string();
         let read = kept.as_ref().map_or(text, |(_, read)| read.clone());
-        let edit = cx.new(|cx| DiffEditor::new(path, &base, &read, window, cx));
+        let edit = cx.new(|cx| DiffEditor::new(path, &language, &base, &read, window, cx));
         if let Some((typed, _)) = &kept {
             edit.update(cx, |e, cx| e.set_text(typed, window, cx));
         }
@@ -729,16 +741,7 @@ impl DiffView {
     /// What `highlight` parses: the sides not parsed yet, and their language.
     fn to_parse(&self) -> Option<([Option<Rope>; 2], String)> {
         let data = self.data.as_ref()?;
-        let path = if data.new.exists {
-            &self.source.path
-        } else {
-            self.source.original_path()
-        };
-        let language = self
-            .source
-            .language
-            .clone()
-            .unwrap_or_else(|| highlight::language_for(path).to_string());
+        let language = language::of_source(&self.source, data).to_string();
         let wants = |i: usize, s: &SideText| {
             (self.hl[i].is_none() && s.exists && s.textual()).then(|| s.rope.clone())
         };
@@ -1555,7 +1558,7 @@ fn item_first_row(item: &Item) -> u32 {
 }
 
 impl DiffView {
-    fn code(&self, side: Side, r: u32, style: &DiffStyle) -> StyledText {
+    fn code(&self, side: Side, r: u32, style: &DiffStyle, m: &Metrics) -> StyledText {
         match &self.data {
             Some(data) => paint::code(
                 data,
@@ -1563,6 +1566,7 @@ impl DiffView {
                 side,
                 &data.rows[r as usize],
                 style,
+                &m.font,
                 &self.find_marks(r),
             ),
             None => StyledText::new(""),
@@ -1581,6 +1585,7 @@ impl DiffView {
         };
         let m = Metrics::new(
             window,
+            cx,
             &style,
             data.old.lines.max(data.new.lines),
             self.line,
@@ -1698,7 +1703,7 @@ impl DiffView {
                 m,
             ))
             .child(paint::sign(&t, style, m))
-            .child(paint::code_cell(self.code(side, r, style), m))
+            .child(paint::code_cell(self.code(side, r, style, m), m))
             .when(selected, |el| el.child(paint::overlay(c.selection)))
             .when(note, |el| el.child(self.note_button(ix, style, cx)))
     }
@@ -1755,7 +1760,7 @@ impl DiffView {
             el.bg(t.line)
                 .child(paint::number(Some(n), t.gutter, num, m))
                 .child(paint::sign(&t, style, m))
-                .child(paint::code_cell(this.code(side, r, style), m))
+                .child(paint::code_cell(this.code(side, r, style, m), m))
                 .when(selected == Some(column), |el| {
                     el.child(paint::overlay(c.selection))
                 })
@@ -2185,6 +2190,7 @@ impl Render for DiffView {
         if let Some(data) = &self.data {
             let m = Metrics::new(
                 window,
+                cx,
                 &style,
                 data.old.lines.max(data.new.lines),
                 self.line,

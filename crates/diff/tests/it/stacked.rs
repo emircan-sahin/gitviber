@@ -97,9 +97,12 @@ fn holds_only_the_files_near_the_screen(cx: &mut TestAppContext) {
         })
         .unwrap();
     cx.run_until_parked();
-    // The overview has the files near the top from the first frame.
+    // The overview has every file from the first frame: those read with each of their six
+    // changes, the rest with one span their line counts make.
     let added = |cx: &mut TestAppContext| view.read_with(cx, |v, _| v.overview_spans()[1].len());
-    assert!(added(cx) > 0);
+    let read = view.read_with(cx, |v, _| v.loaded_count());
+    assert!(read > 0 && read < FILES);
+    assert_eq!(added(cx), read * 6 + (FILES - read));
     let mut most = 0;
     let mut seen_last = false;
     // Down the whole list a screen at a time; each step loads what came near.

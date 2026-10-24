@@ -5,7 +5,7 @@
 use super::*;
 use crate::image::Backdrop;
 use crate::model::zoom::{ACTUAL, FIT, Zoom};
-use gitviber_markdown::{MarkdownBase, MarkdownEvent, MarkdownView, is_markdown};
+use gitviber_markdown::{MarkdownBase, MarkdownEvent, MarkdownView, ReadImage, is_markdown};
 use gitviber_ui::Settings;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,12 +127,19 @@ impl DiffView {
                 view.update(cx, |v, cx| v.set_svg_texts([before, after], cx));
             }
             (None, Kind::Markdown) => {
+                let images = self.version_images(after.is_none());
                 let text = after.or(before).unwrap_or_default();
                 let base = match self.core.repo() {
                     Ok(root) => MarkdownBase::file(root, self.source.path.clone()),
                     Err(_) => MarkdownBase::default(),
                 };
-                let view = cx.new(|cx| MarkdownView::new(&text, base, window, cx));
+                let view = cx.new(|cx| {
+                    let mut v = MarkdownView::new(&text, base, window, cx);
+                    if images.is_some() {
+                        v.read_images(images, window, cx);
+                    }
+                    v
+                });
                 let sub = cx.subscribe_in(&view, window, |_, _, e: &MarkdownEvent, window, cx| {
                     let MarkdownEvent::OpenFile { path, line } = e;
                     links::open_file(path, line.map(|l| (l, 0)), window, cx);
@@ -149,6 +156,39 @@ impl DiffView {
                 self.preview = Some(Preview::Svg(view));
             }
         }
+    }
+
+    /// What the markdown preview would read for the picture at `path`; None: it reads the disk
+    /// (tests).
+    #[doc(hidden)]
+    pub fn preview_image(&self, path: &str) -> Option<Result<Vec<u8>, String>> {
+        let new = self.data.as_ref().is_some_and(|d| d.new.exists);
+        self.version_images(!new).map(|read| read(path))
+    }
+
+    /// A markdown preview's pictures, from the version it shows (`original`: the old side's);
+    /// None for the working tree's, which the preview reads from disk itself.
+    fn version_images(&self, original: bool) -> Option<ReadImage> {
+        let compare = self.source.compare.clone();
+        if !original && compare.new_side_on_disk() {
+            return None;
+        }
+        let core = self.core.clone();
+        Some(Arc::new(move |path: &str| {
+            let bytes = gitviber_core::api::files::media(
+                &core,
+                compare.kind().to_string(),
+                path.to_string(),
+                None,
+                compare.sha().map(str::to_string),
+                compare.base().map(str::to_string),
+                original,
+            )?;
+            if bytes.is_empty() {
+                return Err(format!("{path} isn't in this version"));
+            }
+            Ok(bytes)
+        }))
     }
 
     pub(super) fn preview_element(&self) -> Option<AnyElement> {
