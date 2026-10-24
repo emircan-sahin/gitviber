@@ -190,6 +190,8 @@ pub struct TerminalPanel {
     branch_reads: HashMap<u64, Task<()>>,
     /// Set when the panel lives in a workspace: its project's worktree, Settings and theme.
     bound: Option<Bound>,
+    /// The home folder it started in while no project was open, until the first one opens.
+    home: Option<PathBuf>,
 }
 
 struct Bound {
@@ -466,14 +468,19 @@ impl TerminalPanel {
             outside_branches: HashMap::new(),
             branch_reads: HashMap::new(),
             bound: None,
+            home: None,
         }
     }
 
     /// The panel for a workspace: the Core, Settings and theme are the app's, and the tab set
     /// follows the project's worktree.
     pub fn for_workspace(ctx: &PanelContext, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let root = ctx
-            .project
+        // A per-window panel is given no project: the workspace's is the one open now.
+        let project = ctx.project.clone().or_else(|| {
+            let ws = ctx.workspace.upgrade()?;
+            ws.read(cx).project().cloned()
+        });
+        let root = project
             .as_ref()
             .map(|p| p.read(cx).root().to_path_buf())
             .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
@@ -483,6 +490,7 @@ impl TerminalPanel {
             theme_from(cx.app_theme()),
         );
         let mut this = Self::new(gitviber_ui::core(cx), root, config, theme, window, cx);
+        this.home = project.is_none().then(|| this.root.clone());
         let mut subscriptions = vec![
             cx.observe_global::<Settings>(|this, cx| this.sync_look(cx)),
             cx.observe_global::<AppTheme>(|this, cx| this.sync_look(cx)),
@@ -525,7 +533,7 @@ impl TerminalPanel {
             this.save_at_quit(cx);
             async {}
         }));
-        let project = ctx.project.as_ref().map(|p| this.watch(p, window, cx));
+        let project = project.as_ref().map(|p| this.watch(p, window, cx));
         this.bound = Some(Bound {
             workspace: ctx.workspace.clone(),
             _project: project,
@@ -578,6 +586,10 @@ impl TerminalPanel {
                 if let Some(p) = &project {
                     let root = p.read(cx).root().to_path_buf();
                     self.set_worktree(root, window, cx);
+                    if let Some(home) = self.home.take() {
+                        let open = ws.read(cx).is_open(Slot::Bottom);
+                        self.leave_home(home, open, window, cx);
+                    }
                 }
                 let sub = project.as_ref().map(|p| self.watch(p, window, cx));
                 if let Some(b) = self.bound.as_mut() {
@@ -596,6 +608,48 @@ impl TerminalPanel {
                 cx.notify();
             }
             WorkspaceEvent::TabsChanged => {}
+        }
+    }
+
+    /// The first project opened: the terminals started in the home folder before it (a launch
+    /// draws one before its project is there) give way to one in the project; any typed into
+    /// or running a command move over to the project's tabs instead.
+    fn leave_home(
+        &mut self,
+        home: PathBuf,
+        open: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if home == self.root {
+            return;
+        }
+        if let Some(set) = self.sets.remove(&home) {
+            let ids: Vec<PaneId> = set.groups.iter().flat_map(|g| g.panes.clone()).collect();
+            let used = ids.iter().any(|id| {
+                self.panes.get(id).is_some_and(|s| {
+                    let p = s.view.read(cx);
+                    p.was_used() || p.session.busy()
+                })
+            });
+            if used {
+                let here = self.set_mut();
+                here.active = here.active.or(set.active);
+                here.groups.extend(set.groups);
+                self.apply_dims(cx);
+            } else {
+                for id in ids {
+                    if let Some(slot) = self.panes.remove(&id) {
+                        slot.view.update(cx, |p, _| p.session.close());
+                    }
+                }
+                Self::release_memory_soon(cx);
+            }
+            self.save_soon(cx);
+            cx.notify();
+        }
+        if open && !self.has_terminals() {
+            self.new_terminal(window, cx);
         }
     }
 
@@ -2967,6 +3021,98 @@ mod tests {
         panel.update(cx, |p, cx| p.close_all(cx));
         cx.update(|window, _| window.remove_window());
         cx.run_until_parked();
+    }
+
+    struct Host;
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    /// A launch draws the terminal before its project opens: that first terminal, untouched, gives
+    /// way to one in the project; one typed into moves over to the project's tabs. A project
+    /// already open when the panel is built is where its first terminal starts.
+    #[gpui::test]
+    fn the_first_terminal_starts_in_the_project(cx: &mut TestAppContext) {
+        let base = std::env::temp_dir().join(format!("gitviber-term-home-{}", std::process::id()));
+        let (home, a, b) = (base.join("home"), base.join("a"), base.join("b"));
+        for d in [&home, &a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        // SAFETY: nextest gives each test its own process; nothing else reads these meanwhile.
+        unsafe {
+            std::env::set_var("GITVIBER_CONFIG_DIR", base.join("config"));
+            std::env::set_var("HOME", &home);
+        }
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            gitviber_ui::install_core(cx);
+            crate::init(cx);
+        });
+        let (_, cx) = cx.add_window_view(|_, _| Host);
+        let panel_of = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                Workspace::ensure_panel(ws, "terminal", window, cx)
+                    .and_then(|p| p.view().downcast::<TerminalPanel>().ok())
+                    .expect("the terminal panel")
+            })
+        };
+        let cwds = |panel: &Entity<TerminalPanel>, cx: &mut VisualTestContext| {
+            panel.read_with(cx, |p, cx| {
+                let mut all: Vec<PathBuf> = p.panes().map(|v| v.read(cx).cwd().into()).collect();
+                all.sort();
+                all
+            })
+        };
+        let open = |ws: &Entity<Workspace>, root: &Path, cx: &mut VisualTestContext| {
+            let root = root.to_path_buf();
+            cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(root, window, cx)));
+            cx.run_until_parked();
+        };
+        let workspace = |cx: &mut VisualTestContext| {
+            let ws = cx.update(|_, cx| cx.new(Workspace::new));
+            ws.update(cx, |ws, cx| ws.set_open(Slot::Bottom, true, cx));
+            ws
+        };
+
+        // Shown before the project: its terminal starts at home, then moves to the project.
+        let ws = workspace(cx);
+        let panel = panel_of(&ws, cx);
+        cx.run_until_parked();
+        assert_eq!(cwds(&panel, cx), vec![home.clone()]);
+        open(&ws, &a, cx);
+        assert_eq!(panel.read_with(cx, |p, _| p.worktree().to_path_buf()), a);
+        assert_eq!(cwds(&panel, cx), vec![a.clone()]);
+        assert!(panel.read_with(cx, |p, _| !p.sets.contains_key(&home)));
+        // Another project later is a switch: the first one's terminal stays where it is.
+        open(&ws, &b, cx);
+        assert_eq!(cwds(&panel, cx), vec![a.clone()]);
+        panel.update(cx, |p, cx| p.close_all(cx));
+
+        // Typed into before the project came: kept, among the project's tabs.
+        let ws = workspace(cx);
+        let panel = panel_of(&ws, cx);
+        cx.run_until_parked();
+        let first = panel
+            .read_with(cx, |p, _| p.active_pane())
+            .expect("a terminal");
+        first.update_in(cx, |p, window, cx| p.paste_text("ls".into(), window, cx));
+        open(&ws, &a, cx);
+        assert_eq!(cwds(&panel, cx), vec![home.clone()]);
+        assert_eq!(panel.read_with(cx, |p, _| p.active_pane()), Some(first));
+        panel.update(cx, |p, cx| p.close_all(cx));
+
+        // Built with the project open (⌘J later on): it starts there.
+        let ws = workspace(cx);
+        open(&ws, &b, cx);
+        let panel = panel_of(&ws, cx);
+        cx.run_until_parked();
+        assert_eq!(cwds(&panel, cx), vec![b.clone()]);
+        panel.update(cx, |p, cx| p.close_all(cx));
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// Terminals opened and closed leave no entity behind: no task, subscription or callback

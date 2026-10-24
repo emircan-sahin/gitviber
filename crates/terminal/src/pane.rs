@@ -182,6 +182,8 @@ pub struct TerminalPane {
     pub(crate) blink_visible: bool,
     blink_task: Option<Task<()>>,
     active_at: Instant,
+    /// Typed or pasted into: a launch's terminal in the home folder is replaced only while not.
+    used: bool,
     pub(crate) find: Option<FindState>,
     find_task: Option<Task<()>>,
     pub(crate) cache: Rc<RefCell<RowCache>>,
@@ -306,6 +308,7 @@ impl TerminalPane {
             blink_visible: true,
             blink_task: None,
             active_at: Instant::now(),
+            used: false,
             find: None,
             find_task: None,
             cache: Rc::default(),
@@ -354,6 +357,11 @@ impl TerminalPane {
 
     pub fn has_exited(&self) -> bool {
         self.exited
+    }
+
+    /// The user typed or pasted into it.
+    pub fn was_used(&self) -> bool {
+        self.used
     }
 
     /// The user is on it: it has the keys in the window in front.
@@ -543,6 +551,7 @@ impl TerminalPane {
 
     fn typed(&mut self, cx: &mut Context<Self>) {
         self.active_at = Instant::now();
+        self.used = true;
         if !self.blink_visible {
             self.blink_visible = true;
         }
