@@ -82,6 +82,72 @@ pub fn init(cx: &mut App) {
     register_opener(cx, "external", open_selection);
     register_opener(cx, "files", open_selection);
     quick_open::register(cx);
+    global_commands(cx);
+}
+
+/// `f` in the active window with its workspace, after the action that asked for it is done
+/// dispatching (the window can't be updated during it).
+fn in_active_workspace(
+    cx: &mut App,
+    f: impl FnOnce(&gpui_kit::Entity<Workspace>, &mut Window, &mut App) + 'static,
+) {
+    let Some(handle) = cx.active_window() else {
+        return;
+    };
+    cx.defer(move |cx| {
+        _ = handle.update(cx, |_, window, cx| {
+            if let Some(ws) = Workspace::for_window(window, cx) {
+                f(&ws, window, cx);
+            }
+        });
+    });
+}
+
+/// The old app's global commands, whatever has focus; a view that handles one itself (the code
+/// view's Find in Files, with its selection) runs first.
+fn global_commands(cx: &mut App) {
+    use gitviber_ui::keymap::{file, search};
+    cx.on_action(|_: &search::FindInFiles, cx| {
+        in_active_workspace(cx, |ws, window, cx| {
+            find_in_files(&ws.downgrade(), None, window, cx)
+        });
+    });
+    // From any tab that shows a file: a diff's, a commit's, the file's own.
+    cx.on_action(|_: &file::RevealInExplorer, cx| {
+        in_active_workspace(cx, |ws, window, cx| {
+            let Some(selection) = active_selection(ws, cx) else {
+                return;
+            };
+            // A file outside the repo isn't in its tree.
+            if !matches!(selection, Selection::External { .. }) {
+                let path = gitviber_ui::workspace::selection_path(&selection);
+                reveal_in_explorer(&ws.downgrade(), &path, window, cx);
+            }
+        });
+    });
+    cx.on_action(|_: &file::Reveal, cx| {
+        in_active_workspace(cx, |ws, _, cx| {
+            let Some(selection) = active_selection(ws, cx) else {
+                return;
+            };
+            let core = backend::core(cx);
+            let path = gitviber_ui::workspace::selection_path(&selection);
+            let external = matches!(selection, Selection::External { .. });
+            cx.background_spawn(async move {
+                _ = if external {
+                    gitviber_core::api::files::external_reveal(&core, path)
+                } else {
+                    gitviber_core::api::files::reveal_path(&core, path)
+                };
+            })
+            .detach();
+        });
+    });
+}
+
+/// What the active tab shows, when it's a selection (a file, a diff, a commit's file).
+fn active_selection(ws: &gpui_kit::Entity<Workspace>, cx: &App) -> Option<Selection> {
+    ws.read(cx).tabs().active()?.item.selection().cloned()
 }
 
 fn open_selection(selection: &Selection, window: &mut Window, cx: &mut App) -> Option<TabHandle> {

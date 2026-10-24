@@ -353,6 +353,8 @@ impl CodeView {
                 this.blame_on = blame;
                 this.load_blame(cx);
             }
+            // Ligatures and the code font are read as it draws.
+            cx.notify();
         });
         let mut this = CodeView {
             workspace,
@@ -983,6 +985,7 @@ impl Render for CodeView {
                         .children(rows),
                 )
         });
+        let ligatures = gitviber_ui::Settings::get(cx).ligatures;
         // While the file has unsaved edits the labels would name the saved file's lines: none.
         let blame_column = self.blame_on.then(|| {
             let blamed = self.blame.clone().filter(|_| !self.dirty);
@@ -1074,6 +1077,12 @@ impl Render for CodeView {
                                     .bordered(false)
                                     .appearance(false)
                                     .font_family(t.fonts.code.clone())
+                                    // Settings → ligatures: off, `->` and `!=` draw as their characters.
+                                    .font_features(if ligatures {
+                                        gpui_kit::FontFeatures::default()
+                                    } else {
+                                        gpui_kit::FontFeatures::disable_ligatures()
+                                    })
                                     .text_size(t.fonts.code_size)
                                     .line_height(relative(t.fonts.code_line_height)),
                             )

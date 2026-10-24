@@ -12,7 +12,9 @@ use gitviber_markdown::{MarkdownBase, MarkdownEvent, MarkdownView, is_markdown};
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::keymap::file;
 use gitviber_ui::memory::Live;
-use gitviber_ui::workspace::{Project, ProjectEvent, TabIcon, TabItem, Workspace};
+use gitviber_ui::workspace::{
+    Project, ProjectEvent, Selection, TabIcon, TabItem, Toast, Workspace,
+};
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::{
@@ -74,6 +76,10 @@ pub struct FileView {
     reveal: Option<Reveal>,
     /// The file's modification time when read, to skip re-reading it on others' changes.
     mtime: Option<f64>,
+    /// It differs from HEAD (or is new): the header offers its diff.
+    changed: bool,
+    /// Its Git LFS object isn't here: the notice offers to download it.
+    lfs: bool,
     focus: FocusHandle,
     _load: Task<()>,
     _subs: Vec<Subscription>,
@@ -117,6 +123,8 @@ impl FileView {
             mode,
             reveal: None,
             mtime: None,
+            changed: false,
+            lfs: false,
             focus: cx.focus_handle(),
             _load: Task::ready(()),
             _subs: Vec::new(),
@@ -243,6 +251,64 @@ impl FileView {
         });
     }
 
+    /// This file's uncommitted diff: the unstaged one, else the staged one.
+    fn open_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let FileSource::Repo(path) = self.source.clone() else {
+            return;
+        };
+        let core = self.core.clone();
+        self._load = cx.spawn_in(window, async move |this, cx| {
+            let status = cx
+                .background_spawn(async move { api::changes::status(&core) })
+                .await;
+            _ = this.update_in(cx, |this, window, cx| {
+                let selection = status.ok().and_then(|st| {
+                    let find = |list: &[gitviber_core::git::FileChange]| {
+                        list.iter().find(|f| f.path == path).cloned().map(Arc::new)
+                    };
+                    find(&st.unstaged)
+                        .map(|file| Selection::Unstaged { file })
+                        .or_else(|| find(&st.staged).map(|file| Selection::Staged { file }))
+                });
+                match selection {
+                    Some(selection) => {
+                        _ = this
+                            .workspace
+                            .update(cx, |ws, cx| ws.open(selection, false, window, cx));
+                    }
+                    None => {
+                        _ = this.workspace.update(cx, |ws, cx| {
+                            ws.toast(Toast::info("No uncommitted changes."), cx)
+                        });
+                    }
+                }
+            });
+        });
+    }
+
+    /// Fetches the file's Git LFS object, then shows the file.
+    fn download_lfs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let FileSource::Repo(path) = self.source.clone() else {
+            return;
+        };
+        let core = self.core.clone();
+        self._load = cx.spawn_in(window, async move |this, cx| {
+            let op = format!("lfs-pull:{path}");
+            let shown = path.clone();
+            let pulled = cx
+                .background_spawn(async move { api::sync::lfs_pull(&core, path, op, |_| {}) })
+                .await;
+            _ = this.update_in(cx, |this, window, cx| {
+                let toast = match pulled {
+                    Ok(()) => Toast::success(format!("Downloaded {shown}")),
+                    Err(e) => Toast::error(e).title("Could not download the LFS file"),
+                };
+                _ = this.workspace.update(cx, |ws, cx| ws.toast(toast, cx));
+                this.load(window, cx);
+            });
+        });
+    }
+
     fn notice(
         &mut self,
         title: &str,
@@ -259,6 +325,7 @@ impl FileView {
     }
 
     fn show(&mut self, loaded: Loaded, window: &mut Window, cx: &mut Context<Self>) {
+        self.lfs = false;
         let (head, file, rows) = match loaded {
             Loaded::Failed(e) => return self.notice("Could not read the file", e, false, cx),
             Loaded::External(f) => (None, f, vec![]),
@@ -283,12 +350,14 @@ impl FileView {
             );
         }
         if let Some(size) = file.lfs_missing {
-            return self.notice(
+            self.notice(
                 "Git LFS file not downloaded",
-                format!("Its object ({size}) isn't here; run `git lfs pull` to get it."),
+                format!("Its object ({size}) isn't here."),
                 false,
                 cx,
             );
+            self.lfs = true;
+            return;
         }
         if let Some(kind) =
             kind.filter(|k| *k != MediaKind::Image || !path.to_ascii_lowercase().ends_with(".svg"))
@@ -316,6 +385,9 @@ impl FileView {
         } else {
             vec![]
         };
+        // Differs from HEAD, or isn't in it: there's an uncommitted change to open.
+        self.changed = matches!(self.source, FileSource::Repo(_))
+            && (head.is_none() || rows.iter().any(|r| r.k != 0));
         drop(rows);
         let readonly = !matches!(self.source, FileSource::Repo(_))
             || file.lossy
@@ -458,6 +530,16 @@ impl FileView {
                 )
             })
             .child(div().flex_1())
+            .when(self.changed, |d| {
+                d.child(
+                    Button::new("changes")
+                        .ghost()
+                        .xsmall()
+                        .label("Changes")
+                        .tooltip("This file's uncommitted changes")
+                        .on_click(cx.listener(|this, _, window, cx| this.open_changes(window, cx))),
+                )
+            })
             // Who last changed each line (View → Blame), for the file in the repo as code.
             .when(
                 matches!(self.source, FileSource::Repo(_))
@@ -560,61 +642,72 @@ impl Render for FileView {
         let t = cx.app_theme();
         let svg_preview =
             self.mode == Mode::Preview && self.source.path().to_ascii_lowercase().ends_with(".svg");
-        let body = match &self.content {
-            Content::Loading => div().size_full().into_any_element(),
-            Content::Notice {
-                title,
-                detail,
-                open,
-            } => {
-                let abs = self.abs_path();
-                div()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap_2()
-                    .child(div().text_color(t.foreground).child(title.clone()))
-                    .child(
-                        div()
-                            .text_size(px(11.5))
-                            .text_color(t.subtle)
-                            .child(detail.clone()),
-                    )
-                    .when(*open, |d| {
-                        d.child(
-                            Button::new("open-default")
-                                .small()
-                                .label("Open in Default App")
-                                .on_click(move |_, _, cx| cx.open_with_system(&abs)),
+        let body =
+            match &self.content {
+                Content::Loading => div().size_full().into_any_element(),
+                Content::Notice {
+                    title,
+                    detail,
+                    open,
+                } => {
+                    let abs = self.abs_path();
+                    div()
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .child(div().text_color(t.foreground).child(title.clone()))
+                        .child(
+                            div()
+                                .text_size(px(11.5))
+                                .text_color(t.subtle)
+                                .child(detail.clone()),
                         )
-                    })
-                    .into_any_element()
-            }
-            Content::Media(m) => m.clone().into_any_element(),
-            Content::Text {
-                preview: Some(p), ..
-            } if self.mode == Mode::Preview => p.clone().into_any_element(),
-            Content::Text { .. } if svg_preview => {
-                let abs = self.abs_path();
-                div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .p_4()
-                    .child(
-                        gpui_kit::img(abs)
-                            .max_w_full()
-                            .max_h_full()
-                            .size_full()
-                            .object_fit(gpui_kit::ObjectFit::ScaleDown),
-                    )
-                    .into_any_element()
-            }
-            Content::Text { code, .. } => code.clone().into_any_element(),
-        };
+                        .when(*open, |d| {
+                            d.child(
+                                Button::new("open-default")
+                                    .small()
+                                    .label("Open in Default App")
+                                    .on_click(move |_, _, cx| cx.open_with_system(&abs)),
+                            )
+                        })
+                        .when(self.lfs, |d| {
+                            d.child(
+                                Button::new("lfs-pull")
+                                    .small()
+                                    .label("Download with Git LFS")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.download_lfs(window, cx)
+                                    })),
+                            )
+                        })
+                        .into_any_element()
+                }
+                Content::Media(m) => m.clone().into_any_element(),
+                Content::Text {
+                    preview: Some(p), ..
+                } if self.mode == Mode::Preview => p.clone().into_any_element(),
+                Content::Text { .. } if svg_preview => {
+                    let abs = self.abs_path();
+                    div()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .p_4()
+                        .child(
+                            gpui_kit::img(abs)
+                                .max_w_full()
+                                .max_h_full()
+                                .size_full()
+                                .object_fit(gpui_kit::ObjectFit::ScaleDown),
+                        )
+                        .into_any_element()
+                }
+                Content::Text { code, .. } => code.clone().into_any_element(),
+            };
         let path = self.source.path().to_string();
         let ws = self.workspace.clone();
         div()

@@ -36,6 +36,28 @@ pub const PANEL_ID: &str = "explorer";
 const ROW_HEIGHT: f32 = 24.;
 const INDENT: f32 = 12.;
 
+/// Show History: the History panel narrowed to a file's (or a folder's) commits. It lives in
+/// another crate; until the app sets this, the item says so.
+pub type HistoryHandler = Rc<dyn Fn(&str, bool, &mut Window, &mut App)>;
+
+struct HistoryHook(HistoryHandler);
+impl gpui_kit::Global for HistoryHook {}
+
+pub fn set_history_handler(cx: &mut App, handler: HistoryHandler) {
+    cx.set_global(HistoryHook(handler));
+}
+
+/// The filter (⌘F in the explorer): every file git lists and the ignored ones, matched by path.
+struct Filter {
+    input: Entity<InputState>,
+    needle: String,
+    files: Option<Arc<Vec<Node>>>,
+    found: usize,
+    capped: bool,
+    _sub: Subscription,
+    _load: Task<()>,
+}
+
 /// What a menu item does to the panel.
 type MenuAction = Rc<dyn Fn(&mut ExplorerPanel, &mut Window, &mut Context<ExplorerPanel>)>;
 
@@ -76,6 +98,19 @@ pub struct ExplorerPanel {
     editing: Option<Edit>,
     /// A path asked to be shown whose folders are still being listed.
     revealing: Option<SharedString>,
+    filter: Option<Filter>,
+    /// origin's page on GitHub, for links to a file there.
+    web_url: Option<String>,
+    /// Tracked files with unstaged edits: Discard Changes applies to them.
+    discardable: HashSet<SharedString>,
+    /// A row's menu opened from the keyboard (⇧F10), where it shows.
+    kb_menu: Option<(
+        Entity<PopupMenu>,
+        gpui_kit::Point<gpui_kit::Pixels>,
+        Subscription,
+    )>,
+    /// The list's height when last drawn, for a page of PgUp/PgDn.
+    list_height: Rc<std::cell::Cell<gpui_kit::Pixels>>,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
     listings: HashMap<SharedString, Task<()>>,
@@ -136,6 +171,11 @@ impl ExplorerPanel {
             mark: None,
             editing: None,
             revealing: None,
+            filter: None,
+            web_url: None,
+            discardable: HashSet::new(),
+            kb_menu: None,
+            list_height: Rc::new(std::cell::Cell::new(px(0.))),
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
             listings: HashMap::new(),
@@ -151,6 +191,9 @@ impl ExplorerPanel {
 
     /// Lists every open folder again and reads git's status.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        if self.filter.is_some() {
+            self.load_filter_files(cx);
+        }
         let open: Vec<SharedString> = self.tree.expanded().cloned().collect();
         for path in open {
             self.load(path, cx);
@@ -162,6 +205,14 @@ impl ExplorerPanel {
                 .await;
             let Ok(status) = status else { return };
             _ = this.update(cx, |this, cx| {
+                this.web_url = status.web_url.clone().flatten();
+                // Same rule as Changes: only tracked working-tree edits can be restored.
+                this.discardable = status
+                    .unstaged
+                    .iter()
+                    .filter(|f| f.status != "?")
+                    .map(|f| SharedString::from(f.path.clone()))
+                    .collect();
                 this.status.clear();
                 this.dirty_dirs.clear();
                 for f in status
@@ -209,7 +260,18 @@ impl ExplorerPanel {
     }
 
     fn rebuild(&mut self, cx: &mut Context<Self>) {
-        self.rows = self.tree.rows();
+        self.rows = match &mut self.filter {
+            Some(f) if !f.needle.is_empty() => match &f.files {
+                Some(files) => {
+                    let (rows, found, capped) = tree::matching_rows(files, &f.needle);
+                    (f.found, f.capped) = (found, capped);
+                    rows
+                }
+                // The last tree until the files are listed.
+                None => self.tree.rows(),
+            },
+            _ => self.tree.rows(),
+        };
         self.items = items(&self.rows, self.editing.as_ref().map(|e| &e.what));
         // The edited entry (or the folder a new one goes into) went away.
         if let Some(edit) = &self.editing {
@@ -277,6 +339,138 @@ impl ExplorerPanel {
         self.finish_editing(Some(name.to_string()), window, cx);
     }
 
+    /// Opens the filter (⌘F here) and focuses it.
+    fn open_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(f) = &self.filter {
+            f.input.update(cx, |s, cx| {
+                s.focus(window, cx);
+                s.select_all(window, cx);
+            });
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files"));
+        input.update(cx, |s, cx| s.focus(window, cx));
+        let sub = cx.subscribe(&input, |this, input, e: &InputEvent, cx| {
+            if matches!(e, InputEvent::Change) {
+                let needle = input.read(cx).value().trim().to_string();
+                if let Some(f) = &mut this.filter {
+                    f.needle = needle;
+                }
+                this.picked.clear();
+                this.rebuild(cx);
+            }
+        });
+        self.filter = Some(Filter {
+            input,
+            needle: String::new(),
+            files: None,
+            found: 0,
+            capped: false,
+            _sub: sub,
+            _load: Task::ready(()),
+        });
+        self.load_filter_files(cx);
+        cx.notify();
+    }
+
+    /// Leaving the filter, the file picked in it stays picked, shown in its folders.
+    fn close_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.filter.take().is_none() {
+            return;
+        }
+        self.picked.clear();
+        if let Some(selected) = self.selected.clone() {
+            for dir in self.tree.open_to(&selected, false) {
+                self.load(dir, cx);
+            }
+            self.revealing = Some(selected);
+        }
+        self.focus.focus(window, cx);
+        self.rebuild(cx);
+    }
+
+    fn load_filter_files(&mut self, cx: &mut Context<Self>) {
+        let core = self.core.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let files = cx
+                .background_spawn(async move {
+                    let listed = api::files::list_files(&core)?;
+                    // A failure to list the ignored ones leaves the filter at what git lists.
+                    let ignored = api::files::list_ignored(&core).unwrap_or_default();
+                    let name = |p: &str| p.rsplit('/').next().unwrap_or(p).to_string();
+                    let mut files: Vec<Node> = listed
+                        .into_iter()
+                        .map(|path| Node {
+                            name: name(&path).into(),
+                            path: path.into(),
+                            is_dir: false,
+                            ignored: false,
+                        })
+                        .collect();
+                    files.extend(ignored.into_iter().map(Node::from));
+                    Ok::<_, String>(files)
+                })
+                .await;
+            _ = this.update(cx, |this, cx| match files {
+                Ok(files) => {
+                    if let Some(f) = &mut this.filter {
+                        f.files = Some(Arc::new(files));
+                    }
+                    this.rebuild(cx);
+                }
+                Err(e) => this.toast(Toast::error(e).title("Could not list files"), cx),
+            });
+        });
+        if let Some(f) = &mut self.filter {
+            f._load = task;
+        }
+    }
+
+    fn filtering(&self) -> bool {
+        self.filter.as_ref().is_some_and(|f| !f.needle.is_empty())
+    }
+
+    /// A row's menu from the keyboard, under the row.
+    fn open_keyboard_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let node = self
+            .selected
+            .as_ref()
+            .and_then(|s| self.row_index(s))
+            .map(|i| self.rows[i].node.clone());
+        let at = self
+            .selected
+            .as_ref()
+            .and_then(|s| self.index_of(s))
+            .unwrap_or(0);
+        let offset = self.scroll.0.borrow().base_handle.offset();
+        let origin = self.scroll.0.borrow().base_handle.bounds().origin;
+        let position = gpui_kit::point(
+            origin.x + px(24.),
+            origin.y + offset.y + px(ROW_HEIGHT * (at as f32 + 1.)),
+        );
+        let me = cx.weak_entity();
+        window.defer(cx, move |window, cx| {
+            let menu = PopupMenu::build(window, cx, |menu, window, pcx| match me.upgrade() {
+                Some(this) => this.update(pcx, |this, cx| this.menu(node, menu, window, cx)),
+                None => menu,
+            });
+            gpui_kit::Focusable::focus_handle(menu.read(cx), cx).focus(window, cx);
+            let dismiss = cx.subscribe(&menu, {
+                let me = me.clone();
+                move |_, _: &gpui_kit::DismissEvent, cx| {
+                    _ = me.update(cx, |this, cx| {
+                        this.kb_menu = None;
+                        cx.notify();
+                    });
+                }
+            });
+            _ = me.update(cx, |this, cx| {
+                this.kb_menu = Some((menu, position, dismiss));
+                cx.notify();
+            });
+        });
+    }
+
     fn index_of(&self, path: &str) -> Option<usize> {
         self.items.iter().position(
             |item| matches!(item, Item::Row(i) if self.rows[*i].node.path.as_ref() == path),
@@ -327,6 +521,10 @@ impl ExplorerPanel {
     }
 
     fn activate(&mut self, node: &Node, pin: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // The filter holds its folders open around their matches.
+        if node.is_dir && self.filtering() {
+            return;
+        }
         if node.is_dir {
             let open = !self.tree.is_open(&node.path);
             self.set_open(&node.path, open, cx);
@@ -397,7 +595,30 @@ impl ExplorerPanel {
         if ks.modifiers.alt || ks.modifiers.platform || ks.modifiers.control {
             return;
         }
+        if ks.key == "f10" && ks.modifiers.shift {
+            cx.stop_propagation();
+            return self.open_keyboard_menu(window, cx);
+        }
         let cur = self.selected.as_ref().and_then(|s| self.row_index(s));
+        if matches!(ks.key.as_str(), "pageup" | "pagedown") && !self.rows.is_empty() {
+            cx.stop_propagation();
+            let page = ((f32::from(self.list_height.get()) / ROW_HEIGHT) as isize - 1).max(1);
+            let at = cur.map_or(0, |c| c as isize);
+            let to = if ks.key == "pageup" {
+                at - page
+            } else {
+                at + page
+            };
+            let to = to.clamp(0, self.rows.len() as isize - 1) as usize;
+            let path = self.rows[to].node.path.clone();
+            self.picked.clear();
+            self.selected = Some(path.clone());
+            if let Some(ix) = self.index_of(&path) {
+                self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
+            }
+            cx.notify();
+            return;
+        }
         if ks.key == "escape" && !self.picked.is_empty() {
             self.picked.clear();
             cx.notify();
@@ -758,6 +979,136 @@ impl ExplorerPanel {
         .detach();
     }
 
+    fn show_history(&self, path: &str, file: bool, window: &mut Window, cx: &mut App) {
+        match cx.try_global::<HistoryHook>().map(|h| h.0.clone()) {
+            Some(show) => show(path, file, window, cx),
+            None => self.toast(Toast::info("History comes with the history view."), cx),
+        }
+    }
+
+    /// The file's (or folder's) page on GitHub at the last commit of this branch there: copied, or
+    /// opened.
+    fn github_link(&mut self, path: &str, is_dir: bool, open: bool, cx: &mut Context<Self>) {
+        let Some(web) = self.web_url.clone() else {
+            return;
+        };
+        let (core, path) = (self.core.clone(), path.to_string());
+        self._work_link_spawn(cx, async move |this, cx| {
+            let link = cx.background_spawn({
+                let path = path.clone();
+                async move { gitviber_core::api::github::github_permalink(&core, path, None) }
+            });
+            let link = link.await;
+            _ = this.update(cx, |this, cx| match link {
+                Ok(p) => {
+                    let url = permalink_url(&web, &p.sha, &path, p.tree || is_dir);
+                    if open {
+                        cx.open_url(&url);
+                    } else {
+                        cx.write_to_clipboard(ClipboardItem::new_string(url));
+                        this.toast(Toast::success("Link copied"), cx);
+                    }
+                }
+                Err(e) => this.toast(Toast::info(e).title("Not on GitHub yet"), cx),
+            });
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    fn copy_files(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
+        let core = self.core.clone();
+        let n = paths.len();
+        self._work_link_spawn(cx, async move |this, cx| {
+            let copied = cx
+                .background_spawn(async move { gitviber_core::api::app::copy_files(&core, paths) })
+                .await;
+            _ = this.update(cx, |this, cx| match copied {
+                Ok(()) => this.toast(
+                    Toast::success(if n == 1 {
+                        "File copied".to_string()
+                    } else {
+                        format!("{n} files copied")
+                    }),
+                    cx,
+                ),
+                Err(e) => this.toast(Toast::error(e).title("Could not copy"), cx),
+            });
+        });
+    }
+
+    /// Discard Changes, asked first: the current versions go to the Trash, and Undo puts them back.
+    fn discard(&mut self, paths: Vec<SharedString>, window: &mut Window, cx: &mut Context<Self>) {
+        let what = if paths.len() > 1 {
+            format!("{} files", paths.len())
+        } else {
+            paths[0].to_string()
+        };
+        let detail = if paths.len() > 1 {
+            "Their current versions are moved to the Trash."
+        } else {
+            "Its current version is moved to the Trash."
+        };
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!("Discard changes to {what}?"),
+            Some(detail),
+            &["Discard", "Cancel"],
+            cx,
+        );
+        let core = self.core.clone();
+        self._work = cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            let list: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+            let undo_core = core.clone();
+            let done = cx
+                .background_spawn(async move {
+                    let before = gitviber_core::api::journal::journal_last(&core)
+                        .ok()
+                        .flatten();
+                    gitviber_core::api::changes::discard(&core, list)?;
+                    let after = gitviber_core::api::journal::journal_last(&core)
+                        .ok()
+                        .flatten();
+                    Ok::<_, String>(after.filter(|a| Some(*a) != before))
+                })
+                .await;
+            _ = this.update(cx, |this, cx| match done {
+                Ok(entry) => {
+                    let mut toast =
+                        Toast::success(format!("Discarded {what}")).title(if paths.len() > 1 {
+                            "The old versions are in the Trash."
+                        } else {
+                            "The old version is in the Trash."
+                        });
+                    if let Some(id) = entry {
+                        toast.action = Some(gitviber_ui::workspace::ToastAction {
+                            label: "Undo".into(),
+                            run: Rc::new(move |_, cx| {
+                                let core = undo_core.clone();
+                                cx.background_spawn(async move {
+                                    _ = gitviber_core::api::journal::undo(&core, Some(id));
+                                })
+                                .detach();
+                            }),
+                        });
+                    }
+                    this.toast(toast, cx);
+                }
+                Err(e) => this.toast(Toast::error(e).title("Discard failed"), cx),
+            });
+        });
+    }
+
+    fn _work_link_spawn(
+        &mut self,
+        cx: &mut Context<Self>,
+        f: impl AsyncFnOnce(WeakEntity<Self>, &mut gpui_kit::AsyncApp) + 'static,
+    ) {
+        self._work = cx.spawn(f);
+    }
+
     fn compare(&self, left: &str, right: &str, window: &mut Window, cx: &mut App) {
         crate::compare_files(&self.workspace, left, right, window, cx);
     }
@@ -871,14 +1222,72 @@ impl ExplorerPanel {
                 ))
                 .separator();
         }
+        // Untracked or ignored: git has no history of it, and GitHub no copy.
+        let off_git = node
+            .as_ref()
+            .is_some_and(|n| n.ignored || self.status.get(&n.path) == Some(&ChangeKind::Untracked));
+        if let Some(n) = node.clone().filter(|_| !multi) {
+            let (path, file) = (n.path.to_string(), !n.is_dir);
+            menu = menu
+                .item(
+                    item(
+                        "Show History",
+                        Rc::new(move |this, w, cx| this.show_history(&path, file, w, cx)),
+                    )
+                    .disabled(off_git),
+                )
+                .separator();
+        }
         if !multi {
             let path = node
                 .as_ref()
                 .map(|n| n.path.to_string())
                 .unwrap_or_default();
+            let reveal = path.clone();
             menu = menu.item(item(
                 REVEAL_LABEL,
-                Rc::new(move |this, _, cx| this.reveal_in_finder(&path, cx)),
+                Rc::new(move |this, _, cx| this.reveal_in_finder(&reveal, cx)),
+            ));
+            // Open in…: the app's shared submenu goes here once gitviber-ui has it.
+            if self.web_url.is_some() {
+                let (p1, p2) = (path.clone(), path.clone());
+                let is_dir = node.as_ref().is_some_and(|n| n.is_dir) || node.is_none();
+                menu = menu
+                    .item(
+                        item(
+                            "Copy GitHub Link",
+                            Rc::new(move |this, _, cx| this.github_link(&p1, is_dir, false, cx)),
+                        )
+                        .disabled(off_git),
+                    )
+                    .item(
+                        item(
+                            "Open on GitHub",
+                            Rc::new(move |this, _, cx| this.github_link(&p2, is_dir, true, cx)),
+                        )
+                        .disabled(off_git),
+                    );
+            }
+        }
+        #[cfg(target_os = "macos")]
+        if !files.is_empty() {
+            let abs: Vec<String> = files
+                .iter()
+                .map(|n| {
+                    self.root
+                        .join(n.path.as_ref())
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            let label = if files.len() == 1 {
+                format!("Copy “{}”", files[0].name)
+            } else {
+                format!("Copy {} Files", files.len())
+            };
+            menu = menu.item(item(
+                &label,
+                Rc::new(move |this, _, cx| this.copy_files(abs.clone(), cx)),
             ));
         }
         let t1 = targets.clone();
@@ -904,6 +1313,22 @@ impl ExplorerPanel {
                     Rc::new(move |this, w, cx| {
                         this.start_editing(Editing::Rename { node: n.clone() }, w, cx)
                     }),
+                ));
+            }
+            let discard: Vec<SharedString> = targets
+                .iter()
+                .filter(|n| self.discardable.contains(&n.path))
+                .map(|n| n.path.clone())
+                .collect();
+            if !discard.is_empty() {
+                let label = if discard.len() > 1 {
+                    format!("Discard Changes to {} Files", discard.len())
+                } else {
+                    "Discard Changes".to_string()
+                };
+                menu = menu.item(item(
+                    &label,
+                    Rc::new(move |this, w, cx| this.discard(discard.clone(), w, cx)),
                 ));
             }
             let t3 = targets.clone();
@@ -1089,6 +1514,39 @@ impl ExplorerPanel {
     }
 }
 
+/// GitHub's page of `path` at `sha`: a file's blob or a folder's tree.
+pub fn permalink_url(web: &str, sha: &str, path: &str, tree: bool) -> String {
+    let at: String = if path.is_empty() {
+        String::new()
+    } else {
+        path.split('/')
+            .map(|seg| format!("/{}", encode_segment(seg)))
+            .collect()
+    };
+    format!("{web}/{}/{sha}{at}", if tree { "tree" } else { "blob" })
+}
+
+/// A path segment percent-encoded as JavaScript's encodeURIComponent does.
+fn encode_segment(seg: &str) -> String {
+    seg.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => (b as char).to_string(),
+            b => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 fn insert_dir(set: &mut HashSet<SharedString>, dir: &str) {
     if !set.contains(dir) {
         set.insert(dir.to_string().into());
@@ -1180,6 +1638,62 @@ impl Render for ExplorerPanel {
                     this.cancel_editing(window, cx)
                 }),
             )
+            .on_action(
+                cx.listener(|this, _: &gitviber_ui::keymap::editor::Find, window, cx| {
+                    this.open_filter(window, cx)
+                }),
+            )
+            .children(self.filter.as_ref().map(|f| {
+                let input = f.input.clone();
+                div()
+                    .id("explorer-filter")
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .h(px(32.))
+                    .px_2()
+                    .border_b_1()
+                    .border_color(t.border)
+                    // Esc clears, then closes; ↓ or ↵ go to the rows.
+                    .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                        let Some(f) = &this.filter else { return };
+                        match e.keystroke.key.as_str() {
+                            "escape" if f.needle.is_empty() => this.close_filter(window, cx),
+                            "escape" => f
+                                .input
+                                .clone()
+                                .update(cx, |s, cx| s.set_value("", window, cx)),
+                            "down" | "enter" => this.focus.focus(window, cx),
+                            _ => return,
+                        }
+                        cx.stop_propagation();
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Input::new(&input).xsmall().appearance(false)),
+                    )
+            }))
+            .when(
+                self.filtering()
+                    && self
+                        .filter
+                        .as_ref()
+                        .is_some_and(|f| f.files.is_some() && f.found == 0),
+                |d| {
+                    d.child(
+                        div()
+                            .px_4()
+                            .py_6()
+                            .text_center()
+                            .text_size(px(12.))
+                            .text_color(t.subtle)
+                            .child("No files match."),
+                    )
+                },
+            )
             .child(
                 uniform_list(
                     "explorer-rows",
@@ -1194,6 +1708,39 @@ impl Render for ExplorerPanel {
                 .flex_1()
                 .py_1(),
             )
+            .when(
+                self.filtering() && self.filter.as_ref().is_some_and(|f| f.capped),
+                |d| {
+                    d.child(
+                        div()
+                            .px_4()
+                            .py_2()
+                            .text_center()
+                            .text_size(px(11.))
+                            .text_color(t.subtle)
+                            .child(format!("Showing the first {} matches", tree::MAX_MATCHES)),
+                    )
+                },
+            )
+            // The list's height, for a page of PgUp/PgDn.
+            .child({
+                let height = self.list_height.clone();
+                gpui_kit::canvas(
+                    move |bounds, _, _| height.set(bounds.size.height),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full()
+            })
+            .children(self.kb_menu.as_ref().map(|(menu, at, _)| {
+                gpui_kit::deferred(
+                    gpui_kit::anchored()
+                        .position(*at)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(menu.clone()),
+                )
+                .with_priority(1)
+            }))
             // The space below the rows: the repo root's menu.
             .child(
                 div()

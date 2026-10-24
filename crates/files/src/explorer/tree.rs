@@ -244,6 +244,74 @@ fn same(shown: &[Node], listed: &[Node]) -> bool {
     }
 }
 
+/// The filter shows this many entries at most: the tree draws every row it has.
+pub const MAX_MATCHES: usize = 1000;
+
+/// What the filter shows: the entries whose path holds `needle` (any case) and the folders down
+/// to them, all open, in the tree's order; how many matched (up to MAX_MATCHES), and whether there
+/// were more.
+pub fn matching_rows(listed: &[Node], needle: &str) -> (Vec<Row>, usize, bool) {
+    let needle = needle.to_lowercase();
+    let mut children: HashMap<SharedString, Vec<Node>> = HashMap::new();
+    let mut folders: HashSet<SharedString> = HashSet::new();
+    let mut found = 0;
+    let mut capped = false;
+    for node in listed {
+        if !node.path.to_lowercase().contains(&needle) {
+            continue;
+        }
+        found += 1;
+        if found > MAX_MATCHES {
+            capped = true;
+            found = MAX_MATCHES;
+            break;
+        }
+        children
+            .entry(dirname(&node.path).to_string().into())
+            .or_default()
+            .push(node.clone());
+        let mut dir = dirname(&node.path);
+        while !dir.is_empty() && folders.insert(dir.to_string().into()) {
+            let name = dir.rsplit('/').next().unwrap_or(dir);
+            let folder = Node {
+                name: name.to_string().into(),
+                path: dir.to_string().into(),
+                is_dir: true,
+                ignored: false,
+            };
+            children
+                .entry(dirname(dir).to_string().into())
+                .or_default()
+                .push(folder);
+            dir = dirname(dir);
+        }
+    }
+    for list in children.values_mut() {
+        list.sort_by(compare_nodes);
+        // A matching folder (an ignored one, listed whole) and the folder added for a match in it.
+        list.dedup_by(|a, b| a.path == b.path);
+    }
+    let mut rows = Vec::new();
+    fn walk(
+        dir: &str,
+        depth: usize,
+        children: &HashMap<SharedString, Vec<Node>>,
+        rows: &mut Vec<Row>,
+    ) {
+        for node in children.get(dir).map(Vec::as_slice).unwrap_or_default() {
+            rows.push(Row {
+                node: node.clone(),
+                depth,
+            });
+            if node.is_dir {
+                walk(&node.path, depth + 1, children, rows);
+            }
+        }
+    }
+    walk("", 0, &children, &mut rows);
+    (rows, found, capped)
+}
+
 /// The parent folder of a repo-relative path ("" at the root).
 pub fn dirname(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(d, _)| d)
@@ -396,6 +464,39 @@ mod tests {
         let again = t.renamed("a", "z");
         assert!(t.is_open("z/b") && !t.is_open("a/b"));
         assert_eq!(again.len(), 2);
+    }
+
+    #[test]
+    fn the_filter_shows_matches_in_their_folders() {
+        let listed = [
+            node("src/main.rs", false),
+            node("src/lib.rs", false),
+            node("docs/main.md", false),
+            node("README.md", false),
+        ];
+        let (rows, found, capped) = matching_rows(&listed, "MAIN");
+        let paths: Vec<(&str, usize)> = rows
+            .iter()
+            .map(|r| (r.node.path.as_ref(), r.depth))
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                ("docs", 0),
+                ("docs/main.md", 1),
+                ("src", 0),
+                ("src/main.rs", 1)
+            ]
+        );
+        assert_eq!((found, capped), (2, false));
+        let many: Vec<Node> = (0..MAX_MATCHES + 5)
+            .map(|i| node(&format!("f{i}.txt"), false))
+            .collect();
+        let (rows, found, capped) = matching_rows(&many, "f");
+        assert_eq!(
+            (rows.len(), found, capped),
+            (MAX_MATCHES, MAX_MATCHES, true)
+        );
     }
 
     #[test]
