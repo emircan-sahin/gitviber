@@ -2195,7 +2195,7 @@ impl ChangesPanel {
                         None => vec![],
                     };
                     let all = shown.unstaged.clone();
-                    buttons.push(small("open-all", "Open All".into()).on_click(
+                    buttons.push(small("open-all", "Open all".into()).on_click(
                         cx.listener(|this, _, w, cx| this.open_all(ChangesOf::Unstaged, w, cx)),
                     ));
                     if !discardable.is_empty() {
@@ -2245,7 +2245,7 @@ impl ChangesPanel {
                     );
                 } else {
                     let all = shown.staged.clone();
-                    buttons.push(small("open-all-staged", "Open All".into()).on_click(
+                    buttons.push(small("open-all-staged", "Open all".into()).on_click(
                         cx.listener(|this, _, w, cx| this.open_all(ChangesOf::Staged, w, cx)),
                     ));
                     buttons.push(
@@ -2277,7 +2277,7 @@ impl ChangesPanel {
                 }
             }
             Section::Review => {
-                buttons.push(small("open-all-branch", "Open All".into()).on_click(
+                buttons.push(small("open-all-branch", "Open all".into()).on_click(
                     cx.listener(|this, _, w, cx| this.open_all(ChangesOf::Branch, w, cx)),
                 ));
             }
