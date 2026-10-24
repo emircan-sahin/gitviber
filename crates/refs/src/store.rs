@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use gitviber_ui::store::{config_dir, write_in_background};
 use gpui_kit::{App, Global};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -48,6 +49,47 @@ pub fn update(cx: &mut App, f: impl FnOnce(&mut Saved)) {
     let text = serde_json::to_string_pretty(&next).unwrap_or_default();
     cx.set_global(next);
     write_in_background(cx, path(), text);
+}
+
+/// The old app's, as it kept them by path (its first launch here): pins, worktree folders and
+/// runs, colors. Its runs for worktrees started from an issue have no place here yet.
+fn from_legacy(value: impl Fn(&str) -> Option<Value>) -> Saved {
+    let records = |key: &str| match value(key) {
+        Some(Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    let strings = |key: &str| {
+        records(key)
+            .into_iter()
+            .filter_map(|(k, v)| Some((k, v.as_str()?.to_string())))
+            .filter(|(_, v)| !v.is_empty())
+            .collect()
+    };
+    let pinned_branches = records("gitviber.pinnedBranches")
+        .into_iter()
+        .filter_map(|(main, v)| {
+            let names: Vec<String> = v
+                .as_array()?
+                .iter()
+                .filter_map(|n| n.as_str().map(str::to_string))
+                .collect();
+            (!names.is_empty()).then_some((main, names))
+        })
+        .collect();
+    Saved {
+        pinned_branches,
+        worktree_dirs: strings("gitviber.worktreeDirs"),
+        worktree_run: strings("gitviber.worktreeRun"),
+        worktree_colors: strings("gitviber.worktreeColors"),
+    }
+}
+
+/// On the first launch, what the old app kept, unless this build has a file of its own.
+pub(crate) fn import_legacy(cx: &mut App) {
+    let saved = from_legacy(gitviber_ui::legacy::value);
+    if saved != Saved::default() && !path().exists() {
+        update(cx, |s| *s = saved);
+    }
 }
 
 pub fn pinned(main: &str, cx: &mut App) -> Vec<String> {
@@ -139,4 +181,29 @@ pub fn move_root(from: &str, to: &str, cx: &mut App) {
             s.worktree_colors.insert(to, c);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_old_apps_records_come_over() {
+        let old = serde_json::json!({
+            "gitviber.pinnedBranches": {"/p/a": ["main", 3, "dev"], "/p/b": []},
+            "gitviber.worktreeDirs": {"/p/a": "/w", "/p/b": null},
+            "gitviber.worktreeRun": {"/p/a": "claude"},
+            "gitviber.worktreeColors": {"/p/a.worktrees/x": "teal", "/p/a": "none"},
+            "gitviber.worktreeRun.broken": 3,
+        });
+        let saved = from_legacy(|key| old.get(key).cloned());
+        assert_eq!(saved.pinned_branches["/p/a"], ["main", "dev"]);
+        assert!(!saved.pinned_branches.contains_key("/p/b"));
+        assert_eq!(saved.worktree_dirs.len(), 1);
+        assert_eq!(saved.worktree_dirs["/p/a"], "/w");
+        assert_eq!(saved.worktree_run["/p/a"], "claude");
+        assert_eq!(saved.worktree_colors["/p/a.worktrees/x"], "teal");
+        assert_eq!(saved.worktree_colors["/p/a"], "none");
+        assert_eq!(from_legacy(|_| None), Saved::default());
+    }
 }

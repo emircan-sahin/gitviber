@@ -84,7 +84,7 @@ impl Settings {
         Self::from_value(&serde_json::from_str(text).unwrap_or(Value::Null)).0
     }
 
-    fn from_value(value: &Value) -> (Settings, Map<String, Value>) {
+    pub(crate) fn from_value(value: &Value) -> (Settings, Map<String, Value>) {
         let empty = Map::new();
         let map = value.as_object().unwrap_or(&empty);
         let mut settings = Settings::read(map);

@@ -118,6 +118,61 @@ impl Saved {
     }
 }
 
+/// `list`'s `cap` last.
+fn keep_last<T>(mut list: Vec<T>, cap: usize) -> Vec<T> {
+    let over = list.len().saturating_sub(cap);
+    list.drain(..over);
+    list
+}
+
+impl Saved {
+    /// The old app's (its first launch here), under the same keys and oldest first as it kept
+    /// them: chips, seen commits, accounts, the credential store, issue branches.
+    fn from_legacy(value: impl Fn(&str) -> Option<Value>) -> Saved {
+        let records = |key: &str| match value(key) {
+            Some(Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        let strings = |v: &Value| -> Option<Vec<String>> {
+            Some(
+                v.as_array()?
+                    .iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect(),
+            )
+        };
+        let narrow = records("gitviber.github.narrow")
+            .into_iter()
+            .filter(|(_, v)| v.is_object())
+            .collect();
+        let seen = records("gitviber.seenCommits")
+            .into_iter()
+            .filter_map(|(url, v)| Some((url, strings(&v)?)))
+            .collect();
+        let branch_issues = records("gitviber.issueBranches")
+            .into_iter()
+            .filter_map(|(repo, v)| {
+                let list: Vec<(String, String)> = v
+                    .as_object()?
+                    .iter()
+                    .filter_map(|(b, u)| Some((b.clone(), u.as_str()?.to_string())))
+                    .collect();
+                (!list.is_empty()).then(|| (repo.to_lowercase(), keep_last(list, ISSUE_BRANCHES)))
+            })
+            .collect();
+        Saved {
+            narrow: keep_last(narrow, NARROW_REPOS),
+            seen_commits: keep_last(seen, SEEN_PULLS),
+            accounts: records("gitviber.githubAccounts")
+                .into_iter()
+                .filter_map(|(main, v)| Some((main, v.as_str()?.to_string())))
+                .collect(),
+            allow_store: value("gitviber.githubStore") == Some(Value::Bool(true)),
+            branch_issues,
+        }
+    }
+}
+
 pub struct Store(Saved);
 
 impl Global for Store {}
@@ -129,6 +184,11 @@ pub fn path() -> PathBuf {
 pub(crate) fn init(cx: &mut App) {
     let text = std::fs::read_to_string(path()).unwrap_or_default();
     cx.set_global(Store(serde_json::from_str(&text).unwrap_or_default()));
+    // The first launch: what the old app kept, unless this build has a file of its own.
+    let old = Saved::from_legacy(gitviber_ui::legacy::value);
+    if old != Saved::default() && !path().exists() {
+        Store::update(cx, |s| *s = old);
+    }
 }
 
 impl Store {
@@ -209,6 +269,35 @@ mod tests {
         let text = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<Saved>(&text).unwrap(), s);
         assert_eq!(serde_json::from_str::<Saved>("{\"narrow\": 3}").ok(), None);
+    }
+
+    #[test]
+    fn the_old_apps_records_come_over_in_their_order() {
+        let old = serde_json::json!({
+            "gitviber.github.narrow": {"/p/b": {"pulls": {"scope": "created", "draft": true}}, "/p/a": {"issues": {"scope": null}}, "/p/x": 3},
+            "gitviber.seenCommits": {"pr/2": ["a", 1, "b"], "pr/1": ["c"]},
+            "gitviber.githubAccounts": {"/p/a": "mona", "/p/b": null},
+            "gitviber.githubStore": true,
+            "gitviber.issueBranches": {"O/R": {"12-fix": "https://github.com/o/r/issues/12"}},
+        });
+        let s = Saved::from_legacy(|key| old.get(key).cloned());
+        let repos: Vec<&str> = s.narrow.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(repos, ["/p/b", "/p/a"]);
+        assert_eq!(
+            s.choice("/p/b", ListKind::Pulls).scope,
+            Some(Scope::Created)
+        );
+        assert_eq!(s.choice("/p/b", ListKind::Pulls).draft, Some(true));
+        assert_eq!(s.seen_commits("pr/2"), Some(vec!["a".into(), "b".into()]));
+        assert_eq!(s.seen_commits[1].0, "pr/1");
+        assert_eq!(s.account("/p/a").as_deref(), Some("mona"));
+        assert_eq!(s.account("/p/b"), None);
+        assert!(s.allow_store());
+        assert_eq!(
+            s.branch_issue("o/r", "12-fix").as_deref(),
+            Some("https://github.com/o/r/issues/12")
+        );
+        assert_eq!(Saved::from_legacy(|_| None), Saved::default());
     }
 
     #[test]

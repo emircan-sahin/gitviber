@@ -90,6 +90,7 @@ pub const PANEL: &str = "history";
 /// Registers the History panel, the openers of a commit's, a range's and the Compare screen's
 /// tabs, and the Compare screen's opener for the pickers. Once at startup.
 pub fn init(cx: &mut App) {
+    store::import_legacy(cx);
     register_panel(
         cx,
         PanelSpec::new(PANEL, Slot::Left, "History", |ctx, window, cx| {
@@ -217,7 +218,8 @@ mod tests {
 
     #[gpui_kit::test]
     fn the_list_acts_on_the_head_it_read_and_ignores_rows_gone_since(cx: &mut TestAppContext) {
-        let dir = std::env::temp_dir().join(format!("gitviber-history-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("gitviber-history-test-{}", std::process::id()));
         // SAFETY: the tests that read the config dir all point it at a temporary folder.
         unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
         cx.update(|cx| {
@@ -235,35 +237,53 @@ mod tests {
             ws.update(cx, |ws, cx| ws.open_project(repo(), window, cx));
         });
         cx.run_until_parked();
-        let project = cx.update(|_, cx| ws.read(cx).project().cloned()).expect("the project opened");
+        let project = cx
+            .update(|_, cx| ws.read(cx).project().cloned())
+            .expect("the project opened");
         let panel = cx.update(|window, cx| {
-            let ctx = PanelContext { workspace: ws.downgrade(), project: Some(project.clone()) };
+            let ctx = PanelContext {
+                workspace: ws.downgrade(),
+                project: Some(project.clone()),
+            };
             cx.new(|cx| HistoryPanel::new(&ctx, project.clone(), window, cx))
         });
         cx.run_until_parked();
         let list = panel.read_with(cx, |p, _| p.list().clone());
         let head = cx.update(|_, cx| {
             let core = gitviber_ui::core(cx);
-            gitviber_core::api::history::log(&core, None, 0, 1, None, None).unwrap().remove(0).sha
+            gitviber_core::api::history::log(&core, None, 0, 1, None, None)
+                .unwrap()
+                .remove(0)
+                .sha
         });
         let first = list.read_with(cx, |l, cx| (l.head(cx), l.commits[0].sha.clone()));
         assert_eq!(first, (head.clone(), head.clone()));
         // A row far down takes the cursor, before searches list fewer.
         let far = list.read_with(cx, |l, _| l.commits[150].sha.clone());
-        list.update_in(cx, |l, window, cx| l.click_commit(&far, &gpui_kit::ClickEvent::default(), window, cx));
+        list.update_in(cx, |l, window, cx| {
+            l.click_commit(&far, &gpui_kit::ClickEvent::default(), window, cx)
+        });
         // A search that lists only older commits still acts on HEAD, read with it.
-        panel.update_in(cx, |p, window, cx| p.search_for("path:Cargo.toml".into(), window, cx));
+        panel.update_in(cx, |p, window, cx| {
+            p.search_for("path:Cargo.toml".into(), window, cx)
+        });
         cx.run_until_parked();
         assert_eq!(list.read_with(cx, |l, cx| l.head(cx)), head);
         // A row far down holds the cursor; then a search lists a few: clicks and keys on rows
         // drawn before find what's there now, or nothing.
-        panel.update_in(cx, |p, window, cx| p.search_for("path:crates/history/Cargo.toml".into(), window, cx));
+        panel.update_in(cx, |p, window, cx| {
+            p.search_for("path:crates/history/Cargo.toml".into(), window, cx)
+        });
         cx.run_until_parked();
         let n = list.read_with(cx, |l, _| l.len());
         assert!(n > 0 && n < 150, "{n}");
         list.update_in(cx, |l, window, cx| {
             l.click_commit(&far, &gpui_kit::ClickEvent::default(), window, cx);
-            let down = gpui_kit::KeyDownEvent { keystroke: gpui_kit::Keystroke::parse("enter").unwrap(), is_held: false, prefer_character_input: false };
+            let down = gpui_kit::KeyDownEvent {
+                keystroke: gpui_kit::Keystroke::parse("enter").unwrap(),
+                is_held: false,
+                prefer_character_input: false,
+            };
             l.key_down(&down, window, cx);
         });
     }

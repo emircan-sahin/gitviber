@@ -11,6 +11,7 @@ pub mod dev;
 pub mod fonts;
 pub mod fuzzy;
 pub mod keymap;
+pub mod legacy;
 pub mod memory;
 pub mod settings;
 pub mod state;

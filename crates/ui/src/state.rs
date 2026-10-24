@@ -85,9 +85,9 @@ pub struct UiState {
 }
 
 const RECENT_PROJECTS: usize = 20;
-const RECENT_COMMANDS: usize = 30;
+pub(crate) const RECENT_COMMANDS: usize = 30;
 /// Agent worktrees come and go; keep only the most recently used.
-const SAVED_WORKSPACES: usize = 30;
+pub(crate) const SAVED_WORKSPACES: usize = 30;
 
 /// `item` first in `list`, once, at most `cap` long.
 pub fn bump(list: &mut Vec<String>, item: &str, cap: usize) {

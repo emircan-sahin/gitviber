@@ -37,6 +37,7 @@ use gpui_kit::App;
 /// Registers the top bar's items and the git commands' handlers, and listens for git's
 /// credential prompts. Once at startup, after the core is set up.
 pub fn init(cx: &mut App) {
+    store::import_legacy(cx);
     topbar::register(cx);
     actions::install(cx);
     askpass::install(cx);

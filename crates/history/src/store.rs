@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use gitviber_ui::store::{config_dir, write_in_background};
 use gpui_kit::{App, Global};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::commit::GraphRefs;
 
@@ -47,6 +48,31 @@ pub fn update(cx: &mut App, f: impl FnOnce(&mut Saved)) {
     write_in_background(cx, path(), text);
 }
 
+/// The old app's (its first launch here): the one all-branches choice, and each repository's
+/// refs, a field it left out read as every ref.
+fn from_legacy(value: impl Fn(&str) -> Option<Value>) -> Saved {
+    let graph_refs = match value("gitviber.history.graphRefs") {
+        Some(Value::Object(map)) => map
+            .into_iter()
+            .filter_map(|(main, v)| Some((main, serde_json::from_value::<GraphRefs>(v).ok()?)))
+            .filter(|(_, refs)| *refs != GraphRefs::default())
+            .collect(),
+        _ => BTreeMap::new(),
+    };
+    Saved {
+        all_branches: value("gitviber.history.allBranches") == Some(Value::Bool(true)),
+        graph_refs,
+    }
+}
+
+/// On the first launch, what the old app kept, unless this build has a file of its own.
+pub(crate) fn import_legacy(cx: &mut App) {
+    let saved = from_legacy(gitviber_ui::legacy::value);
+    if saved != Saved::default() && !path().exists() {
+        update(cx, |s| *s = saved);
+    }
+}
+
 pub fn graph_refs(main: &str, cx: &mut App) -> GraphRefs {
     get(cx).graph_refs.get(main).cloned().unwrap_or_default()
 }
@@ -60,4 +86,30 @@ pub fn set_graph_refs(main: &str, refs: GraphRefs, cx: &mut App) {
             s.graph_refs.insert(main, refs);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_old_apps_choices_come_over() {
+        let old = serde_json::json!({
+            "gitviber.history.allBranches": true,
+            "gitviber.history.graphRefs": {
+                "/p/a": {"local": true, "remote": false, "tags": true, "hidden": ["refs/heads/x"], "only": null},
+                "/p/b": {"tags": false},
+                "/p/c": {"local": true, "remote": true, "tags": true, "hidden": [], "only": null},
+                "/p/d": {"hidden": "x"},
+            },
+        });
+        let saved = from_legacy(|key| old.get(key).cloned());
+        assert!(saved.all_branches);
+        assert!(!saved.graph_refs["/p/a"].remote);
+        assert_eq!(saved.graph_refs["/p/a"].hidden, ["refs/heads/x"]);
+        assert!(!saved.graph_refs["/p/b"].tags && saved.graph_refs["/p/b"].local);
+        // Every ref is what nothing saved means; one that can't be read is left out.
+        assert_eq!(saved.graph_refs.len(), 2);
+        assert_eq!(from_legacy(|_| None), Saved::default());
+    }
 }
