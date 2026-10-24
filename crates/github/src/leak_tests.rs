@@ -34,7 +34,7 @@ impl Render for Host {
     }
 }
 
-fn setup(cx: &mut TestAppContext) {
+pub(crate) fn setup(cx: &mut TestAppContext) {
     let dir = std::env::temp_dir().join(format!("gitviber-github-test-{}", std::process::id()));
     // SAFETY: the tests that read the config dir all point it at a temporary folder.
     unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
@@ -47,7 +47,7 @@ fn setup(cx: &mut TestAppContext) {
     });
 }
 
-fn pull(n: u64) -> PullItem {
+pub(crate) fn pull(n: u64) -> PullItem {
     PullItem {
         number: n,
         title: format!("PR {n}"),
@@ -65,7 +65,7 @@ fn pull(n: u64) -> PullItem {
     }
 }
 
-fn issue(n: u64) -> IssueItem {
+pub(crate) fn issue(n: u64) -> IssueItem {
     IssueItem {
         number: n,
         title: format!("Issue {n}"),
@@ -81,7 +81,7 @@ fn issue(n: u64) -> IssueItem {
     }
 }
 
-fn file(path: &str) -> FileChange {
+pub(crate) fn file(path: &str) -> FileChange {
     FileChange {
         path: path.into(),
         old_path: None,

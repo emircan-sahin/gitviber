@@ -35,7 +35,7 @@ use crate::ui::common::{
 use crate::ui::dialogs::confirm;
 use crate::ui::labels::LabelPicker;
 use crate::ui::markdown_input::MarkdownInput;
-use crate::ui::page_find::PageFind;
+use crate::ui::page_find::{FindHost, PageFind, Parts};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CloseReason {
@@ -131,6 +131,7 @@ impl IssueView {
                 t.rows(4).placeholder("Leave a comment (markdown)")
             })
             .small()
+            .signed_by(Some(repo.clone()), number)
         });
         let input = comment.read(cx).input().clone();
         let subs = vec![
@@ -244,19 +245,27 @@ impl IssueView {
         cx.notify();
     }
 
-    /// What ⌘F looks through, in the page's order: the title and description unless they're
-    /// being edited, then the comments.
-    fn find_parts(&self) -> (String, Vec<Entity<MarkdownView>>) {
-        let editing = self.editing.is_some();
-        let title = self.item().filter(|_| !editing).map(|i| i.title);
-        let views = self.blocks.views().skip(usize::from(editing)).collect();
-        (title.unwrap_or_default(), views)
+    fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.find.open(self, &self.scroll, &self.focus, window, cx);
     }
 
-    fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (title, views) = self.find_parts();
-        self.find
-            .open(&self.scroll, &self.focus, &title, views, window, cx);
+    /// The labels shown: the ones being picked until they're saved.
+    fn labels(&self, i: &IssueItem) -> Vec<LabelItem> {
+        self.picking.clone().unwrap_or_else(|| i.labels.clone())
+    }
+
+    /// The description's view, when it has text and isn't being edited.
+    fn body_view(&self) -> Option<Entity<MarkdownView>> {
+        self.detail
+            .as_ref()
+            .filter(|d| self.editing.is_none() && !d.body.trim().is_empty())
+            .and_then(|_| self.blocks.get(0))
+    }
+
+    /// Comment `n`'s view, when it has text.
+    fn comment_view(&self, d: &IssueDetail, n: usize) -> Option<Entity<MarkdownView>> {
+        let c = d.thread.get(n)?;
+        self.blocks.get(n + 1).filter(|_| !c.body.trim().is_empty())
     }
 
     fn texts(d: &IssueDetail) -> Vec<&str> {
@@ -404,6 +413,7 @@ impl IssueView {
                     .placeholder("Description (markdown)")
                     .default_value(body)
             })
+            .signed_by(self.target.clone(), self.number)
         });
         title.update(cx, |t, cx| t.focus(window, cx));
         self._editing = Some(cx.subscribe(&title, |this, _, ev: &InputEvent, cx| {
@@ -590,6 +600,60 @@ impl TabItem for IssueView {
     }
 }
 
+const NO_DESCRIPTION: &str = "No description provided.";
+
+fn number(i: &IssueItem) -> String {
+    format!("#{}", i.number)
+}
+
+fn opened(i: &IssueItem) -> String {
+    format!("opened {}", ago(&i.created_at))
+}
+
+fn assigned(i: &IssueItem) -> String {
+    format!("assigned to {}", i.assignees.join(", "))
+}
+
+impl FindHost for IssueView {
+    /// The title, the line under it and the description, or the description being edited when
+    /// it's previewed; the comments; the comment being written, previewed.
+    fn find_parts(&self, parts: &mut Parts, cx: &App) {
+        let Some(i) = self.item() else { return };
+        let d = self.detail.as_deref();
+        if let Some((_, body)) = &self.editing {
+            if let Some(v) = body.read(cx).shown_preview() {
+                parts.view(v);
+            }
+        } else {
+            parts.text(("title", 0), &i.title);
+            parts.text(("number", 0), &number(&i));
+            parts.text(("author", 0), &i.author);
+            parts.text(("opened", 0), &opened(&i));
+            if !i.assignees.is_empty() {
+                parts.text(("assignees", 0), &assigned(&i));
+            }
+            for (n, l) in self.labels(&i).iter().enumerate() {
+                parts.text(("label", n), &l.name);
+            }
+            match (self.body_view(), d) {
+                (Some(v), _) => parts.view(&v),
+                (None, Some(_)) => parts.text(("no-description", 0), NO_DESCRIPTION),
+                (None, None) => {}
+            }
+        }
+        for (n, c) in d.into_iter().flat_map(|d| d.thread.iter().enumerate()) {
+            parts.text(("comment-author", n), &c.author);
+            parts.text(("comment-time", n), &ago(&c.created_at));
+            if let Some(v) = d.and_then(|d| self.comment_view(d, n)) {
+                parts.view(&v);
+            }
+        }
+        if let Some(v) = self.comment.read(cx).shown_preview() {
+            parts.view(v);
+        }
+    }
+}
+
 impl Render for IssueView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx);
@@ -618,7 +682,8 @@ impl Render for IssueView {
             self.blocks
                 .sync(&Self::texts(&d), &web, &url, &signed, window, cx);
         }
-        self.find.sync(|| self.find_parts(), cx);
+        self.find.sync(self, cx);
+        let marks = self.find.marks();
         let Some(i) = self.item() else {
             let text = self
                 .detail_error
@@ -644,7 +709,7 @@ impl Render for IssueView {
         );
         let busy = self.busy.is_some();
         let text = self.text(cx);
-        let labels = self.picking.clone().unwrap_or_else(|| i.labels.clone());
+        let labels = self.labels(&i);
 
         let header: AnyElement = if let Some((title, body)) = &self.editing {
             let empty = title.read(cx).value().trim().is_empty();
@@ -693,16 +758,20 @@ impl Render for IssueView {
                 .child(
                     div()
                         .text_color(t.foreground.opacity(0.85))
-                        .child(i.author.clone()),
+                        .child(marks.text(("author", 0), i.author.clone(), cx)),
                 )
-                .child(format!("opened {}", ago(&i.created_at)));
+                .child(marks.text(("opened", 0), opened(&i), cx));
             if !i.assignees.is_empty() {
                 meta = meta
                     .child(div().text_color(t.subtle).child("·"))
-                    .child(format!("assigned to {}", i.assignees.join(", ")));
+                    .child(marks.text(("assignees", 0), assigned(&i), cx));
             }
-            for l in &labels {
-                meta = meta.child(label_chip(l, &t));
+            for (n, l) in labels.iter().enumerate() {
+                meta = meta.child(label_chip(
+                    l,
+                    marks.text(("label", n), l.name.clone(), cx),
+                    &t,
+                ));
             }
             if rights.label {
                 meta = meta.child(
@@ -735,12 +804,12 @@ impl Render for IssueView {
                                 .gap_x(px(6.))
                                 .text_size(rems(1.06))
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child(self.find.title(i.title.clone(), cx))
+                                .child(marks.text(("title", 0), i.title.clone(), cx))
                                 .child(
                                     div()
                                         .text_color(t.subtle)
                                         .font_weight(FontWeight::NORMAL)
-                                        .child(format!("#{}", i.number)),
+                                        .child(marks.text(("number", 0), number(&i), cx)),
                                 ),
                         )
                         .child(meta),
@@ -907,11 +976,7 @@ impl Render for IssueView {
             .child(header)
             .child(actions);
         if self.editing.is_none() {
-            let body = d
-                .as_ref()
-                .filter(|d| !d.body.trim().is_empty())
-                .and_then(|_| self.blocks.get(0));
-            let desc = match (body, &d) {
+            let desc = match (self.body_view(), &d) {
                 (Some(md), _) => div().px(px(12.)).py(px(10.)).child(md).into_any_element(),
                 (None, Some(_)) => div()
                     .px(px(12.))
@@ -919,7 +984,7 @@ impl Render for IssueView {
                     .text_size(rems(0.75))
                     .text_color(t.subtle)
                     .italic()
-                    .child("No description provided.")
+                    .child(marks.text(("no-description", 0), NO_DESCRIPTION, cx))
                     .into_any_element(),
                 (None, None) => div().h(px(8.)).into_any_element(),
             };
@@ -928,27 +993,30 @@ impl Render for IssueView {
         if let Some(d) = d.as_ref().filter(|d| !d.thread.is_empty()) {
             let mut s = section("Conversation", Some(d.thread.len().to_string().into()), &t);
             for (n, c) in d.thread.iter().enumerate() {
-                let md = self.blocks.get(n + 1).filter(|_| !c.body.trim().is_empty());
-                s = s.child(
-                    div()
-                        .px(px(12.))
-                        .py(px(10.))
-                        .border_b_1()
-                        .border_color(t.border)
-                        .child(
-                            div()
-                                .flex()
-                                .gap(px(8.))
-                                .text_size(rems(0.72))
-                                .child(
-                                    div()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(c.author.clone()),
-                                )
-                                .child(div().text_color(t.subtle).child(ago(&c.created_at))),
-                        )
-                        .children(md.map(|md| div().mt(px(6.)).child(md))),
-                );
+                let md = self.comment_view(d, n);
+                s =
+                    s.child(
+                        div()
+                            .px(px(12.))
+                            .py(px(10.))
+                            .border_b_1()
+                            .border_color(t.border)
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap(px(8.))
+                                    .text_size(rems(0.72))
+                                    .child(div().font_weight(FontWeight::SEMIBOLD).child(
+                                        marks.text(("comment-author", n), c.author.clone(), cx),
+                                    ))
+                                    .child(div().text_color(t.subtle).child(marks.text(
+                                        ("comment-time", n),
+                                        ago(&c.created_at),
+                                        cx,
+                                    ))),
+                            )
+                            .children(md.map(|md| div().mt(px(6.)).child(md))),
+                    );
             }
             page = page.child(s);
         }
@@ -1001,5 +1069,84 @@ impl Render for IssueView {
             )
             .children(self.find.bar(cx))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gitviber_core::github::{Comment, Label};
+    use gpui_kit::{TestAppContext, VisualTestContext};
+
+    use super::*;
+    use crate::leak_tests::{issue, setup};
+
+    /// The workspace, which the page holds weakly, and the page.
+    struct Host(Entity<Workspace>, Entity<IssueView>);
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().w(px(900.)).h(px(600.)).child(self.1.clone())
+        }
+    }
+
+    fn draw(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+
+    #[gpui_kit::test]
+    fn find_reaches_the_labels_assignees_and_comments(cx: &mut TestAppContext) {
+        setup(cx);
+        let (host, cx) = cx.add_window_view(|window, cx| {
+            let ws = cx.new(Workspace::new);
+            Workspace::register_window(&ws, window, cx);
+            let i = issue(1);
+            let view =
+                cx.new(|cx| IssueView::new(ws.downgrade(), i.url.clone(), Some(i), window, cx));
+            Host(ws, view)
+        });
+        cx.run_until_parked();
+        let (_ws, view) = host.read_with(cx, |h, _| (h.0.clone(), h.1.clone()));
+        view.update(cx, |v, cx| {
+            let mut i = crate::ui::core_issue(&issue(1));
+            i.title = "zeta crash".into();
+            i.assignees = vec!["zeta-x".into()];
+            i.labels = ["zeta-bug", "other"]
+                .map(|name| Label {
+                    name: name.into(),
+                    color: "ff0000".into(),
+                    description: String::new(),
+                })
+                .into();
+            v.detail = Some(Arc::new(IssueDetail {
+                issue: i,
+                body: "The zeta body".into(),
+                thread: vec![Comment {
+                    author: "Bob".into(),
+                    body: "zeta again".into(),
+                    created_at: "2026-01-01T00:00:00Z".into(),
+                    review: None,
+                }],
+                closed_by: None,
+            }));
+            v.detail_error = None;
+            v.detail_at = Some(Instant::now());
+            v.text_stale = true;
+            cx.notify();
+        });
+        draw(cx);
+        cx.update(|window, cx| view.update(cx, |v, cx| v.open_find(window, cx)));
+        cx.simulate_input("zeta");
+        draw(cx);
+        let finder = view.read_with(cx, |v, _| v.find.finder()).expect("open");
+        // The title, "assigned to zeta-x", the label, the description and the comment.
+        assert_eq!(finder.read_with(cx, |f, _| f.state()), (Some(0), 5, None));
+        for n in 1..=5 {
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            let (current, _, waiting) = finder.read_with(cx, |f, _| f.state());
+            assert_eq!(current, Some(n % 5));
+            assert_eq!(waiting, None, "match {n} was never drawn");
+        }
     }
 }

@@ -130,8 +130,8 @@ pub fn label_dot(label: &LabelItem, t: &AppTheme) -> Div {
     div().flex_none().size(px(7.)).rounded_full().bg(color)
 }
 
-/// A label as a small chip.
-pub fn label_chip(label: &LabelItem, t: &AppTheme) -> Div {
+/// A label as a small chip; `name`: its name as drawn.
+pub fn label_chip(label: &LabelItem, name: impl IntoElement, t: &AppTheme) -> Div {
     div()
         .flex()
         .flex_none()
@@ -145,7 +145,7 @@ pub fn label_chip(label: &LabelItem, t: &AppTheme) -> Div {
         .text_size(rems(0.656))
         .text_color(t.muted_foreground)
         .child(label_dot(label, t))
-        .child(div().truncate().child(label.name.clone()))
+        .child(div().truncate().child(name))
 }
 
 /// A boxed part of a PR or issue page with its uppercase title.
@@ -271,11 +271,6 @@ impl Blocks {
     pub fn get(&self, i: usize) -> Option<Entity<MarkdownView>> {
         self.items.get(i).map(|(_, v)| v.clone())
     }
-
-    /// Every block's view, in the page's order.
-    pub fn views(&self) -> impl Iterator<Item = Entity<MarkdownView>> + '_ {
-        self.items.iter().map(|(_, v)| v.clone())
-    }
 }
 
 /// Signed links for a private repo's attachments (`github.com/user-attachments/...` needs a
@@ -287,18 +282,18 @@ pub struct Attachments {
     asked: HashSet<String>,
 }
 
+/// The ids of the attachments `text` links to.
+pub fn attachment_ids(text: &str) -> impl Iterator<Item = &str> {
+    text.split(['(', ')', '"', '\'', ' ', '\n', '<', '>'])
+        .filter_map(attachment_id)
+}
+
 impl Attachments {
     /// Whether `texts` hold attachments not asked for yet; marks them asked.
     pub fn wants(&mut self, texts: &[&str]) -> bool {
         let mut new = false;
-        for text in texts {
-            for word in text.split(['(', ')', '"', '\'', ' ', '\n', '<', '>']) {
-                if let Some(id) = attachment_id(word)
-                    && self.asked.insert(id.to_string())
-                {
-                    new = true;
-                }
-            }
+        for id in texts.iter().flat_map(|t| attachment_ids(t)) {
+            new |= self.asked.insert(id.to_string());
         }
         new
     }
@@ -319,7 +314,7 @@ impl Attachments {
 /// A button-like text link in a row ("Show failure", "Details").
 pub fn text_button(
     id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
+    label: impl IntoElement,
     t: &AppTheme,
 ) -> gpui_kit::Stateful<Div> {
     let hover = t.foreground;
@@ -330,7 +325,7 @@ pub fn text_button(
         .text_size(rems(0.69))
         .text_color(t.subtle)
         .hover(move |s| s.text_color(hover))
-        .child(label.into())
+        .child(label)
 }
 
 /// The "Signed in as" line under a list.

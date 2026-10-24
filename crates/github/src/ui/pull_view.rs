@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use gitviber_core::api;
 use gitviber_core::git::FileChange;
-use gitviber_core::github::{CheckFailure, PullDetail, PullFiles};
+use gitviber_core::github::{Annotation, CheckFailure, PullDetail, PullFiles};
 use gitviber_markdown::MarkdownView;
 use gitviber_ui::AppTheme;
 use gitviber_ui::actions::editor;
@@ -25,14 +25,15 @@ use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, ScrollHandle,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity,
-    Window, div, prelude::FluentBuilder as _, px, rems, uniform_list,
+    ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+    UniformListScrollHandle, WeakEntity, Window, div, prelude::FluentBuilder as _, px, rems,
+    uniform_list,
 };
 
 use crate::cache::{Cache, MIN_AGE, Wakes};
 use crate::ci::{self, CiWatch};
 use crate::logic::actions::{
-    MergeMethod, ReviewEvent, allowed_methods, pull_rights, pull_source, review_badge,
+    MergeMethod, PullRights, ReviewEvent, allowed_methods, pull_rights, pull_source, review_badge,
 };
 use crate::logic::checks::{check_note, checks_summary, failure_report, is_failing, sort_checks};
 use crate::logic::keys::move_target;
@@ -48,7 +49,7 @@ use crate::ui::common::{
 };
 use crate::ui::dialogs::{ReviewDialog, confirm};
 use crate::ui::markdown_input::MarkdownInput;
-use crate::ui::page_find::PageFind;
+use crate::ui::page_find::{FindHost, Key, Marks, PageFind, Parts};
 
 /// The files only change with the two commits: rarely worth reading again.
 const FILES_AGE: Duration = Duration::from_secs(600);
@@ -63,6 +64,8 @@ type Shown = (Arc<Vec<FileChange>>, Option<(String, String, String)>);
 struct Failure {
     data: Option<Arc<CheckFailure>>,
     error: Option<String>,
+    /// The log's box, which a match in it scrolls.
+    log: ScrollHandle,
     _task: Task<()>,
 }
 
@@ -121,6 +124,7 @@ pub struct PullView {
     commits_focus: FocusHandle,
     commits_scroll: ScrollHandle,
     commit_cursor: Option<String>,
+    files_scroll: UniformListScrollHandle,
     _ci: Option<CiWatch>,
     _detail: Task<()>,
     _files: Task<()>,
@@ -201,6 +205,7 @@ impl PullView {
             commits_focus: cx.focus_handle(),
             commits_scroll: ScrollHandle::new(),
             commit_cursor: None,
+            files_scroll: UniformListScrollHandle::new(),
             _ci: None,
             _detail: Task::ready(()),
             _files: Task::ready(()),
@@ -334,16 +339,26 @@ impl PullView {
         self.blocks.sync(&texts, &web, &url, &signed, window, cx);
     }
 
-    /// What ⌘F looks through, in the page's order: the title, the description, the comments.
-    fn find_parts(&self) -> (String, Vec<Entity<MarkdownView>>) {
-        let title = self.item().map(|p| p.title).unwrap_or_default();
-        (title, self.blocks.views().collect())
+    /// The description's view, when it has text.
+    fn body_view(&self) -> Option<Entity<MarkdownView>> {
+        let d = self.detail.as_ref()?;
+        self.blocks.get(0).filter(|_| !d.body.trim().is_empty())
+    }
+
+    /// Comment `i`'s view, when it has text.
+    fn comment_view(&self, d: &PullDetail, i: usize) -> Option<Entity<MarkdownView>> {
+        let c = d.comments.get(i)?;
+        self.blocks.get(i + 1).filter(|_| !c.body.trim().is_empty())
+    }
+
+    /// Cached data stays on screen; a failed refresh (a rate limit, say) is noted beside it.
+    fn refresh_error(&self) -> Option<String> {
+        let e = self.detail_error.as_ref()?;
+        (self.busy.is_none() && self.detail.is_some()).then(|| format!("Couldn't refresh: {e}"))
     }
 
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (title, views) = self.find_parts();
-        self.find
-            .open(&self.scroll, &self.focus, &title, views, window, cx);
+        self.find.open(self, &self.scroll, &self.focus, window, cx);
     }
 
     /// Signed links for the attachments the text holds, asked once per new one.
@@ -854,6 +869,7 @@ impl PullView {
                         t.rows(4).placeholder("Leave a comment (markdown)")
                     })
                     .small()
+                    .signed_by(self.target.clone(), self.number)
                 });
                 // Text in it keeps the tab: a preview tab would be replaced, a hidden one released.
                 let input = b.read(cx).input().clone();
@@ -956,6 +972,7 @@ impl PullView {
             Failure {
                 data: old,
                 error: None,
+                log: ScrollHandle::new(),
                 _task: task,
             },
         );
@@ -1066,7 +1083,7 @@ impl TabItem for PullView {
     }
 }
 
-fn branch_chip(name: &str, t: &AppTheme) -> AnyElement {
+fn branch_chip(name: impl IntoElement, t: &AppTheme) -> AnyElement {
     div()
         .flex_none()
         .px(px(6.))
@@ -1075,7 +1092,7 @@ fn branch_chip(name: &str, t: &AppTheme) -> AnyElement {
         .text_color(t.primary)
         .font_family(t.fonts.code.clone())
         .text_size(rems(0.69))
-        .child(name.to_string())
+        .child(name)
         .into_any_element()
 }
 
@@ -1092,6 +1109,212 @@ fn check_icon(state: &str, t: &AppTheme) -> Icon {
     Icon::new(name).xsmall().text_color(color)
 }
 
+/// The line under the title: who, and what they did or want.
+fn who_and_verb(p: &PullItem, d: Option<&PullDetail>) -> (String, &'static str) {
+    match p.state {
+        PullState::Merged => (
+            d.and_then(|d| d.merged_by.clone())
+                .unwrap_or(p.author.clone()),
+            "merged",
+        ),
+        PullState::Closed => (p.author.clone(), "wanted to merge"),
+        PullState::Open => (p.author.clone(), "wants to merge"),
+    }
+}
+
+fn commit_count(n: u64) -> String {
+    format!("{n} commit{}", if n == 1 { "" } else { "s" })
+}
+
+const NO_DESCRIPTION: &str = "No description provided.";
+const READING: &str = "Reading its output and log…";
+const NO_OUTPUT: &str = "The check left no output; its Details page may say more.";
+
+enum Tone {
+    Quiet,
+    Conflict,
+    Warn,
+    Ready,
+}
+
+fn has_conflicts(d: &PullDetail) -> bool {
+    d.mergeable == Some(false) || d.mergeable_state == "dirty"
+}
+
+/// Where the PR stands for merging: the box's tone, title and note.
+fn merge_words(d: &PullDetail) -> (Tone, String, &'static str) {
+    let st = d.mergeable_state.as_str();
+    let base = &d.pull.base_ref;
+    if d.mergeable.is_none() {
+        (
+            Tone::Quiet,
+            "Checking mergeability…".into(),
+            "GitHub is computing whether this can merge. Refresh in a moment.",
+        )
+    } else if d.pull.draft && !has_conflicts(d) {
+        (
+            Tone::Quiet,
+            "This is a draft".into(),
+            "GitHub won't merge it until it's marked ready for review.",
+        )
+    } else if has_conflicts(d) {
+        (
+            Tone::Conflict,
+            format!("This branch has conflicts with {base}"),
+            "Resolve them locally: GitViber merges the base into this branch and opens the conflicts.",
+        )
+    } else if st == "blocked" {
+        (
+            Tone::Warn,
+            "Merging is blocked".into(),
+            "Required reviews or checks haven't passed yet.",
+        )
+    } else if st == "behind" {
+        (
+            Tone::Warn,
+            format!("This branch is behind {base}"),
+            "It can still merge, but the base has newer commits.",
+        )
+    } else if st == "unstable" {
+        (
+            Tone::Warn,
+            "Checks are failing or pending".into(),
+            "You can still merge if the repository allows it.",
+        )
+    } else {
+        (
+            Tone::Ready,
+            "Ready to merge".into(),
+            "No conflicts with the base branch.",
+        )
+    }
+}
+
+/// What the merge box says in place of its button, when you can't use it.
+fn merge_side(d: &PullDetail, rights: &PullRights) -> Option<&'static str> {
+    if has_conflicts(d) {
+        // A fork's branch lives in another repo; pushing the fix here would go to the wrong place.
+        (!rights.resolve).then_some("From a fork: resolve it in the fork's repository.")
+    } else {
+        (!rights.merge).then_some("Only people with write access can merge.")
+    }
+}
+
+fn checks_error(e: &str) -> String {
+    format!("Could not load all checks: {e}")
+}
+
+fn failure_error(e: &str) -> String {
+    format!("Could not read the check: {e}")
+}
+
+fn annotations_error(e: &str) -> String {
+    format!("Could not read the annotations: {e}")
+}
+
+fn log_error(e: &str) -> String {
+    format!("Could not read the job's log: {e}")
+}
+
+fn no_output(f: &CheckFailure) -> bool {
+    f.title.is_empty()
+        && f.summary.is_empty()
+        && f.annotations.is_empty()
+        && f.log.is_none()
+        && f.log_error.is_none()
+        && f.annotations_error.is_none()
+}
+
+/// A part's index for check row `row`'s annotation `i`.
+fn nested(row: usize, i: usize) -> usize {
+    (row << 20) | i
+}
+
+fn annotation_place(a: &Annotation) -> String {
+    if a.line > 0 {
+        format!("{}:{}", a.path, a.line)
+    } else {
+        a.path.clone()
+    }
+}
+
+/// Actions puts its own errors ("exit code 1") on .github, a folder: no place to open.
+fn shows_place(a: &Annotation) -> bool {
+    !a.path.is_empty() && a.path != ".github"
+}
+
+/// The log's last 40 lines: the error is at its end.
+fn log_tail(log: &str) -> &str {
+    let log = log.trim_end_matches('\n');
+    let start = log
+        .match_indices('\n')
+        .rev()
+        .nth(39)
+        .map_or(0, |(i, _)| i + 1);
+    &log[start..]
+}
+
+/// Each line's bytes in `text`, without its line break.
+fn lines(text: &str) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
+    let mut at = 0;
+    text.split_inclusive('\n').map(move |l| {
+        let start = at;
+        at += l.len();
+        start..start + l.trim_end_matches(['\n', '\r']).len()
+    })
+}
+
+fn commits_on(day: &str) -> String {
+    format!("Commits on {day}")
+}
+
+fn committed(c: &gitviber_core::git::Commit) -> SharedString {
+    gitviber_ui::widgets::relative_time(c.committed_at, gitviber_ui::widgets::now_unix()).into()
+}
+
+fn latest(shown: usize, total: u64) -> String {
+    format!("The latest {shown} of {total} commits.")
+}
+
+fn showing_from(n: usize) -> String {
+    format!(
+        "Showing changes from {n} commit{}",
+        if n == 1 { "" } else { "s" }
+    )
+}
+
+/// A file's path, its folder dimmed; split in two pieces of one part while the find marks it.
+fn path_label(marks: &Marks, ix: usize, path: &str, cx: &App) -> AnyElement {
+    let key = ("file", ix);
+    if !marks.any(key, cx) {
+        return PathLabel(path.to_string().into()).into_any_element();
+    }
+    let t = theme(cx);
+    let cut = path.rfind('/').map_or(0, |i| i + 1);
+    div()
+        .flex()
+        .min_w_0()
+        .overflow_hidden()
+        .when(cut > 0, |d| {
+            d.child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(t.subtle)
+                    .child(marks.slice(key, path, 0..cut, cx)),
+            )
+        })
+        .child(
+            div()
+                .flex_none()
+                .max_w_full()
+                .truncate()
+                .text_color(t.foreground)
+                .child(marks.slice(key, path, cut..path.len(), cx)),
+        )
+        .into_any_element()
+}
+
 impl PullView {
     fn merge_box(
         &self,
@@ -1100,80 +1323,35 @@ impl PullView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let t = theme(cx);
+        let marks = self.find.marks();
         let p = PullItem::from(&d.pull);
         let rights = pull_rights(&p, account, d.closed_by.as_deref());
-        let st = d.mergeable_state.as_str();
-        let conflicts = d.mergeable == Some(false) || st == "dirty";
-        let base = &d.pull.base_ref;
-        let (tone, title, note): (gpui_kit::Hsla, String, &str) = if d.mergeable.is_none() {
-            (
-                t.border,
-                "Checking mergeability…".into(),
-                "GitHub is computing whether this can merge. Refresh in a moment.",
-            )
-        } else if d.pull.draft && !conflicts {
-            (
-                t.border,
-                "This is a draft".into(),
-                "GitHub won't merge it until it's marked ready for review.",
-            )
-        } else if conflicts {
-            (
-                t.conflict.opacity(0.6),
-                format!("This branch has conflicts with {base}"),
-                "Resolve them locally: GitViber merges the base into this branch and opens the conflicts.",
-            )
-        } else if st == "blocked" {
-            (
-                t.modified.opacity(0.6),
-                "Merging is blocked".into(),
-                "Required reviews or checks haven't passed yet.",
-            )
-        } else if st == "behind" {
-            (
-                t.modified.opacity(0.6),
-                format!("This branch is behind {base}"),
-                "It can still merge, but the base has newer commits.",
-            )
-        } else if st == "unstable" {
-            (
-                t.modified.opacity(0.6),
-                "Checks are failing or pending".into(),
-                "You can still merge if the repository allows it.",
-            )
-        } else {
-            (
-                t.added.opacity(0.6),
-                "Ready to merge".into(),
-                "No conflicts with the base branch.",
-            )
+        let (tone, title, note) = merge_words(d);
+        let tone = match tone {
+            Tone::Quiet => t.border,
+            Tone::Conflict => t.conflict.opacity(0.6),
+            Tone::Warn => t.modified.opacity(0.6),
+            Tone::Ready => t.added.opacity(0.6),
         };
+        let conflicts = has_conflicts(d);
         let busy = self.busy.is_some();
-        let side = |s: &str| {
+        let action: AnyElement = if let Some(side) = merge_side(d, &rights) {
             div()
                 .max_w(px(220.))
                 .text_right()
                 .text_size(rems(0.72))
                 .text_color(t.muted_foreground)
-                .child(s.to_string())
+                .child(marks.text(("merge-side", 0), side, cx))
                 .into_any_element()
-        };
-        let action: AnyElement = if conflicts {
-            // A fork's branch lives in another repo; pushing the fix here would go to the wrong place.
-            if rights.resolve {
-                Button::new("resolve")
-                    .small()
-                    .primary()
-                    .icon(IconName::GitMerge)
-                    .label("Resolve locally")
-                    .disabled(busy)
-                    .on_click(cx.listener(|this, _, window, cx| this.resolve_locally(window, cx)))
-                    .into_any_element()
-            } else {
-                side("From a fork: resolve it in the fork's repository.")
-            }
-        } else if !rights.merge {
-            side("Only people with write access can merge.")
+        } else if conflicts {
+            Button::new("resolve")
+                .small()
+                .primary()
+                .icon(IconName::GitMerge)
+                .label("Resolve locally")
+                .disabled(busy)
+                .on_click(cx.listener(|this, _, window, cx| this.resolve_locally(window, cx)))
+                .into_any_element()
         } else {
             let methods = allowed_methods(account.and_then(|a| a.access_for(&p.url)));
             let first = methods[0];
@@ -1232,14 +1410,14 @@ impl PullView {
                         div()
                             .text_size(rems(0.78))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(title),
+                            .child(marks.text(("merge-title", 0), title, cx)),
                     )
                     .child(
                         div()
                             .mt(px(2.))
                             .text_size(rems(0.72))
                             .text_color(t.muted_foreground)
-                            .child(note),
+                            .child(marks.text(("merge-note", 0), note, cx)),
                     ),
             )
             .child(action)
@@ -1251,6 +1429,7 @@ impl PullView {
             return None;
         }
         let t = theme(cx);
+        let marks = self.find.marks();
         let checks: Vec<Check> = d.ci.checks.iter().map(Check::from).collect();
         let aside = (!checks.is_empty()).then(|| checks_summary(&checks).into());
         let now = gitviber_ui::widgets::now_unix();
@@ -1262,7 +1441,7 @@ impl PullView {
                     .py(px(8.))
                     .text_size(rems(0.75))
                     .text_color(t.removed)
-                    .child(format!("Could not load all checks: {e}")),
+                    .child(marks.text(("checks-error", 0), checks_error(e), cx)),
             );
         }
         for (i, c) in sort_checks(&checks).into_iter().enumerate() {
@@ -1276,7 +1455,11 @@ impl PullView {
                 .px(px(12.))
                 .text_size(rems(0.75))
                 .child(check_icon(&c.state, &t))
-                .child(div().min_w_0().truncate().child(c.name.clone()))
+                .child(div().min_w_0().truncate().child(marks.text(
+                    ("check", i),
+                    c.name.clone(),
+                    cx,
+                )))
                 .when(!note.is_empty(), |d| {
                     d.child(
                         div()
@@ -1284,7 +1467,7 @@ impl PullView {
                             .truncate()
                             .text_size(rems(0.69))
                             .text_color(t.subtle)
-                            .child(note),
+                            .child(marks.text(("check-note", i), note, cx)),
                     )
                 })
                 .child(div().flex_1());
@@ -1315,14 +1498,22 @@ impl PullView {
             }
             body = body.child(row);
             if let Some(id) = c.id.filter(|_| shown) {
-                body = body.child(self.failure_view(id, c, cx));
+                body = body.child(self.failure_view(i, id, c, cx));
             }
         }
         Some(body.into_any_element())
     }
 
-    fn failure_view(&self, id: u64, check: &Check, cx: &mut Context<Self>) -> AnyElement {
+    /// Check row `row`'s failure, run `id`.
+    fn failure_view(
+        &self,
+        row: usize,
+        id: u64,
+        check: &Check,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let t = theme(cx);
+        let marks = self.find.marks();
         let f = &self.failures[&id];
         let mut col = div()
             .border_y_1()
@@ -1340,11 +1531,11 @@ impl PullView {
                             .items_center()
                             .gap(px(8.))
                             .text_color(t.removed)
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .child(format!("Could not read the check: {e}")),
-                            )
+                            .child(div().flex_1().child(marks.text(
+                                ("failure-error", row),
+                                failure_error(e),
+                                cx,
+                            )))
                             .child(
                                 Button::new(("retry", id as usize))
                                     .ghost()
@@ -1360,40 +1551,37 @@ impl PullView {
                     )
                     .into_any_element(),
                 None => col
-                    .child(
-                        div()
-                            .text_color(t.subtle)
-                            .child("Reading its output and log…"),
-                    )
+                    .child(div().text_color(t.subtle).child(marks.text(
+                        ("failure-wait", row),
+                        READING,
+                        cx,
+                    )))
                     .into_any_element(),
             };
         };
         if !data.title.is_empty() {
-            col = col.child(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(data.title.clone()),
-            );
+            col = col.child(div().font_weight(FontWeight::SEMIBOLD).child(marks.text(
+                ("failure-title", row),
+                data.title.clone(),
+                cx,
+            )));
         }
         if !data.summary.is_empty() {
             col = col.child(
                 div()
                     .py(px(4.))
                     .text_color(t.muted_foreground)
-                    .child(data.summary.clone()),
+                    .child(marks.text(("failure-summary", row), data.summary.clone(), cx)),
             );
         }
         for (i, a) in data.annotations.iter().enumerate() {
+            let at = nested(row, i);
             let color = match a.level.as_str() {
                 "failure" => t.removed,
                 "warning" => t.modified,
                 _ => t.subtle,
             };
-            let place = if a.line > 0 {
-                format!("{}:{}", a.path, a.line)
-            } else {
-                a.path.clone()
-            };
+            let place = annotation_place(a);
             let (path, line) = (a.path.clone(), (a.line > 0).then_some(a.line as u32));
             col = col.child(
                 div()
@@ -1405,7 +1593,7 @@ impl PullView {
                             .flex_none()
                             .text_size(rems(0.69))
                             .text_color(color)
-                            .child(a.level.clone()),
+                            .child(marks.text(("annotation-level", at), a.level.clone(), cx)),
                     )
                     .child(
                         div()
@@ -1413,12 +1601,17 @@ impl PullView {
                             .flex_wrap()
                             .gap(px(4.))
                             // Actions puts its own errors ("exit code 1") on .github, a folder.
-                            .when(!a.path.is_empty() && a.path != ".github", |d| {
+                            .when(shows_place(a), |d| {
                                 d.child(
-                                    text_button(("annotation", i), place, &t)
-                                        .text_color(t.primary)
-                                        .font_family(t.fonts.code.clone())
-                                        .on_click(move |_, window, cx| {
+                                    text_button(
+                                        ("annotation", i),
+                                        marks.text(("annotation-place", at), place, cx),
+                                        &t,
+                                    )
+                                    .text_color(t.primary)
+                                    .font_family(t.fonts.code.clone())
+                                    .on_click(
+                                        move |_, window, cx| {
                                             request(
                                                 GithubRequest::OpenFile {
                                                     path: path.clone(),
@@ -1427,36 +1620,31 @@ impl PullView {
                                                 window,
                                                 cx,
                                             )
-                                        }),
+                                        },
+                                    ),
                                 )
                             })
                             .when(!a.title.is_empty(), |d| {
-                                d.child(
-                                    div()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(format!("{}:", a.title)),
-                                )
+                                d.child(div().font_weight(FontWeight::SEMIBOLD).child(marks.text(
+                                    ("annotation-title", at),
+                                    format!("{}:", a.title),
+                                    cx,
+                                )))
                             })
-                            .child(a.message.clone()),
+                            .child(marks.text(("annotation-message", at), a.message.clone(), cx)),
                     ),
             );
         }
         if let Some(log) = &data.log {
             // The error is at the log's end: only the tail shows, the whole copies.
-            let tail: Vec<&str> = log
-                .lines()
-                .rev()
-                .take(40)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
+            let tail = log_tail(log);
             col = col.child(
                 div()
                     .id(("log", id as usize))
                     .mt(px(6.))
                     .max_h(px(280.))
                     .overflow_y_scroll()
+                    .track_scroll(&f.log)
                     .rounded(px(3.))
                     .border_1()
                     .border_color(t.border)
@@ -1464,37 +1652,31 @@ impl PullView {
                     .p(px(8.))
                     .font_family(t.fonts.code.clone())
                     .text_size(rems(0.69))
-                    .children(tail.into_iter().map(|l| div().child(l.to_string()))),
+                    .children(lines(tail).map(|r| {
+                        div().child(marks.slice(("log", row), tail, r, cx).within(&f.log))
+                    })),
             );
         }
         if let Some(e) = &data.annotations_error {
-            col = col.child(
-                div()
-                    .mt(px(4.))
-                    .text_color(t.removed)
-                    .child(format!("Could not read the annotations: {e}")),
-            );
+            col = col.child(div().mt(px(4.)).text_color(t.removed).child(marks.text(
+                ("annotations-error", row),
+                annotations_error(e),
+                cx,
+            )));
         }
         if let Some(e) = &data.log_error {
-            col = col.child(
-                div()
-                    .mt(px(4.))
-                    .text_color(t.removed)
-                    .child(format!("Could not read the job's log: {e}")),
-            );
+            col = col.child(div().mt(px(4.)).text_color(t.removed).child(marks.text(
+                ("log-error", row),
+                log_error(e),
+                cx,
+            )));
         }
-        if data.title.is_empty()
-            && data.summary.is_empty()
-            && data.annotations.is_empty()
-            && data.log.is_none()
-            && data.log_error.is_none()
-            && data.annotations_error.is_none()
-        {
-            col = col.child(
-                div()
-                    .text_color(t.subtle)
-                    .child("The check left no output; its Details page may say more."),
-            );
+        if no_output(&data) {
+            col = col.child(div().text_color(t.subtle).child(marks.text(
+                ("no-output", row),
+                NO_OUTPUT,
+                cx,
+            )));
         }
         let report = failure_report(&check.name, &self.url, &data);
         let retry = data.log_error.is_some() || data.annotations_error.is_some();
@@ -1542,6 +1724,8 @@ impl PullView {
             return None;
         }
         let t = theme(cx);
+        let marks = self.find.marks();
+        let within = &self.commits_scroll;
         let fresh = commits.iter().filter(|c| self.is_new(&c.sha)).count();
         let aside = if fresh > 0 {
             format!("{fresh} new · {}", commits.len())
@@ -1555,7 +1739,7 @@ impl PullView {
             .commit_at()
             .filter(|_| self.commits_focus.is_focused(window));
         let mut rows: Vec<AnyElement> = Vec::new();
-        for (day, range) in by_day(commits) {
+        for (n, (day, range)) in by_day(commits).into_iter().enumerate() {
             rows.push(
                 div()
                     .flex()
@@ -1567,7 +1751,7 @@ impl PullView {
                     .border_color(t.border)
                     .text_size(rems(0.69))
                     .text_color(t.subtle)
-                    .child(format!("Commits on {day}"))
+                    .child(marks.text(("day", n), commits_on(&day), cx).within(within))
                     .into_any_element(),
             );
             for ix in range {
@@ -1616,7 +1800,16 @@ impl PullView {
                                 .xsmall()
                                 .text_color(t.subtle),
                         )
-                        .child(div().min_w_0().truncate().child(c.subject.clone()))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .child(
+                                    marks
+                                        .text(("subject", ix), c.subject.clone(), cx)
+                                        .within(within),
+                                ),
+                        )
                         .when(!c.body.is_empty(), |d| {
                             d.child(
                                 div()
@@ -1656,21 +1849,30 @@ impl PullView {
                                 .truncate()
                                 .text_size(rems(0.69))
                                 .text_color(t.subtle)
-                                .child(c.author_name.clone()),
+                                .child(
+                                    marks
+                                        .text(("commit-author", ix), c.author_name.clone(), cx)
+                                        .within(within),
+                                ),
                         )
                         .child(
                             div()
                                 .flex_none()
                                 .text_size(rems(0.69))
                                 .text_color(t.subtle)
-                                .child(gitviber_ui::widgets::relative_time(
-                                    c.committed_at,
-                                    gitviber_ui::widgets::now_unix(),
-                                )),
+                                .child(
+                                    marks
+                                        .text(("commit-time", ix), committed(c), cx)
+                                        .within(within),
+                                ),
                         )
                         .children(ci_badge(("commit-ci", ix), states.get(&c.sha).copied(), &t))
                         .child(
-                            text_button(("sha", ix), short, &t)
+                            text_button(
+                                ("sha", ix),
+                                marks.text(("sha", ix), short, cx).within(within),
+                                &t,
+                            )
                                 .font_family(t.fonts.code.clone())
                                 .on_click(move |_, window, cx| {
                                     cx.stop_propagation();
@@ -1778,7 +1980,10 @@ impl PullView {
                             .font_family(t.fonts.code.clone())
                             .text_size(rems(0.72))
                             .text_color(t.muted_foreground)
-                            .children(c.body.lines().map(|l| div().child(l.to_string())))
+                            .children(lines(&c.body).map(|r| {
+                                div()
+                                    .child(marks.slice(("body", ix), &c.body, r, cx).within(within))
+                            }))
                             .into_any_element(),
                     );
                 }
@@ -1794,7 +1999,7 @@ impl PullView {
                     .border_color(t.border)
                     .text_size(rems(0.72))
                     .text_color(t.subtle)
-                    .child(format!("The latest {} of {total} commits.", commits.len())),
+                    .child(marks.text(("latest", 0), latest(commits.len(), total), cx)),
             );
         }
         // A long list scrolls on its own, so Files changed stays right under it.
@@ -1819,6 +2024,7 @@ impl PullView {
     fn pick_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (range, _) = self.picked()?;
         let t = theme(cx);
+        let marks = self.find.marks();
         let commits = &self.commits()[range.clone()];
         let one = commits.len() == 1;
         let n = commits.len();
@@ -1850,19 +2056,20 @@ impl PullView {
                     div()
                         .flex_none()
                         .text_color(t.muted_foreground)
-                        .child(format!(
-                            "Showing changes from {n} commit{}",
-                            if n == 1 { "" } else { "s" }
-                        )),
+                        .child(marks.text(("pick-from", 0), showing_from(n), cx)),
                 )
                 .child(
                     div()
                         .flex_none()
                         .font_family(t.fonts.code.clone())
-                        .child(pick_label(commits)),
+                        .child(marks.text(("pick-label", 0), pick_label(commits), cx)),
                 )
                 .when(one, |d| {
-                    d.child(div().min_w_0().truncate().child(commits[0].subject.clone()))
+                    d.child(div().min_w_0().truncate().child(marks.text(
+                        ("pick-subject", 0),
+                        commits[0].subject.clone(),
+                        cx,
+                    )))
                 })
                 .child(div().flex_1())
                 .when(one, |d| {
@@ -1896,109 +2103,104 @@ impl PullView {
         )
     }
 
-    fn files_section(&self, d: Option<&PullDetail>, cx: &mut Context<Self>) -> AnyElement {
-        let t = theme(cx);
-        let picked = self.picked();
-        let narrowed = picked.as_ref().is_some_and(|(_, n)| *n);
-        let shown: Option<Shown> = if narrowed {
-            let (range, _) = picked.clone().expect("narrowed");
-            self.picked_files.as_ref().map(|(b, h, files)| {
+    /// The files Files changed lists: the PR's, or the picked commits'; None until they're read.
+    fn shown_files(&self) -> Option<Shown> {
+        match self.picked() {
+            Some((range, true)) => self.picked_files.as_ref().map(|(b, h, files)| {
                 (
                     files.clone(),
                     Some((b.clone(), h.clone(), pick_label(&self.commits()[range]))),
                 )
-            })
+            }),
+            _ => self.files.as_ref().map(|_| (self.file_list.clone(), None)),
+        }
+    }
+
+    /// What Files changed says while it has no files to list.
+    fn files_note(&self) -> Option<String> {
+        if let Some((files, _)) = self.shown_files() {
+            return files.is_empty().then(|| "No files changed.".into());
+        }
+        let narrowed = self.picked().is_some_and(|(_, n)| n);
+        let error = if narrowed {
+            &self.picked_error
         } else {
-            self.files.as_ref().map(|_| (self.file_list.clone(), None))
+            &self.files_error
         };
+        Some(match error {
+            Some(e) if narrowed => format!("Could not load the commits' files: {e}"),
+            Some(e) => format!("Could not load the PR's files: {e}"),
+            None if narrowed => "Loading…".into(),
+            None => "Fetching the PR's commits…".into(),
+        })
+    }
+
+    fn files_section(&self, d: Option<&PullDetail>, cx: &mut Context<Self>) -> AnyElement {
+        let t = theme(cx);
+        let marks = self.find.marks();
+        let narrowed = self.picked().is_some_and(|(_, n)| n);
+        let shown = self.shown_files();
         let aside = match (&shown, d) {
             (Some((files, _)), _) => Some(files.len().to_string().into()),
             (None, Some(d)) if !narrowed => Some(d.changed_files.to_string().into()),
             _ => None,
         };
         let mut s = section("Files changed", aside, &t).children(self.pick_bar(cx));
-        let error = if narrowed {
-            self.picked_error.clone()
-        } else {
-            self.files_error.clone()
-        };
-        match shown {
-            None => {
-                let text = match error {
-                    Some(e) => format!(
-                        "Could not load {} files: {e}",
-                        if narrowed { "the commits'" } else { "the PR's" }
-                    ),
-                    None => {
-                        if narrowed {
-                            "Loading…".into()
-                        } else {
-                            "Fetching the PR's commits…".into()
-                        }
-                    }
-                };
-                s = s.child(
+        if let Some(note) = self.files_note() {
+            return s
+                .child(
                     div()
                         .px(px(12.))
                         .py(px(8.))
                         .text_size(rems(0.75))
                         .text_color(t.subtle)
-                        .child(text),
-                );
-            }
-            Some((files, _)) if files.is_empty() => {
-                s = s.child(
-                    div()
-                        .px(px(12.))
-                        .py(px(8.))
-                        .text_size(rems(0.75))
-                        .text_color(t.subtle)
-                        .child("No files changed."),
+                        .child(marks.text(("files-note", 0), note, cx)),
                 )
-            }
-            Some((files, range)) => {
-                let weak = cx.weak_entity();
-                let count = files.len();
-                let list = uniform_list("pull-files", count, move |r, _, cx| {
-                    let t = theme(cx);
-                    r.map(|ix| {
-                        let f = &files[ix];
-                        let (file, range, weak) = (f.clone(), range.clone(), weak.clone());
-                        let hover = t.hover;
-                        div()
-                            .id(("file", ix))
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .h(px(28.))
-                            .px(px(12.))
-                            .text_size(rems(0.75))
-                            .cursor_pointer()
-                            .hover(move |s| s.bg(hover))
-                            .child(FileIcon::file(&f.path))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(PathLabel(f.path.clone().into())),
-                            )
-                            .child(LineCounts::new(f.additions, f.deletions))
-                            .child(StatusLetter(gitviber_ui::widgets::ChangeKind::from_letter(
-                                f.status.chars().next().unwrap_or('M'),
-                            )))
-                            .on_click(move |ev, window, cx| {
-                                let pin = ev.click_count() > 1;
-                                weak.update(cx, |this, cx| {
-                                    this.open_file(&file, range.clone(), !pin, window, cx)
-                                })
-                                .ok();
+                .into_any_element();
+        }
+        if let Some((files, range)) = shown {
+            let weak = cx.weak_entity();
+            let count = files.len();
+            let list = uniform_list("pull-files", count, move |r, _, cx| {
+                let t = theme(cx);
+                r.map(|ix| {
+                    let f = &files[ix];
+                    let (file, range, weak) = (f.clone(), range.clone(), weak.clone());
+                    let hover = t.hover;
+                    div()
+                        .id(("file", ix))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .h(px(28.))
+                        .px(px(12.))
+                        .text_size(rems(0.75))
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hover))
+                        .child(FileIcon::file(&f.path))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(path_label(&marks, ix, &f.path, cx)),
+                        )
+                        .child(LineCounts::new(f.additions, f.deletions))
+                        .child(StatusLetter(gitviber_ui::widgets::ChangeKind::from_letter(
+                            f.status.chars().next().unwrap_or('M'),
+                        )))
+                        .on_click(move |ev, window, cx| {
+                            let pin = ev.click_count() > 1;
+                            weak.update(cx, |this, cx| {
+                                this.open_file(&file, range.clone(), !pin, window, cx)
                             })
-                    })
-                    .collect::<Vec<_>>()
+                            .ok();
+                        })
                 })
-                .h(px(28. * count.min(14) as f32));
-                s = s.child(list);
-            }
+                .collect::<Vec<_>>()
+            })
+            .track_scroll(&self.files_scroll)
+            .h(px(28. * count.min(14) as f32));
+            s = s.child(list);
         }
         s.into_any_element()
     }
@@ -2008,13 +2210,14 @@ impl PullView {
             return None;
         }
         let t = theme(cx);
+        let marks = self.find.marks();
         let mut s = section(
             "Conversation",
             Some(d.comments.len().to_string().into()),
             &t,
         );
         for (i, c) in d.comments.iter().enumerate() {
-            let md = self.blocks.get(i + 1).filter(|_| !c.body.trim().is_empty());
+            let md = self.comment_view(d, i);
             let verdict = c.review.as_deref().map(|r| {
                 let color = match r {
                     "APPROVED" => t.added,
@@ -2025,7 +2228,7 @@ impl PullView {
                 div()
                     .text_size(rems(0.69))
                     .text_color(color)
-                    .child(review_badge(r))
+                    .child(marks.text(("verdict", i), review_badge(r), cx))
             });
             s = s.child(
                 div()
@@ -2039,20 +2242,178 @@ impl PullView {
                             .items_center()
                             .gap(px(8.))
                             .text_size(rems(0.72))
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(c.author.clone()),
-                            )
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(marks.text(
+                                ("comment-author", i),
+                                c.author.clone(),
+                                cx,
+                            )))
                             .children(verdict)
-                            .child(div().text_color(t.subtle).child(ago(&c.created_at))),
+                            .child(div().text_color(t.subtle).child(marks.text(
+                                ("comment-time", i),
+                                ago(&c.created_at),
+                                cx,
+                            ))),
                     )
-                    .when(!c.body.trim().is_empty(), |d| {
-                        d.children(md.map(|md| div().mt(px(6.)).child(md)))
-                    }),
+                    .children(md.map(|md| div().mt(px(6.)).child(md))),
             );
         }
         Some(s.into_any_element())
+    }
+}
+
+impl FindHost for PullView {
+    /// The page top to bottom: the title and the line under it, the merge box, checks and the
+    /// failures shown, commits with their messages (folded or not), the files, the description
+    /// and the conversation.
+    fn find_parts(&self, parts: &mut Parts, cx: &App) {
+        let Some(p) = self.item() else { return };
+        let d = self.detail.as_deref();
+        let account = self.account(cx);
+        parts.text(("title", 0), &p.title);
+        parts.text(("number", 0), &format!("#{}", p.number));
+        let (who, verb) = who_and_verb(&p, d);
+        parts.text(("who", 0), &who);
+        parts.text(("verb", 0), verb);
+        parts.text(("head", 0), &p.head_ref);
+        parts.text(("into", 0), "into");
+        parts.text(("base", 0), &p.base_ref);
+        if let Some(d) = d {
+            parts.text(("commit-count", 0), &commit_count(d.commits));
+        }
+        if let Some(e) = self.refresh_error() {
+            parts.text(("refresh-error", 0), &e);
+        }
+        if let Some(d) = d {
+            if p.state == PullState::Open {
+                let (_, title, note) = merge_words(d);
+                parts.text(("merge-title", 0), &title);
+                parts.text(("merge-note", 0), note);
+                let rights = pull_rights(&p, account.as_deref(), d.closed_by.as_deref());
+                if let Some(side) = merge_side(d, &rights) {
+                    parts.text(("merge-side", 0), side);
+                }
+            }
+            if let Some(e) = &d.ci.checks_error {
+                parts.text(("checks-error", 0), &checks_error(e));
+            }
+            let checks: Vec<Check> = d.ci.checks.iter().map(Check::from).collect();
+            let now = gitviber_ui::widgets::now_unix();
+            for (row, c) in sort_checks(&checks).into_iter().enumerate() {
+                parts.text(("check", row), &c.name);
+                parts.text(("check-note", row), &check_note(c, now));
+                if let Some(f) = c.id.and_then(|id| self.failures.get(&id)) {
+                    self.failure_parts(row, f, parts);
+                }
+            }
+        }
+        let commits = self.commits();
+        if !commits.is_empty() {
+            let total = d.map_or(0, |d| d.commits).max(commits.len() as u64);
+            if total as usize > commits.len() {
+                parts.text(("latest", 0), &latest(commits.len(), total));
+            }
+            let days = by_day(commits);
+            for (n, (day, range)) in days.into_iter().enumerate() {
+                parts.text(("day", n), &commits_on(&day));
+                for ix in range {
+                    let c = &commits[ix];
+                    parts.text(("subject", ix), &c.subject);
+                    parts.text(("commit-author", ix), &c.author_name);
+                    parts.text(("commit-time", ix), &committed(c));
+                    parts.text(("sha", ix), &c.short_sha);
+                    parts.text(("body", ix), &c.body);
+                }
+            }
+        }
+        if let Some((range, _)) = self.picked() {
+            let picked = &commits[range];
+            parts.text(("pick-from", 0), &showing_from(picked.len()));
+            parts.text(("pick-label", 0), &pick_label(picked));
+            if let [one] = picked {
+                parts.text(("pick-subject", 0), &one.subject);
+            }
+        }
+        match (self.files_note(), self.shown_files()) {
+            (Some(note), _) => parts.text(("files-note", 0), &note),
+            (None, Some((files, _))) => {
+                for (ix, f) in files.iter().enumerate() {
+                    parts.text(("file", ix), &f.path);
+                }
+            }
+            (None, None) => {}
+        }
+        match (self.body_view(), d) {
+            (Some(v), _) => parts.view(&v),
+            (None, Some(_)) => parts.text(("no-description", 0), NO_DESCRIPTION),
+            (None, None) => {}
+        }
+        for (i, c) in d.into_iter().flat_map(|d| d.comments.iter().enumerate()) {
+            parts.text(("comment-author", i), &c.author);
+            if let Some(r) = &c.review {
+                parts.text(("verdict", i), &review_badge(r));
+            }
+            parts.text(("comment-time", i), &ago(&c.created_at));
+            if let Some(v) = d.and_then(|d| self.comment_view(d, i)) {
+                parts.view(&v);
+            }
+        }
+    }
+
+    /// A commit's message opens; a file's row comes into the list's view.
+    fn show_part(&mut self, (what, ix): Key, cx: &mut Context<Self>) {
+        match what {
+            "body" => {
+                if let Some(c) = self.commits().get(ix) {
+                    let sha = c.sha.clone();
+                    if self.open_bodies.insert(sha) {
+                        cx.notify();
+                    }
+                }
+            }
+            "file" => {
+                self.files_scroll.scroll_to_item(ix, ScrollStrategy::Center);
+                cx.notify();
+            }
+            _ => {}
+        }
+    }
+}
+
+impl PullView {
+    /// What a shown failure (check row `row`'s) says, as its view draws it.
+    fn failure_parts(&self, row: usize, f: &Failure, parts: &mut Parts) {
+        let Some(data) = &f.data else {
+            match &f.error {
+                Some(e) => parts.text(("failure-error", row), &failure_error(e)),
+                None => parts.text(("failure-wait", row), READING),
+            }
+            return;
+        };
+        parts.text(("failure-title", row), &data.title);
+        parts.text(("failure-summary", row), &data.summary);
+        for (i, a) in data.annotations.iter().enumerate() {
+            let at = nested(row, i);
+            parts.text(("annotation-level", at), &a.level);
+            if shows_place(a) {
+                parts.text(("annotation-place", at), &annotation_place(a));
+            }
+            if !a.title.is_empty() {
+                parts.text(("annotation-title", at), &format!("{}:", a.title));
+            }
+            parts.text(("annotation-message", at), &a.message);
+        }
+        if let Some(log) = &data.log {
+            parts.text(("log", row), log_tail(log));
+        }
+        if let Some(e) = &data.annotations_error {
+            parts.text(("annotations-error", row), &annotations_error(e));
+        }
+        if let Some(e) = &data.log_error {
+            parts.text(("log-error", row), &log_error(e));
+        }
+        if no_output(data) {
+            parts.text(("no-output", row), NO_OUTPUT);
+        }
     }
 }
 
@@ -2074,7 +2435,8 @@ impl Render for PullView {
         if self.text_stale {
             self.sync_text(window, cx);
         }
-        self.find.sync(|| self.find_parts(), cx);
+        self.find.sync(self, cx);
+        let marks = self.find.marks();
         if let Some(req) = self.pending_request.take() {
             window.defer(cx, move |window, cx| request(req, window, cx));
         }
@@ -2116,18 +2478,7 @@ impl Render for PullView {
         let source = pull_source(&p, account.as_deref());
         let busy = self.busy.is_some();
         let open = p.state == PullState::Open;
-        let who = if p.state == PullState::Merged {
-            d.as_ref()
-                .and_then(|d| d.merged_by.clone())
-                .unwrap_or(p.author.clone())
-        } else {
-            p.author.clone()
-        };
-        let verb = match p.state {
-            PullState::Merged => "merged",
-            PullState::Closed => "wanted to merge",
-            PullState::Open => "wants to merge",
-        };
+        let (who, verb) = who_and_verb(&p, d.as_deref());
         let head_ci = ci::state(cx, &self.target, &p.head_sha);
         let meta = div()
             .mt(px(6.))
@@ -2138,19 +2489,25 @@ impl Render for PullView {
             .text_size(rems(0.75))
             .text_color(t.muted_foreground)
             .child(pull_pill(p.state, p.draft, &t))
-            .child(div().text_color(t.foreground.opacity(0.85)).child(who))
-            .child(verb)
-            .child(branch_chip(&p.head_ref, &t))
-            .child("into")
-            .child(branch_chip(&p.base_ref, &t))
+            .child(
+                div()
+                    .text_color(t.foreground.opacity(0.85))
+                    .child(marks.text(("who", 0), who, cx)),
+            )
+            .child(marks.text(("verb", 0), verb, cx))
+            .child(branch_chip(
+                marks.text(("head", 0), p.head_ref.clone(), cx),
+                &t,
+            ))
+            .child(marks.text(("into", 0), "into", cx))
+            .child(branch_chip(
+                marks.text(("base", 0), p.base_ref.clone(), cx),
+                &t,
+            ))
             .children(ci_badge("head-ci", head_ci.filter(|_| open), &t))
             .when_some(d.clone(), |m, d| {
                 m.child(div().text_color(t.subtle).child("·"))
-                    .child(format!(
-                        "{} commit{}",
-                        d.commits,
-                        if d.commits == 1 { "" } else { "s" }
-                    ))
+                    .child(marks.text(("commit-count", 0), commit_count(d.commits), cx))
                     .child(LineCounts::new(
                         Some(d.additions as u32),
                         Some(d.deletions as u32),
@@ -2253,19 +2610,16 @@ impl Render for PullView {
                 )
             })
             // Cached data stays on screen; a failed refresh (a rate limit, say) is noted beside it.
-            .when_some(
-                self.detail_error.clone().filter(|_| !busy && d.is_some()),
-                |a, e| {
-                    a.child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(rems(0.75))
-                            .text_color(t.removed)
-                            .child(format!("Couldn't refresh: {e}")),
-                    )
-                },
-            );
+            .when_some(self.refresh_error(), |a, e| {
+                a.child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(rems(0.75))
+                        .text_color(t.removed)
+                        .child(marks.text(("refresh-error", 0), e, cx)),
+                )
+            });
 
         let mut page = div()
             .mx_auto()
@@ -2290,12 +2644,16 @@ impl Render for PullView {
                                     .gap_x(px(6.))
                                     .text_size(rems(1.06))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(self.find.title(p.title.clone(), cx))
+                                    .child(marks.text(("title", 0), p.title.clone(), cx))
                                     .child(
                                         div()
                                             .text_color(t.subtle)
                                             .font_weight(FontWeight::NORMAL)
-                                            .child(format!("#{}", p.number)),
+                                            .child(marks.text(
+                                                ("number", 0),
+                                                format!("#{}", p.number),
+                                                cx,
+                                            )),
                                     ),
                             )
                             .child(meta),
@@ -2312,11 +2670,7 @@ impl Render for PullView {
         page =
             page.children(self.commits_section(total.max(self.commits().len() as u64), window, cx));
         page = page.child(self.files_section(d.as_deref(), cx));
-        let body = d
-            .as_ref()
-            .filter(|d| !d.body.trim().is_empty())
-            .and_then(|_| self.blocks.get(0));
-        let desc = match (body, &d) {
+        let desc = match (self.body_view(), &d) {
             (Some(md), _) => div().px(px(12.)).py(px(10.)).child(md).into_any_element(),
             (None, Some(_)) => div()
                 .px(px(12.))
@@ -2324,7 +2678,7 @@ impl Render for PullView {
                 .text_size(rems(0.75))
                 .text_color(t.subtle)
                 .italic()
-                .child("No description provided.")
+                .child(marks.text(("no-description", 0), NO_DESCRIPTION, cx))
                 .into_any_element(),
             (None, None) => div().h(px(8.)).into_any_element(),
         };
@@ -2361,5 +2715,177 @@ impl Render for PullView {
             .child(scroller)
             .children(self.find.bar(cx))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gitviber_core::git::Commit;
+    use gitviber_core::github::{Comment, CommitChecks};
+    use gpui_kit::{TestAppContext, VisualTestContext};
+
+    use super::*;
+    use crate::leak_tests::{file, pull, setup};
+
+    /// The workspace, which the page holds weakly, and the page.
+    struct Host(Entity<Workspace>, Entity<PullView>);
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().w(px(900.)).h(px(600.)).child(self.1.clone())
+        }
+    }
+
+    fn commit(i: usize, subject: &str, body: &str) -> Commit {
+        Commit {
+            sha: format!("{i:040}"),
+            short_sha: format!("{i:07}"),
+            author_name: "Ann".into(),
+            author_email: "ann@example.com".into(),
+            timestamp: 1_700_000_000,
+            committer_name: "Ann".into(),
+            committed_at: 1_700_000_000,
+            parents: vec![],
+            refs: vec![],
+            subject: subject.into(),
+            body: body.into(),
+            unpushed: false,
+            on_origin: true,
+            not_in_head: false,
+            file: None,
+        }
+    }
+
+    fn draw(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+
+    /// Fills the page as a read would: a failing check shown, two commits (one message folded),
+    /// thirty files, a description and a review.
+    fn fill(v: &mut PullView) {
+        let mut p = crate::ui::core_pull(&pull(1));
+        p.title = "zeta: the fix".into();
+        v.detail = Some(Arc::new(PullDetail {
+            pull: p,
+            body: "The zeta body".into(),
+            additions: 1,
+            deletions: 1,
+            changed_files: 30,
+            commits: 2,
+            mergeable: Some(true),
+            mergeable_state: "clean".into(),
+            ci: CommitChecks {
+                checks: vec![gitviber_core::github::Check {
+                    name: "zeta-lint".into(),
+                    state: "failure".into(),
+                    status: String::new(),
+                    description: String::new(),
+                    app: "GitHub Actions".into(),
+                    started_at: None,
+                    completed_at: None,
+                    url: None,
+                    id: Some(7),
+                }],
+                checks_error: None,
+            },
+            comments: vec![Comment {
+                author: "zeta-bot".into(),
+                body: "zeta again".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                review: Some("APPROVED".into()),
+            }],
+            closed_by: None,
+            merged_by: None,
+        }));
+        v.detail_error = None;
+        v.detail_at = Some(Instant::now());
+        v.text_stale = true;
+        let files: Vec<FileChange> = (0..30)
+            .map(|i| match i {
+                25 => file("src/zeta.rs"),
+                _ => file(&format!("src/f{i}.rs")),
+            })
+            .collect();
+        v.file_list = Arc::new(files.clone());
+        v.files = Some(Arc::new(PullFiles {
+            base: "def".into(),
+            head: "abc".into(),
+            files,
+            commits: vec![
+                commit(0, "first", ""),
+                commit(1, "zeta fix", "line one\nzeta two"),
+            ],
+        }));
+        let log: Vec<String> = (0..60)
+            .map(|i| format!("step {i}"))
+            .chain(["zeta at the end".to_string()])
+            .collect();
+        v.failures.insert(
+            7,
+            Failure {
+                data: Some(Arc::new(CheckFailure {
+                    title: "zeta failed".into(),
+                    summary: String::new(),
+                    annotations: vec![Annotation {
+                        path: "src/zeta.rs".into(),
+                        line: 3,
+                        level: "failure".into(),
+                        title: String::new(),
+                        message: "no zeta".into(),
+                    }],
+                    annotations_error: None,
+                    log: Some(log.join("\n")),
+                    log_error: None,
+                })),
+                error: None,
+                log: ScrollHandle::new(),
+                _task: Task::ready(()),
+            },
+        );
+    }
+
+    #[gpui_kit::test]
+    fn every_match_on_the_page_is_drawn_and_scrolled_to(cx: &mut TestAppContext) {
+        setup(cx);
+        let (host, cx) = cx.add_window_view(|window, cx| {
+            let ws = cx.new(Workspace::new);
+            Workspace::register_window(&ws, window, cx);
+            let p = pull(1);
+            let view =
+                cx.new(|cx| PullView::new(ws.downgrade(), p.url.clone(), Some(p), window, cx));
+            Host(ws, view)
+        });
+        // The read finds no repository; the page then shows what a read would have brought.
+        cx.run_until_parked();
+        let (_ws, view) = host.read_with(cx, |h, _| (h.0.clone(), h.1.clone()));
+        view.update(cx, |v, cx| {
+            fill(v);
+            cx.notify();
+        });
+        draw(cx);
+        cx.update(|window, cx| view.update(cx, |v, cx| v.open_find(window, cx)));
+        cx.simulate_input("zeta");
+        draw(cx);
+        let finder = view.read_with(cx, |v, _| v.find.finder()).expect("open");
+        // The title; the check, its failure's title, place, message and log; a commit's subject
+        // and folded message; a file out of the list's view; the description; the reviewer and
+        // their review.
+        assert_eq!(finder.read_with(cx, |f, _| f.state()), (Some(0), 12, None));
+        for n in 1..=12 {
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            draw(cx);
+            let (current, _, waiting) = finder.read_with(cx, |f, _| f.state());
+            assert_eq!(current, Some(n % 12));
+            assert_eq!(waiting, None, "match {n} was never drawn");
+        }
+        // Stepping into the folded message opened it; the file's row came into the list's view.
+        view.read_with(cx, |v, _| {
+            assert!(v.open_bodies.contains(&format!("{:040}", 1)));
+            assert!(v.files_scroll.0.borrow().base_handle.offset().y < px(0.));
+        });
+        // Scrolled down the page and back up to the title.
+        assert_eq!(view.read_with(cx, |v, _| v.scroll.offset().y), px(0.));
     }
 }

@@ -23,6 +23,11 @@ const FAILED: Duration = Duration::from_secs(300);
 const BATCH: usize = 100;
 /// Verdicts kept; the oldest answers go first.
 const MAX_KNOWN: usize = 5000;
+/// A scroll shows new rows each frame: what `want` gets this soon after its last request waits
+/// until the rows stop coming for this long, and goes in one.
+const QUIET: Duration = Duration::from_millis(250);
+/// A long scroll's badges wait no longer than this.
+const MOST: Duration = Duration::from_secs(1);
 
 type Key = (Target, String);
 
@@ -32,8 +37,16 @@ pub struct Ci {
     failed_at: HashMap<Target, Instant>,
     asking: HashSet<Key>,
     tasks: HashMap<u64, Task<()>>,
-    /// Asked for this frame by `want`.
+    /// Asked for by `want`, not sent yet.
     queued: Vec<Key>,
+    /// Whether a send of `queued` is on its way.
+    sending: bool,
+    /// When `want` last sent, first queued what waits, and last queued.
+    sent_at: Option<Instant>,
+    first_at: Option<Instant>,
+    last_at: Option<Instant>,
+    #[cfg(test)]
+    requests: usize,
     /// Some asker draws without following `Ci`: answers redraw the windows.
     redraw: bool,
     next: u64,
@@ -98,6 +111,10 @@ pub fn ask(cx: &mut App, target: &Target, shas: &[String]) {
         ci.asking.insert((target.clone(), s.clone()));
     }
     ci.next += 1;
+    #[cfg(test)]
+    {
+        ci.requests += 1;
+    }
     let id = ci.next;
     let (to, list) = (target.clone(), wanted.clone());
     let target = target.clone();
@@ -232,8 +249,9 @@ impl CiWatch {
     }
 }
 
-/// Asks for `sha`'s verdict with the others asked this frame, in one request, and redraws the
+/// Asks for `sha`'s verdict with the others wanted meanwhile, in one request, and redraws the
 /// windows when it lands: for a badge drawn by a view that doesn't follow `Ci` (History's rows).
+/// The first screen's go at the frame's end; a scroll's, once it stops (or each second).
 pub fn want(cx: &mut App, target: &Target, sha: &str) {
     // Drawn every frame: only a sha with nothing fresh, asked or queued changes anything, so
     // what follows `Ci` isn't woken by every frame.
@@ -252,24 +270,54 @@ pub fn want(cx: &mut App, target: &Target, sha: &str) {
     {
         return;
     }
+    let now = cx.background_executor().now();
     let ci = cx.global_mut::<Ci>();
     ci.redraw = true;
-    let first = ci.queued.is_empty();
     ci.queued.push(key);
-    if first {
-        cx.defer(|cx| {
-            let queued = std::mem::take(&mut cx.global_mut::<Ci>().queued);
-            let mut by: HashMap<Target, Vec<String>> = HashMap::new();
-            for (t, s) in queued {
-                let list = by.entry(t).or_default();
-                if !list.contains(&s) {
-                    list.push(s);
+    ci.last_at = Some(now);
+    if std::mem::replace(&mut ci.sending, true) {
+        return;
+    }
+    ci.first_at = Some(now);
+    let busy = ci.sent_at.is_some_and(|at| now.duration_since(at) < QUIET);
+    // Touches only the global: a reset `Ci` just has nothing queued when it runs.
+    cx.spawn(async move |cx| {
+        if busy {
+            loop {
+                cx.background_executor().timer(QUIET).await;
+                let wait = cx.update(|cx| {
+                    let now = cx.background_executor().now();
+                    let ci = cx.try_global::<Ci>();
+                    let since = |at: Option<Instant>| at.map_or(MOST, |at| now.duration_since(at));
+                    ci.is_some_and(|ci| since(ci.last_at) < QUIET && since(ci.first_at) < MOST)
+                });
+                if !wait {
+                    break;
                 }
             }
-            for (t, shas) in by {
-                ask(cx, &t, &shas);
-            }
-        });
+        }
+        cx.update(send_wanted);
+    })
+    .detach();
+}
+
+fn send_wanted(cx: &mut App) {
+    let now = cx.background_executor().now();
+    if cx.try_global::<Ci>().is_none() {
+        return;
+    }
+    let ci = cx.global_mut::<Ci>();
+    ci.sending = false;
+    ci.sent_at = Some(now);
+    let mut by: HashMap<Target, Vec<String>> = HashMap::new();
+    for (t, s) in std::mem::take(&mut ci.queued) {
+        let list = by.entry(t).or_default();
+        if !list.contains(&s) {
+            list.push(s);
+        }
+    }
+    for (t, shas) in by {
+        ask(cx, &t, &shas);
     }
 }
 
@@ -417,5 +465,36 @@ mod tests {
         }
         cx.run_until_parked();
         assert_eq!(woke.get(), after_ask);
+    }
+
+    #[gpui_kit::test]
+    fn a_scrolls_badges_go_in_one_request_after_the_first_screens(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gitviber_ui::install_core(cx);
+            crate::cache::init(cx);
+            init(cx);
+        });
+        let sha = |i: usize| format!("{i:040x}");
+        let requests = |cx: &mut TestAppContext| cx.update(|cx| cx.global::<Ci>().requests);
+        // The first screen: sent at once, no timer waited for.
+        let start = cx.executor().now();
+        cx.update(|cx| want(cx, &None, &sha(0)));
+        cx.run_until_parked();
+        assert_eq!(requests(cx), 1);
+        assert_eq!(cx.executor().now(), start);
+        // A scroll right after, a new row each frame (another repo: the first ask failed).
+        let original = Some("someone/original".to_string());
+        for i in 1..=30 {
+            cx.update(|cx| want(cx, &original, &sha(i)));
+            cx.executor().advance_clock(Duration::from_millis(16));
+        }
+        assert_eq!(requests(cx), 1);
+        // Once the rows stop coming: the rest in one.
+        for _ in 0..8 {
+            cx.executor().advance_clock(QUIET);
+            cx.run_until_parked();
+        }
+        assert_eq!(requests(cx), 2);
+        assert!(cx.update(|cx| cx.global::<Ci>().queued.is_empty()));
     }
 }

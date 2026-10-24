@@ -2,8 +2,11 @@
 //! a line comment, the description of an issue or a pull request being made or edited.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
+use gitviber_core::api;
 use gitviber_markdown::{Callouts, MarkdownBase, MarkdownView};
 use gitviber_ui::memory::Live;
 use gpui_kit::assets::IconName;
@@ -13,11 +16,15 @@ use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
     ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Window, canvas, div, prelude::FluentBuilder as _, px, rems,
+    Task, Window, canvas, div, prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::logic::text::github_markdown;
-use crate::ui::common::theme;
+use crate::model::Target;
+use crate::ui::common::{attachment_ids, theme};
+
+/// Signed links expire after 5 minutes: a lookup is used for 4.
+const LINKS_AGE: Duration = Duration::from_secs(240);
 
 pub struct MarkdownInput {
     /// Kept while the preview shows, so the text keeps its undo history and cursor.
@@ -34,6 +41,13 @@ pub struct MarkdownInput {
     height: Rc<Cell<Pixels>>,
     /// The preview's: keys go on reaching the host (⌘↵ posts, Esc cancels) while it shows.
     focus: FocusHandle,
+    /// The PR or issue it's posted on, whose attachments the API signs (a private repo's need a
+    /// github.com login the app doesn't have); None for one not made yet, with nothing to sign.
+    signs: Option<(Target, u64)>,
+    /// The signed links last read, by attachment id, and when they were asked for.
+    links: HashMap<String, String>,
+    asked: Option<Instant>,
+    _links: Task<()>,
     _live: Live,
 }
 
@@ -55,6 +69,10 @@ impl MarkdownInput {
             preview: None,
             height: Rc::default(),
             focus: cx.focus_handle(),
+            signs: None,
+            links: HashMap::new(),
+            asked: None,
+            _links: Task::ready(()),
             _live: Live::new("MarkdownInput"),
         }
     }
@@ -62,6 +80,17 @@ impl MarkdownInput {
     pub fn small(mut self) -> Self {
         self.small = true;
         self
+    }
+
+    /// Posted on PR or issue `number`: the preview shows its attachments the way the page does.
+    pub fn signed_by(mut self, target: Target, number: u64) -> Self {
+        self.signs = Some((target, number));
+        self
+    }
+
+    /// The draft rendered, while the preview shows it.
+    pub fn shown_preview(&self) -> Option<&Entity<MarkdownView>> {
+        self.preview.as_ref()
     }
 
     /// The box itself, for its events.
@@ -100,8 +129,11 @@ impl MarkdownInput {
             return;
         }
         let text = self.value(cx);
+        if self.wants_links(&text) {
+            self.ask_links(cx);
+        }
         self.preview = (!text.trim().is_empty()).then(|| {
-            let source = github_markdown(&text, &self.repo, &self.page, &|_| None);
+            let source = self.source(&text);
             let base = MarkdownBase {
                 root: None,
                 file: None,
@@ -111,6 +143,48 @@ impl MarkdownInput {
         });
         self.focus.focus(window, cx);
         cx.notify();
+    }
+
+    fn source(&self, text: &str) -> String {
+        github_markdown(text, &self.repo, &self.page, &|id| {
+            self.links.get(id).cloned()
+        })
+    }
+
+    /// Whether to ask for signed links: the draft has attachments, a page to sign them, and
+    /// none were asked for lately.
+    fn wants_links(&self, text: &str) -> bool {
+        self.signs.is_some()
+            && self.asked.is_none_or(|at| at.elapsed() > LINKS_AGE)
+            && attachment_ids(text).next().is_some()
+    }
+
+    /// The page's attachments, signed: an image already posted there (quoted, copied from a
+    /// comment) loads in the preview too. One that isn't posted yet has no signed link.
+    fn ask_links(&mut self, cx: &mut Context<Self>) {
+        let Some((target, number)) = self.signs.clone() else {
+            return;
+        };
+        self.asked = Some(Instant::now());
+        let core = crate::core(cx);
+        self._links = cx.spawn(async move |this, cx| {
+            let read = cx
+                .background_spawn(async move { api::github::pr_attachments(&core, target, number) })
+                .await;
+            if let Ok(links) = read {
+                this.update(cx, |this, cx| this.take_links(links, cx)).ok();
+            }
+        });
+    }
+
+    /// Fresh links: the preview showing takes them.
+    fn take_links(&mut self, links: HashMap<String, String>, cx: &mut Context<Self>) {
+        self.links = links;
+        let Some(view) = self.preview.clone() else {
+            return;
+        };
+        let source = self.source(&self.value(cx));
+        view.update(cx, |v, cx| v.set_source(&source, cx));
     }
 
     #[cfg(test)]
@@ -255,6 +329,37 @@ mod tests {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();
         assert!(weak.upgrade().is_none());
+    }
+
+    #[gpui_kit::test]
+    fn a_drafts_attachments_take_the_pages_signed_links(cx: &mut TestAppContext) {
+        let (input, cx) = host(cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let id = "012a2451-fa01-4fe5-8736-33f4a4d179f1";
+        let text = format!("![shot](https://github.com/user-attachments/assets/{id})");
+        let signed =
+            format!("https://private-user-images.githubusercontent.com/1/2-{id}.png?jwt=x");
+        cx.update(|window, cx| {
+            input.update(cx, |i, cx| {
+                i.set_value(&text, window, cx);
+                // A PR or issue not made yet has no page to sign them.
+                assert!(!i.wants_links(&text));
+                i.signs = Some((Some("o/r".into()), 1));
+                assert!(i.wants_links(&text));
+                assert!(!i.wants_links("no pictures"));
+                // Asked a moment ago (the links are good for 4 minutes): not again.
+                i.asked = Some(Instant::now());
+                assert!(!i.wants_links(&text));
+                i.preview(true, window, cx);
+                assert!(!i.source(&text).contains(&signed));
+                // The links land while it's previewed: the preview shows the signed one.
+                i.take_links(HashMap::from([(id.to_string(), signed.clone())]), cx);
+                assert!(i.source(&text).contains(&signed));
+                assert!(i.shown_preview().is_some());
+                i.asked = Instant::now().checked_sub(LINKS_AGE + Duration::from_secs(1));
+                assert!(i.wants_links(&text));
+            })
+        });
     }
 
     struct Slot(Option<Entity<MarkdownInput>>);

@@ -130,11 +130,15 @@ impl PullFileView {
             .unwrap_or_default();
         let page = range.pull_url.clone().unwrap_or_default();
         let composer = cx.new(|cx| {
-            MarkdownInput::new(web.clone(), page, window, cx, |t| {
+            let input = MarkdownInput::new(web.clone(), page, window, cx, |t| {
                 t.rows(3)
                     .placeholder(format!("Leave a comment (markdown; {POST_KEY} to post)"))
             })
-            .small()
+            .small();
+            match range.number {
+                Some(n) => input.signed_by(target.clone(), n),
+                None => input,
+            }
         });
         let input = composer.read(cx).input().clone();
         let subs = vec![

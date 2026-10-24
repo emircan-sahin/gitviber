@@ -31,6 +31,7 @@ const SETTLED: Duration = Duration::from_secs(600);
 pub fn install_bridges(cx: &mut App) {
     gitviber_refs::hooks::set_pull_provider(cx, Rc::new(pull_of), Rc::new(open_pull_url));
     gitviber_history::set_commit_checks(cx, Rc::new(commit_checks));
+    gitviber_history::set_repo_checks(cx, Rc::new(repo_checks));
     gitviber_refs::hooks::set_push_access(cx, Rc::new(push_access));
     gitviber_history::set_fork_of(cx, Rc::new(fork_of));
     // Every read lands in the cache: History hears only when the fork itself changed.
@@ -131,6 +132,15 @@ fn open_pull_url(url: &str, window: &mut Window, cx: &mut App) {
             url: url.to_string(),
         });
     crate::ui::open_pull(&ws.downgrade(), item, false, window, cx);
+}
+
+/// A row's badge for a commit of another repository (a fork's original, owner/name), asked of
+/// that repository with the other rows shown.
+fn repo_checks(repo: &str, sha: &str, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    let target = Some(repo.to_string());
+    crate::ci::want(cx, &target, sha);
+    let id = gpui_kit::SharedString::from(format!("ci-{repo}-{sha}"));
+    ci_badge(id, crate::ci::state(cx, &target, sha), &theme(cx))
 }
 
 /// A commit's checks for History: its row's badge (`header` false), asked with the other rows
