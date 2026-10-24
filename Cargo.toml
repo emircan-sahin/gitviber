@@ -63,8 +63,9 @@ chrono = "=0.4.45"
 # Core's events cross to the UI thread over its channel.
 futures = "=0.3.34"
 
-# gpui-base with one fix (vendor/gpui-base/PATCH.md): closed markdown documents' shaped text
-# was kept in a table swept only every 4096 entries.
+# gpui-base with two changes (vendor/gpui-base/PATCH.md): closed markdown documents' shaped text
+# was kept in a table swept only every 4096 entries, and the code editor gains blocks between
+# lines (review notes).
 [patch.crates-io]
 gpui-base = { path = "vendor/gpui-base" }
 

@@ -126,9 +126,26 @@ impl<M: InputModeKind> InputBaseState<M> {
                     .nearest_visible_display_row(display_point.row)
             });
         let max_display_row = self.display_map.display_row_count().saturating_sub(1);
-        let target_display_row = current_display_row
+        let mut target_display_row = current_display_row
             .saturating_add_signed(move_lines)
             .min(max_display_row);
+        // The rows of a line block have no text: on past them, or back to the text above.
+        while self.display_map.is_gap_display_row(target_display_row) {
+            match target_display_row
+                .checked_add_signed(move_lines.signum())
+                .filter(|row| *row <= max_display_row && move_lines != 0)
+            {
+                Some(row) => target_display_row = row,
+                None => {
+                    while target_display_row > 0
+                        && self.display_map.is_gap_display_row(target_display_row)
+                    {
+                        target_display_row -= 1;
+                    }
+                    break;
+                }
+            }
+        }
         let target_wrap_row = self
             .display_map
             .display_row_to_wrap_row(target_display_row)

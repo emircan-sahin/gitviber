@@ -859,6 +859,7 @@ impl<M: InputModeKind> TextElement<M> {
                 offset = end;
                 y += last_layout.line_height;
             }
+            y += line.gap_rows * last_layout.line_height;
         }
         (!corners.is_empty()).then_some(corners)
     }
@@ -1398,7 +1399,7 @@ impl<M: InputModeKind> TextElement<M> {
                     });
                 }
 
-                offset_y += line.wrapped_lines.len() * last_layout.line_height;
+                offset_y += line.size(last_layout.line_height).height;
             }
 
             infos
@@ -2065,6 +2066,79 @@ impl<M: InputModeKind> TextElement<M> {
         out
     }
 
+    /// The editor's line blocks under the visible lines, laid out as wide as the text and
+    /// placed in the rows left for them, with each one whose content wants other rows: its
+    /// index and those rows.
+    fn prepaint_blocks(
+        &self,
+        layout: &LastLayout,
+        bounds: Bounds<Pixels>,
+        input_bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (Vec<AnyElement>, Vec<(usize, usize)>) {
+        let state = self.state.read(cx);
+        let gaps = state.display_map.gaps();
+        if gaps.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        let line_height = layout.line_height;
+        let mut placed = Vec::new();
+        let mut y = layout.visible_top;
+        for (line, &row) in layout.lines.iter().zip(&layout.visible_buffer_lines) {
+            if line.gap_rows > 0 {
+                let mut top = y + line.wrapped_lines.len() * line_height;
+                for (ix, &(at, rows)) in gaps.iter().enumerate() {
+                    if at == row
+                        && let Some(block) = state.extras.line_blocks().get(ix)
+                    {
+                        placed.push((ix, rows, top, block.id.clone(), block.render.clone()));
+                        top += rows * line_height;
+                    }
+                }
+            }
+            y += line.size(line_height).height;
+        }
+        // Fixed sideways, like the gutter: the text scrolls under nothing.
+        let x = input_bounds.origin.x + layout.line_number_width;
+        let width = (input_bounds.right() - x).max(px(1.));
+        let mut elements = Vec::with_capacity(placed.len());
+        let mut resized = Vec::new();
+        window.with_content_mask(
+            Some(gpui::ContentMask {
+                bounds: input_bounds,
+            }),
+            |window| {
+                for (ix, rows, top, id, render) in placed {
+                    // Clicks and drags stay in the block; the wheel still scrolls the text.
+                    let mut element = gpui::div()
+                        .id(ElementId::Name(id))
+                        .w(width)
+                        .block_mouse_except_scroll()
+                        .child(render(window, cx))
+                        .into_any_element();
+                    let measured = element.layout_as_root(
+                        size(
+                            gpui::AvailableSpace::Definite(width),
+                            gpui::AvailableSpace::MinContent,
+                        ),
+                        window,
+                        cx,
+                    );
+                    let wants = ((measured.height / line_height).ceil() as usize).max(1);
+                    if wants != rows {
+                        resized.push((ix, wants));
+                    }
+                    // Centred in its whole rows.
+                    let free = (rows * line_height - measured.height).max(px(0.));
+                    element.prepaint_at(point(x, bounds.origin.y + top + free.half()), window, cx);
+                    elements.push(element);
+                }
+            },
+        );
+        (elements, resized)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn layout_lines(
         state: &InputBaseState<M>,
@@ -2352,6 +2426,9 @@ pub(super) struct PrepaintState {
     /// The lines of entire lines.
     last_layout: LastLayout,
     token_elements: Vec<AnyElement>,
+    /// The line blocks on screen, and those whose content wants other rows (index, rows).
+    block_elements: Vec<AnyElement>,
+    resized_blocks: Vec<(usize, usize)>,
     /// The lines only contains the visible lines in the viewport, based on `visible_range`.
     ///
     /// The child is the soft lines.
@@ -2803,7 +2880,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         let whitespace_indicators =
             Self::layout_whitespace_indicators(&state, text_size, &text_style, window, cx);
 
-        let lines = Self::layout_lines(
+        let mut lines = Self::layout_lines(
             &state,
             &display_text,
             &last_layout,
@@ -2813,6 +2890,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
             whitespace_indicators,
             window,
         );
+        if !state.display_map.gaps().is_empty() {
+            for (line, &row) in lines.iter_mut().zip(&last_layout.visible_buffer_lines) {
+                line.gap_rows = state.display_map.gap_rows(row);
+            }
+        }
 
         let mut longest_line_width = wrap_width.unwrap_or(px(0.));
         // 1. Single line
@@ -3052,7 +3134,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                         .text_system()
                         .shape_line(line_no, text_size, &runs, None),
                 );
-                for _ in 0..line.wrapped_lines.len().saturating_sub(1) {
+                for _ in 0..(line.wrapped_lines.len() + line.gap_rows).saturating_sub(1) {
                     sub_lines.push(ShapedLine::default());
                 }
                 line_numbers.push(sub_lines);
@@ -3079,8 +3161,12 @@ impl<M: InputModeKind> Element for TextElement<M> {
         let hitbox = window.insert_hitbox(input_bounds, HitboxBehavior::Normal);
 
         let token_elements = self.prepaint_tokens(&last_layout, bounds, token_elements, window, cx);
+        let (block_elements, resized_blocks) =
+            self.prepaint_blocks(&last_layout, bounds, input_bounds, window, cx);
         PrepaintState {
             token_elements,
+            block_elements,
+            resized_blocks,
             hitbox,
             bounds,
             last_layout,
@@ -3155,13 +3241,15 @@ impl<M: InputModeKind> Element for TextElement<M> {
             offset_y += invisible_top_padding;
 
             // Each item is the normal lines.
-            for (lines, &buffer_line) in line_numbers
+            for ((lines, &buffer_line), layout) in line_numbers
                 .iter()
                 .zip(prepaint.last_layout.visible_buffer_lines.iter())
+                .zip(prepaint.last_layout.lines.iter())
             {
                 let is_active = prepaint.current_row == Some(buffer_line);
                 let p = point(input_bounds.origin.x, origin.y + offset_y);
-                let height = line_height * lines.len() as f32;
+                // The rows of the text, not the gap under it.
+                let height = line_height * (lines.len() - layout.gap_rows) as f32;
                 // Paint the current line background
                 if is_active {
                     if let Some(bg_color) = active_line_color {
@@ -3171,7 +3259,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                         ));
                     }
                 }
-                offset_y += height;
+                offset_y += line_height * lines.len() as f32;
             }
         }
 
@@ -3334,6 +3422,19 @@ impl<M: InputModeKind> Element for TextElement<M> {
             element.paint(window, cx);
         }
 
+        if !prepaint.block_elements.is_empty() {
+            window.with_content_mask(
+                Some(gpui::ContentMask {
+                    bounds: input_bounds,
+                }),
+                |window| {
+                    for element in &mut prepaint.block_elements {
+                        element.paint(window, cx);
+                    }
+                },
+            );
+        }
+
         // Paint blinking cursors (shared blink state for all carets)
         if focused && show_cursor {
             for cursor_info in prepaint.cursor_infos_with_scroll() {
@@ -3365,14 +3466,15 @@ impl<M: InputModeKind> Element for TextElement<M> {
             window.paint_quad(fill(gutter_bounds, gutter_bg));
 
             // Each item is the normal lines.
-            for (lines, &buffer_line) in line_numbers
+            for ((lines, &buffer_line), layout) in line_numbers
                 .iter()
                 .zip(prepaint.last_layout.visible_buffer_lines.iter())
+                .zip(prepaint.last_layout.lines.iter())
             {
                 let p = point(input_bounds.origin.x, origin.y + offset_y);
                 let is_active = prepaint.current_row == Some(buffer_line);
 
-                let height = line_height * lines.len() as f32;
+                let height = line_height * (lines.len() - layout.gap_rows) as f32;
                 // paint active line number background
                 if is_active {
                     if let Some(bg_color) = active_line_color {
@@ -3422,6 +3524,18 @@ impl<M: InputModeKind> Element for TextElement<M> {
             state.scroll_size = prepaint.scroll_size;
             state.update_scroll_offset(Some(prepaint.cursor_scroll_offset), cx);
             state.deferred_scroll_offset = None;
+
+            // A block's content measured other rows than its gap has: the next frame has them.
+            if !prepaint.resized_blocks.is_empty() {
+                let mut gaps = state.display_map.gaps().to_vec();
+                for &(ix, rows) in &prepaint.resized_blocks {
+                    if let Some(gap) = gaps.get_mut(ix) {
+                        gap.1 = rows;
+                    }
+                }
+                state.display_map.set_gaps(gaps);
+                cx.notify();
+            }
 
             // Layout consumers need changed geometry, not another notification
             // for every paint of an unchanged input.

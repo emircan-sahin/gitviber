@@ -99,6 +99,16 @@ impl WrapMap {
         self.wrapper.buffer_line_to_wrap_row_range(line)
     }
 
+    /// The rows left empty under lines: (buffer line, rows), in the order they were set.
+    pub(super) fn gaps(&self) -> &[(usize, usize)] {
+        self.wrapper.gaps()
+    }
+
+    /// Leaves rows empty under lines, replacing the last set.
+    pub(super) fn set_gaps(&mut self, gaps: Vec<(usize, usize)>) {
+        self.wrapper.set_gaps(gaps);
+    }
+
     /// Update text (incremental or full)
     pub(super) fn on_text_changed(
         &mut self,

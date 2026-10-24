@@ -170,6 +170,45 @@ impl DisplayMap {
         self.rebuild_fold_projection();
     }
 
+    // ==================== Line Gaps ====================
+
+    /// Leaves `rows` empty under buffer line `line` for each `(line, rows)`, replacing the last
+    /// set: the editor draws its line blocks there. Several on one line stack in order; they
+    /// follow their lines through edits.
+    pub(crate) fn set_gaps(&mut self, gaps: Vec<(usize, usize)>) {
+        self.wrap_map.set_gaps(gaps);
+        // A gap moved to another line can leave the row count as it was.
+        self.fold_map
+            .mark_dirty_with_wrap_count(self.wrap_map.wrap_row_count());
+        self.rebuild_fold_projection();
+    }
+
+    /// The rows left empty under lines (line, rows), in the order they were set, at their
+    /// lines now.
+    pub fn gaps(&self) -> &[(usize, usize)] {
+        self.wrap_map.gaps()
+    }
+
+    /// Rows left empty under buffer line `line` for the editor's line blocks.
+    pub fn gap_rows(&self, line: usize) -> usize {
+        self.wrap_map.line(line).map_or(0, |l| l.gap)
+    }
+
+    /// Whether `display_row` is one of the empty rows under a line, which no text or caret is on.
+    pub(crate) fn is_gap_display_row(&self, display_row: usize) -> bool {
+        if self.gaps().is_empty() {
+            return false;
+        }
+        let Some(wrap_row) = self.display_row_to_wrap_row(display_row) else {
+            return false;
+        };
+        let line = self.wrap_map.wrap_row_to_buffer_line(wrap_row);
+        let first = self.wrap_map.buffer_line_to_first_wrap_row(line);
+        self.wrap_map
+            .line(line)
+            .is_some_and(|l| wrap_row - first >= l.lines_len())
+    }
+
     // ==================== Text and Layout Updates ====================
 
     /// Adjust folds and candidates for a text edit before updating the wrap map.

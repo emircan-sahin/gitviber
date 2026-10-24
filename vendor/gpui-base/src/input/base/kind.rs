@@ -121,6 +121,11 @@ pub trait InputExtras: Default + 'static {
     fn context_menu_capabilities(&self) -> (bool, bool) {
         (false, false)
     }
+
+    /// The blocks drawn between lines, in the order they were set.
+    fn line_blocks(&self) -> &[crate::input::LineBlock] {
+        &[]
+    }
 }
 
 /// A mode with nothing extra to render.
@@ -359,6 +364,8 @@ pub struct EditorExtras {
     pub(crate) hover_popover: Option<HoverPopoverState>,
     pub(crate) hover_definition: HoverDefinition,
     pub(crate) context_menu_task: Task<anyhow::Result<()>>,
+    /// Blocks between lines, index-aligned with the display map's gaps.
+    pub(crate) blocks: Vec<crate::input::LineBlock>,
 }
 
 impl Default for EditorExtras {
@@ -372,6 +379,7 @@ impl Default for EditorExtras {
             hover_popover: None,
             hover_definition: HoverDefinition::default(),
             context_menu_task: Task::ready(Ok(())),
+            blocks: Vec::new(),
         }
     }
 }

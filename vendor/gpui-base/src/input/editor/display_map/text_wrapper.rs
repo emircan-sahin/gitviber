@@ -116,6 +116,9 @@ pub(crate) struct LineItem {
     ///
     /// Not contains the line end `\n`.
     pub(crate) wrapped_lines: SmallVec<[Range<usize>; 1]>,
+    /// Empty rows under the text, where the editor draws its line blocks
+    /// ([`TextWrapper::set_gaps`]).
+    pub(crate) gap: usize,
 }
 
 impl LineItem {
@@ -130,6 +133,12 @@ impl LineItem {
     pub(crate) fn lines_len(&self) -> usize {
         self.wrapped_lines.len()
     }
+
+    /// Wrap rows this line takes: its soft wrapped lines and the gap under them.
+    #[inline]
+    pub(crate) fn rows(&self) -> usize {
+        self.wrapped_lines.len() + self.gap
+    }
 }
 
 /// Summary of a subtree of [`LineItem`]s, maintained incrementally by the [`SumTree`].
@@ -137,7 +146,7 @@ impl LineItem {
 pub(crate) struct LineSummary {
     /// Number of buffer lines.
     buffer_rows: usize,
-    /// Number of wrap rows (sum of each line's `lines_len()`).
+    /// Number of wrap rows (sum of each line's `rows()`).
     wrap_rows: usize,
     /// Sum of byte lengths of the buffer lines (without the trailing `\n`).
     bytes: usize,
@@ -178,7 +187,7 @@ impl sum_tree::Item for LineItem {
     fn summary(&self, _: &()) -> LineSummary {
         LineSummary {
             buffer_rows: 1,
-            wrap_rows: self.lines_len(),
+            wrap_rows: self.rows(),
             bytes: self.len(),
             max_line_len: self.len(),
             longest_row: 0,
@@ -228,6 +237,8 @@ pub(crate) struct TextWrapper {
     pub(crate) lines: SumTree<LineItem>,
 
     inline_metrics: Rc<[(Range<usize>, Pixels)]>,
+    /// Rows left empty under lines, in the editor's block order: (buffer line, rows).
+    gaps: Vec<(usize, usize)>,
     _initialized: bool,
 }
 
@@ -242,6 +253,7 @@ impl TextWrapper {
             wrapping_indent: WrappingIndent::default(),
             lines: SumTree::new(&()),
             inline_metrics: Rc::from([]),
+            gaps: Vec::new(),
             _initialized: false,
         }
     }
@@ -302,7 +314,7 @@ impl TextWrapper {
         let mut cursor = self.lines.cursor::<Dimensions<BufferRows, WrapRows>>(&());
         cursor.seek(&BufferRows(row), Bias::Right);
         let start = cursor.start().1.0;
-        let len = cursor.item().map(|l| l.lines_len()).unwrap_or(0);
+        let len = cursor.item().map(|l| l.rows()).unwrap_or(0);
         start..start + len
     }
 
@@ -314,6 +326,37 @@ impl TextWrapper {
             Some(_) => cursor.start().1.0,
             None => self.lines_count().saturating_sub(1),
         }
+    }
+
+    /// The rows left empty under lines, as [`Self::set_gaps`] set them and edits moved them.
+    pub(crate) fn gaps(&self) -> &[(usize, usize)] {
+        &self.gaps
+    }
+
+    /// Leaves `rows` empty under buffer line `line` for each `(line, rows)`, replacing the last
+    /// set; several on one line add up. They follow their lines through edits.
+    pub(crate) fn set_gaps(&mut self, gaps: Vec<(usize, usize)>) {
+        let mut lines: Vec<usize> = self.gaps.iter().chain(&gaps).map(|g| g.0).collect();
+        lines.sort_unstable();
+        lines.dedup();
+        self.gaps = gaps;
+        if self.lines.is_empty() {
+            return;
+        }
+        let mut cursor = self.lines.cursor::<BufferRows>(&());
+        let mut tree = SumTree::new(&());
+        for line in lines {
+            tree.append(cursor.slice(&BufferRows(line), Bias::Right), &());
+            if let Some(item) = cursor.item() {
+                let mut item = item.clone();
+                item.gap = gap_rows(&self.gaps, line);
+                tree.push(item, &());
+                cursor.next();
+            }
+        }
+        tree.append(cursor.suffix(), &());
+        drop(cursor);
+        self.lines = tree;
     }
 
     pub(crate) fn set_wrap_width(&mut self, wrap_width: Option<Pixels>, cx: &mut App) {
@@ -537,6 +580,20 @@ impl TextWrapper {
             .offset_to_point(range.start + new_text.len())
             .row;
 
+        // Gaps follow their lines: past the edit they move with it, inside it they go to its
+        // end. Text replaced as a whole (a new value, a re-wrap, the first layout) keeps them
+        // at their lines; one past the last line stays unused.
+        if range.start > 0 || range.end < self.text.len() {
+            let delta = (new_end_row - new_start_row) as isize - (end_row - start_row) as isize;
+            for gap in &mut self.gaps {
+                if gap.0 >= end_row {
+                    gap.0 = gap.0.saturating_add_signed(delta);
+                } else if gap.0 >= start_row {
+                    gap.0 = end_row.saturating_add_signed(delta);
+                }
+            }
+        }
+
         let mut new_lines = Vec::with_capacity(new_end_row.saturating_sub(new_start_row) + 1);
         let wrap_width = self.wrap_width;
 
@@ -595,6 +652,7 @@ impl TextWrapper {
                 len: line.len(),
                 indent: indent_chars,
                 wrapped_lines,
+                gap: gap_rows(&self.gaps, row),
             });
         }
 
@@ -706,6 +764,11 @@ impl TextWrapper {
     }
 }
 
+/// The rows `gaps` leave under `line`.
+fn gap_rows(gaps: &[(usize, usize)], line: usize) -> usize {
+    gaps.iter().filter(|g| g.0 == line).map(|g| g.1).sum()
+}
+
 /// A display point within the soft-wrapped text.
 ///
 /// This represents a position in the text after soft-wrapping,
@@ -749,6 +812,8 @@ pub(crate) struct LineLayout {
     /// Whether any run of this line carries a background color, so [`Self::paint_background`]
     /// can skip the glyph walk for the common case of a line without highlights.
     has_background: bool,
+    /// Empty rows under the text for the editor's line blocks.
+    pub(crate) gap_rows: usize,
 }
 
 impl LineLayout {
@@ -761,6 +826,7 @@ impl LineLayout {
             whitespace_chars: Vec::new(),
             whitespace_indicators: None,
             has_background: false,
+            gap_rows: 0,
         }
     }
 
@@ -1013,7 +1079,7 @@ impl LineLayout {
             .map(|(ix, line)| line.width + self.line_indent(ix))
             .max()
             .unwrap_or(self.longest_width);
-        size(width, self.wrapped_lines.len() * line_height)
+        size(width, (self.wrapped_lines.len() + self.gap_rows) * line_height)
     }
 
     /// Paint only the glyph background quads of this line.
@@ -1511,16 +1577,19 @@ mod tests {
                     len: 2,
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..2],
+                    gap: 0,
                 },
                 LineItem {
                     len: 4,
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..2, 2..4],
+                    gap: 0,
                 },
                 LineItem {
                     len: 1,
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..1],
+                    gap: 0,
                 },
             ],
             &(),
@@ -1682,11 +1751,13 @@ mod tests {
                     len: Rope::from("first line").len(),
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..10],
+                    gap: 0,
                 },
                 LineItem {
                     len: Rope::from("this one wraps").len(),
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..9, 9..14],
+                    gap: 0,
                 },
             ],
             &(),
@@ -1738,24 +1809,28 @@ mod tests {
                     len: Rope::from("Hello, 世界!\r").len(),
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..15],
+                    gap: 0,
                 },
                 // range: 16..36
                 LineItem {
                     len: Rope::from("This is second line.\n").len(),
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..10, 10..20],
+                    gap: 0,
                 },
                 // range: 37..56
                 LineItem {
                     len: Rope::from("This is third line.\n").len(),
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..9, 9..15, 15..20],
+                    gap: 0,
                 },
                 // range: 57..79
                 LineItem {
                     len: Rope::from("这里是第 4 行。").len(),
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..22],
+                    gap: 0,
                 },
             ],
             &(),

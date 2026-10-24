@@ -1,4 +1,9 @@
-use gpui::{App, Div, Entity, InteractiveElement as _, IntoElement, RenderOnce, Stateful, Window};
+use std::rc::Rc;
+
+use gpui::{
+    AnyElement, App, Context, Div, Entity, InteractiveElement as _, IntoElement, RenderOnce,
+    SharedString, Stateful, Window,
+};
 
 use super::{EditorMode, InputBaseState, InputModeKind};
 
@@ -211,6 +216,60 @@ impl EditorState {
     pub(crate) fn syntax_context_at(&self, offset: usize) -> super::SyntaxContext {
         self.mode.syntax_context_at(&self.text, offset)
     }
+
+    /// Replaces the blocks drawn between lines. Several under one line stack in the order
+    /// given. A block keeps the rows it measured while its `id` stays.
+    pub fn set_line_blocks(&mut self, blocks: Vec<LineBlock>, cx: &mut Context<Self>) {
+        let measured: std::collections::HashMap<&SharedString, usize> = self
+            .extras
+            .blocks
+            .iter()
+            .zip(self.display_map.gaps())
+            .map(|(block, gap)| (&block.id, gap.1))
+            .collect();
+        let gaps = blocks
+            .iter()
+            .map(|b| (b.line, measured.get(&b.id).copied().unwrap_or(b.rows).max(1)))
+            .collect();
+        self.display_map.set_gaps(gaps);
+        self.extras.blocks = blocks;
+        cx.notify();
+    }
+
+    /// The blocks drawn between lines, in the order they were set.
+    pub fn line_blocks(&self) -> &[LineBlock] {
+        &self.extras.blocks
+    }
+}
+
+/// Something of the host's drawn between two lines of a code editor (a note, a comment): under
+/// buffer line `line` (0-based), as wide as the text and in whole rows of the line height, so
+/// scrolling, the gutter and folds work in rows as before. The caret steps over it, a fold
+/// over its line hides it, and it follows its line through edits.
+#[derive(Clone)]
+pub struct LineBlock {
+    /// Stable across updates: the rows it measured are kept under it.
+    pub id: SharedString,
+    pub line: usize,
+    /// Its height in rows until it's laid out, then what its content measures.
+    pub rows: usize,
+    pub render: Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>,
+}
+
+impl LineBlock {
+    pub fn new(
+        id: impl Into<SharedString>,
+        line: usize,
+        rows: usize,
+        render: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            line,
+            rows,
+            render: Rc::new(render),
+        }
+    }
 }
 
 /// An unstyled source-code editor.
@@ -268,6 +327,10 @@ impl crate::input::InputExtras for super::EditorExtras {
 
     fn inline_completion_item(&self) -> Option<&lsp_types::InlineCompletionItem> {
         self.inline_completion.item.as_ref()
+    }
+
+    fn line_blocks(&self) -> &[LineBlock] {
+        &self.blocks
     }
 
     fn context_menu_capabilities(&self) -> (bool, bool) {

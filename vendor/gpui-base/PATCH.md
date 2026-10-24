@@ -1,10 +1,16 @@
 # gpui-base 0.8.0, patched
 
-The crates.io release of gpui-base 0.8.0, byte for byte, except `src/text/inline.rs` (the diff
-below) and this file. Wired in through `[patch.crates-io]` in the workspace Cargo.toml (and
-excluded from the workspace). Drop it once an upstream release sweeps the table itself.
+The crates.io release of gpui-base 0.8.0, byte for byte, except two changes and this file:
+1. `src/text/inline.rs`: closed markdown documents' shaped text is swept (below). Drop it once
+   an upstream release sweeps the table itself.
+2. Line blocks in the code editor (the second half of this file). Drop it once upstream has
+   blocks between lines.
 
-## Why
+Wired in through `[patch.crates-io]` in the workspace Cargo.toml (and excluded from the
+workspace). The whole patch: `diff -ru ~/.cargo/registry/src/index.crates.io-*/gpui-base-0.8.0
+vendor/gpui-base`.
+
+## 1. Retained layouts: why
 
 `RETAINED_LAYOUTS` (upstream `src/text/inline.rs`, lines 277-283 and `retain_layout` at 309-318)
 hands each painted paragraph's shaped `StyledText` from one frame to the next, keyed by its
@@ -14,14 +20,14 @@ paragraphs stayed until thousands more had come and gone. Now the table is swept
 doubled since the last sweep, and never below 64 entries: dead entries never outnumber live ones
 by much, at an amortized constant cost per insert.
 
-## Measured
+## 1. Measured
 
 - crates/markdown/examples/cycles.rs (`MD=prose MallocLargeCache=0`, a different document
   opened, drawn off screen and closed 300 times): unpatched 40 → 57 MB, patched 40 → 42 MB flat.
 - crates/markdown `leak_tests::closed_documents_leave_no_shaped_text_behind` (120 documents,
   bytes still allocated): unpatched 12.2 MB (fails), patched 53 KB.
 
-## The change
+## 1. The change
 
 ```diff
 --- a/src/text/inline.rs
@@ -58,3 +64,33 @@ by much, at an amortized constant cost per insert.
          layouts.insert(state_key(state), retained);
      });
 ```
+
+## 2. Line blocks: why
+
+Review notes on a file's own view sit between its lines (the old app used Monaco's view zones).
+The editor had no way to leave room between lines, and everything in it (visible rows, scroll
+height, scrollbar, caret moves, hit tests, line numbers, folds) assumes rows of one height.
+
+## 2. The change
+
+A block takes whole rows: `gap` empty wrap rows under a buffer line, so every row computation
+keeps working and only the places that walk a line's rows learn about the gap.
+
+- `EditorState::set_line_blocks(Vec<LineBlock>)` (`src/input/editor/mod.rs`): `LineBlock { id,
+  line, rows, render }`, exported as `gpui_base::input::LineBlock`. A block keeps the rows it
+  measured while its id stays. `DisplayMap::gaps()` / `gap_rows(line)` read them back.
+- `text_wrapper.rs`: `LineItem.gap`, counted in the summary's wrap rows and a line's row range;
+  `TextWrapper::set_gaps`; `_update` moves gaps with their lines (past an edit by its line delta,
+  inside it to its end; a whole-text replacement or re-wrap keeps them). `LineLayout.gap_rows`
+  is in its `size()`.
+- `display_map.rs` / `wrap_map.rs`: `set_gaps`, `gaps`, `gap_rows`, `is_gap_display_row`.
+- `element.rs`: lines get their gap rows; line numbers, the active line, fold icons and range
+  frames skip the gap; `prepaint_blocks` lays each visible block out at the text's width (its
+  height measured, rounded up to rows), centred in its rows, fixed sideways, clipped to the
+  input, `block_mouse_except_scroll` so clicks stay in it and the wheel still scrolls. A block
+  measuring other rows is resized after paint (the next frame has it).
+- `movement.rs`: ↑/↓, page and add-cursor moves step over gap rows. `indent.rs`: guides skip it.
+- `kind.rs`: `EditorExtras.blocks`, `InputExtras::line_blocks`. `input/mod.rs`: the export.
+
+Tested from crates/files (`tests::blocks_between_lines_take_rows_the_caret_steps_over`: rows,
+placement, caret, clicks, edits, reload, leaks) and seen in a snapshot of the files demo.
