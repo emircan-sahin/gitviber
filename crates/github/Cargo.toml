@@ -23,7 +23,7 @@ serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
 # NFKD for an issue's branch name (logic/issue_work.rs); already in the tree through url's idna.
-icu_normalizer = { version = "=2.4.0", default-features = false, features = ["compiled_data"] }
+icu_normalizer = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
 
 [[example]]
 name = "github-demo"
