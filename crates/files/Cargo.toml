@@ -21,6 +21,8 @@ gitviber-diff = { path = "../diff" }
 image = { version = "=0.25.10", default-features = false }
 # Already in the tree through gpui-component's editor: Go to Definition's locations.
 lsp-types = "=0.97.0"
+# Already in the tree through gpui, with these features: an SVG root's attributes (svg.rs).
+regex = "=1.13.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # PDFs, audio and video in PDFKit's and AVKit's own views beside the window's (native_media.rs).

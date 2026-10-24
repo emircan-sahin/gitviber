@@ -339,3 +339,222 @@ fn blame_names_each_lines_commit_and_new_lines(cx: &mut TestAppContext) {
     );
     _ = std::fs::remove_dir_all(&repo);
 }
+
+#[gpui_kit::test]
+fn find_in_the_rendered_markdown_preview(cx: &mut TestAppContext) {
+    setup(cx);
+    let repo = std::env::temp_dir().join(format!("gitviber-files-mdfind-{}", std::process::id()));
+    _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(
+        repo.join("README.md"),
+        "# Foo\n\nfoo and **foo**, then a food.\n",
+    )
+    .unwrap();
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    cx.update(gitviber_ui::install_core);
+    let (host, cx) = cx.add_window_view(|_, cx| WsHost(cx.new(Workspace::new)));
+    let ws = host.read_with(cx, |h, _| h.0.clone());
+    cx.update(|window, cx| {
+        Workspace::register_window(&ws, window, cx);
+        ws.update(cx, |ws, cx| ws.open_project(repo.clone(), window, cx));
+    });
+    cx.run_until_parked();
+    let weak = ws.downgrade();
+    cx.update(|window, cx| {
+        crate::open_file(
+            &weak,
+            "README.md",
+            crate::OpenOptions::default(),
+            window,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    let file = cx.update(|_, cx| {
+        let view = ws
+            .read(cx)
+            .tabs()
+            .active()
+            .and_then(|t| t.item.handle())
+            .unwrap()
+            .view();
+        view.downcast::<crate::FileView>().unwrap()
+    });
+    cx.update(|window, cx| file.update(cx, |f, cx| f.open_find(window, cx)));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    // Typed into the box (focused by open_find): the heading, the plain and the bold one, and
+    // "food"'s start; the first is current.
+    cx.simulate_input("foo");
+    cx.run_until_parked();
+    assert_eq!(
+        file.read_with(cx, |f, cx| f.preview_find(cx)),
+        Some((Some(0), 4))
+    );
+    // ↵ steps on, and the key isn't typed into the box (which would start over at the first).
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(
+        file.read_with(cx, |f, cx| f.preview_find(cx)),
+        Some((Some(1), 4))
+    );
+    cx.simulate_keystrokes("shift-enter");
+    cx.run_until_parked();
+    assert_eq!(
+        file.read_with(cx, |f, cx| f.preview_find(cx)),
+        Some((Some(0), 4))
+    );
+    // ⌥⌘C: Match Case, found again from the first ("Foo" in the heading drops out).
+    let flip = if cfg!(target_os = "macos") {
+        "alt-cmd-c"
+    } else {
+        "alt-c"
+    };
+    cx.simulate_keystrokes(flip);
+    cx.run_until_parked();
+    assert_eq!(
+        file.read_with(cx, |f, cx| f.preview_find(cx)),
+        Some((Some(0), 3))
+    );
+    // The file changes on disk: the count follows.
+    std::fs::write(repo.join("README.md"), "Just one foo.\n").unwrap();
+    cx.update(|window, cx| file.update(cx, |f, cx| f.load(window, cx)));
+    cx.run_until_parked();
+    assert_eq!(
+        file.read_with(cx, |f, cx| f.preview_find(cx)),
+        Some((Some(0), 1))
+    );
+    cx.update(|window, cx| file.update(cx, |f, cx| f.close_find(window, cx)));
+    assert_eq!(file.read_with(cx, |f, cx| f.preview_find(cx)), None);
+    // ⌘F again: the last query, found again.
+    cx.update(|window, cx| file.update(cx, |f, cx| f.open_find(window, cx)));
+    assert_eq!(
+        file.read_with(cx, |f, cx| f.preview_find(cx)),
+        Some((Some(0), 1))
+    );
+    _ = std::fs::remove_dir_all(&repo);
+}
+
+/// The workspace's active tab and a panel, side by side.
+struct PanelHost(gpui_kit::Entity<Workspace>, Option<AnyView>);
+
+impl Render for PanelHost {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let tab = self
+            .0
+            .read(cx)
+            .tabs()
+            .active()
+            .and_then(|t| t.item.handle())
+            .map(|h| h.view());
+        div()
+            .size_full()
+            .flex()
+            .children(self.1.clone().map(|p| div().w_1_2().h_full().child(p)))
+            .children(tab.map(|t| div().w_1_2().h_full().child(t)))
+    }
+}
+
+#[gpui_kit::test]
+fn search_panel_keys_move_through_results_and_back(cx: &mut TestAppContext) {
+    setup(cx);
+    let repo =
+        std::env::temp_dir().join(format!("gitviber-files-searchkeys-{}", std::process::id()));
+    _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("a.txt"), "foo one\nbar\nfoo two\n").unwrap();
+    std::fs::write(repo.join("b.txt"), "foo three\n").unwrap();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-qm",
+        "init",
+    ]);
+    cx.update(gitviber_ui::install_core);
+    let (host, cx) = cx.add_window_view(|_, cx| PanelHost(cx.new(Workspace::new), None));
+    let ws = host.read_with(cx, |h, _| h.0.clone());
+    cx.update(|window, cx| {
+        Workspace::register_window(&ws, window, cx);
+        ws.update(cx, |ws, cx| ws.open_project(repo.clone(), window, cx));
+    });
+    cx.run_until_parked();
+    let panel = cx
+        .update(|window, cx| ws.update(cx, |ws, cx| ws.panel(crate::search::PANEL_ID, window, cx)))
+        .unwrap()
+        .view();
+    host.update(cx, |h, cx| {
+        h.1 = Some(panel.clone());
+        cx.notify();
+    });
+    let panel = panel.downcast::<crate::SearchPanel>().unwrap();
+    cx.update(|window, cx| panel.update(cx, |p, cx| p.ask(Some("foo".into()), window, cx)));
+    cx.run_until_parked();
+    let draw = |cx: &mut gpui_kit::VisualTestContext| {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    };
+    draw(cx);
+    let keys = |cx: &mut gpui_kit::VisualTestContext| panel.read_with(cx, |p, _| p.keyboard());
+    // a.txt, its two matches, b.txt, its one.
+    assert_eq!(keys(cx), (None, 5, false));
+    cx.simulate_keystrokes("down");
+    draw(cx);
+    assert_eq!(keys(cx), (Some(0), 5, false));
+    // Landing on a match previews it.
+    cx.simulate_keystrokes("down");
+    draw(cx);
+    assert_eq!(keys(cx), (Some(1), 5, false));
+    assert_eq!(cx.update(|_, cx| ws.read(cx).tabs().len()), 1);
+    cx.simulate_keystrokes("left");
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_eq!(keys(cx), (Some(0), 3, false));
+    cx.simulate_keystrokes("end");
+    assert_eq!(keys(cx), (Some(2), 3, false));
+    // Back in the box: ⌥⌘C flips Match Case, Esc clears, then goes back to the Explorer.
+    cx.update(|window, cx| panel.update(cx, |p, cx| p.ask(None, window, cx)));
+    draw(cx);
+    let flip = if cfg!(target_os = "macos") {
+        "alt-cmd-c"
+    } else {
+        "alt-c"
+    };
+    cx.simulate_keystrokes(flip);
+    draw(cx);
+    assert!(keys(cx).2);
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    assert_eq!(keys(cx).1, 0);
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    let explorer = cx
+        .update(|window, cx| {
+            ws.update(cx, |ws, cx| ws.panel(crate::explorer::PANEL_ID, window, cx))
+        })
+        .unwrap();
+    let focused = cx.update(|window, cx| {
+        explorer
+            .focus_handle(cx)
+            .is_some_and(|f| f.is_focused(window))
+    });
+    assert!(focused);
+    _ = std::fs::remove_dir_all(&repo);
+}

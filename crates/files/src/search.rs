@@ -8,20 +8,21 @@ use std::time::Duration;
 
 use gitviber_core::grep::{self, Found, Query};
 use gitviber_core::{Core, api};
+use gitviber_markdown::FindQuery;
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::FileIcon;
 use gitviber_ui::workspace::{Panel, PanelContext, Workspace};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Enter, Input, InputEvent, InputState};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, Focusable as _,
-    HighlightStyle, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, StyledText, Subscription, Task,
-    UniformListScrollHandle, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
-    uniform_list,
+    HighlightStyle, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
+    ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _, StyledText,
+    Subscription, Task, UniformListScrollHandle, WeakEntity, Window, div,
+    prelude::FluentBuilder as _, px, uniform_list,
 };
 
 use crate::backend;
@@ -29,6 +30,7 @@ use crate::{OpenOptions, Reveal, open_file};
 
 pub const PANEL_ID: &str = "search";
 const DEBOUNCE: Duration = Duration::from_millis(250);
+const ROW_HEIGHT: f32 = 24.;
 
 #[derive(Clone, Copy)]
 enum Item {
@@ -56,8 +58,11 @@ pub struct SearchPanel {
     collapsed: HashSet<usize>,
     items: Vec<Item>,
     picked: Option<(usize, usize)>,
+    /// The keyboard's row in `items`, while the results have focus.
+    cursor: Option<usize>,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
+    list_focus: FocusHandle,
     _search: Task<()>,
     _subs: Vec<Subscription>,
     _live: Live,
@@ -77,10 +82,10 @@ impl SearchPanel {
         let mut subs = Vec::new();
         for state in [&input, &include, &exclude] {
             subs.push(
-                cx.subscribe_in(state, window, |this, _, e: &InputEvent, _, cx| match e {
-                    InputEvent::Change => this.schedule(DEBOUNCE, cx),
-                    InputEvent::PressEnter { .. } => this.schedule(Duration::ZERO, cx),
-                    _ => {}
+                cx.subscribe_in(state, window, |this, _, e: &InputEvent, _, cx| {
+                    if matches!(e, InputEvent::Change) {
+                        this.schedule(DEBOUNCE, cx)
+                    }
                 }),
             );
         }
@@ -102,8 +107,10 @@ impl SearchPanel {
             collapsed: HashSet::new(),
             items: Vec::new(),
             picked: None,
+            cursor: None,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
+            list_focus: cx.focus_handle(),
             _search: Task::ready(()),
             _subs: subs,
             _live: Live::new("SearchPanel"),
@@ -189,6 +196,7 @@ impl SearchPanel {
                 }
                 this.pending = false;
                 this.picked = None;
+                this.cursor = None;
                 this.rebuild();
                 cx.notify();
             });
@@ -220,6 +228,7 @@ impl SearchPanel {
         f: usize,
         h: usize,
         pin: bool,
+        focus: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -241,11 +250,130 @@ impl SearchPanel {
             OpenOptions {
                 preview: !pin,
                 reveal: Some(reveal),
-                focus: false,
+                focus,
             },
             window,
             cx,
         );
+        cx.notify();
+    }
+
+    /// The keyboard's row, how many rows, and Match Case.
+    #[cfg(test)]
+    pub(crate) fn keyboard(&self) -> (Option<usize>, usize, bool) {
+        (self.cursor, self.items.len(), self.match_case)
+    }
+
+    /// The box's keys: ⌥⌘C/W/R flip a toggle, ↓ goes to the results, Esc clears the query, then
+    /// goes back to the Explorer.
+    fn on_box_key(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let ks = &e.keystroke;
+        let mut q = FindQuery {
+            text: String::new(),
+            match_case: self.match_case,
+            whole_word: self.whole_word,
+            regex: self.regex,
+        };
+        if q.flip_on_key(ks) {
+            cx.stop_propagation();
+            (self.match_case, self.whole_word, self.regex) = (q.match_case, q.whole_word, q.regex);
+            return self.schedule(Duration::ZERO, cx);
+        }
+        let m = &ks.modifiers;
+        if m.alt || m.platform || m.control || m.shift {
+            return;
+        }
+        match ks.key.as_str() {
+            "down" if !self.items.is_empty() => {
+                let picked = self.picked.and_then(|(f, h)| {
+                    self.items
+                        .iter()
+                        .position(|i| matches!(i, Item::Hit(a, b) if (*a, *b) == (f, h)))
+                });
+                self.cursor = Some(self.cursor.or(picked).unwrap_or(0));
+                self.list_focus.focus(window, cx);
+                cx.notify();
+            }
+            "escape" if !self.input.read(cx).value().is_empty() => {
+                self.input.update(cx, |s, cx| s.set_value("", window, cx));
+                self.schedule(Duration::ZERO, cx);
+            }
+            "escape" => self.leave(window, cx),
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
+
+    /// Back to the Explorer, focused.
+    fn leave(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ws) = self.workspace.upgrade() else {
+            return;
+        };
+        ws.update(cx, |ws, cx| ws.show_panel(crate::explorer::PANEL_ID, cx));
+        let panel = Workspace::ensure_panel(&ws, crate::explorer::PANEL_ID, window, cx);
+        if let Some(focus) = panel.and_then(|p| p.focus_handle(cx)) {
+            focus.focus(window, cx);
+        }
+    }
+
+    /// The results' keys, as the sidebar lists have them: ↑/↓, Home/End and PgUp/PgDn move
+    /// (landing on a match previews it), ↵ keeps a match's tab, Space previews it, both open or
+    /// close a file; → opens a file or goes into the match's code, ← closes it or goes up to it.
+    fn on_list_key(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let ks = &e.keystroke;
+        let m = &ks.modifiers;
+        if m.alt || m.platform || m.control || m.shift || self.items.is_empty() {
+            return;
+        }
+        let n = self.items.len();
+        let i = self.cursor.filter(|c| *c < n).unwrap_or(0);
+        let height = f32::from(self.scroll.0.borrow().base_handle.bounds().size.height);
+        let page = ((height / ROW_HEIGHT) as usize).saturating_sub(1).max(1);
+        let to = match ks.key.as_str() {
+            "down" => Some((i + 1).min(n - 1)),
+            "up" => Some(i.saturating_sub(1)),
+            "home" => Some(0),
+            "end" => Some(n - 1),
+            "pagedown" => Some((i + page).min(n - 1)),
+            "pageup" => Some(i.saturating_sub(page)),
+            _ => None,
+        };
+        if let Some(to) = to {
+            cx.stop_propagation();
+            return self.land(to, window, cx);
+        }
+        self.cursor = Some(i);
+        match (ks.key.as_str(), self.items[i]) {
+            ("enter" | "space", Item::File(f)) => self.toggle_file(f, cx),
+            ("enter", Item::Hit(f, h)) => self.open_hit(f, h, true, false, window, cx),
+            ("space", Item::Hit(f, h)) => self.open_hit(f, h, false, false, window, cx),
+            ("right", Item::File(f)) if self.collapsed.contains(&f) => self.toggle_file(f, cx),
+            ("right", Item::File(_)) if i + 1 < n => self.land(i + 1, window, cx),
+            ("right", Item::Hit(f, h)) => self.open_hit(f, h, false, true, window, cx),
+            ("left", Item::File(f)) if !self.collapsed.contains(&f) => self.toggle_file(f, cx),
+            ("left", Item::Hit(f, _)) => {
+                if let Some(up) = self
+                    .items
+                    .iter()
+                    .position(|it| matches!(it, Item::File(g) if *g == f))
+                {
+                    self.land(up, window, cx);
+                }
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
+
+    /// The keyboard's row moves to `ix`, scrolled to; a match there is previewed.
+    fn land(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.cursor = Some(ix);
+        self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
+        if let Some(Item::Hit(f, h)) = self.items.get(ix).copied()
+            && self.picked != Some((f, h))
+        {
+            self.open_hit(f, h, false, false, window, cx);
+        }
         cx.notify();
     }
 
@@ -276,7 +404,7 @@ impl SearchPanel {
             }))
     }
 
-    fn render_item(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn render_item(&self, ix: usize, keyboard: bool, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.app_theme();
         let Some(found) = &self.found else {
             return div().into_any_element();
@@ -296,6 +424,7 @@ impl SearchPanel {
                     .text_size(px(12.))
                     .cursor_pointer()
                     .hover(|s| s.bg(t.hover))
+                    .when(keyboard, |d| d.bg(t.hover))
                     .child(
                         Icon::new(if open {
                             IconName::ChevronDown
@@ -332,7 +461,10 @@ impl SearchPanel {
                             .text_color(t.muted_foreground)
                             .child(file.hits.len().to_string()),
                     )
-                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_file(f, cx)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.cursor = Some(ix);
+                        this.toggle_file(f, cx)
+                    }))
                     .into_any_element()
             }
             Item::Hit(f, h) => {
@@ -363,6 +495,7 @@ impl SearchPanel {
                         d.bg(t.primary.opacity(0.15))
                     })
                     .hover(|s| s.bg(t.hover))
+                    .when(keyboard, |d| d.bg(t.hover))
                     .child(
                         div()
                             .w(px(28.))
@@ -383,7 +516,8 @@ impl SearchPanel {
                             .child(styled),
                     )
                     .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-                        this.open_hit(f, h, e.click_count() >= 2, window, cx)
+                        this.cursor = Some(ix);
+                        this.open_hit(f, h, e.click_count() >= 2, false, window, cx)
                     }))
                     .into_any_element()
             }
@@ -488,6 +622,12 @@ impl Render for SearchPanel {
             .text_color(t.foreground)
             .child(
                 div()
+                    .capture_key_down(cx.listener(Self::on_box_key))
+                    // ↵ searches now. Taken here, not as the Input's PressEnter: a one-line Input
+                    // lets the key go on to be typed, and that Change would wait out the pause.
+                    .on_action(
+                        cx.listener(|this, _: &Enter, _, cx| this.schedule(Duration::ZERO, cx)),
+                    )
                     .flex_none()
                     .p_2()
                     .gap(px(6.))
@@ -636,15 +776,29 @@ impl Render for SearchPanel {
                 )
             })
             .child(
-                uniform_list(
-                    "search-results",
-                    count,
-                    cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                        range.map(|ix| this.render_item(ix, cx)).collect::<Vec<_>>()
-                    }),
-                )
-                .track_scroll(&self.scroll)
-                .flex_1(),
+                div()
+                    .id("search-results-box")
+                    .key_context("SearchResults")
+                    .track_focus(&self.list_focus)
+                    .on_key_down(cx.listener(Self::on_list_key))
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        uniform_list(
+                            "search-results",
+                            count,
+                            cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
+                                let at = this.cursor.filter(|_| this.list_focus.is_focused(window));
+                                range
+                                    .map(|ix| this.render_item(ix, at == Some(ix), cx))
+                                    .collect::<Vec<_>>()
+                            }),
+                        )
+                        .track_scroll(&self.scroll)
+                        .flex_1(),
+                    ),
             )
             .children(footer.map(|text| {
                 div()

@@ -18,6 +18,7 @@ pub mod media;
 pub mod native_media;
 mod quick_open;
 pub mod search;
+mod svg;
 pub mod text;
 
 use std::sync::Arc;
@@ -25,7 +26,8 @@ use std::sync::Arc;
 use gitviber_core::git::FileChange;
 use gitviber_core::grep::Query;
 use gitviber_ui::workspace::{
-    PanelSpec, Selection, Slot, TabHandle, Workspace, register_opener, register_panel,
+    BarItem, BarSlot, PanelContext, PanelSpec, Selection, Slot, TabHandle, Workspace,
+    register_bar_item, register_opener, register_panel,
 };
 use gpui_kit::{App, AppContext as _, SharedString, WeakEntity, Window};
 
@@ -83,6 +85,40 @@ pub fn init(cx: &mut App) {
     register_opener(cx, "files", open_selection);
     quick_open::register(cx);
     global_commands(cx);
+    register_bar_item(
+        cx,
+        BarItem::new("language", BarSlot::StatusRight, language_item),
+    );
+    // A diff's Go to Definition into another file, and its preview's file links, land on the line.
+    gitviber_diff::set_file_opener(cx, |path, at, window, cx| {
+        let Some(ws) = Workspace::for_window(window, cx) else {
+            return;
+        };
+        let options = OpenOptions {
+            preview: false,
+            reveal: at.map(|(line, column)| Reveal::Line { line, column }),
+            focus: true,
+        };
+        open_file(&ws.downgrade(), path, options, window, cx);
+    });
+}
+
+/// The status bar's name of the active file's language, while its code shows.
+fn language_item(ctx: &PanelContext, _: &mut Window, cx: &mut App) -> Option<gpui_kit::AnyElement> {
+    use gpui_kit::{IntoElement as _, ParentElement as _, Styled as _};
+    let ws = ctx.workspace.upgrade()?;
+    let view = ws.read(cx).tabs().active()?.item.handle()?.view();
+    let lang = view
+        .downcast::<FileView>()
+        .ok()?
+        .read(cx)
+        .shown_language(cx)?;
+    Some(
+        gpui_kit::div()
+            .px(gpui_kit::px(6.))
+            .child(language::language_label(lang).to_string())
+            .into_any_element(),
+    )
 }
 
 /// `f` in the active window with its workspace, after the action that asked for it is done

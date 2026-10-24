@@ -2323,6 +2323,9 @@ version = "0.1.17"
 dependencies = [
  "gitviber-core",
  "gitviber-diff",
+ "gitviber-files",
+ "gitviber-history",
+ "gitviber-refs",
  "gitviber-review",
  "gitviber-terminal",
  "gitviber-ui",
@@ -2362,6 +2365,8 @@ version = "0.1.17"
 dependencies = [
  "futures",
  "gitviber-core",
+ "gitviber-markdown",
+ "gitviber-ui",
  "gpui-kit",
  "gpui-pre",
 ]
@@ -2382,6 +2387,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "raw-window-handle",
+ "regex",
 ]
 
 [[package]]
@@ -2440,6 +2446,7 @@ dependencies = [
  "ratex-render",
  "ratex-types",
  "ratex-unicode-font",
+ "regex",
 ]
 
 [[package]]
@@ -2475,6 +2482,7 @@ version = "0.1.17"
 dependencies = [
  "gitviber-core",
  "gitviber-diff",
+ "gitviber-markdown",
  "gitviber-refs",
  "gitviber-terminal",
  "gitviber-ui",

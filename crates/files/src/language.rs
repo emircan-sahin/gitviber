@@ -151,6 +151,48 @@ pub fn language_for(path: &str, text: Option<&str>) -> &'static str {
         .unwrap_or("text")
 }
 
+/// A language's name for people (the status bar): "Rust", "Plain Text".
+pub fn language_label(lang: &str) -> &str {
+    match lang {
+        "text" => "Plain Text",
+        "astro" => "Astro",
+        "bash" => "Shell",
+        "c" => "C",
+        "cmake" => "CMake",
+        "cpp" => "C++",
+        "csharp" => "C#",
+        "css" => "CSS",
+        "diff" => "Diff",
+        "ejs" => "EJS",
+        "elixir" => "Elixir",
+        "erb" => "ERB",
+        "go" => "Go",
+        "graphql" => "GraphQL",
+        "html" => "HTML",
+        "java" => "Java",
+        "javascript" => "JavaScript",
+        "json" => "JSON",
+        "kotlin" => "Kotlin",
+        "lua" => "Lua",
+        "make" => "Makefile",
+        "markdown" => "Markdown",
+        "php" => "PHP",
+        "proto" => "Protocol Buffers",
+        "python" => "Python",
+        "ruby" => "Ruby",
+        "rust" => "Rust",
+        "scala" => "Scala",
+        "svelte" => "Svelte",
+        "swift" => "Swift",
+        "toml" => "TOML",
+        "tsx" => "TSX",
+        "typescript" => "TypeScript",
+        "yaml" => "YAML",
+        "zig" => "Zig",
+        other => other,
+    }
+}
+
 /// Code fence words that aren't a grammar's own name, so ```js and ```sh color too.
 const FENCE_ALIASES: &[(&str, &str)] = &[
     ("js", "javascript"),
@@ -216,5 +258,7 @@ mod tests {
         assert_eq!(language_for("bin/run", Some("#!/bin/zsh\n")), "bash");
         assert_eq!(language_for("README", Some("hello")), "text");
         assert_eq!(language_for("notes.unknown", None), "text");
+        assert_eq!(language_label(language_for("a.tsx", None)), "TSX");
+        assert_eq!(language_label("text"), "Plain Text");
     }
 }

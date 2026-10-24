@@ -8,9 +8,12 @@ use std::sync::Arc;
 
 use gitviber_core::git::{DiffPair, FileText};
 use gitviber_core::{Core, api};
-use gitviber_markdown::{MarkdownBase, MarkdownEvent, MarkdownView, is_markdown};
+use gitviber_markdown::{
+    FindBar, FindBarEvent, FindChanged, FindQuery, MarkdownBase, MarkdownEvent, MarkdownView,
+    is_markdown,
+};
 use gitviber_ui::ActiveAppTheme as _;
-use gitviber_ui::keymap::file;
+use gitviber_ui::keymap::{editor, file};
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{
     Project, ProjectEvent, Selection, TabIcon, TabItem, Toast, Workspace,
@@ -19,12 +22,13 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, StyledImage as _, Subscription, Task,
-    WeakEntity, Window, div, prelude::FluentBuilder as _, px,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, WeakEntity, Window,
+    div, prelude::FluentBuilder as _, px,
 };
 
 use crate::code::{CodeEvent, CodeSource, CodeView};
 use crate::media::{MediaKind, MediaView, media_kind};
+use crate::svg::SvgPreview;
 use crate::text::{self, Bar};
 use crate::{OpenOptions, Reveal, backend, open_file};
 
@@ -61,6 +65,7 @@ enum Content {
     Text {
         code: Entity<CodeView>,
         preview: Option<Entity<MarkdownView>>,
+        svg: Option<Entity<SvgPreview>>,
         _subs: Vec<Subscription>,
     },
 }
@@ -80,10 +85,18 @@ pub struct FileView {
     changed: bool,
     /// Its Git LFS object isn't here: the notice offers to download it.
     lfs: bool,
+    /// ⌘F's box over the rendered preview, made the first time; its query stays for the next.
+    find: Option<PreviewFind>,
+    find_open: bool,
     focus: FocusHandle,
     _load: Task<()>,
     _subs: Vec<Subscription>,
     _live: Live,
+}
+
+struct PreviewFind {
+    bar: Entity<FindBar>,
+    _sub: Subscription,
 }
 
 /// What reading the file found.
@@ -125,6 +138,8 @@ impl FileView {
             mtime: None,
             changed: false,
             lfs: false,
+            find: None,
+            find_open: false,
             focus: cx.focus_handle(),
             _load: Task::ready(()),
             _subs: Vec::new(),
@@ -164,6 +179,15 @@ impl FileView {
         }
     }
 
+    /// The language of the code on screen, for the status bar; None while a preview, media or
+    /// a notice shows.
+    pub fn shown_language(&self, cx: &App) -> Option<&'static str> {
+        match &self.content {
+            Content::Text { code, .. } if self.mode == Mode::Code => Some(code.read(cx).language()),
+            _ => None,
+        }
+    }
+
     pub fn source(&self) -> &FileSource {
         &self.source
     }
@@ -186,8 +210,29 @@ impl FileView {
             self.set_mode(Mode::Code, window, cx);
         }
         match &self.content {
-            Content::Text { code, .. } => code.update(cx, |c, cx| c.reveal(reveal, window, cx)),
+            Content::Text { code, .. } => {
+                let code = code.clone();
+                self.reveal_in(&code, reveal, window, cx)
+            }
             _ => self.reveal = Some(reveal),
+        }
+    }
+
+    /// Reveals in the code, which focuses the editor: focus outside this tab (the Search
+    /// panel's results, stepped through) goes back where it was.
+    fn reveal_in(
+        &self,
+        code: &Entity<CodeView>,
+        reveal: Reveal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let before = window
+            .focused(cx)
+            .filter(|f| *f != self.focus && !self.focus.contains(f, window));
+        code.update(cx, |c, cx| c.reveal(reveal, window, cx));
+        if let Some(before) = before {
+            before.focus(window, cx);
         }
     }
 
@@ -392,10 +437,16 @@ impl FileView {
         let readonly = !matches!(self.source, FileSource::Repo(_))
             || file.lossy
             || !text::keeps_line_endings(&file.text);
-        if let Content::Text { code, preview, .. } = &self.content {
-            let (code, preview) = (code.clone(), preview.clone());
+        if let Content::Text {
+            code, preview, svg, ..
+        } = &self.content
+        {
+            let (code, preview, svg) = (code.clone(), preview.clone(), svg.clone());
             if let Some(preview) = &preview {
                 preview.update(cx, |p, cx| p.set_source(&file.text, cx));
+            }
+            if let Some(svg) = &svg {
+                svg.update(cx, |p, cx| p.set_source(&file.text, cx));
             }
             code.update(cx, |c, cx| {
                 c.file_changed(file.text, head, bars, window, cx)
@@ -415,11 +466,12 @@ impl FileView {
         self.content = Content::Text {
             code: code.clone(),
             preview: None,
+            svg: None,
             _subs: vec![sub],
         };
         if let Some(reveal) = self.reveal.take() {
             self.mode = Mode::Code;
-            code.update(cx, |c, cx| c.reveal(reveal, window, cx));
+            self.reveal_in(&code, reveal, window, cx);
         }
         if self.mode == Mode::Preview {
             self.build_preview(window, cx);
@@ -431,11 +483,18 @@ impl FileView {
         let Content::Text {
             code,
             preview,
+            svg,
             _subs,
         } = &mut self.content
         else {
             return;
         };
+        // From the code's text: typing not saved yet shows.
+        if svg.is_none() && self.source.path().to_ascii_lowercase().ends_with(".svg") {
+            let text = code.read(cx).text(cx).to_string();
+            *svg = Some(cx.new(|cx| SvgPreview::new(&text, cx)));
+            return;
+        }
         if preview.is_some() || !is_markdown(self.source.path()) {
             return;
         }
@@ -466,7 +525,96 @@ impl FileView {
                 }
             },
         ));
+        // The file changed on disk: the find's count follows.
+        _subs.push(cx.subscribe(&view, |this, _, _: &FindChanged, cx| this.show_found(cx)));
         *preview = Some(view);
+    }
+
+    fn shown_preview(&self) -> Option<Entity<MarkdownView>> {
+        match &self.content {
+            Content::Text {
+                preview: Some(p), ..
+            } if self.mode == Mode::Preview => Some(p.clone()),
+            _ => None,
+        }
+    }
+
+    /// ⌘F on the rendered preview: the find box, focused with its text selected.
+    pub(crate) fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.shown_preview().is_none() {
+            return;
+        }
+        let find = self.find.get_or_insert_with(|| {
+            let bar = cx.new(|cx| FindBar::new(window, cx));
+            let sub = cx.subscribe_in(
+                &bar,
+                window,
+                |this, _, e: &FindBarEvent, window, cx| match e {
+                    FindBarEvent::Changed => this.find_again(cx),
+                    FindBarEvent::Step(dir) => {
+                        if let Some(preview) = this.shown_preview() {
+                            preview.update(cx, |p, cx| p.step_match(*dir, cx));
+                            this.show_found(cx);
+                        }
+                    }
+                    FindBarEvent::Close => this.close_find(window, cx),
+                },
+            );
+            PreviewFind { bar, _sub: sub }
+        });
+        let bar = find.bar.clone();
+        if !self.find_open {
+            self.find_open = true;
+            // The last query, marked again.
+            self.find_again(cx);
+        }
+        bar.update(cx, |b, cx| b.focus(window, cx));
+        cx.notify();
+    }
+
+    /// Runs the box's query on the preview, from its first match.
+    fn find_again(&mut self, cx: &mut Context<Self>) {
+        let (Some(f), Some(preview)) = (&self.find, self.shown_preview()) else {
+            return;
+        };
+        if !self.find_open {
+            return;
+        }
+        let query = f.bar.read(cx).query().clone();
+        let found = preview.update(cx, |p, cx| {
+            let found = p.find(&query, cx);
+            p.select_match(Some(0), true, cx);
+            found.map(|_| p.matches())
+        });
+        f.bar.update(cx, |b, cx| b.set_found(found, cx));
+    }
+
+    /// The box's count, from the preview (stepped, or its text changed).
+    fn show_found(&mut self, cx: &mut Context<Self>) {
+        if let (Some(f), Some(preview)) = (&self.find, self.shown_preview()) {
+            let found = Ok(preview.read(cx).matches());
+            f.bar.update(cx, |b, cx| b.set_found(found, cx));
+        }
+    }
+
+    /// The preview find's current match and count; None while its box is closed.
+    #[cfg(test)]
+    pub(crate) fn preview_find(&self, cx: &App) -> Option<(Option<usize>, usize)> {
+        self.find_open.then_some(())?;
+        Some(self.shown_preview()?.read(cx).matches())
+    }
+
+    pub(crate) fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.find_open) {
+            return;
+        }
+        if let Some(preview) = self.shown_preview() {
+            preview.update(cx, |p, cx| {
+                _ = p.find(&FindQuery::default(), cx);
+            });
+            gpui_kit::Focusable::focus_handle(preview.read(cx), cx).focus(window, cx);
+        }
+        cx.notify();
     }
 
     fn set_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
@@ -474,6 +622,8 @@ impl FileView {
             return;
         }
         self.mode = mode;
+        // The box searches the rendered copy, which goes or comes anew.
+        self.find_open = false;
         let lower = self.source.path().to_ascii_lowercase();
         gitviber_ui::Settings::update(cx, |s| {
             if lower.ends_with(".svg") {
@@ -486,8 +636,9 @@ impl FileView {
             Mode::Preview => self.build_preview(window, cx),
             // The rendered copy goes; the code keeps the text (and any typing).
             Mode::Code => {
-                if let Content::Text { preview, .. } = &mut self.content {
+                if let Content::Text { preview, svg, .. } = &mut self.content {
                     *preview = None;
+                    *svg = None;
                 }
             }
         }
@@ -630,6 +781,9 @@ impl TabItem for FileView {
             Content::Text {
                 preview: Some(p), ..
             } if self.mode == Mode::Preview => gpui_kit::Focusable::focus_handle(p.read(cx), cx),
+            Content::Text { svg: Some(s), .. } if self.mode == Mode::Preview => {
+                s.read(cx).focus_handle().clone()
+            }
             Content::Text { code, .. } => code.read(cx).editor_focus(cx),
             Content::Media(m) => m.read(cx).focus_handle().clone(),
             _ => self.focus.clone(),
@@ -640,8 +794,6 @@ impl TabItem for FileView {
 impl Render for FileView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.app_theme();
-        let svg_preview =
-            self.mode == Mode::Preview && self.source.path().to_ascii_lowercase().ends_with(".svg");
         let body =
             match &self.content {
                 Content::Loading => div().size_full().into_any_element(),
@@ -689,22 +841,8 @@ impl Render for FileView {
                 Content::Text {
                     preview: Some(p), ..
                 } if self.mode == Mode::Preview => p.clone().into_any_element(),
-                Content::Text { .. } if svg_preview => {
-                    let abs = self.abs_path();
-                    div()
-                        .size_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .p_4()
-                        .child(
-                            gpui_kit::img(abs)
-                                .max_w_full()
-                                .max_h_full()
-                                .size_full()
-                                .object_fit(gpui_kit::ObjectFit::ScaleDown),
-                        )
-                        .into_any_element()
+                Content::Text { svg: Some(s), .. } if self.mode == Mode::Preview => {
+                    s.clone().into_any_element()
                 }
                 Content::Text { code, .. } => code.clone().into_any_element(),
             };
@@ -738,7 +876,21 @@ impl Render for FileView {
                 })
                 .detach();
             }))
+            .on_action(cx.listener(|this, _: &editor::Find, window, cx| {
+                if this.shown_preview().is_some() {
+                    this.open_find(window, cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
             .child(self.header(cx))
-            .child(div().flex_1().min_h_0().child(body))
+            .child(
+                div().relative().flex_1().min_h_0().child(body).children(
+                    self.find
+                        .as_ref()
+                        .filter(|_| self.find_open && self.shown_preview().is_some())
+                        .map(|f| div().absolute().top_2().right_4().child(f.bar.clone())),
+                ),
+            )
     }
 }

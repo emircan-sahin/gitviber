@@ -71,6 +71,8 @@ pub struct CodeView {
     state: Entity<EditorState>,
     readonly: bool,
     crlf: bool,
+    /// The file's language, highlighted or not (the status bar names it).
+    lang: &'static str,
     /// HEAD's text, for the bars once the file is typed into; None: no bars (new, outside).
     head: Option<Arc<String>>,
     bars: Arc<Vec<Bar>>,
@@ -257,10 +259,11 @@ impl CodeView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let lang = crate::language::language_for(&source.path, Some(&text));
         let language = if text.len() > MAX_HIGHLIGHT_BYTES {
             "text"
         } else {
-            crate::language::language_for(&source.path, Some(&text))
+            lang
         };
         let crlf = text::uses_crlf(&text);
         // Past this the bars aren't worked out again, so HEAD's text isn't kept either.
@@ -363,6 +366,7 @@ impl CodeView {
             state,
             readonly,
             crlf,
+            lang,
             head: head.map(Arc::new),
             bars: Arc::new(bars),
             dirty: false,
@@ -482,6 +486,11 @@ impl CodeView {
 
     pub fn is_readonly(&self) -> bool {
         self.readonly
+    }
+
+    /// The file's language (a grammar's name; "text" for none).
+    pub fn language(&self) -> &'static str {
+        self.lang
     }
 
     pub fn editor_focus(&self, cx: &App) -> FocusHandle {

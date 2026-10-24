@@ -61,6 +61,14 @@ struct Filter {
 /// What a menu item does to the panel.
 type MenuAction = Rc<dyn Fn(&mut ExplorerPanel, &mut Window, &mut Context<ExplorerPanel>)>;
 
+fn menu_item(me: &WeakEntity<ExplorerPanel>, label: &str, f: MenuAction) -> PopupMenuItem {
+    let me = me.clone();
+    PopupMenuItem::new(label.to_string()).on_click(move |_, window, cx| {
+        let f = f.clone();
+        _ = me.update(cx, |this, cx| f(this, window, cx));
+    })
+}
+
 enum Editing {
     Rename { node: Node },
     New { parent: SharedString, is_dir: bool },
@@ -451,7 +459,7 @@ impl ExplorerPanel {
         let me = cx.weak_entity();
         window.defer(cx, move |window, cx| {
             let menu = PopupMenu::build(window, cx, |menu, window, pcx| match me.upgrade() {
-                Some(this) => this.update(pcx, |this, cx| this.menu(node, menu, window, cx)),
+                Some(this) => Self::build_menu(&this, node.clone(), menu, window, pcx),
                 None => menu,
             });
             gpui_kit::Focusable::focus_handle(menu.read(cx), cx).focus(window, cx);
@@ -1113,14 +1121,35 @@ impl ExplorerPanel {
         crate::compare_files(&self.workspace, left, right, window, cx);
     }
 
+    /// A row's menu (`node`), or the empty space's (None), built in the menu's own context:
+    /// Open in… makes a submenu of it.
+    fn build_menu(
+        this: &Entity<Self>,
+        node: Option<Node>,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        let (menu, open_in) = this.update(cx, |this, cx| this.menu(node.clone(), menu, cx));
+        let menu = match open_in {
+            Some(path) => gitviber_ui::open_in::menu_items(
+                menu,
+                move |_| gitviber_ui::open_in::OpenTarget::file(path.clone()),
+                window,
+                cx,
+            ),
+            None => menu,
+        };
+        this.update(cx, |this, cx| this.menu_rest(node, menu, cx))
+    }
+
+    /// The menu down to Reveal in Finder, and the path Open in… opens next (one target only).
     fn menu(
         &mut self,
         node: Option<Node>,
         menu: PopupMenu,
-        window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> PopupMenu {
-        let _ = window;
+    ) -> (PopupMenu, Option<String>) {
         if let Some(n) = &node {
             self.selected = Some(n.path.clone());
             if !self.picked.contains(&n.path) {
@@ -1133,13 +1162,7 @@ impl ExplorerPanel {
         let multi = targets.len() > 1;
         let files: Vec<Node> = targets.iter().filter(|n| !n.is_dir).cloned().collect();
         let me = cx.weak_entity();
-        let item = |label: &str, f: MenuAction| {
-            let me = me.clone();
-            PopupMenuItem::new(label.to_string()).on_click(move |_, window, cx| {
-                let f = f.clone();
-                _ = me.update(cx, |this, cx| f(this, window, cx));
-            })
-        };
+        let item = |label: &str, f: MenuAction| menu_item(&me, label, f);
         let mut menu = menu;
         if let Some(n) = node.clone().filter(|n| !n.is_dir && !multi) {
             let open = n.clone();
@@ -1238,17 +1261,42 @@ impl ExplorerPanel {
                 )
                 .separator();
         }
+        if multi {
+            return (menu, None);
+        }
+        let path = node
+            .as_ref()
+            .map(|n| n.path.to_string())
+            .unwrap_or_default();
+        let reveal = path.clone();
+        menu = menu.item(item(
+            REVEAL_LABEL,
+            Rc::new(move |this, _, cx| this.reveal_in_finder(&reveal, cx)),
+        ));
+        (menu, Some(path))
+    }
+
+    /// The menu from Copy GitHub Link on.
+    fn menu_rest(
+        &mut self,
+        node: Option<Node>,
+        menu: PopupMenu,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        let targets = self.targets(node.as_ref());
+        let multi = targets.len() > 1;
+        let files: Vec<Node> = targets.iter().filter(|n| !n.is_dir).cloned().collect();
+        let me = cx.weak_entity();
+        let item = |label: &str, f: MenuAction| menu_item(&me, label, f);
+        let mut menu = menu;
+        let off_git = node
+            .as_ref()
+            .is_some_and(|n| n.ignored || self.status.get(&n.path) == Some(&ChangeKind::Untracked));
         if !multi {
             let path = node
                 .as_ref()
                 .map(|n| n.path.to_string())
                 .unwrap_or_default();
-            let reveal = path.clone();
-            menu = menu.item(item(
-                REVEAL_LABEL,
-                Rc::new(move |this, _, cx| this.reveal_in_finder(&reveal, cx)),
-            ));
-            // Open in…: the app's shared submenu goes here once gitviber-ui has it.
             if self.web_url.is_some() {
                 let (p1, p2) = (path.clone(), path.clone());
                 let is_dir = node.as_ref().is_some_and(|n| n.is_dir) || node.is_none();
@@ -1505,9 +1553,7 @@ impl ExplorerPanel {
                 this.click(row_ix, e, window, cx)
             }))
             .context_menu(move |menu, window, cx| match me.upgrade() {
-                Some(this) => this.update(cx, |this, cx| {
-                    this.menu(Some(menu_node.clone()), menu, window, cx)
-                }),
+                Some(this) => Self::build_menu(&this, Some(menu_node.clone()), menu, window, cx),
                 None => menu,
             })
             .into_any_element()
@@ -1748,7 +1794,7 @@ impl Render for ExplorerPanel {
                     .h(px(48.))
                     .flex_none()
                     .context_menu(move |menu, window, cx| match me.upgrade() {
-                        Some(this) => this.update(cx, |this, cx| this.menu(None, menu, window, cx)),
+                        Some(this) => Self::build_menu(&this, None, menu, window, cx),
                         None => menu,
                     }),
             )
