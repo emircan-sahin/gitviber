@@ -177,7 +177,7 @@ pub fn about(core: &Core) -> Res<About> {
     let version = env!("CARGO_PKG_VERSION").to_string();
     let checked = core.git.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let text = |program: &str, args: &[&str]| {
-        let mut cmd = std::process::Command::new(program);
+        let mut cmd = std::process::Command::new(process::resolve(program));
         cmd.args(args)
             .env("PATH", process::search_path())
             .stdin(std::process::Stdio::null())

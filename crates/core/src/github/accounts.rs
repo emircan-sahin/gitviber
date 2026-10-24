@@ -23,7 +23,7 @@ pub struct GhAccount {
 /// support, whose output names no "account"): an empty list, as there's nothing to pick.
 pub fn accounts() -> Vec<GhAccount> {
     let status = |json: bool| {
-        let mut cmd = Command::new("gh");
+        let mut cmd = Command::new(process::resolve("gh"));
         cmd.args(["auth", "status", "--hostname", "github.com"]);
         if json {
             cmd.args(["--json", "hosts"]);

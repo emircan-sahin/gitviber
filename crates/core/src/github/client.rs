@@ -79,7 +79,7 @@ fn gh_token(user: Option<&str>) -> Option<String> {
 
 /// `gh` is a parameter for the tests' stand-in.
 fn gh_auth_token(gh: &str, user: Option<&str>, timeout: Duration) -> Option<String> {
-    let mut cmd = Command::new(gh);
+    let mut cmd = Command::new(process::resolve(gh));
     cmd.args(["auth", "token", "--hostname", "github.com"]);
     if let Some(user) = user {
         cmd.args(["--user", user]);

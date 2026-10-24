@@ -302,6 +302,80 @@ fn log_all_lists_other_branches_and_marks_what_head_lacks() {
     );
 }
 
+/// The log's reads run at once (and under a refresh's timeout, on threads of their own): each
+/// list still comes in git's order with every commit's marks as rev-list tells them.
+#[test]
+fn every_commit_is_marked_as_rev_list_says() {
+    let sb = Sandbox::new("logmarks");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    write_commit(a, "p.txt", "p\n", "pushed");
+    switch_branch(a, "feat", true).unwrap();
+    write_commit(a, "f.txt", "f\n", "feat pushed");
+    run(a, &["push", "-q", "origin", "main", "feat"]).unwrap();
+    write_commit(a, "f.txt", "g\n", "feat local");
+    switch_branch(a, "main", false).unwrap();
+    write_commit(a, "m.txt", "m\n", "main local");
+    write_commit(a, "m.txt", "n\n", "main local 2");
+
+    let set = |args: &[&str]| -> std::collections::HashSet<String> {
+        run_text(a, args)
+            .unwrap()
+            .lines()
+            .map(String::from)
+            .collect()
+    };
+    let (unpushed, on_origin, in_head) = (
+        set(&["rev-list", "@{upstream}..HEAD"]),
+        set(&["rev-list", "--remotes=origin"]),
+        set(&["rev-list", "HEAD"]),
+    );
+    assert_eq!((unpushed.len(), on_origin.len()), (2, 3));
+    // (sha, unpushed, on_origin, not_in_head) for `tips`' topo order, skip..skip+limit.
+    let expected = |tips: &[&str], skip: usize, limit: usize, head: bool, other: bool| {
+        let mut args = vec!["rev-list", "--topo-order"];
+        args.extend(tips);
+        let order = run_text(a, &args).unwrap();
+        let mark = |s: &str| {
+            (
+                s.to_string(),
+                head && unpushed.contains(s),
+                on_origin.contains(s),
+                other && !in_head.contains(s),
+            )
+        };
+        order
+            .lines()
+            .skip(skip)
+            .take(limit)
+            .map(mark)
+            .collect::<Vec<_>>()
+    };
+    let got = |list: Vec<Commit>| -> Vec<_> {
+        list.into_iter()
+            .map(|c| (c.sha, c.unpushed, c.on_origin, c.not_in_head))
+            .collect()
+    };
+    reading(|| {
+        assert_eq!(
+            got(log(a, None, 0, 50).unwrap()),
+            expected(&["HEAD"], 0, 50, true, false)
+        );
+        assert_eq!(
+            got(log(a, None, 1, 2).unwrap()),
+            expected(&["HEAD"], 1, 2, true, false)
+        );
+        let theirs = log(a, Some("refs/remotes/origin/feat"), 0, 50).unwrap();
+        assert_eq!(
+            got(theirs),
+            expected(&["refs/remotes/origin/feat"], 0, 50, false, true)
+        );
+        let all = log_all(a, &GraphRefs::default(), 0, 50, &LogFilter::default()).unwrap();
+        let tips = ["--branches", "--remotes", "--tags", "HEAD"];
+        assert_eq!(got(all), expected(&tips, 0, 50, true, true));
+    });
+}
+
 #[test]
 fn log_all_shows_only_the_refs_asked_for() {
     let sb = Sandbox::new("logrefs");

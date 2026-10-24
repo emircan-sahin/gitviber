@@ -1,7 +1,7 @@
 //! Building and running git commands: the environment every call gets, and the repo root.
 
 use crate::network::{self, Net};
-use crate::process::{exec, search_path};
+use crate::process::{exec, git, search_path};
 use std::cell::Cell;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -47,7 +47,7 @@ pub(crate) const PINS: [&str; 12] = [
     "log.showSignature=false",
 ];
 pub(crate) fn command(repo: &Path, args: &[&str]) -> Command {
-    let mut cmd = Command::new("git");
+    let mut cmd = Command::new(git());
     for var in REPO_ENV {
         cmd.env_remove(var);
     }
@@ -95,6 +95,16 @@ pub(crate) fn reading<T>(f: impl FnOnce() -> T) -> T {
 
 pub(crate) fn read_timeout() -> Option<Duration> {
     READING.with(Cell::get).then_some(READ_TIMEOUT)
+}
+
+/// Runs `a` here and `b` on a thread beside it, `b`'s git calls timed out as this thread's are.
+pub(crate) fn both<A, B: Send>(a: impl FnOnce() -> A, b: impl FnOnce() -> B + Send) -> (A, B) {
+    let timed = read_timeout().is_some();
+    std::thread::scope(|s| {
+        let b = s.spawn(move || if timed { reading(b) } else { b() });
+        let a = a();
+        (a, b.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
+    })
 }
 
 /// Runs git and returns stdout. `ok_codes` lists exit codes that are not errors.
@@ -185,6 +195,39 @@ mod tests {
         assert_eq!(outer, Some(READ_TIMEOUT));
         let _ = std::panic::catch_unwind(|| reading(|| panic!("a read failed")));
         assert_eq!(read_timeout(), None, "reset after a panic");
+        // A read run beside another is timed out as it is, and only then.
+        assert_eq!(both(read_timeout, read_timeout), (None, None));
+        let timeout = Some(READ_TIMEOUT);
+        assert_eq!(
+            reading(|| both(read_timeout, read_timeout)),
+            (timeout, timeout)
+        );
+    }
+
+    /// The exit used to be polled every 10 ms, so no git call came back sooner, however quick.
+    #[test]
+    fn a_short_git_call_returns_as_git_does() {
+        let fastest = |f: &dyn Fn()| {
+            (0..5)
+                .map(|_| {
+                    let t = std::time::Instant::now();
+                    f();
+                    t.elapsed()
+                })
+                .min()
+                .unwrap()
+        };
+        let alone = fastest(&|| {
+            Command::new(git()).arg("--version").output().unwrap();
+        });
+        // A refresh's read, with a timeout: the path every git call of a refresh takes.
+        let called = fastest(&|| {
+            reading(|| run(Path::new("."), &["--version"])).unwrap();
+        });
+        assert!(
+            called < alone + Duration::from_millis(4),
+            "{called:?} through run, {alone:?} for git alone"
+        );
     }
 
     #[test]

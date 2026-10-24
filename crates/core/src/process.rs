@@ -45,6 +45,46 @@ pub(crate) fn merge_paths(login: Option<&OsStr>, current: &OsStr) -> OsString {
     std::env::join_paths(dirs).unwrap_or_else(|_| current.to_os_string())
 }
 
+/// Where exec would find `program` on `search_path()`. Given a bare name and a PATH of its own,
+/// std forks and execs, and a fork costs more the bigger the app (+10 ms a git call with a 400 MB
+/// heap); given a path, it posix_spawns. Not found, the name stays bare and fails as before. Only for real binaries: a script without a
+/// `#!` line runs (through sh) only when exec looks it up by name. Relative PATH entries are
+/// skipped: exec would look in them from the child's folder, the repo.
+pub(crate) fn resolve(program: &str) -> PathBuf {
+    #[cfg(unix)]
+    if !program.contains('/') {
+        use std::os::unix::fs::PermissionsExt;
+        let runnable = |p: &PathBuf| {
+            std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        };
+        let found = std::env::split_paths(&search_path())
+            .filter(|dir| dir.is_absolute())
+            .map(|dir| dir.join(program))
+            .find(runnable);
+        if let Some(path) = found {
+            return path;
+        }
+    }
+    PathBuf::from(program)
+}
+
+/// `resolve("git")`, looked up once per search path: every git call asks.
+pub(crate) fn git() -> PathBuf {
+    static CACHE: RwLock<Option<(u64, PathBuf)>> = RwLock::new(None);
+    let generation = crate::shell::generation();
+    if let Some((g, git)) = CACHE.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if *g == generation {
+            return git.clone();
+        }
+    }
+    let git = resolve("git");
+    // Not found isn't kept: a git installed meanwhile is found on the next call.
+    if git.is_absolute() {
+        *CACHE.write().unwrap_or_else(|e| e.into_inner()) = Some((generation, git.clone()));
+    }
+    git
+}
+
 /// macOS has no pipe2: std marks a new pipe close-on-exec a step after making it, and a child
 /// spawned on another thread in between inherits it. A `git patch-id` got the pipe a concurrent
 /// spawn reads until its child execs, and waited for input from the thread stuck there, forever.
@@ -107,17 +147,11 @@ pub(crate) fn exec(
             .take()
             .map(|s| Box::new(s) as Box<dyn Read + Send>),
     );
-    let deadline = timeout.map(|t| Instant::now() + t);
-    let status = loop {
-        if let Some(st) = child.try_wait().map_err(|e| e.to_string())? {
-            break st;
-        }
-        if deadline.is_some_and(|d| Instant::now() > d) {
-            kill_group(&mut child, Duration::ZERO);
-            return Err(format!("{label} timed out"));
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
+    if timeout.is_some_and(|t| !exits_within(&mut child, t)) {
+        kill_group(&mut child, Duration::ZERO);
+        return Err(format!("{label} timed out"));
+    }
+    let status = child.wait().map_err(|e| e.to_string())?;
     let (stdout, stderr) = (
         out.join().unwrap_or_default(),
         err.join().unwrap_or_default(),
@@ -144,6 +178,36 @@ pub(crate) fn exec(
             e
         })
     }
+}
+
+/// Whether the child exits within `timeout`. Waited for on a thread that doesn't reap it: a
+/// reaped leader's pid (the group's id) can go to another process before `kill_group`'s SIGKILL.
+#[cfg(unix)]
+fn exits_within(child: &mut Child, timeout: Duration) -> bool {
+    let pid = child.id() as libc::id_t;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let flags = libc::WEXITED | libc::WNOWAIT;
+        while unsafe { libc::waitid(libc::P_PID, pid, &mut info, flags) } != 0
+            && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
+        {}
+        let _ = tx.send(());
+    });
+    rx.recv_timeout(timeout).is_ok()
+}
+
+// No supported platform; kept compiling.
+#[cfg(not(unix))]
+fn exits_within(child: &mut Child, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while matches!(child.try_wait(), Ok(None)) {
+        if Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    true
 }
 
 /// Gives the command a process group of its own, so `kill_group` also stops what it started.
@@ -364,23 +428,26 @@ mod tests {
         let mut cmd = Command::new("sh");
         cmd.args([
             "-c",
-            &format!("sleep 30 & echo $! > {}; wait", pidfile.display()),
+            &format!("sleep 30 & echo $$ $! > {}; wait", pidfile.display()),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+        let started = Instant::now();
         let err = exec(cmd, "sh", &[], None, Some(Duration::from_millis(500))).unwrap_err();
         assert_eq!(err, "sh timed out");
-        let pid: libc::pid_t = std::fs::read_to_string(&pidfile)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        // Orphaned, it lingers as a zombie until launchd reaps it.
-        let gone = (0..100).any(|_| {
-            std::thread::sleep(Duration::from_millis(20));
-            (unsafe { libc::kill(pid, 0) }) != 0
-        });
-        assert!(gone, "the child still runs");
+        let took = started.elapsed();
+        assert!(took < Duration::from_secs(5), "returned after {took:?}");
+        let pids = std::fs::read_to_string(&pidfile).unwrap();
+        for pid in pids.split_whitespace() {
+            let pid: libc::pid_t = pid.parse().unwrap();
+            // The child is reaped; what it started, orphaned, lingers as a zombie until
+            // launchd reaps it.
+            let gone = (0..100).any(|_| {
+                std::thread::sleep(Duration::from_millis(20));
+                (unsafe { libc::kill(pid, 0) }) != 0
+            });
+            assert!(gone, "{pid} still runs");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

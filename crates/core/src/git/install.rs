@@ -1,7 +1,7 @@
 //! Whether a usable git is installed, and installing Apple's command line tools when not.
 
 use super::in_english;
-use crate::process::{exec, search_path, spawn};
+use crate::process::{exec, git, resolve, search_path, spawn};
 use serde::Serialize;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -25,7 +25,7 @@ pub struct GitInfo {
 
 pub fn check_install() -> GitInfo {
     let out = spawn(
-        in_english(&mut Command::new("git"))
+        in_english(&mut Command::new(git()))
             .arg("--version")
             .env("PATH", search_path())
             .stdin(Stdio::null())
@@ -88,7 +88,7 @@ pub fn install_tools() -> Result<(), String> {
     if !cfg!(target_os = "macos") {
         return Err("Install git with your system's package manager.".into());
     }
-    let mut cmd = Command::new("xcode-select");
+    let mut cmd = Command::new(resolve("xcode-select"));
     cmd.arg("--install")
         .env("PATH", search_path())
         .stdin(Stdio::null())

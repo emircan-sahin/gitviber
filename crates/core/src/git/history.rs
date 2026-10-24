@@ -1,7 +1,7 @@
 //! The commit log, its filters and graph, reflog and branch comparisons.
 
 use super::{
-    command, has_head, has_origin, pushed_base, range_files, read_timeout, run, run_text,
+    both, command, has_head, has_origin, pushed_base, range_files, read_timeout, run, run_text,
     short_ref, validate_branch, validate_full_ref, validate_rev, FileChange, REF_KINDS,
 };
 use crate::process::exec;
@@ -474,13 +474,6 @@ fn commits(
     let lines = |s: String| -> std::collections::HashSet<String> {
         s.lines().map(str::to_string).collect()
     };
-    let unpushed = if mark_unpushed {
-        run_text(repo, &["rev-list", &format!("{}..HEAD", pushed_base(repo))])
-            .map(lines)
-            .unwrap_or_default()
-    } else {
-        Default::default()
-    };
     let mut filter_args = filter.args();
     // An unfiltered log is drawn as a graph: keep each branch's commits together rather than
     // interleaved by date. A search skips it: with paths, git would diff all of history first.
@@ -500,17 +493,6 @@ fn commits(
         args.extend(["--not", not]);
         args.extend(&paths);
         run_text(repo, &args).map(lines)
-    };
-    // No origin refs at all means nothing is on origin; skip the walk, it would list the whole history.
-    let off_origin = if has_origin(repo) {
-        Some(outside("--remotes=origin")?)
-    } else {
-        None
-    };
-    let not_in_head = if mark_not_in_head {
-        outside("HEAD")?
-    } else {
-        Default::default()
     };
 
     // git skips before `-S` and `--follow` drop commits, so --skip would pass over commits that
@@ -535,7 +517,43 @@ fn commits(
     args.extend(filter_args.iter().map(String::as_str));
     args.extend(tips);
     args.extend(&paths);
-    let raw = run_text(repo, &args)?;
+    // The four reads don't depend on each other, so they run at once; an error is still the
+    // first one in this order.
+    let ((unpushed, off_origin), (not_in_head, raw)) = both(
+        || {
+            both(
+                || {
+                    if mark_unpushed {
+                        run_text(repo, &["rev-list", &format!("{}..HEAD", pushed_base(repo))])
+                            .map(lines)
+                            .unwrap_or_default()
+                    } else {
+                        Default::default()
+                    }
+                },
+                // No origin refs at all means nothing is on origin; skip the walk, it would
+                // list the whole history.
+                || {
+                    has_origin(repo)
+                        .then(|| outside("--remotes=origin"))
+                        .transpose()
+                },
+            )
+        },
+        || {
+            both(
+                || {
+                    if mark_not_in_head {
+                        outside("HEAD")
+                    } else {
+                        Ok(Default::default())
+                    }
+                },
+                || run_text(repo, &args),
+            )
+        },
+    );
+    let (off_origin, not_in_head, raw) = (off_origin?, not_in_head?, raw?);
     Ok(raw
         .split('\x1e')
         .filter_map(|rec| {
