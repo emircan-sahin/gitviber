@@ -138,6 +138,28 @@ pub fn suggest_guide(
     out
 }
 
+/// `suggest_guide`, with what the command prints handed to `output` as it prints it.
+pub fn suggest_guide_streaming(
+    core: &Core,
+    command: String,
+    prompt: String,
+    target: suggest::Target,
+    agent: suggest::Agent,
+    kind: suggest::Kind,
+    output: suggest::Output,
+) -> Res<suggest::Guided> {
+    if !matches!(kind, suggest::Kind::Guide | suggest::Kind::Risks) {
+        return Err("not a guided review's run".into());
+    }
+    let cancel = core.suggest.start(kind);
+    let flag = cancel.clone();
+    let out = core.in_repo(move |r| {
+        suggest::run_guide_streaming(r, &command, &prompt, &target, &agent, &flag, output)
+    });
+    core.suggest.finish(kind, &cancel);
+    out
+}
+
 /// What the uncommitted changes are now, cheaply: a guide of them is outdated once it differs.
 pub fn changes_stamp(core: &Core) -> Res<String> {
     core.read_repo(git::changes_stamp)

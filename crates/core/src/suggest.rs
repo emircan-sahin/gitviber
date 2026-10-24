@@ -600,6 +600,32 @@ pub fn run_guide(
     guide_within(repo, template, prompt, target, agent, cancel, None)
 }
 
+/// What a command prints as it prints it (stdout and stderr, as they come), for a view to show
+/// while it runs; the answer is still the whole stdout.
+pub type Output = Arc<dyn Fn(&[u8]) + Send + Sync>;
+
+/// `run_guide`, with what the command prints handed to `output` as it goes.
+pub fn run_guide_streaming(
+    repo: &Path,
+    template: &str,
+    prompt: &str,
+    target: &Target,
+    agent: &Agent,
+    cancel: &AtomicBool,
+    output: Output,
+) -> Result<Guided, String> {
+    guide_with(
+        repo,
+        template,
+        prompt,
+        target,
+        agent,
+        cancel,
+        None,
+        Some(output),
+    )
+}
+
 /// `run_guide`, stopped after `timeout` instead of the one the change's size gives.
 pub(crate) fn guide_within(
     repo: &Path,
@@ -610,8 +636,23 @@ pub(crate) fn guide_within(
     cancel: &AtomicBool,
     timeout: Option<Duration>,
 ) -> Result<Guided, String> {
+    guide_with(repo, template, prompt, target, agent, cancel, timeout, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn guide_with(
+    repo: &Path,
+    template: &str,
+    prompt: &str,
+    target: &Target,
+    agent: &Agent,
+    cancel: &AtomicBool,
+    timeout: Option<Duration>,
+    output: Option<Output>,
+) -> Result<Guided, String> {
     let input = guide_input(repo, target)?;
     let mut options = Options::new(timeout.unwrap_or(input.timeout), None);
+    options.output = output;
     options.args = agent.args.clone();
     // Removed with the patch in it however the run ends: answered, failed, cancelled or timed out.
     let mut scratch = None;
@@ -668,12 +709,14 @@ fn opencode_reads(own: Option<&str>, dir: &str) -> String {
 }
 
 /// How a run goes: stopped after `timeout`; `cut`: the diff was cut, and what of it is whole;
-/// `args` after the template's own, `env` added to its environment.
+/// `args` after the template's own, `env` added to its environment; `output` hears what it
+/// prints as it does.
 struct Options {
     timeout: Duration,
     cut: Option<&'static str>,
     args: Vec<String>,
     env: Vec<(&'static str, String)>,
+    output: Option<Output>,
 }
 
 impl Options {
@@ -683,6 +726,7 @@ impl Options {
             cut,
             args: vec![],
             env: vec![],
+            output: None,
         }
     }
 }
@@ -743,11 +787,32 @@ fn ask(
     // command never blocks on a full pipe; it comes back over a channel, which can be given up on.
     let drain = |r: Option<Box<dyn Read + Send>>| {
         let (tx, rx) = mpsc::channel();
+        let output = options.output.clone();
         std::thread::spawn(move || {
             let mut buf = Vec::new();
-            if let Some(mut r) = r {
-                let _ = r.by_ref().take(MAX_OUTPUT as u64 + 1).read_to_end(&mut buf);
-                let _ = std::io::copy(&mut r, &mut std::io::sink());
+            match (r, output) {
+                (Some(mut r), None) => {
+                    let _ = r.by_ref().take(MAX_OUTPUT as u64 + 1).read_to_end(&mut buf);
+                    let _ = std::io::copy(&mut r, &mut std::io::sink());
+                }
+                // Chunk by chunk, each told as it comes; past MAX_OUTPUT only read past.
+                (Some(mut r), Some(output)) => {
+                    let mut chunk = [0u8; 8192];
+                    loop {
+                        match r.read(&mut chunk) {
+                            Ok(0) => break,
+                            Ok(n) if buf.len() <= MAX_OUTPUT => {
+                                output(&chunk[..n]);
+                                let room = (MAX_OUTPUT + 1).saturating_sub(buf.len());
+                                buf.extend_from_slice(&chunk[..n.min(room)]);
+                            }
+                            Ok(_) => {}
+                            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                            Err(_) => break,
+                        }
+                    }
+                }
+                (None, _) => {}
             }
             let _ = tx.send(buf);
         });

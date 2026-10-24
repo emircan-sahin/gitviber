@@ -532,3 +532,49 @@ fn an_empty_tools_value_and_a_quoted_schema_each_stay_one_argument() {
         "{out}"
     );
 }
+
+/// What the command prints reaches the caller as it prints it, stderr's progress too, and the
+/// answer is still the whole stdout.
+#[cfg(unix)]
+#[test]
+fn a_guides_output_streams_as_it_comes() {
+    let sb = Sandbox::new("guide-stream");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "one\n", "root");
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<(Instant, Vec<u8>)>::new()));
+    let sink = seen.clone();
+    let output: suggest::Output =
+        Arc::new(move |chunk: &[u8]| sink.lock().unwrap().push((Instant::now(), chunk.to_vec())));
+    let start = Instant::now();
+    let g = suggest::run_guide_streaming(
+        &r,
+        "sh -c 'cat >/dev/null; echo first; echo working >&2; sleep 0.4; echo second'",
+        "P",
+        &of(rev(&r, "HEAD")),
+        &Agent::default(),
+        &AtomicBool::new(false),
+        output,
+    )
+    .unwrap();
+    let ended = start.elapsed();
+    assert_eq!(g.text, "first\nsecond\n");
+    let seen = seen.lock().unwrap();
+    let all: Vec<u8> = seen.iter().flat_map(|(_, c)| c.clone()).collect();
+    let all = String::from_utf8_lossy(&all);
+    assert!(
+        all.contains("first") && all.contains("working") && all.contains("second"),
+        "{all}"
+    );
+    // The first line came well before the command ended.
+    let first = seen
+        .iter()
+        .find(|(_, c)| String::from_utf8_lossy(c).contains("first"))
+        .unwrap()
+        .0;
+    assert!(
+        first.duration_since(start) + Duration::from_millis(300) < ended,
+        "{:?} vs {ended:?}",
+        first.duration_since(start)
+    );
+}
