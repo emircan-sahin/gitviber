@@ -5,6 +5,7 @@
 use gitviber_ui::actions::{terminal, view, workbench};
 use gitviber_ui::assets::LOGO;
 use gitviber_ui::keymap::{self, shortcut_label};
+use gitviber_ui::widgets::{Look, StatusDot};
 use gitviber_ui::workspace::{BarSlot, PanelContext, Registry};
 use gitviber_ui::{ActiveAppTheme, windows};
 use gpui_kit::assets::IconName;
@@ -65,7 +66,47 @@ fn divider(cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-pub fn top_bar(ctx: &PanelContext, drawn: bool, window: &mut Window, cx: &mut App) -> AnyElement {
+/// The terminal's button; while it's hidden, a dot for an agent that asked or news not looked at
+/// (`news`), which its tooltip names too.
+fn terminal_button(bar: &Bar, news: Option<Look>) -> AnyElement {
+    let mut button = bar.icon_button(
+        "toggle-terminal",
+        IconName::PanelBottom,
+        "terminal.toggle",
+        terminal::Toggle,
+    );
+    if let Some(look) = news {
+        let what = match look {
+            Look::Needs => "needs you",
+            _ => "not viewed",
+        };
+        button = button.tooltip(format!(
+            "{} · a terminal: {what}",
+            bar.tip("terminal.toggle")
+        ));
+    }
+    div()
+        .relative()
+        .child(button)
+        .when_some(news, |d, look| {
+            d.child(
+                div()
+                    .absolute()
+                    .top(px(3.))
+                    .right(px(3.))
+                    .child(StatusDot(look)),
+            )
+        })
+        .into_any_element()
+}
+
+pub fn top_bar(
+    ctx: &PanelContext,
+    drawn: bool,
+    terminal_news: Option<Look>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     let chips: Vec<AnyElement> = Registry::get(cx)
         .bar_items(BarSlot::TopChips)
         .into_iter()
@@ -110,12 +151,7 @@ pub fn top_bar(ctx: &PanelContext, drawn: bool, window: &mut Window, cx: &mut Ap
         .pr_2()
         .children(actions)
         .child(divider(cx))
-        .child(bar.icon_button(
-            "toggle-terminal",
-            IconName::PanelBottom,
-            "terminal.toggle",
-            terminal::Toggle,
-        ))
+        .child(terminal_button(&bar, terminal_news))
         .child(bar.icon_button(
             "toggle-git",
             IconName::PanelLeft,

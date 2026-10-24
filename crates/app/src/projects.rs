@@ -1,12 +1,13 @@
 //! The saved projects, as the welcome screen and the left panel list them (Settings → Appearance
-//! → Projects in the sidebar): a click opens one, a drag reorders, hover actions and a right-click
-//! menu do the rest. A folder that was moved sinks below the others and offers Locate….
+//! → Projects in the sidebar): a click or ↵ opens one, a drag reorders, hover actions and a
+//! right-click menu (also ⇧F10) do the rest, ⌫ removes one. A folder that was moved sinks below
+//! the others and offers Locate….
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use gitviber_core::api;
-use gitviber_ui::actions::terminal as term_cmds;
+use gitviber_ui::actions::{project as project_cmds, terminal as term_cmds};
 use gitviber_ui::workspace::{Slot, Toast};
 use gitviber_ui::{ActiveAppTheme, UiState, Workspace};
 use gpui_kit::assets::IconName;
@@ -14,10 +15,10 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClipboardItem, Context, Global, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Task, Window, div, hsla,
-    prelude::FluentBuilder as _, px, rems,
+    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Global, Hsla,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, PathPromptOptions,
+    Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Task, Window,
+    div, hsla, prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::help::{open_url, toast};
@@ -222,6 +223,116 @@ fn locate(path: &str, window: &mut Window, cx: &mut App) {
     .detach();
 }
 
+/// The window is in a linked worktree of the open project: its row then opens the main folder,
+/// as a row of another project would.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Away {
+    folder: String,
+    main_branch: Option<String>,
+}
+
+/// Set while the window is in `root` and not in the project's `main` folder.
+pub fn away_of(root: &str, main: &str, worktrees: &[gitviber_core::git::Worktree]) -> Option<Away> {
+    (root != main).then(|| Away {
+        folder: folder_name(root).to_string(),
+        main_branch: worktrees
+            .iter()
+            .find(|w| w.main)
+            .and_then(|w| w.branch.clone()),
+    })
+}
+
+impl Away {
+    fn open_label(&self) -> String {
+        match &self.main_branch {
+            Some(branch) => format!("Open the main folder, on {branch}"),
+            None => "Open the main folder".into(),
+        }
+    }
+}
+
+/// A list's keyboard state, kept while it shows: one focus for the list, the row the keys act
+/// on (by path, so a reorder keeps it), and the scroll that brings that row into view.
+struct Keys {
+    focus: FocusHandle,
+    row: Option<String>,
+    /// Moved there by a key: the row shows a ring, as a click's doesn't.
+    by_key: bool,
+    scroll: ScrollHandle,
+}
+
+/// The row the keys act on: the one moved to, else the open project's, else the first.
+fn key_row(shown: &[String], row: Option<&str>, current: Option<&str>) -> usize {
+    let at = |p: Option<&str>| p.and_then(|p| shown.iter().position(|s| s == p));
+    at(row).or_else(|| at(current)).unwrap_or(0)
+}
+
+impl Keys {
+    fn go(&mut self, row: Option<&String>, cx: &mut Context<Self>) {
+        self.row = row.cloned();
+        self.by_key = true;
+        cx.notify();
+    }
+}
+
+/// ↑/↓, ↵/Space and ⇧F10 on the row the keys act on.
+fn key_down(
+    keys: &Entity<Keys>,
+    shown: &[String],
+    current: Option<&str>,
+    away: bool,
+    e: &KeyDownEvent,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let k = &e.keystroke;
+    let at = key_row(shown, keys.read(cx).row.as_deref(), current);
+    let Some(path) = shown.get(at) else { return };
+    if gitviber_refs::ui::is_menu_key(k) {
+        let scroll = keys.read(cx).scroll.clone();
+        if let Some(mut row) = scroll.bounds_for_item(at) {
+            // Bounds as laid out; the list draws them scrolled.
+            row.origin += scroll.offset();
+            gitviber_refs::ui::open_row_menu(row, window, cx);
+        }
+        return cx.stop_propagation();
+    }
+    let m = k.modifiers;
+    if m.platform || m.control || m.alt || m.shift {
+        return;
+    }
+    let step = |to: usize, cx: &mut App| {
+        keys.update(cx, |k, cx| k.go(shown.get(to), cx));
+        keys.read(cx).scroll.scroll_to_item(to);
+    };
+    match k.key.as_str() {
+        "down" => step((at + 1).min(shown.len() - 1), cx),
+        "up" => step(at.saturating_sub(1), cx),
+        "enter" | "space" => {
+            if info(path, cx).is_some_and(|i| !i.exists) {
+                locate(path, window, cx)
+            } else if away || current != Some(path.as_str()) {
+                open_project(path, window, cx)
+            }
+        }
+        _ => return,
+    }
+    cx.stop_propagation();
+}
+
+/// ⌫: removes the keys' row (not the open project), the keys going on to its neighbour.
+fn forget_key_row(keys: &Entity<Keys>, shown: &[String], current: Option<&str>, cx: &mut App) {
+    let at = key_row(shown, keys.read(cx).row.as_deref(), current);
+    let Some(path) = shown.get(at).filter(|p| current != Some(p.as_str())) else {
+        return;
+    };
+    let next = shown
+        .get(at + 1)
+        .or_else(|| at.checked_sub(1).and_then(|i| shown.get(i)));
+    keys.update(cx, |k, cx| k.go(next, cx));
+    forget(path, cx);
+}
+
 #[derive(Clone)]
 struct DraggedProject {
     path: String,
@@ -246,26 +357,57 @@ impl Render for DraggedProject {
 }
 
 /// The list. `current`: the open project's main folder, which can't be removed and doesn't open
-/// again; `compact`: a line a row without hover actions, for the narrow sidebar.
-pub fn list(id: &'static str, current: Option<String>, compact: bool, cx: &App) -> AnyElement {
+/// again (unless the window is `away` in another worktree of it); `compact`: a line a row without
+/// hover actions, for the narrow sidebar; `max_h`: taller than that, it scrolls.
+pub fn list(
+    id: &'static str,
+    current: Option<String>,
+    away: Option<Away>,
+    compact: bool,
+    max_h: Option<f32>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let keys = window.use_keyed_state(SharedString::from(format!("{id}-keys")), cx, |_, cx| Keys {
+        focus: cx.focus_handle().tab_stop(true),
+        row: None,
+        by_key: false,
+        scroll: ScrollHandle::new(),
+    });
+    let cx: &App = cx;
+    let (focus, scroll) = {
+        let k = keys.read(cx);
+        (k.focus.clone(), k.scroll.clone())
+    };
+    let focused = focus.is_focused(window);
     let recent = UiState::get(cx).recent_projects.clone();
     let gone = |p: &str| info(p, cx).is_some_and(|i| !i.exists);
     let shown = shown_order(&recent, gone);
+    let key_at = focused.then(|| key_row(&shown, keys.read(cx).row.as_deref(), current.as_deref()));
+    let ring = keys.read(cx).by_key;
     let first = recent.first().cloned();
     let t = cx.app_theme().clone();
-    let rows = shown.into_iter().enumerate().map(|(i, path)| {
+    let rows = shown.clone().into_iter().enumerate().map(|(i, path)| {
+        let keyed = key_at == Some(i);
         let name = folder_name(&path).to_string();
         let i_info = info(&path, cx);
         // Unknown until project_info answers: taken as there rather than flash every row dimmed.
         let missing = i_info.as_ref().is_some_and(|i| !i.exists);
         let github = i_info.and_then(|i| i.github);
-        let here = current.as_deref() == Some(path.as_str());
-        let detail = if missing {
-            "Folder not found".to_string()
-        } else {
-            path.clone()
+        let is_current = current.as_deref() == Some(path.as_str());
+        let away = away.clone().filter(|_| is_current);
+        // Opening the open project does nothing, unless the window is in one of its worktrees.
+        let here = is_current && away.is_none();
+        let detail = match &away {
+            _ if missing => "Folder not found".to_string(),
+            Some(a) => format!("In worktree {}", a.folder),
+            None => path.clone(),
         };
-        let (open, drop_to) = (path.clone(), path.clone());
+        let open_label: SharedString = away
+            .as_ref()
+            .map_or_else(|| "Open".into(), |a| a.open_label().into());
+        let (open, drop_to, clicked) = (path.clone(), path.clone(), path.clone());
+        let keys_c = keys.downgrade();
         let is_first = first.as_deref() == Some(path.as_str());
         let actions = (!compact).then(|| {
             let mut buttons: Vec<AnyElement> = Vec::new();
@@ -309,7 +451,7 @@ pub fn list(id: &'static str, current: Option<String>, compact: bool, cx: &App) 
                         .into_any_element(),
                 );
             }
-            if !here {
+            if !is_current {
                 let f = path.clone();
                 buttons.push(
                     action("forget", IconName::X, "Remove from list")
@@ -337,8 +479,16 @@ pub fn list(id: &'static str, current: Option<String>, compact: bool, cx: &App) 
             .h(px(if compact { 28. } else { 36. }))
             .px_2()
             .rounded(px(3.))
-            .when(here, |d| d.bg(t.active))
-            .when(!here, |d| d.cursor_pointer().hover(|s| s.bg(t.hover)))
+            .border_1()
+            .border_color(if keyed && ring {
+                t.ring
+            } else {
+                gpui_kit::transparent_black()
+            })
+            .when(is_current, |d| d.bg(t.active))
+            .when(!here, |d| d.cursor_pointer())
+            .when(!is_current, |d| d.hover(|s| s.bg(t.hover)))
+            .when(keyed && !here, |d| d.bg(t.hover))
             .child(
                 div()
                     .when(missing, |d| d.opacity(0.45))
@@ -368,7 +518,7 @@ pub fn list(id: &'static str, current: Option<String>, compact: bool, cx: &App) 
                         )
                     }),
             )
-            .when(here, |d| {
+            .when(is_current, |d| {
                 d.child(Icon::new(IconName::Check).small().text_color(t.primary))
             })
             .children(actions)
@@ -379,6 +529,11 @@ pub fn list(id: &'static str, current: Option<String>, compact: bool, cx: &App) 
                 })
             })
             .on_click(move |_, window, cx| {
+                let _ = keys_c.update(cx, |k, cx| {
+                    k.row = Some(clicked.clone());
+                    k.by_key = false;
+                    cx.notify();
+                });
                 if missing {
                     locate(&open, window, cx)
                 } else if !here {
@@ -410,7 +565,7 @@ pub fn list(id: &'static str, current: Option<String>, compact: bool, cx: &App) 
                     let (o, tm, r) = (p.clone(), p.clone(), p.clone());
                     m = m
                         .item(
-                            PopupMenuItem::new("Open")
+                            PopupMenuItem::new(open_label.clone())
                                 .icon(IconName::FolderOpen)
                                 .disabled(here)
                                 .on_click(move |_, window, cx| open_project(&o, window, cx)),
@@ -457,18 +612,36 @@ pub fn list(id: &'static str, current: Option<String>, compact: bool, cx: &App) 
                     .item(
                         PopupMenuItem::new("Remove from List")
                             .icon(IconName::X)
-                            .disabled(here)
+                            .disabled(is_current)
                             .on_click(move |_, _, cx| forget(&f, cx)),
                     )
             })
             .into_any_element()
     });
+    let is_away = away.is_some();
+    let (keys_k, keys_f) = (keys.downgrade(), keys.downgrade());
+    let (shown_f, current_f, current_k) = (shown.clone(), current.clone(), current.clone());
     div()
         .id(id)
+        .key_context("ProjectList")
+        .track_focus(&focus)
+        .track_scroll(&scroll)
+        .overflow_y_scroll()
+        .when_some(max_h, |d, h| d.max_h(px(h)))
         .flex()
         .flex_col()
         .gap_px()
         .w_full()
+        .on_key_down(move |e: &KeyDownEvent, window, cx| {
+            if let Some(keys) = keys_k.upgrade() {
+                key_down(&keys, &shown, current_k.as_deref(), is_away, e, window, cx);
+            }
+        })
+        .on_action(move |_: &project_cmds::Forget, _, cx| {
+            if let Some(keys) = keys_f.upgrade() {
+                forget_key_row(&keys, &shown_f, current_f.as_deref(), cx);
+            }
+        })
         .children(rows)
         .into_any_element()
 }
@@ -498,5 +671,43 @@ mod tests {
         assert_eq!(moved(&list, "/a", "/c"), ["/b", "/c", "/a"]);
         assert_eq!(moved(&list, "/x", "/a"), list);
         assert_eq!(folder_name("/Users/me/repo/"), "repo");
+    }
+
+    #[test]
+    fn away_names_the_worktree_and_the_main_folders_branch() {
+        let main = gitviber_core::git::Worktree {
+            path: "/r/app".into(),
+            head: None,
+            branch: Some("main".into()),
+            detached: false,
+            bare: false,
+            locked: false,
+            lock_reason: None,
+            in_use: false,
+            prunable: false,
+            current: false,
+            main: true,
+        };
+        assert_eq!(
+            away_of("/r/app", "/r/app", std::slice::from_ref(&main)),
+            None
+        );
+        let away = away_of("/r/app-fix", "/r/app", &[main]).unwrap();
+        assert_eq!(away.folder, "app-fix");
+        assert_eq!(away.open_label(), "Open the main folder, on main");
+        assert_eq!(
+            away_of("/r/x", "/r/app", &[]).unwrap().open_label(),
+            "Open the main folder"
+        );
+    }
+
+    #[test]
+    fn keys_act_on_the_row_moved_to_else_the_open_project() {
+        let shown: Vec<String> = ["/a", "/b", "/c"].map(String::from).into();
+        assert_eq!(key_row(&shown, Some("/c"), Some("/b")), 2);
+        assert_eq!(key_row(&shown, None, Some("/b")), 1);
+        // A row removed meanwhile: the open project's, else the first.
+        assert_eq!(key_row(&shown, Some("/gone"), None), 0);
+        assert_eq!(key_row(&[], None, None), 0);
     }
 }

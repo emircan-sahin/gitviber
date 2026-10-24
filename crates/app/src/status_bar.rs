@@ -5,6 +5,7 @@
 use gitviber_ui::actions::{app, diff, editor};
 use gitviber_ui::memory;
 use gitviber_ui::settings::{LIGHT_SYNTAX_THEMES, SYNTAX_THEMES};
+use gitviber_ui::widgets::Pressable as _;
 use gitviber_ui::workspace::{BarSlot, PanelContext, Registry};
 use gitviber_ui::{ActiveAppTheme, Settings};
 use gpui_kit::assets::IconName;
@@ -181,6 +182,7 @@ pub fn status_bar(
                 .child(item("status-font", cx).child(font))
                 .child(
                     item("status-layout", cx)
+                        .pressable(cx)
                         .child(layout)
                         .on_click(|_, window, cx| {
                             window.dispatch_action(Box::new(diff::ToggleSplit), cx)
@@ -188,6 +190,7 @@ pub fn status_bar(
                 )
                 .child(
                     item("status-wrap", cx)
+                        .pressable(cx)
                         .when(wrap, |d| d.text_color(t.primary))
                         .child(Icon::new(IconName::TextWrap).xsmall())
                         .child("Wrap")
@@ -222,6 +225,7 @@ pub fn status_bar(
                     Some(button) => d.child(button),
                     None => d.child(
                         item("status-version", cx)
+                            .pressable(cx)
                             .child(format!("v{} · {os}", env!("CARGO_PKG_VERSION")))
                             .on_click(|_, window, cx| {
                                 window.dispatch_action(Box::new(app::About), cx)

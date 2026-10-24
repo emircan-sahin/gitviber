@@ -45,6 +45,13 @@ pub fn dragged(want: f32, limits: Limits, total: f32) -> Option<f32> {
     }
 }
 
+/// A sidebar's divider double-clicked: as wide as its header needs to show all its tabs (`spare`
+/// is the room their row has at `drawn` past them, less than zero when they're cut off), at least
+/// its base size.
+pub fn fit_header(limits: Limits, drawn: f32, spare: f32, total: f32) -> f32 {
+    limits.clamp((drawn - spare).max(limits.base), total)
+}
+
 /// The sidebars' widths as drawn in a window `total` wide, from their saved sizes (None: closed,
 /// Some(None): open at the base size). The right one gives way first, then the left, down to
 /// their mins; one that still doesn't fit isn't drawn.
@@ -93,6 +100,15 @@ mod tests {
             (Some(320.), Some(260.))
         );
         assert_eq!(fit_sides(1480., Some(None), None), (Some(320.), None));
+    }
+
+    #[test]
+    fn a_double_click_fits_the_header_from_the_base_up() {
+        // Tabs cut off by 60 at 280: 340. Room to spare: narrower, down to the base.
+        assert_eq!(fit_header(LEFT, 280., -60., 1480.), 340.);
+        assert_eq!(fit_header(LEFT, 500., 100., 1480.), 400.);
+        assert_eq!(fit_header(RIGHT, 300., 200., 1480.), 260.);
+        assert_eq!(fit_header(LEFT, 400., -300., 1000.), 450.);
     }
 
     #[test]

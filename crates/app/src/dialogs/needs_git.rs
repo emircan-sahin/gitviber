@@ -43,6 +43,9 @@ pub fn check(recheck: bool, cx: &mut App) {
     let task = cx.spawn(async move |cx| {
         let info = asked.await;
         cx.update(|cx| {
+            if let Some(note) = info.as_ref().ok().and_then(|i| found(i, recheck)) {
+                toast(note, cx);
+            }
             let c = cx.default_global::<GitCheck>();
             c.checking = false;
             c.missing = info.ok().filter(|i| matches!(i.state, "missing" | "tools"));
@@ -50,6 +53,32 @@ pub fn check(recheck: bool, cx: &mut App) {
         });
     });
     cx.default_global::<GitCheck>()._task = Some(task);
+}
+
+/// What a check that found git says: at launch only an old one (it does fail: every repo open
+/// lists worktrees; errors stay until dismissed), on Check again which one it found.
+fn found(info: &GitInfo, recheck: bool) -> Option<Toast> {
+    let version = info.version.as_deref().unwrap_or_default();
+    match info.state {
+        "old" if !recheck => {
+            let how = if IS_MAC {
+                ", e.g. brew install git"
+            } else {
+                " with your package manager"
+            };
+            Some(
+                Toast::error(format!(
+                    "Worktrees and some actions will fail. Update git{how}."
+                ))
+                .title(format!(
+                    "git {version} is older than GitViber needs ({})",
+                    info.minimum
+                )),
+            )
+        }
+        "ok" | "old" if recheck => Some(Toast::success(format!("Found git {version}"))),
+        _ => None,
+    }
 }
 
 fn install_tools(cx: &mut App) {
@@ -157,4 +186,34 @@ pub fn screen(info: &GitInfo, cx: &App) -> AnyElement {
                 }),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(state: &'static str) -> GitInfo {
+        GitInfo {
+            state,
+            version: Some("2.30.1".into()),
+            detail: None,
+            minimum: "2.36".into(),
+        }
+    }
+
+    #[test]
+    fn an_old_git_warns_at_launch_and_check_again_says_what_it_found() {
+        let old = found(&info("old"), false).unwrap();
+        assert_eq!(old.kind, gitviber_ui::workspace::ToastKind::Error);
+        assert_eq!(
+            old.title.as_deref(),
+            Some("git 2.30.1 is older than GitViber needs (2.36)")
+        );
+        assert!(found(&info("ok"), false).is_none());
+        assert_eq!(
+            found(&info("old"), true).map(|t| t.message),
+            Some("Found git 2.30.1".into())
+        );
+        assert!(found(&info("missing"), true).is_none());
+    }
 }

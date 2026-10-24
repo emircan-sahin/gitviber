@@ -199,7 +199,6 @@ pub struct SettingsWindow {
     /// Goes up to show `section`: the settings view is built again, on it.
     nav: usize,
     opacity: Entity<SliderState>,
-    blur: Entity<SliderState>,
     pub data: Data,
     identity_inputs: Option<(Entity<InputState>, Entity<InputState>)>,
     remote_inputs: Option<(Entity<InputState>, Entity<InputState>)>,
@@ -227,25 +226,12 @@ impl SettingsWindow {
                 .step(WINDOW_OPACITY.step)
                 .default_value(s.window_opacity)
         });
-        let blur = cx.new(|_| {
-            SliderState::new()
-                .min(BACKGROUND_BLUR.min)
-                .max(BACKGROUND_BLUR.max)
-                .step(BACKGROUND_BLUR.step)
-                .default_value(s.background_blur)
-        });
         let mut subs = theme::attach(window, cx);
         subs.push(cx.subscribe(&opacity, |_, _, e: &SliderEvent, cx| {
             if let SliderEvent::Change(v) = e {
                 let floor = appearance_floor(Settings::get(cx));
                 let v = v.start().max(floor);
                 Settings::update(cx, |s| s.window_opacity = v);
-            }
-        }));
-        subs.push(cx.subscribe(&blur, |_, _, e: &SliderEvent, cx| {
-            if let SliderEvent::Change(v) = e {
-                let v = v.start();
-                Settings::update(cx, |s| s.background_blur = v);
             }
         }));
         let mut last_agent = s.browser_agent_control;
@@ -282,7 +268,6 @@ impl SettingsWindow {
             section,
             nav: 0,
             opacity,
-            blur,
             data: Data::default(),
             identity_inputs: None,
             remote_inputs: None,

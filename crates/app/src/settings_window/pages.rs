@@ -70,6 +70,9 @@ fn slider_row(slider: &Entity<SliderState>, label: String, disabled: bool) -> An
         .into_any_element()
 }
 
+/// What Background blur stores when switched on: the old app's middle radius.
+const BLUR_ON: f32 = 20.;
+
 pub fn appearance(w: &SettingsWindow, cx: &App) -> SettingPage {
     let s = Settings::get(cx);
     let mut theme = vec![segmented(
@@ -116,7 +119,7 @@ pub fn appearance(w: &SettingsWindow, cx: &App) -> SettingPage {
     // macOS only: elsewhere the window can't be made clear this way.
     if IS_MAC {
         let floor = appearance_floor(s);
-        let (opacity, blur) = (w.opacity.clone(), w.blur.clone());
+        let opacity = w.opacity.clone();
         theme.push(
             SettingItem::new(
                 "Window opacity",
@@ -136,22 +139,16 @@ pub fn appearance(w: &SettingsWindow, cx: &App) -> SettingPage {
                  menus stay solid, as does the window in full screen."
             )),
         );
+        // macOS blurs at one strength (an NSVisualEffectView): on or off. The setting keeps the
+        // old app's radius, any of which is on.
         theme.push(
-            SettingItem::new(
+            switch(
                 "Background blur",
-                SettingField::render(move |_, _, cx| {
-                    let s = Settings::get(cx);
-                    let (v, off) = (s.background_blur, s.window_opacity >= 100.);
-                    slider_row(&blur, format!("{v:.0} px"), off)
-                })
-                .on_reset(
-                    |cx| Settings::get(cx).background_blur != 0.,
-                    |_, cx| Settings::update(cx, |s| s.background_blur = 0.),
-                ),
+                "Blurs the desktop behind a see-through window. Off, it shows sharp.",
+                |s| s.background_blur > 0.,
+                |s, v| s.background_blur = if v { BLUR_ON } else { 0. },
             )
-            .description(
-                "How much the desktop behind a see-through window is blurred. 0 leaves it sharp.",
-            ),
+            .disabled(s.window_opacity >= 100.),
         );
         theme.push(
             switch(
@@ -1101,9 +1098,8 @@ pub fn browser(w: &SettingsWindow, cx: &App) -> SettingPage {
             .icon(IconName::Globe)
             .group(SettingGroup::new().item(SettingItem::render(|_, _, cx| {
                 note(
-                    "On Linux a browser tab opens localhost and 127.0.0.1 only, with nothing of \
-                     its own to keep or clear. The settings here are for macOS, where each tab \
-                     has a browser of its own.",
+                    "The browser tab needs macOS for now. The settings here are for macOS, \
+                     where each tab has a browser of its own.",
                     cx,
                 )
             })));

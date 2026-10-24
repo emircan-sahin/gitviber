@@ -329,6 +329,7 @@ impl CloneDialog {
             });
             cx.update(|cx| match done {
                 Ok(path) => {
+                    notify_if_away("Clone finished".into(), folder, cx);
                     Settings::update(cx, |s| s.clone_parent = Some(parent));
                     let _ = handle.update(cx, |_, window, cx| {
                         // A prompt still over it (a late fetch's) closes first.
@@ -339,11 +340,16 @@ impl CloneDialog {
                     });
                 }
                 Err(e) if e == CANCELLED => toast(Toast::info("Clone cancelled"), cx),
-                Err(_) => {}
+                Err(e) => notify_if_away("Clone failed".into(), e, cx),
             });
         }));
         cx.notify();
     }
+}
+
+/// "A git command ends" in Settings → Notifications, while the user isn't looking at the app.
+fn notify_if_away(title: String, body: String, cx: &mut App) {
+    gitviber_ui::notify_if_away(|s| s.notify_git, title, body, None, cx);
 }
 
 impl Render for CloneDialog {

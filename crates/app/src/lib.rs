@@ -25,9 +25,11 @@ mod welcome;
 mod workspace_view;
 
 use std::path::PathBuf;
+use std::rc::Rc;
 
+use gitviber_history::HistoryPanel;
 use gitviber_ui::assets::Assets;
-use gitviber_ui::{UiState, windows};
+use gitviber_ui::{UiState, Workspace, windows};
 use gpui_kit::App;
 
 pub use instance::second_launch;
@@ -82,7 +84,7 @@ pub fn init(cx: &mut App) {
     gitviber_github::init(cx);
     gitviber_review::init(cx);
     // Bridges last: they hand one feature's data to another's hooks.
-    gitviber_github::install_bridges(cx);
+    install_bridges(cx);
     settings_window::install(cx);
     help::install(cx);
     dialogs::install(cx);
@@ -94,6 +96,23 @@ pub fn init(cx: &mut App) {
     palette::import_legacy();
     // Every store has taken its keys in its init.
     gitviber_ui::legacy::finish();
+}
+
+fn install_bridges(cx: &mut App) {
+    gitviber_github::install_bridges(cx);
+    gitviber_files::explorer::set_history_handler(cx, Rc::new(show_history));
+}
+
+/// Show History: the History panel, narrowed to that file (or folder, `file` false).
+pub(crate) fn show_history(path: &str, file: bool, window: &mut gpui_kit::Window, cx: &mut App) {
+    let Some(ws) = Workspace::for_window(window, cx) else {
+        return;
+    };
+    ws.update(cx, |ws, cx| ws.show_panel(gitviber_history::PANEL, cx));
+    let panel = Workspace::ensure_panel(&ws, gitviber_history::PANEL, window, cx);
+    if let Some(p) = panel.and_then(|p| p.view().downcast::<HistoryPanel>().ok()) {
+        p.update(cx, |p, cx| p.show_history_of(path.to_string(), file, cx));
+    }
 }
 
 /// GITVIBER_SNAPSHOT_OPEN pictures more than the main window: `settings:<section>` the settings

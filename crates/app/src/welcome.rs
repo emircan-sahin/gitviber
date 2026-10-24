@@ -9,7 +9,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, IntoElement, ParentElement as _, Styled as _, div, img,
+    AnyElement, App, IntoElement, ParentElement as _, Styled as _, Window, div, img,
     prelude::FluentBuilder as _, px, rems,
 };
 
@@ -44,9 +44,10 @@ pub fn empty_center(cx: &App) -> AnyElement {
 }
 
 /// The window with no project open: open or clone one, or pick a saved one.
-pub fn no_project(cx: &App) -> AnyElement {
+pub fn no_project(window: &mut Window, cx: &mut App) -> AnyElement {
     let t = cx.app_theme().clone();
-    let has_recent = !UiState::get(cx).recent_projects.is_empty();
+    let recent = (!UiState::get(cx).recent_projects.is_empty())
+        .then(|| crate::projects::list("welcome-projects", None, None, false, None, window, cx));
     let open_key = gitviber_ui::keymap::shortcut_label("file.openRepo", cx);
     div()
         .size_full()
@@ -122,7 +123,7 @@ pub fn no_project(cx: &App) -> AnyElement {
                         )
                         .on_click(|_, window, cx| window.dispatch_action(Box::new(file::CloneRepo), cx)),
                 )
-                .when(has_recent, |d| {
+                .when_some(recent, |d, recent| {
                     d.child(
                         div()
                             .mt_6()
@@ -137,7 +138,7 @@ pub fn no_project(cx: &App) -> AnyElement {
                                     .text_color(t.subtle)
                                     .child("RECENT"),
                             )
-                            .child(crate::projects::list("welcome-projects", None, false, cx)),
+                            .child(recent),
                     )
                 }),
         )

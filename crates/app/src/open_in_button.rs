@@ -4,6 +4,7 @@
 
 use gitviber_ui::memory::Live;
 use gitviber_ui::open_in::{self, OpenTarget, grouped};
+use gitviber_ui::widgets::Pressable as _;
 use gitviber_ui::workspace::Selection;
 use gitviber_ui::{ActiveAppTheme, Workspace};
 use gpui_kit::assets::IconName;
@@ -180,6 +181,7 @@ impl Render for OpenInButton {
             .child(
                 div()
                     .id("status-open-in")
+                    .pressable(cx)
                     .flex()
                     .items_center()
                     .gap_1()

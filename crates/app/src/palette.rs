@@ -1,22 +1,20 @@
 //! The command palette (⇧⌘P) and quick open (⌘P), one box: a query starting with ">" lists the
 //! commands that apply where focus was, anything else the mode's rows: files (recently opened
-//! first), the changed files (Open Changed File), the other projects to start a terminal in (New
-//! Terminal in Project…), or an agent's past conversations in the worktree (Resume a
-//! Conversation…). Built when it opens and dropped when it closes. What was picked runs once the
-//! dialog is gone, from where focus was, so it lands where the user was working.
+//! first), the changed files (Open Changed File) or the other projects to start a terminal in (New
+//! Terminal in Project…). Built when it opens and dropped when it closes. What was picked runs once
+//! the dialog is gone, from where focus was, so it lands where the user was working.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gitviber_core::conversations::Conversation;
 use gitviber_core::git::FileChange;
 use gitviber_core::{Core, api};
 use gitviber_ui::fuzzy::{Match, fuzzy_match, match_path, prepare_query};
 use gitviber_ui::keymap::{self, Category, IS_MAC, ROOT_CONTEXT, bindings_for, format_chord};
 use gitviber_ui::memory::Live;
 use gitviber_ui::state::bump;
-use gitviber_ui::widgets::{ChangeKind, FileIcon, StatusLetter, relative_time};
+use gitviber_ui::widgets::{ChangeKind, FileIcon, StatusLetter};
 use gitviber_ui::workspace::{
     PanelContext, QuickItem, Registry, RunItem, Selection, Slot, Workspace,
 };
@@ -25,8 +23,8 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
 use gpui_kit::{
     Action, App, AppContext as _, Context, Entity, FocusHandle, FontWeight, Global, HighlightStyle,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    StyledText, Task, WeakEntity, Window, div, prelude::*, px,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString,
+    Styled as _, StyledText, Task, WeakEntity, Window, div, prelude::*, px,
 };
 use serde_json::Value;
 
@@ -41,7 +39,6 @@ pub enum Mode {
     Files,
     Changes,
     Projects,
-    Conversations,
 }
 
 enum Run {
@@ -58,7 +55,6 @@ enum Run {
     Change(Selection),
     Terminal {
         cwd: PathBuf,
-        command: Option<String>,
     },
 }
 
@@ -146,7 +142,7 @@ pub struct Palette {
     mode: Mode,
     query: SharedString,
     workspace: WeakEntity<Workspace>,
-    /// The worktree it opened on, for recent files and conversations.
+    /// The worktree it opened on, for recent files.
     root: Option<PathBuf>,
     /// The commands that applied where focus was, with their titles as listed.
     commands: Vec<(&'static keymap::Command, SharedString)>,
@@ -154,7 +150,6 @@ pub struct Palette {
     recent: Vec<String>,
     changes: Option<Vec<(Selection, Arc<FileChange>, &'static str)>>,
     projects: Vec<String>,
-    conversations: Option<Vec<Conversation>>,
     error: Option<SharedString>,
     rows: Vec<Row>,
     focus_return: Option<FocusHandle>,
@@ -297,7 +292,6 @@ impl Palette {
                 recent,
                 changes: None,
                 projects,
-                conversations: None,
                 error: None,
                 rows: Vec::new(),
                 focus_return,
@@ -325,43 +319,23 @@ impl Palette {
         });
     }
 
-    /// What a mode reads off the UI thread: the status, the conversations, read each time it's
-    /// asked for (a conversation started a minute ago is the likely one).
+    /// What a mode reads off the UI thread: the status, read each time it's asked for.
     fn load(&mut self, core: Arc<Core>, cx: &mut Context<Self>) {
-        match self.mode {
-            Mode::Changes => {
-                let read = cx.background_spawn(async move { api::changes::status(&core) });
-                self._load = Some(cx.spawn(async move |this, cx| {
-                    let status = read.await;
-                    let _ = this.update(cx, |p, cx| {
-                        match status {
-                            Ok(s) => p.changes = Some(changes_of(s)),
-                            Err(e) => p.error = Some(e.into()),
-                        }
-                        p.rank(cx);
-                        cx.notify();
-                    });
-                }));
-            }
-            Mode::Conversations => {
-                let Some(cwd) = self.root.clone() else { return };
-                let cwd = cwd.to_string_lossy().into_owned();
-                let read =
-                    cx.background_spawn(async move { api::app::agent_conversations(&core, cwd) });
-                self._load = Some(cx.spawn(async move |this, cx| {
-                    let list = read.await;
-                    let _ = this.update(cx, |p, cx| {
-                        match list {
-                            Ok(l) => p.conversations = Some(l),
-                            Err(e) => p.error = Some(e.into()),
-                        }
-                        p.rank(cx);
-                        cx.notify();
-                    });
-                }));
-            }
-            _ => {}
+        if self.mode != Mode::Changes {
+            return;
         }
+        let read = cx.background_spawn(async move { api::changes::status(&core) });
+        self._load = Some(cx.spawn(async move |this, cx| {
+            let status = read.await;
+            let _ = this.update(cx, |p, cx| {
+                match status {
+                    Ok(s) => p.changes = Some(changes_of(s)),
+                    Err(e) => p.error = Some(e.into()),
+                }
+                p.rank(cx);
+                cx.notify();
+            });
+        }));
     }
 
     fn rank(&mut self, cx: &App) {
@@ -427,38 +401,10 @@ impl Palette {
                         hint: None,
                         path: false,
                         status: None,
-                        run: Run::Terminal {
-                            cwd: path.into(),
-                            command: None,
-                        },
+                        run: Run::Terminal { cwd: path.into() },
                     }
                 })
                 .collect(),
-            Mode::Conversations => {
-                let list = self.conversations.as_deref().unwrap_or_default();
-                let now = gitviber_ui::widgets::now_unix();
-                rank(&query, list, |c| c.title.as_str(), false, |_| None)
-                    .into_iter()
-                    .map(|(at, m)| {
-                        let c = &list[at];
-                        let when = relative_time(c.modified as i64, now);
-                        Row {
-                            label: c.title.clone().into(),
-                            hits: m.hits,
-                            hint: Some(match &c.branch {
-                                Some(b) => format!("{b} · {when}").into(),
-                                None => when.into(),
-                            }),
-                            path: false,
-                            status: None,
-                            run: Run::Terminal {
-                                cwd: self.root.clone().unwrap_or_default(),
-                                command: Some(c.command.clone()),
-                            },
-                        }
-                    })
-                    .collect()
-            }
         };
     }
 
@@ -539,15 +485,38 @@ impl Palette {
                     }
                 });
             }
-            Run::Terminal { cwd, command } => {
-                let (cwd, command, ws) = (cwd.clone(), command.clone(), self.workspace.clone());
+            Run::Terminal { cwd } => {
+                let (cwd, ws) = (cwd.clone(), self.workspace.clone());
                 window.defer(cx, move |window, cx| {
                     if let Some(ws) = ws.upgrade() {
-                        open_terminal(&ws, cwd, command, window, cx);
+                        open_terminal(&ws, cwd, window, cx);
                     }
                 });
             }
         }
+    }
+
+    /// PgUp / PgDn: ten rows at a time, stopping at the ends.
+    fn page(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let k = &e.keystroke;
+        let dir: isize = match k.key.as_str() {
+            "pageup" => -10,
+            "pagedown" => 10,
+            _ => return,
+        };
+        if k.modifiers.modified() {
+            return;
+        }
+        cx.stop_propagation();
+        let state = self.state.read(cx);
+        let Some(last) = state.matched_count().checked_sub(1) else {
+            return;
+        };
+        let at = state.selected_index().map_or(0, |i| i.row);
+        let to = (at as isize + dir).clamp(0, last as isize) as usize;
+        self.state.update(cx, |s, cx| {
+            s.set_selected_index(Some(gpui_kit::component::IndexPath::new(to)), window, cx)
+        });
     }
 
     fn switch(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
@@ -586,19 +555,6 @@ impl Palette {
             return e.clone();
         }
         match self.mode {
-            Mode::Conversations => match &self.conversations {
-                None => "Looking for conversations…".into(),
-                Some(l) if l.is_empty() => {
-                    let name = self
-                        .root
-                        .as_ref()
-                        .and_then(|r| r.file_name())
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    format!("No Claude Code conversations in {name} yet").into()
-                }
-                Some(_) => "No matching conversations".into(),
-            },
             Mode::Changes => match &self.changes {
                 None => "Reading the changes…".into(),
                 Some(l) if l.is_empty() => "No changes".into(),
@@ -620,27 +576,20 @@ impl Palette {
         match self.mode {
             Mode::Changes => "Open a changed file's diff · type > for commands",
             Mode::Projects => "Open a terminal in a project · type > for commands",
-            Mode::Conversations => "Resume a conversation · type > for commands",
             _ => "Search files by name · type > for commands",
         }
     }
 }
 
-/// A new terminal tab in `cwd`, typing `command` at its prompt, the window staying where it is.
-pub fn open_terminal(
-    ws: &Entity<Workspace>,
-    cwd: PathBuf,
-    command: Option<String>,
-    window: &mut Window,
-    cx: &mut App,
-) {
+/// A new terminal tab in `cwd`, the window staying where it is.
+pub fn open_terminal(ws: &Entity<Workspace>, cwd: PathBuf, window: &mut Window, cx: &mut App) {
     let Some(panel) = Workspace::ensure_panel(ws, "terminal", window, cx)
         .and_then(|p| p.view().downcast::<gitviber_terminal::TerminalPanel>().ok())
     else {
         return;
     };
     ws.update(cx, |ws, cx| ws.set_open(Slot::Bottom, true, cx));
-    panel.update(cx, |p, cx| p.open_terminal(cwd, command, window, cx));
+    panel.update(cx, |p, cx| p.open_terminal(cwd, None, window, cx));
 }
 
 /// `text` with the matched characters (char indices) in semibold.
@@ -712,6 +661,7 @@ impl Render for Palette {
         div()
             // The palette's own keys switch it over, and the app's other keys stay out.
             .key_context(ROOT_CONTEXT)
+            .on_key_down(cx.listener(Self::page))
             .on_action(
                 cx.listener(|this, _: &workbench::ShowCommands, window, cx| {
                     this.switch(Mode::Commands, window, cx)
