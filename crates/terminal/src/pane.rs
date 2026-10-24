@@ -19,7 +19,8 @@ use gpui::{
     ExternalPaths, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent,
     Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
     PinchEvent, Pixels, Point, PromptLevel, Render, ScrollDelta, ScrollWheelEvent, Size,
-    Styled as _, Subscription, Task, UTF16Selection, Window, div, prelude::FluentBuilder as _, px,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, UTF16Selection, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_kit::component::menu::ContextMenuExt as _;
 
@@ -402,6 +403,24 @@ impl TerminalPane {
         let emu = self.session.emu.lock();
         let top = -(emu.term.grid().display_offset() as i32);
         top..top + emu.term.screen_lines() as i32
+    }
+
+    /// What the screen shows, as a screen reader reads it: a wrapped line whole, no trailing
+    /// blanks.
+    pub fn screen_text(&self) -> String {
+        let emu = self.session.emu.lock();
+        let term = &emu.term;
+        let top = -(term.grid().display_offset() as i32);
+        let text = term.bounds_to_string(
+            GridPoint::new(Line(top), Column(0)),
+            GridPoint::new(
+                Line(top + term.screen_lines() as i32 - 1),
+                term.last_column(),
+            ),
+        );
+        let text = strip_marks(text);
+        let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
+        lines.join("\n").trim_end().to_string()
     }
 
     pub(crate) fn set_config(&mut self, config: TerminalConfig, cx: &mut Context<Self>) {
@@ -1587,8 +1606,20 @@ impl TerminalPane {
 }
 
 impl Render for TerminalPane {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let primary = self.theme.primary;
+        // Only while VoiceOver listens: the text is read from the grid each frame. It hears what
+        // the screen shows when it reads the pane; new output isn't announced (GPUI has no live
+        // regions).
+        let a11y = (self.config.screen_reader && window.is_a11y_active()).then(|| {
+            let name = self.title().map(String::from).unwrap_or_else(|| {
+                let dir = self.dir();
+                dir.file_name()
+                    .map_or_else(|| dir.to_string_lossy(), |n| n.to_string_lossy())
+                    .into_owned()
+            });
+            (format!("Terminal, {name}"), self.screen_text())
+        });
         let weak = cx.entity().downgrade();
         let focus = self.focus.clone();
         let hovered = self
@@ -1605,6 +1636,11 @@ impl Render for TerminalPane {
             .size_full()
             .relative()
             .opacity(1. - self.dim)
+            .when_some(a11y, |d, (label, text)| {
+                d.role(gpui::Role::Terminal)
+                    .aria_label(label)
+                    .aria_value(text)
+            })
             .on_key_down(cx.listener(Self::key_down))
             .on_action(cx.listener(Self::on_copy))
             .on_action(cx.listener(Self::on_paste))

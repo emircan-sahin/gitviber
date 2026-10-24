@@ -50,6 +50,8 @@ pub struct TerminalConfig {
     pub shell_integration: bool,
     /// `terminalInactiveDim`: percent a split's other panes fade.
     pub inactive_dim: f32,
+    /// `terminalScreenReader`: each pane tells VoiceOver what its screen shows.
+    pub screen_reader: bool,
 }
 
 impl Default for TerminalConfig {
@@ -69,6 +71,7 @@ impl Default for TerminalConfig {
             option_as_meta: OptionAsMeta::Off,
             shell_integration: true,
             inactive_dim: 20.,
+            screen_reader: false,
         }
     }
 }

@@ -182,6 +182,12 @@ pub struct TerminalPanel {
     split_bounds: SplitBounds,
     killing: bool,
     focus: FocusHandle,
+    /// The tab strip, reached by keyboard only (a click goes into the terminal).
+    strip_focus: FocusHandle,
+    /// Branches of tabs outside the repo's worktrees, by tab, read once as each first shows:
+    /// nothing watches that folder, so a checkout there shows on a new tab.
+    outside_branches: HashMap<u64, Option<String>>,
+    branch_reads: HashMap<u64, Task<()>>,
     /// Set when the panel lives in a workspace: its project's worktree, Settings and theme.
     bound: Option<Bound>,
 }
@@ -215,6 +221,59 @@ pub fn save_before_quit(cx: &mut App) {
     for panel in live.0.clone().iter().filter_map(|p| p.upgrade()) {
         panel.update(cx, |p, cx| p.save_at_quit(cx));
     }
+}
+
+/// A split's pane in its tab's tooltip, by the number its header shows: "2 · api — Claude Code
+/// working".
+fn pane_line(n: usize, title: &str, look: Option<&str>) -> String {
+    match look {
+        Some(look) => format!("{n} · {title} — {look}"),
+        None => format!("{n} · {title}"),
+    }
+}
+
+/// A tab's tooltip, and what a screen reader says for it: its name, where it runs (and what, for
+/// one pane), then a split's panes a line each, or the one dot's state. Read aloud, the branch
+/// is in it and "; pane" goes between panes so one doesn't run into the next.
+fn tab_label(
+    name: Option<&str>,
+    cwd: &str,
+    program: Option<&str>,
+    branch: Option<&str>,
+    lines: &[String],
+    look: Option<&str>,
+) -> (String, String) {
+    let split = !lines.is_empty();
+    let where_ = match program.filter(|_| !split) {
+        Some(p) => format!("{cwd} · {p}"),
+        None => cwd.to_string(),
+    };
+    let head = match name {
+        Some(n) => format!("{n} · {where_}"),
+        None => where_,
+    };
+    let tip = match (split, look) {
+        (true, _) => std::iter::once(head.clone())
+            .chain(lines.iter().cloned())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        (false, Some(look)) => format!("{head} · {look}"),
+        (false, None) => head.clone(),
+    };
+    let count = split.then(|| format!("{} panes", lines.len()));
+    let mut aria = [
+        Some(head),
+        branch.map(String::from),
+        count.or(look.map(String::from)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ");
+    for l in lines {
+        aria.push_str(&format!("; pane {l}"));
+    }
+    (tip, aria)
 }
 
 /// The key that flips a find option, Monaco's: ⌥⌘C / ⌥⌘W / ⌥⌘R on macOS, Alt+C / Alt+W / Alt+R
@@ -324,6 +383,7 @@ pub fn config_from(s: &Settings, t: &AppTheme) -> TerminalConfig {
         },
         shell_integration: s.shell_integration,
         inactive_dim: s.terminal_inactive_dim as f32,
+        screen_reader: s.terminal_screen_reader,
     }
 }
 
@@ -402,6 +462,9 @@ impl TerminalPanel {
             split_bounds: Rc::default(),
             killing: false,
             focus: cx.focus_handle(),
+            strip_focus: cx.focus_handle().tab_stop(true),
+            outside_branches: HashMap::new(),
+            branch_reads: HashMap::new(),
             bound: None,
         }
     }
@@ -618,8 +681,9 @@ impl TerminalPanel {
         }
     }
 
-    /// The repo's other worktrees a terminal can open in, with their branches.
-    fn other_worktrees(&self, cx: &App) -> Vec<WorktreeInfo> {
+    /// The repo's worktrees a terminal can open in, with their branches; empty until refs has
+    /// listed them.
+    fn repo_worktrees(&self, cx: &App) -> Vec<WorktreeInfo> {
         let mut out: Vec<WorktreeInfo> = self.worktrees.clone();
         if let Some(repo) = self
             .workspace()
@@ -636,8 +700,72 @@ impl TerminalPanel {
                 }
             }
         }
+        out
+    }
+
+    /// The repo's other worktrees, for the ▾ menu.
+    fn other_worktrees(&self, cx: &App) -> Vec<WorktreeInfo> {
+        let mut out = self.repo_worktrees(cx);
         out.retain(|w| w.path != self.root);
         out
+    }
+
+    /// Reads the branch of each shown tab outside `listed` once; forgets closed tabs'.
+    fn read_outside_branches(&mut self, listed: &[WorktreeInfo], cx: &mut Context<Self>) {
+        // Worktrees not listed yet: every tab would look outside.
+        if listed.is_empty() {
+            return;
+        }
+        let live: std::collections::HashSet<u64> = self
+            .sets
+            .values()
+            .flat_map(|s| s.groups.iter().map(|g| g.id))
+            .collect();
+        self.outside_branches.retain(|id, _| live.contains(id));
+        self.branch_reads.retain(|id, _| live.contains(id));
+        let new: Vec<(u64, PathBuf)> = self
+            .set()
+            .map(|s| s.groups.iter())
+            .into_iter()
+            .flatten()
+            .filter(|g| !self.outside_branches.contains_key(&g.id))
+            .filter_map(|g| {
+                Some((
+                    g.id,
+                    self.panes
+                        .get(&g.panes[0])?
+                        .view
+                        .read(cx)
+                        .cwd()
+                        .to_path_buf(),
+                ))
+            })
+            .filter(|(_, cwd)| !listed.iter().any(|w| &w.path == cwd))
+            .collect();
+        for (gid, cwd) in new {
+            self.outside_branches.insert(gid, None);
+            let core = self.core.clone();
+            let path = cwd.to_string_lossy().into_owned();
+            let read = cx.spawn(async move |this, cx| {
+                let branch = cx
+                    .background_spawn(async move {
+                        gitviber_core::api::repo::folder_branch(&core, path)
+                            .ok()
+                            .flatten()
+                    })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.branch_reads.remove(&gid);
+                    if let Some(slot) = this.outside_branches.get_mut(&gid)
+                        && branch.is_some()
+                    {
+                        *slot = branch;
+                        cx.notify();
+                    }
+                });
+            });
+            self.branch_reads.insert(gid, read);
+        }
     }
 
     /// The saved projects other than this one: a terminal there leaves the window on this one.
@@ -997,7 +1125,8 @@ impl TerminalPanel {
                 ws.update(cx, |ws, cx| ws.focus_center(window, cx));
             }
             cx.emit(PanelEvent::Empty);
-        } else {
+        } else if !self.strip_focus.is_focused(window) {
+            // ⌫ on the tabs stays on them.
             self.focus_active(window, cx);
         }
         cx.notify();
@@ -1232,6 +1361,59 @@ impl TerminalPanel {
         self.set_mut().active = Some(gid);
         self.apply_dims(cx);
         self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    /// Keys on the focused tab strip: ←/→ (Home/End) open another tab and stay on the strip, ↵ or
+    /// Space go into the terminal, ⌫ kills it. ⌥←/⌥→ are tab.moveLeft/moveRight (`move_group`).
+    fn strip_key(&mut self, e: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(set) = self.set() else { return };
+        // A tab's name field has its own keys (a space is typed).
+        if !self.strip_focus.is_focused(window)
+            || e.keystroke.modifiers.modified()
+            || set.groups.is_empty()
+        {
+            return;
+        }
+        let ids: Vec<u64> = set.groups.iter().map(|g| g.id).collect();
+        let at = ids
+            .iter()
+            .position(|id| Some(*id) == set.active)
+            .unwrap_or(0);
+        let last = ids.len() - 1;
+        match e.keystroke.key.as_str() {
+            "left" | "right" | "home" | "end" => {
+                let to = match e.keystroke.key.as_str() {
+                    "left" => at.saturating_sub(1),
+                    "right" => (at + 1).min(last),
+                    "home" => 0,
+                    _ => last,
+                };
+                self.set_mut().active = Some(ids[to]);
+                self.apply_dims(cx);
+                cx.notify();
+            }
+            "enter" | "space" => self.focus_active(window, cx),
+            "backspace" | "delete" => self.close_group(ids[at], window, cx),
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
+
+    /// The open tab a place left (-1) or right (1).
+    fn move_group(&mut self, by: isize, cx: &mut Context<Self>) {
+        let Some(set) = self.sets.get_mut(&self.root) else {
+            return;
+        };
+        let Some(at) = set.groups.iter().position(|g| Some(g.id) == set.active) else {
+            return;
+        };
+        let to = at as isize + by;
+        if to < 0 || to as usize >= set.groups.len() {
+            return;
+        }
+        set.groups.swap(at, to as usize);
+        self.save_soon(cx);
         cx.notify();
     }
 
@@ -1628,14 +1810,28 @@ impl TerminalPanel {
             .unwrap_or_default();
         let active = self.set().and_then(|s| s.active);
         let alone = set_groups.len() == 1;
+        let listed = self.repo_worktrees(cx);
+        self.read_outside_branches(&listed, cx);
+        let strip_focused = self.strip_focus.is_focused(window);
         let mut tabs = h_flex()
             .id("terminal-tabs")
+            .track_focus(&self.strip_focus)
+            .key_context("TabStrip")
+            .role(gpui::Role::TabList)
+            .aria_label("Terminals")
+            // A click goes into the terminal (the tab's own handler), not to the strip.
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+            .on_key_down(cx.listener(Self::strip_key))
+            .on_action(cx.listener(|this, _: &tab::MoveLeft, _, cx| this.move_group(-1, cx)))
+            .on_action(cx.listener(|this, _: &tab::MoveRight, _, cx| this.move_group(1, cx)))
             .flex_1()
             .min_w_0()
             .h_full()
             .overflow_x_scroll();
         for (gid, _) in &set_groups {
-            tabs = tabs.child(self.render_tab(*gid, Some(*gid) == active, alone, window, cx));
+            let active = Some(*gid) == active;
+            let ring = active && strip_focused;
+            tabs = tabs.child(self.render_tab(*gid, active, ring, alone, &listed, cx));
         }
         let group = self.active_group().map(|g| {
             (
@@ -1860,8 +2056,9 @@ impl TerminalPanel {
         &self,
         gid: u64,
         active: bool,
+        ring: bool,
         alone: bool,
-        window: &mut Window,
+        listed: &[WorktreeInfo],
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let t = &self.theme;
@@ -1882,16 +2079,39 @@ impl TerminalPanel {
             .get(&g.panes[0])
             .map(|s| s.view.read(cx).cwd().to_path_buf())
             .unwrap_or_default();
-        let branch = self
-            .worktrees
-            .iter()
-            .find(|w| w.path == cwd)
-            .and_then(|w| w.branch.clone());
+        let branch = match listed.iter().find(|w| w.path == cwd) {
+            Some(w) => w.branch.clone(),
+            None => self.outside_branches.get(&gid).cloned().flatten(),
+        };
         let here = cwd == self.root;
         let hue = self.tab_hue(&cwd, cx);
         let order = layout::pane_order(&g.layout);
         let look = crate::agent::most_urgent(g.panes.iter().map(|id| self.look_of_pane(*id)));
         let look_tip = look.map(|l| self.look_label(&g.panes, l));
+        let lines: Vec<String> = if order.len() > 1 {
+            order
+                .iter()
+                .enumerate()
+                .map(|(i, &id)| {
+                    let look = self.look_of_pane(id).map(|l| self.look_label(&[id], l));
+                    pane_line(i + 1, &self.pane_title(id, cx), look.as_deref())
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+        let program = self
+            .panes
+            .get(&g.panes[0])
+            .and_then(|s| s.view.read(cx).title().map(String::from));
+        let (tip, aria) = tab_label(
+            g.name.as_deref(),
+            &cwd.to_string_lossy(),
+            program.as_deref(),
+            branch.as_deref(),
+            &lines,
+            look_tip.as_deref(),
+        );
         let focused = g.focused;
         // A split's panes by number, each in its agent's look; else the tab's one dot.
         let dots = if order.len() > 1 {
@@ -1915,22 +2135,17 @@ impl TerminalPanel {
         } else {
             look.map(|l| attention::look_dot(l, cx))
         };
-        let dots = dots.map(|d| {
-            div()
-                .id(("tab-look", gid))
-                .flex()
-                .items_center()
-                .child(d)
-                .when_some(look_tip, |d, tip| {
-                    d.tooltip(move |window, cx| {
-                        gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
-                    })
-                })
-        });
+        let dots = dots.map(|d| div().flex().items_center().child(d));
         let weak = cx.entity().downgrade();
-        let _ = window;
         div()
             .id(("terminal-tab", gid))
+            .role(gpui::Role::Tab)
+            .aria_label(aria)
+            .aria_selected(active)
+            // The dot's state, where it runs, a split's panes a line each.
+            .tooltip(move |window, cx| {
+                gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+            })
             .group("terminal-tab")
             .relative()
             .flex()
@@ -1959,6 +2174,16 @@ impl TerminalPanel {
                         .right_0()
                         .h(px(2.))
                         .bg(t.primary),
+                )
+            })
+            // The strip has the keys: the open tab says so.
+            .when(ring, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .border_1()
+                        .border_color(t.primary.opacity(0.6)),
                 )
             })
             // Its worktree's color, as the worktree picker shows it.
@@ -2346,7 +2571,9 @@ impl TerminalPanel {
                 .key_context("TerminalFind")
                 .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, _, cx| {
                     let k = &e.keystroke;
-                    if let Some(which) = find_option_key(&k.key, &k.modifiers, cfg!(target_os = "macos")) {
+                    if let Some(which) =
+                        find_option_key(&k.key, &k.modifiers, cfg!(target_os = "macos"))
+                    {
                         cx.stop_propagation();
                         this.toggle_find_option(which, cx);
                     }
@@ -2575,17 +2802,133 @@ mod tests {
 
     #[test]
     fn find_options_flip_on_monacos_keys() {
-        let m = |alt, platform, shift, control| gpui::Modifiers { alt, platform, shift, control, ..Default::default() };
-        assert_eq!(find_option_key("c", &m(true, true, false, false), true), Some(0));
-        assert_eq!(find_option_key("w", &m(true, true, false, false), true), Some(1));
-        assert_eq!(find_option_key("r", &m(true, false, false, false), false), Some(2));
+        let m = |alt, platform, shift, control| gpui::Modifiers {
+            alt,
+            platform,
+            shift,
+            control,
+            ..Default::default()
+        };
+        assert_eq!(
+            find_option_key("c", &m(true, true, false, false), true),
+            Some(0)
+        );
+        assert_eq!(
+            find_option_key("w", &m(true, true, false, false), true),
+            Some(1)
+        );
+        assert_eq!(
+            find_option_key("r", &m(true, false, false, false), false),
+            Some(2)
+        );
         // ⌥C alone types ç on a Mac; ⌥⌘C elsewhere is the desktop's; Shift is another key.
-        assert_eq!(find_option_key("c", &m(true, false, false, false), true), None);
-        assert_eq!(find_option_key("c", &m(true, true, false, false), false), None);
-        assert_eq!(find_option_key("c", &m(true, true, true, false), true), None);
-        assert_eq!(find_option_key("x", &m(true, true, false, false), true), None);
+        assert_eq!(
+            find_option_key("c", &m(true, false, false, false), true),
+            None
+        );
+        assert_eq!(
+            find_option_key("c", &m(true, true, false, false), false),
+            None
+        );
+        assert_eq!(
+            find_option_key("c", &m(true, true, true, false), true),
+            None
+        );
+        assert_eq!(
+            find_option_key("x", &m(true, true, false, false), true),
+            None
+        );
     }
-    use gpui::TestAppContext;
+    #[test]
+    fn a_tab_says_where_it_runs_and_a_split_each_pane() {
+        let (tip, aria) = tab_label(
+            None,
+            "/w/a",
+            Some("vim"),
+            Some("main"),
+            &[],
+            Some("Claude Code working"),
+        );
+        assert_eq!(tip, "/w/a · vim · Claude Code working");
+        assert_eq!(aria, "/w/a · vim · main · Claude Code working");
+        let lines = [
+            pane_line(1, "srv", None),
+            pane_line(2, "claude", Some("Claude Code asks")),
+        ];
+        let (tip, aria) = tab_label(Some("api"), "/w/b", Some("ignored"), None, &lines, None);
+        assert_eq!(tip, "api · /w/b\n1 · srv\n2 · claude — Claude Code asks");
+        assert_eq!(
+            aria,
+            "api · /w/b · 2 panes; pane 1 · srv; pane 2 · claude — Claude Code asks"
+        );
+        assert_eq!(
+            tab_label(None, "/", None, None, &[], None),
+            ("/".into(), "/".into())
+        );
+    }
+
+    use gpui::{TestAppContext, VisualTestContext};
+
+    /// The focused strip: arrows open tabs and keep the keys, ⌥→ moves the open tab, ↵ goes in;
+    /// a screen reader gets the pane's screen without trailing blanks.
+    #[gpui::test]
+    fn the_focused_tab_strip_takes_the_arrows(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::init(cx);
+        });
+        let core = Arc::new(Core::new(Arc::new(|_| {})));
+        let dir = std::env::temp_dir();
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            TerminalPanel::new(
+                core.clone(),
+                dir.clone(),
+                TerminalConfig::default(),
+                TerminalTheme::dark(),
+                window,
+                cx,
+            )
+        });
+        for _ in 0..3 {
+            panel.update_in(cx, |p, window, cx| {
+                p.open_terminal(dir.clone(), None, window, cx)
+            });
+        }
+        let groups = |cx: &mut VisualTestContext| {
+            panel.read_with(cx, |p, _| {
+                let s = p.set().expect("a set");
+                (s.groups.iter().map(|g| g.id).collect::<Vec<_>>(), s.active)
+            })
+        };
+        let (ids, active) = groups(cx);
+        assert_eq!(active, Some(ids[2]));
+        panel.update_in(cx, |p, window, cx| window.focus(&p.strip_focus, cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_keystrokes("home");
+        assert_eq!(groups(cx).1, Some(ids[0]));
+        cx.simulate_keystrokes("right left right");
+        assert_eq!(groups(cx).1, Some(ids[1]));
+        cx.simulate_keystrokes("end right");
+        assert_eq!(groups(cx).1, Some(ids[2]));
+        assert!(cx.update(|window, cx| panel.read(cx).strip_focus.is_focused(window)));
+        panel.update(cx, |p, cx| p.move_group(-1, cx));
+        assert_eq!(groups(cx), (vec![ids[0], ids[2], ids[1]], Some(ids[2])));
+        panel.update(cx, |p, cx| p.move_group(-1, cx));
+        panel.update(cx, |p, cx| p.move_group(-1, cx));
+        assert_eq!(groups(cx).0, vec![ids[2], ids[0], ids[1]]);
+        cx.simulate_keystrokes("enter");
+        let pane = panel.read_with(cx, |p, _| p.active_pane()).expect("a pane");
+        assert!(cx.update(|window, cx| pane.read(cx).focus_handle(cx).is_focused(window)));
+        let text = pane.update(cx, |p, _| {
+            p.session.emu.lock().feed(b"\x1b[2J\x1b[Hone  \r\ntwo\r\n");
+            p.screen_text()
+        });
+        assert!(text.starts_with("one\ntwo"), "{text:?}");
+        assert!(text.lines().all(|l| l.trim_end() == l));
+        panel.update(cx, |p, cx| p.close_all(cx));
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+    }
 
     /// Terminals opened and closed leave no entity behind: no task, subscription or callback
     /// holds a pane, so its terminal and scrollback go with it.
