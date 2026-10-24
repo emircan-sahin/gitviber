@@ -188,6 +188,39 @@ pub fn worktree_agent(worktree: &Path, cx: &App) -> Option<PaneAgent> {
     })
 }
 
+/// What quitting would stop in every window's terminals, as `agent::quit_stops` words it: an
+/// agent mid-turn, a command running. Not an agent done with its turn, which the next run
+/// resumes. Each pane's foreground job is asked of core off the UI thread.
+pub fn stopped_by_quit(cx: &App) -> gpui::Task<Vec<String>> {
+    let panes: Vec<(u32, Option<PaneAgent>)> = cx
+        .try_global::<LivePanels>()
+        .map(|live| {
+            live.0
+                .iter()
+                .filter_map(|p| p.upgrade())
+                .flat_map(|p| {
+                    p.read(cx)
+                        .panes
+                        .values()
+                        .filter_map(|s| Some((s.view.read(cx).pty_id()?, s.agent.clone())))
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if panes.is_empty() || !gitviber_ui::has_core(cx) {
+        return gpui::Task::ready(Vec::new());
+    }
+    let core = gitviber_ui::core(cx);
+    cx.background_spawn(async move {
+        let busy: Vec<(bool, Option<&PaneAgent>)> = panes
+            .iter()
+            .map(|(id, a)| (core.ptys.busy(Some(&[*id])) > 0, a.as_ref()))
+            .collect();
+        agent::quit_stops(&busy)
+    })
+}
+
 /// Pastes `text` into the pane an agent runs in, in `worktree`, and sends it: false when none does.
 pub fn paste_to_agent(worktree: &Path, text: &str, window: &mut Window, cx: &mut App) -> bool {
     let Some(live) = cx.try_global::<LivePanels>() else {

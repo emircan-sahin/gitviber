@@ -5,136 +5,24 @@ use std::collections::BTreeMap;
 
 use gitviber_core::suggest::{Agent, Reads};
 
-/// How a known CLI takes a model and an effort, and the flags that make it start fast.
-#[derive(Debug)]
-pub struct Preset {
-    pub key: &'static str,
-    pub label: &'static str,
-    pub command: &'static str,
-    pub model_flag: &'static str,
-    /// The default until the user types one: new models come out every few months.
-    pub model: &'static str,
-    /// The flag (a trailing `=` takes the level joined), its levels, and the level until one is
-    /// picked ("" is the CLI's own).
-    pub effort: Option<(&'static str, &'static [&'static str], &'static str)>,
-    /// Flags every run gets, then the tools a guided review may use, or none for the rest.
-    pub lean: Option<(&'static str, &'static str, &'static str)>,
-    /// Its bare program is an interactive session of its own, which Ask Agent opens.
-    pub session: bool,
-}
-
-pub const PRESETS: &[Preset] = &[
-    Preset {
-        key: "claude",
-        label: "Claude Code",
-        command: "claude -p",
-        model_flag: "--model",
-        // The alias follows the newest Sonnet; a pinned id stayed on the older one.
-        model: "sonnet",
-        effort: Some((
-            "--effort",
-            &["low", "medium", "high", "xhigh", "max"],
-            "medium",
-        )),
-        // Measured on a 5-line commit: 50 s and 6 turns with the user's MCP servers, skills and
-        // xhigh effort; 8 s and 1 turn with these and medium. Read is all a guided review needs.
-        lean: Some((
-            "--strict-mcp-config --no-session-persistence --disable-slash-commands",
-            "--tools Read,Grep,Glob",
-            "--tools \"\"",
-        )),
-        session: false,
-    },
-    Preset {
-        key: "codex",
-        label: "Codex",
-        command: "codex exec",
-        model_flag: "-m",
-        model: "gpt-6-luna",
-        // A config override, one argument: core runs argv without a shell.
-        effort: Some((
-            "-c model_reasoning_effort=",
-            &["minimal", "low", "medium", "high", "xhigh"],
-            "medium",
-        )),
-        lean: None,
-        session: true,
-    },
-    // The plan agent can't edit files; the default build agent can.
-    Preset {
-        key: "opencode",
-        label: "opencode",
-        command: "opencode run --agent plan",
-        model_flag: "-m",
-        model: "anthropic/claude-sonnet-5",
-        effort: Some((
-            "--variant",
-            &["minimal", "low", "medium", "high", "xhigh", "max"],
-            "",
-        )),
-        lean: None,
-        session: true,
-    },
-    Preset {
-        key: "pi",
-        label: "pi",
-        command: "pi -p --no-tools --no-session",
-        model_flag: "--model",
-        model: "anthropic/claude-sonnet-5",
-        effort: Some((
-            "--thinking",
-            &["off", "minimal", "low", "medium", "high", "xhigh", "max"],
-            "medium",
-        )),
-        lean: None,
-        session: true,
-    },
-    Preset {
-        key: "llm",
-        label: "llm",
-        command: "llm",
-        model_flag: "-m",
-        model: "gpt-6-luna",
-        // Only `-o reasoning_effort` for some OpenAI models.
-        effort: None,
-        lean: None,
-        session: false,
-    },
-];
+/// How a known CLI takes a model and an effort, and the flags that make it start fast: the one
+/// table Settings and the commit box read too.
+pub use gitviber_ui::settings::{AGENT_PRESETS as PRESETS, AgentPreset as Preset};
 
 pub type Models = BTreeMap<String, String>;
 
 pub fn preset_of(command: &str) -> Option<&'static Preset> {
-    PRESETS.iter().find(|p| p.command == command.trim())
+    Preset::of(command)
 }
 
 /// The model a preset runs with: the user's id, or the default until they type one.
 pub fn model_of(p: &Preset, models: &Models) -> String {
-    models
-        .get(p.key)
-        .map_or(p.model, String::as_str)
-        .trim()
-        .to_string()
+    p.model_in(models)
 }
 
 /// The effort a preset runs with: the user's, or its default until they pick one.
 pub fn effort_of(p: &Preset, efforts: &Models) -> String {
-    match p.effort {
-        Some((_, _, default)) => efforts
-            .get(p.key)
-            .map_or(default, String::as_str)
-            .to_string(),
-        None => String::new(),
-    }
-}
-
-fn effort_arg(p: &Preset, level: &str) -> String {
-    let flag = p.effort.map_or("", |e| e.0);
-    if flag.ends_with('=') {
-        format!("{flag}{level}")
-    } else {
-        format!("{flag} {level}")
-    }
+    p.effort_in(efforts)
 }
 
 /// The command as run: a preset's with its lean (`reads`: a guided review's), model and effort
@@ -146,22 +34,7 @@ pub fn command_line(
     reads: bool,
     lean: bool,
 ) -> String {
-    let Some(p) = preset_of(command) else {
-        return command.to_string();
-    };
-    let mut parts = vec![command.trim().to_string()];
-    if lean && let Some((flags, tools, none)) = p.lean {
-        parts.push(format!("{flags} {}", if reads { tools } else { none }));
-    }
-    let model = model_of(p, models);
-    if !model.is_empty() {
-        parts.push(format!("{} {model}", p.model_flag));
-    }
-    let effort = effort_of(p, efforts);
-    if !effort.is_empty() {
-        parts.push(effort_arg(p, &effort));
-    }
-    parts.join(" ")
+    gitviber_ui::settings::command_line(command, models, efforts, reads, lean)
 }
 
 /// What a guided review runs: its own command, models and efforts, or Commit Messages' where it

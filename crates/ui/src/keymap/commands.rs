@@ -25,7 +25,7 @@ macro_rules! modules {
 modules! {
 workbench: [ShowCommands, QuickOpen, OpenChange, OpenSettings, ShortcutOverlay],
     file: [OpenRepo, CloneRepo, SwitchProject, Save, Reveal, RevealInExplorer, OpenIn],
-    window: [Reload, Minimize, Zoom, ToggleFullScreen, BringAllToFront],
+    window: [Minimize, Zoom, ToggleFullScreen, BringAllToFront],
     repo: [Refresh],
     tab: [Close, Goto1, Goto2, Goto3, Goto4, Goto5, Goto6, CloseOthers, CloseLeft, CloseRight, CloseAll, ReopenClosed, Goto7, Goto8, Last, Next, Prev, MoveLeft, MoveRight],
     view: [Changes, History, Pulls, Issues, ToggleGitPanel, ToggleExplorer, FocusGitPanel, FocusCode, ShowExplorer, FocusNextPanel, FocusPrevPanel, ZoomIn, ZoomOut, ZoomReset],
@@ -94,8 +94,6 @@ pub static COMMANDS: &[Command] = &[
     cmd::<file::OpenRepo>("file.openRepo", "Open Repository", General, &["cmd+o"]),
     cmd::<file::CloneRepo>("file.cloneRepo", "Clone Repository", General, &[]),
     cmd::<file::SwitchProject>("file.switchProject", "Switch Project", General, &[]),
-    // Not ⌘R: a reload ends every terminal , and in the terminal ⌘R names a pane.
-    cmd::<window::Reload>("window.reload", "Reload Window", General, &["shift+cmd+r"]),
     // The file watcher refreshes on its own; this is for changes it can't see.
     cmd::<repo::Refresh>("repo.refresh", "Refresh", General, &[]),
     cmd::<tab::Close>("tab.close", "Close Tab", General, &["cmd+w"]),

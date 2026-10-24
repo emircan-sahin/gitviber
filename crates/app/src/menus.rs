@@ -220,7 +220,6 @@ pub fn build(cx: &App) -> Vec<Menu> {
         item(editor::FontZoomReset, "Reset Code Font Size"),
         sep(),
         item(repo::Refresh, "Refresh"),
-        item(window::Reload, "Reload Window"),
         sep(),
         item(window::ToggleFullScreen, "Enter Full Screen"),
     ]);

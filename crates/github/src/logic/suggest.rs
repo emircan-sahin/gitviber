@@ -3,106 +3,19 @@
 
 pub const PULL_PROMPT: &str = "Write a GitHub pull request title and description for this branch: a title under 72 characters on the first line, a blank line, then a description in Markdown of what changed and why. Output only the title and the description, with no quotes or code fences around them.";
 
-struct Preset {
-    id: &'static str,
-    command: &'static str,
-    model_flag: &'static str,
-    model: &'static str,
-    /// The reasoning effort flag and the level a preset runs at until the user picks one.
-    effort: Option<(&'static str, &'static str)>,
-    /// Flags every run gets, for a faster start; with no tools, as a description needs none.
-    lean: &'static str,
-}
-
-const PRESETS: [Preset; 5] = [
-    Preset {
-        id: "claude",
-        command: "claude -p",
-        model_flag: "--model",
-        model: "sonnet",
-        effort: Some(("--effort", "medium")),
-        lean: "--strict-mcp-config --no-session-persistence --disable-slash-commands --tools \"\"",
-    },
-    Preset {
-        id: "codex",
-        command: "codex exec",
-        model_flag: "-m",
-        model: "gpt-6-luna",
-        effort: Some(("-c model_reasoning_effort=", "medium")),
-        lean: "",
-    },
-    Preset {
-        id: "opencode",
-        command: "opencode run --agent plan",
-        model_flag: "-m",
-        model: "anthropic/claude-sonnet-5",
-        effort: Some(("--variant", "")),
-        lean: "",
-    },
-    Preset {
-        id: "pi",
-        command: "pi -p --no-tools --no-session",
-        model_flag: "--model",
-        model: "anthropic/claude-sonnet-5",
-        effort: Some(("--thinking", "medium")),
-        lean: "",
-    },
-    Preset {
-        id: "llm",
-        command: "llm",
-        model_flag: "-m",
-        model: "gpt-6-luna",
-        effort: None,
-        lean: "",
-    },
-];
-
 /// The program a command runs, by name ("claude" from "~/.local/bin/claude -p").
 pub fn program_of(command: &str) -> &str {
-    command
-        .split_whitespace()
-        .next()
-        .and_then(|p| p.rsplit('/').next())
-        .unwrap_or("")
+    gitviber_ui::settings::program_of(command)
 }
 
 /// The command as run: a preset's with its lean, model and effort flags; a custom one as typed.
+/// A description needs no tools.
 pub fn command_line(
     command: &str,
     models: &std::collections::BTreeMap<String, String>,
     efforts: &std::collections::BTreeMap<String, String>,
 ) -> String {
-    let Some(p) = PRESETS.iter().find(|p| p.command == command.trim()) else {
-        return command.to_string();
-    };
-    let model = models
-        .get(p.id)
-        .map(String::as_str)
-        .unwrap_or(p.model)
-        .trim()
-        .to_string();
-    let effort = p.effort.map(|(flag, default)| {
-        let level = efforts.get(p.id).map(String::as_str).unwrap_or(default);
-        if level.is_empty() {
-            String::new()
-        } else if flag.ends_with('=') {
-            format!("{flag}{level}")
-        } else {
-            format!("{flag} {level}")
-        }
-    });
-    let model = (!model.is_empty()).then(|| format!("{} {model}", p.model_flag));
-    [
-        Some(command.trim().to_string()),
-        Some(p.lean.to_string()),
-        model,
-        effort,
-    ]
-    .into_iter()
-    .flatten()
-    .filter(|s| !s.is_empty())
-    .collect::<Vec<_>>()
-    .join(" ")
+    gitviber_ui::settings::command_line(command, models, efforts, false, true)
 }
 
 /// A Markdown answer inside a fence that wraps it: the first fence (after at most a "Here's the

@@ -29,6 +29,7 @@ use crate::repo::RepoState;
 use crate::worktrees::{list as wt_list, worktree_chip};
 
 pub fn register(cx: &mut App) {
+    cx.on_action(|_: &file::SwitchProject, cx| switch_project(cx));
     register_bar_item(
         cx,
         BarItem::new("project", BarSlot::TopChips, project_chip).order(0),
@@ -82,13 +83,42 @@ fn pull_request_chip(ctx: &PanelContext, _: &mut Window, cx: &mut App) -> Option
     Some(crate::worktrees::picker_pull_chip(&pull, false, cx))
 }
 
+/// Each window's project chip as last drawn, for Switch Project to open; a closed window's or an
+/// old project's goes with it (weak).
+#[derive(Default)]
+struct ProjectChips(Vec<(gpui_kit::AnyWindowHandle, gpui_kit::WeakEntity<ProjectChip>)>);
+impl Global for ProjectChips {}
+
 fn project_chip(ctx: &PanelContext, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let project = ctx.project.clone()?;
     let id = project.entity_id().as_u64() as usize;
     let chip = window.use_keyed_state(("refs-project-chip", id), cx, |_, cx| {
         ProjectChip::new(&project, cx)
     });
+    let handle = window.window_handle();
+    let chips = cx.default_global::<ProjectChips>();
+    chips
+        .0
+        .retain(|(w, c)| *w != handle && c.upgrade().is_some());
+    chips.0.push((handle, chip.downgrade()));
     Some(chip.into_any_element())
+}
+
+/// File → Switch Project: the window's project chip opens its list.
+fn switch_project(cx: &mut App) {
+    let Some(handle) = cx.active_window() else {
+        return;
+    };
+    let chip = cx
+        .try_global::<ProjectChips>()
+        .and_then(|c| c.0.iter().find(|(w, _)| *w == handle))
+        .and_then(|(_, c)| c.upgrade());
+    if let Some(chip) = chip {
+        chip.update(cx, |c, cx| {
+            c.open = true;
+            cx.notify();
+        });
+    }
 }
 
 pub struct ProjectChip {

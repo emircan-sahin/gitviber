@@ -42,7 +42,7 @@ mod attention;
 mod resume;
 mod saved;
 
-pub use attention::{agents_in, paste_to_agent, worktree_agent};
+pub use attention::{agents_in, paste_to_agent, stopped_by_quit, worktree_agent};
 pub(crate) use saved::import_legacy;
 
 /// A worktree the panel can open a terminal in, as the app lists them.

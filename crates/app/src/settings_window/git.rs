@@ -503,14 +503,14 @@ fn models_link(id: &'static str, (label, url): (&'static str, &'static str)) -> 
 
 /// The models field of a preset: an id typed, empty for the CLI's own default.
 fn model_field(p: &'static AgentPreset, which: Which) -> SettingItem {
-    let lean = if p.lean.is_empty() {
+    let lean = if p.lean.is_none() {
         String::new()
     } else {
         format!(
             " Every run also gets {} (a guided review --tools Read,Grep,Glob, to read the patch): \
              no MCP servers, skills, saved session or tools beyond reading files, so it starts and \
              answers faster.",
-            p.lean
+            p.lean_flags(false)
         )
     };
     let hint = match which {

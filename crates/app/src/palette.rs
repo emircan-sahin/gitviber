@@ -93,6 +93,39 @@ fn recent_files(cx: &mut App) -> &mut RecentFiles {
     cx.global_mut::<RecentFiles>()
 }
 
+/// The old app's recent files (gitviber.palette.files: root → paths, the latest first), into
+/// palette.json on the first launch, while the file isn't there yet.
+pub fn import_legacy() {
+    let path = recent_path();
+    if path.exists() {
+        return;
+    }
+    if let Some(files) = legacy_files(gitviber_ui::legacy::value("gitviber.palette.files")) {
+        let text = serde_json::json!({ "files": files }).to_string();
+        if let Err(err) = store::write_atomic(&path, &text) {
+            eprintln!("gitviber: couldn't write {}: {err}", path.display());
+        }
+    }
+}
+
+/// Roots with their paths kept, other values dropped, each list capped as the palette keeps it.
+fn legacy_files(value: Option<Value>) -> Option<BTreeMap<String, Vec<String>>> {
+    let map = value?.as_object()?.clone();
+    let files: BTreeMap<String, Vec<String>> = map
+        .into_iter()
+        .filter_map(|(root, list)| {
+            let paths: Vec<String> = list
+                .as_array()?
+                .iter()
+                .filter_map(|p| p.as_str().map(str::to_string))
+                .take(RECENT_FILES)
+                .collect();
+            (!paths.is_empty()).then_some((root, paths))
+        })
+        .collect();
+    (!files.is_empty()).then_some(files)
+}
+
 fn remember_file(root: &str, path: &str, cx: &mut App) {
     let files = recent_files(cx);
     bump(
@@ -721,6 +754,20 @@ impl Render for Palette {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_old_apps_recent_files_keep_their_roots_and_paths() {
+        let old = serde_json::json!({
+            "/r/a": ["src/x.rs", 3, "README.md"],
+            "/r/b": [],
+            "/r/c": "nope"
+        });
+        let files = legacy_files(Some(old)).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files["/r/a"], ["src/x.rs", "README.md"]);
+        assert!(legacy_files(Some(serde_json::json!([1]))).is_none());
+        assert!(legacy_files(None).is_none());
+    }
 
     #[test]
     fn recent_ones_come_first_with_an_empty_query() {

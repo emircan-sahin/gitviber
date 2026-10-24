@@ -457,6 +457,10 @@ impl CommitBox {
     fn failed(&mut self, title: &str, e: &str, cx: &mut Context<Self>) {
         self.busy = false;
         self.toast(Toast::error(e.to_string()).title(title.to_string()), cx);
+        // git has no name or email for the commit: the app asks for them, even after a "Not now".
+        if no_identity(e) {
+            cx.dispatch_action(&gitviber_ui::keymap::requests::AskGitIdentity);
+        }
         self.refresh_project(cx);
         cx.notify();
     }
@@ -861,5 +865,28 @@ impl Render for CommitBox {
             .on_action(
                 cx.listener(|this, _: &git::SuggestMessage, window, cx| this.suggest(window, cx)),
             )
+    }
+}
+
+/// git refused the commit for want of an author: "Author identity unknown … Please tell me who
+/// you are", or an empty name.
+fn no_identity(message: &str) -> bool {
+    message.lines().any(|l| {
+        l.starts_with("*** Please tell me who you are") || l.starts_with("fatal: empty ident name")
+    })
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::no_identity;
+
+    #[test]
+    fn a_commit_without_an_author_is_told_apart() {
+        let git = "Author identity unknown\n\n*** Please tell me who you are.\n\nRun\n";
+        assert!(no_identity(git));
+        assert!(no_identity(
+            "fatal: empty ident name (for <a@b>) not allowed"
+        ));
+        assert!(!no_identity("error: gpg failed to sign the data"));
     }
 }

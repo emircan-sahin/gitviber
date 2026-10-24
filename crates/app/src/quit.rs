@@ -4,7 +4,6 @@
 
 use std::time::{Duration, Instant};
 
-use gitviber_terminal::TerminalPanel;
 use gitviber_ui::actions::app;
 use gitviber_ui::{Settings, state};
 use gpui_kit::{App, AppContext as _, Global, Task};
@@ -107,34 +106,16 @@ fn answered(go: bool, cx: &mut App) {
 }
 
 /// What leaving now stops that's worth asking about: a push or pull on its way, the terminals'
-/// commands and working agents. An agent done with its turn is resumed on the next run.
+/// running commands and agents mid-turn. An agent done with its turn is resumed on the next run.
 fn stopped_by_leaving(cx: &mut App) -> Task<Vec<String>> {
     let net = gitviber_refs::net::NetActivity::global(cx)
         .read(cx)
         .current()
         .map(|r| r.label.to_string());
-    let ptys: Vec<u32> = crate::workspace_view::main_workspace(cx)
-        .and_then(|ws| ws.read(cx).built_panel("terminal").cloned())
-        .and_then(|p| p.view().downcast::<TerminalPanel>().ok())
-        .map(|panel| {
-            panel
-                .read(cx)
-                .panes()
-                .filter_map(|p| p.read(cx).pty_id())
-                .collect()
-        })
-        .unwrap_or_default();
-    if !gitviber_ui::has_core(cx) {
-        return Task::ready(net.into_iter().collect());
-    }
-    let core = gitviber_ui::core(cx);
+    let terminals = gitviber_terminal::stopped_by_quit(cx);
     cx.background_spawn(async move {
-        let busy: Vec<(bool, Option<&gitviber_terminal::agent::PaneAgent>)> = ptys
-            .iter()
-            .map(|id| (core.ptys.busy(Some(&[*id])) > 0, None))
-            .collect();
         let mut out: Vec<String> = net.into_iter().collect();
-        out.extend(gitviber_terminal::agent::quit_stops(&busy));
+        out.extend(terminals.await);
         out
     })
 }

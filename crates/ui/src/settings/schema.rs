@@ -244,10 +244,13 @@ pub struct AgentPreset {
     /// The flag (a trailing `=` takes the level joined), its levels, and the level until one is
     /// picked ("" is the CLI's own).
     pub effort: Option<(&'static str, &'static [&'static str], &'static str)>,
-    /// Flags every run gets, for a faster start; "" for none.
-    pub lean: &'static str,
+    /// Flags every run gets, for a faster start, then the tools a guided review may use (it reads
+    /// a patch file), and the tools for the rest (none).
+    pub lean: Option<(&'static str, &'static str, &'static str)>,
     /// Listed under Others, to keep the picker narrow.
     pub other: bool,
+    /// Its bare program is an interactive session of its own, which Ask Agent opens.
+    pub session: bool,
 }
 
 /// As SUGGEST_PRESETS, with what the settings page says about each.
@@ -263,8 +266,15 @@ pub const AGENT_PRESETS: &[AgentPreset] = &[
             "https://platform.claude.com/docs/en/about-claude/models/overview",
         ),
         effort: Some(("--effort", SUGGEST_PRESETS[0].1, "medium")),
-        lean: "--strict-mcp-config --no-session-persistence --disable-slash-commands --tools \"\"",
+        // Measured on a 5-line commit: 50 s and 6 turns with the user's MCP servers, skills and
+        // xhigh effort; 8 s and 1 turn with these and medium. Read is all a guided review needs.
+        lean: Some((
+            "--strict-mcp-config --no-session-persistence --disable-slash-commands",
+            "--tools Read,Grep,Glob",
+            "--tools \"\"",
+        )),
         other: false,
+        session: false,
     },
     AgentPreset {
         key: "codex",
@@ -276,9 +286,11 @@ pub const AGENT_PRESETS: &[AgentPreset] = &[
             "OpenAI's Codex models",
             "https://developers.openai.com/codex/models",
         ),
+        // A config override, one argument: core runs argv without a shell.
         effort: Some(("-c model_reasoning_effort=", SUGGEST_PRESETS[1].1, "medium")),
-        lean: "",
+        lean: None,
         other: false,
+        session: true,
     },
     AgentPreset {
         key: "opencode",
@@ -288,8 +300,9 @@ pub const AGENT_PRESETS: &[AgentPreset] = &[
         model: "anthropic/claude-sonnet-5",
         models: ("models.dev", "https://models.dev"),
         effort: Some(("--variant", SUGGEST_PRESETS[2].1, "")),
-        lean: "",
+        lean: None,
         other: true,
+        session: true,
     },
     AgentPreset {
         key: "pi",
@@ -299,8 +312,9 @@ pub const AGENT_PRESETS: &[AgentPreset] = &[
         model: "anthropic/claude-sonnet-5",
         models: ("pi's model list", "https://pi.dev/models"),
         effort: Some(("--thinking", SUGGEST_PRESETS[3].1, "medium")),
-        lean: "",
+        lean: None,
         other: true,
+        session: true,
     },
     AgentPreset {
         key: "llm",
@@ -312,9 +326,11 @@ pub const AGENT_PRESETS: &[AgentPreset] = &[
             "llm models",
             "https://llm.datasette.io/en/stable/usage.html#listing-available-models",
         ),
+        // Only `-o reasoning_effort` for some OpenAI models.
         effort: None,
-        lean: "",
+        lean: None,
         other: true,
+        session: false,
     },
 ];
 
@@ -353,6 +369,44 @@ impl AgentPreset {
             format!("{flag} {level}")
         }
     }
+}
+
+impl AgentPreset {
+    /// The flags every run gets (`reads`: a guided review's, which may read files); "" for none.
+    pub fn lean_flags(&self, reads: bool) -> String {
+        match self.lean {
+            Some((flags, tools, none)) => format!("{flags} {}", if reads { tools } else { none }),
+            None => String::new(),
+        }
+    }
+}
+
+/// The command as run: a preset's with its lean flags (`reads`: a guided review's; `lean` false
+/// leaves them out, for a CLI too old to know them), model and effort; a custom one carries its
+/// own, as typed.
+pub fn command_line(
+    command: &str,
+    models: &BTreeMap<String, String>,
+    efforts: &BTreeMap<String, String>,
+    reads: bool,
+    lean: bool,
+) -> String {
+    let Some(p) = AgentPreset::of(command) else {
+        return command.to_string();
+    };
+    let mut parts = vec![command.trim().to_string()];
+    if lean && p.lean.is_some() {
+        parts.push(p.lean_flags(reads));
+    }
+    let model = p.model_in(models);
+    if !model.is_empty() {
+        parts.push(format!("{} {model}", p.model_flag));
+    }
+    let effort = p.effort_in(efforts);
+    if !effort.is_empty() {
+        parts.push(p.effort_arg(&effort));
+    }
+    parts.join(" ")
 }
 
 /// The program a command runs, by name ("claude" from "~/.local/bin/claude -p").
@@ -849,5 +903,37 @@ mod preset_tests {
         assert_eq!(codex.model_in(&models), "o5");
         assert_eq!(codex.effort_in(&BTreeMap::new()), "medium");
         assert_eq!(program_of("~/.local/bin/claude -p"), "claude");
+    }
+
+    #[test]
+    fn a_presets_command_line_carries_its_flags() {
+        let none = BTreeMap::new();
+        assert_eq!(
+            command_line("claude -p", &none, &none, false, true),
+            "claude -p --strict-mcp-config --no-session-persistence --disable-slash-commands \
+             --tools \"\" --model sonnet --effort medium"
+        );
+        assert_eq!(
+            command_line("claude -p", &none, &none, true, false),
+            "claude -p --model sonnet --effort medium"
+        );
+        let mut efforts = BTreeMap::new();
+        efforts.insert("codex".to_string(), "high".to_string());
+        assert_eq!(
+            command_line("codex exec", &none, &efforts, false, true),
+            "codex exec -m gpt-6-luna -c model_reasoning_effort=high"
+        );
+        efforts.insert("claude".to_string(), String::new());
+        let mut models = BTreeMap::new();
+        models.insert("claude".to_string(), String::new());
+        assert_eq!(
+            command_line("claude -p", &models, &efforts, true, true),
+            "claude -p --strict-mcp-config --no-session-persistence --disable-slash-commands \
+             --tools Read,Grep,Glob"
+        );
+        assert_eq!(
+            command_line("my-cli --x", &none, &none, false, true),
+            "my-cli --x"
+        );
     }
 }

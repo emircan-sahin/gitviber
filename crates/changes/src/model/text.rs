@@ -205,62 +205,6 @@ fn fenced(text: &str) -> Option<&str> {
     Some(&text[inner_start.min(text.len())..inner_end.min(text.len())])
 }
 
-/// How a known agent CLI takes a model and an effort, and the flags that make it start fast.
-struct Preset {
-    name: &'static str,
-    command: &'static str,
-    model_flag: &'static str,
-    model: &'static str,
-    /// The effort flag (a trailing `=` takes the level joined) and the level until one is picked.
-    effort: Option<(&'static str, &'static str)>,
-    lean: Option<&'static str>,
-}
-
-const PRESETS: &[Preset] = &[
-    Preset {
-        name: "claude",
-        command: "claude -p",
-        model_flag: "--model",
-        model: "sonnet",
-        effort: Some(("--effort", "medium")),
-        lean: Some(
-            "--strict-mcp-config --no-session-persistence --disable-slash-commands --tools \"\"",
-        ),
-    },
-    Preset {
-        name: "codex",
-        command: "codex exec",
-        model_flag: "-m",
-        model: "gpt-6-luna",
-        effort: Some(("-c model_reasoning_effort=", "medium")),
-        lean: None,
-    },
-    Preset {
-        name: "opencode",
-        command: "opencode run --agent plan",
-        model_flag: "-m",
-        model: "anthropic/claude-sonnet-5",
-        effort: Some(("--variant", "")),
-        lean: None,
-    },
-    Preset {
-        name: "pi",
-        command: "pi -p --no-tools --no-session",
-        model_flag: "--model",
-        model: "anthropic/claude-sonnet-5",
-        effort: Some(("--thinking", "medium")),
-        lean: None,
-    },
-    Preset {
-        name: "llm",
-        command: "llm",
-        model_flag: "-m",
-        model: "gpt-6-luna",
-        effort: None,
-        lean: None,
-    },
-];
-
 /// The commit box's command as run: a preset's with its lean, model and effort flags (the
 /// user's picks in `models` / `efforts`, else its defaults); a custom one carries its own.
 pub fn command_line(
@@ -268,43 +212,12 @@ pub fn command_line(
     models: &BTreeMap<String, String>,
     efforts: &BTreeMap<String, String>,
 ) -> String {
-    let Some(p) = PRESETS.iter().find(|p| p.command == command.trim()) else {
-        return command.to_string();
-    };
-    let model = models
-        .get(p.name)
-        .map(String::as_str)
-        .unwrap_or(p.model)
-        .trim();
-    let effort = p.effort.map(|(flag, default)| {
-        (
-            flag,
-            efforts.get(p.name).map(String::as_str).unwrap_or(default),
-        )
-    });
-    let mut parts = vec![command.trim().to_string()];
-    parts.extend(p.lean.map(str::to_string));
-    if !model.is_empty() {
-        parts.push(format!("{} {model}", p.model_flag));
-    }
-    if let Some((flag, level)) = effort.filter(|(_, l)| !l.is_empty()) {
-        parts.push(if flag.ends_with('=') {
-            format!("{flag}{level}")
-        } else {
-            format!("{flag} {level}")
-        });
-    }
-    parts.join(" ")
+    gitviber_ui::settings::command_line(command, models, efforts, false, true)
 }
 
 /// The program a template runs, by name ("claude" from "~/.local/bin/claude -p").
 pub fn program_of(command: &str) -> String {
-    command
-        .split_whitespace()
-        .next()
-        .and_then(|w| w.rsplit('/').next())
-        .unwrap_or("")
-        .to_string()
+    gitviber_ui::settings::program_of(command).to_string()
 }
 
 /// Sent ahead of the diff, word for word; Settings shows it.

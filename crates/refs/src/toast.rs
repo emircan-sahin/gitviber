@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use gitviber_ui::keymap::view;
+use gitviber_ui::keymap::{requests, view};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{Sizable as _, WindowExt as _};
@@ -126,6 +126,9 @@ fn always(fix: GitFix, target: Option<&str>) -> Option<Action> {
     match fix {
         GitFix::Conflicted => Some(Action::new("Open Changes", |window, cx| {
             window.dispatch_action(Box::new(view::Changes), cx)
+        })),
+        GitFix::Identity => Some(Action::new("Set name and email", |window, cx| {
+            window.dispatch_action(Box::new(requests::AskGitIdentity), cx)
         })),
         GitFix::Signing => Some(Action::new("Signing guide", |_, cx| {
             cx.open_url(SIGNING_HELP)

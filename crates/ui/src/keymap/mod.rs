@@ -357,6 +357,8 @@ mod tests {
         };
         let body = &ts[ts.find("export const COMMANDS = [").unwrap()
             ..ts.find("] as const satisfies").unwrap()];
+        // The page's reload: there's no page to reload in the native app.
+        const DROPPED: &[&str] = &["window.reload"];
         let mut seen = 0;
         for line in body
             .lines()
@@ -364,6 +366,10 @@ mod tests {
             .filter(|l| l.starts_with("{ id: \""))
         {
             let id = ts_field(line, "id").unwrap();
+            if DROPPED.contains(&id) {
+                assert!(command(id).is_none(), "{id} is dropped");
+                continue;
+            }
             let c = command(id).unwrap_or_else(|| panic!("{id} missing"));
             let keys = ts_list(line, "keys").unwrap();
             assert_eq!(
