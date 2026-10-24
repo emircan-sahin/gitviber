@@ -73,7 +73,9 @@ pub struct ToastAction {
 
 impl std::fmt::Debug for ToastAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ToastAction").field("label", &self.label).finish()
+        f.debug_struct("ToastAction")
+            .field("label", &self.label)
+            .finish()
     }
 }
 

@@ -12,7 +12,9 @@ use std::sync::Arc;
 
 use gitviber_core::api;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
-use gpui_kit::{App, AppContext as _, Context, Global, Image, ImageFormat, SharedString, Task, Window};
+use gpui_kit::{
+    App, AppContext as _, Context, Global, Image, ImageFormat, SharedString, Task, Window,
+};
 
 use crate::settings::Settings;
 use crate::workspace::Toast;
@@ -193,7 +195,9 @@ pub fn open(app: &OpenApp, target: OpenTarget, cx: &mut App) {
             project,
         } = target;
         match &app.command {
-            Some(command) => api::files::open_in_custom(&core, command.clone(), path, line, project),
+            Some(command) => {
+                api::files::open_in_custom(&core, command.clone(), path, line, project)
+            }
             None => api::files::open_in(&core, app.id.clone(), path, line, project),
         }
     });
@@ -235,7 +239,8 @@ pub fn icon(app: &OpenApp, cx: &mut App) -> Option<Arc<Image>> {
     let task = cx.spawn(async move |cx| {
         let png = drawn.await;
         cx.update(|cx| {
-            let image = (!png.is_empty()).then(|| Arc::new(Image::from_bytes(ImageFormat::Png, png)));
+            let image =
+                (!png.is_empty()).then(|| Arc::new(Image::from_bytes(ImageFormat::Png, png)));
             cx.default_global::<Found>().icons.insert(id, image);
             cx.refresh_windows();
         });
@@ -248,7 +253,15 @@ pub fn icon(app: &OpenApp, cx: &mut App) -> Option<Arc<Image>> {
 pub fn grouped(apps: &[OpenApp]) -> Vec<(Group, Vec<OpenApp>)> {
     Group::ORDER
         .into_iter()
-        .map(|g| (g, apps.iter().filter(|a| a.group == g).cloned().collect::<Vec<_>>()))
+        .map(|g| {
+            (
+                g,
+                apps.iter()
+                    .filter(|a| a.group == g)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+        })
         .filter(|(_, list)| !list.is_empty())
         .collect()
 }
@@ -278,10 +291,12 @@ pub fn menu_items(
             sub = sub.label(group.label());
             for app in apps {
                 let target = target.clone();
-                sub = sub.item(PopupMenuItem::new(app.name.clone()).on_click(move |_, _, cx| {
-                    let t = target(cx);
-                    open(&app, t, cx)
-                }));
+                sub = sub.item(
+                    PopupMenuItem::new(app.name.clone()).on_click(move |_, _, cx| {
+                        let t = target(cx);
+                        open(&app, t, cx)
+                    }),
+                );
             }
         }
         sub
