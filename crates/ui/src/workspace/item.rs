@@ -2,8 +2,11 @@
 
 use std::rc::Rc;
 
+use futures::channel::oneshot;
 use gpui_kit::assets::IconName;
-use gpui_kit::{AnyView, App, Entity, EntityId, FocusHandle, Render, SharedString};
+use gpui_kit::{
+    AnyView, App, Context, Entity, EntityId, FocusHandle, Render, SharedString, Task, Window,
+};
 
 /// A center tab's view. Implement it on the view entity's type and open it with
 /// `Workspace::open_tab`; the strip reads the title and icon from the entity as it changes.
@@ -48,6 +51,62 @@ pub trait TabItem: Render {
     fn hidden(&self, _cx: &App) -> bool {
         false
     }
+
+    /// Writes its unsaved edits, for the ask before they'd be lost (Save): the task answers true
+    /// once they're written, false when they weren't (a failure, an overwrite declined). None: it
+    /// can't save them (a comment's draft), so the ask offers to discard them only.
+    fn save(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> Option<Task<bool>>
+    where
+        Self: Sized,
+    {
+        None
+    }
+
+    /// Whether `save` can write its unsaved edits; false for a comment's draft.
+    fn can_save(&self, _cx: &App) -> bool {
+        false
+    }
+
+    /// Drops its unsaved edits for good (Don't Save), wherever it kept them.
+    fn discard(&mut self, _cx: &mut Context<Self>)
+    where
+        Self: Sized,
+    {
+    }
+
+    /// Its unsaved edits outlive it: kept when it closes and back when it opens again (a diff's).
+    /// A worktree switch or a quit then needn't ask about them; closing the tab still does.
+    fn keeps_edits(&self, _cx: &App) -> bool {
+        false
+    }
+}
+
+/// A save's answer for `TabItem::save`: answered once with `done`; dropped unanswered, it's false.
+pub struct SaveDone(Option<oneshot::Sender<bool>>);
+
+impl SaveDone {
+    pub fn done(mut self, saved: bool) {
+        if let Some(tx) = self.0.take() {
+            let _ = tx.send(saved);
+        }
+    }
+}
+
+impl Drop for SaveDone {
+    fn drop(&mut self) {
+        if let Some(tx) = self.0.take() {
+            let _ = tx.send(false);
+        }
+    }
+}
+
+/// A save's answer and the task `TabItem::save` returns for it.
+pub fn save_signal(cx: &App) -> (SaveDone, Task<bool>) {
+    let (tx, rx) = oneshot::channel();
+    let task = cx
+        .background_executor()
+        .spawn(async move { rx.await.unwrap_or(false) });
+    (SaveDone(Some(tx)), task)
 }
 
 /// The icon before a tab's title.
@@ -69,6 +128,10 @@ trait AnyTab {
     fn focus(&self, cx: &App) -> Option<FocusHandle>;
     fn reopenable(&self, cx: &App) -> bool;
     fn hidden(&self, cx: &App) -> bool;
+    fn save(&self, window: &mut Window, cx: &mut App) -> Option<Task<bool>>;
+    fn can_save(&self, cx: &App) -> bool;
+    fn discard(&self, cx: &mut App);
+    fn keeps_edits(&self, cx: &App) -> bool;
     fn view(&self) -> AnyView;
     fn id(&self) -> EntityId;
 }
@@ -100,6 +163,18 @@ impl<V: TabItem> AnyTab for Entity<V> {
     }
     fn hidden(&self, cx: &App) -> bool {
         self.read(cx).hidden(cx)
+    }
+    fn save(&self, window: &mut Window, cx: &mut App) -> Option<Task<bool>> {
+        self.update(cx, |v, cx| v.save(window, cx))
+    }
+    fn can_save(&self, cx: &App) -> bool {
+        self.read(cx).can_save(cx)
+    }
+    fn discard(&self, cx: &mut App) {
+        self.update(cx, |v, cx| v.discard(cx))
+    }
+    fn keeps_edits(&self, cx: &App) -> bool {
+        self.read(cx).keeps_edits(cx)
     }
     fn view(&self) -> AnyView {
         self.clone().into()
@@ -144,6 +219,18 @@ impl TabHandle {
     }
     pub fn hidden(&self, cx: &App) -> bool {
         self.0.hidden(cx)
+    }
+    pub fn save(&self, window: &mut Window, cx: &mut App) -> Option<Task<bool>> {
+        self.0.save(window, cx)
+    }
+    pub fn can_save(&self, cx: &App) -> bool {
+        self.0.can_save(cx)
+    }
+    pub fn discard(&self, cx: &mut App) {
+        self.0.discard(cx)
+    }
+    pub fn keeps_edits(&self, cx: &App) -> bool {
+        self.0.keeps_edits(cx)
     }
     pub fn view(&self) -> AnyView {
         self.0.view()

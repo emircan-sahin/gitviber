@@ -6,6 +6,7 @@ pub mod clone;
 pub mod identity;
 pub mod licenses;
 pub mod needs_git;
+pub mod unsaved;
 
 use gpui_kit::App;
 
@@ -18,6 +19,7 @@ pub fn install(cx: &mut App) {
         })
     });
     about::install(cx);
+    unsaved::install(cx);
     clone::install(cx);
     needs_git::check(false, cx);
 }

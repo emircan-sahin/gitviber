@@ -77,13 +77,16 @@ pub fn request(cx: &mut App) {
     let ask = Settings::get(cx).ask_before_quit;
     let q = get(cx);
     let since = q.at.map_or(Duration::MAX, |at| at.elapsed());
+    let was = q.phase;
     let (phase, then) = on_quit(q.phase, since, ask);
     if phase == Phase::Asking && q.phase != Phase::Asking {
         q.at = Some(Instant::now());
     }
     q.phase = phase;
     match then {
-        Then::Leave => leave(cx),
+        // A second ⌘Q while it asks quits at once, unsaved edits and all.
+        Then::Leave if was == Phase::Asking => leave(cx),
+        Then::Leave => settle_then_leave(cx),
         Then::Ask => {
             let running = stopped_by_leaving(cx);
             let task = cx.spawn(async move |cx| {
@@ -101,8 +104,33 @@ fn answered(go: bool, cx: &mut App) {
     let (phase, then) = on_answer(q.phase, go);
     q.phase = phase;
     if then == Then::Leave {
-        leave(cx);
+        settle_then_leave(cx);
     }
+}
+
+/// Unsaved edits that wouldn't come back (a draft, a file's typing) are asked about first:
+/// Cancel keeps the app; edits a tab keeps itself (a diff's) are saved by it as it quits.
+fn settle_then_leave(cx: &mut App) {
+    let dirty = crate::workspace_view::main_workspace(cx)
+        .map(|ws| (ws.downgrade(), ws.read(cx).unkept_dirty_tabs(cx)))
+        .filter(|(_, keys)| !keys.is_empty());
+    let (Some((ws, keys)), Some(settle)) = (dirty, gitviber_ui::workspace::settle_edits(cx)) else {
+        return leave(cx);
+    };
+    let q = get(cx);
+    q.phase = Phase::Asking;
+    q.at = Some(Instant::now());
+    settle(
+        keys,
+        ws,
+        Box::new(|go, cx| match (go, get(cx).phase) {
+            (true, Phase::Asking) => leave(cx),
+            (false, Phase::Asking) => get(cx).phase = Phase::Idle,
+            // A second ⌘Q went first.
+            _ => {}
+        }),
+        cx,
+    );
 }
 
 /// What leaving now stops that's worth asking about: a push or pull on its way, the terminals'
@@ -156,11 +184,14 @@ fn ask_about(running: Vec<String>, cx: &mut App) {
     get(cx)._asking = Some(task);
 }
 
-/// Saves what waits to be saved, ends the shells (a pty's child would outlive the app), quits.
+/// Saves what waits to be saved, the terminals' sessions with it, ends the shells (a pty's
+/// child would outlive the app), quits.
 fn leave(cx: &mut App) {
     get(cx).phase = Phase::Leaving;
     state::flush(cx);
     crate::crash::quitting();
+    // Before the shells go: the terminals' save reads their sessions and agents' resume commands.
+    gitviber_terminal::save_before_quit(cx);
     if gitviber_ui::has_core(cx) {
         gitviber_ui::core(cx).ptys.kill_all();
     }

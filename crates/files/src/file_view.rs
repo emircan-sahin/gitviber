@@ -512,6 +512,18 @@ impl TabItem for FileView {
         matches!(&self.content, Content::Text { code, .. } if code.read(cx).is_dirty())
     }
 
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<Task<bool>> {
+        match &self.content {
+            Content::Text { code, .. } => code.clone().update(cx, |c, cx| c.save_task(window, cx)),
+            _ => None,
+        }
+    }
+
+    /// An open repo file's text; never one outside the repo, which is read-only.
+    fn can_save(&self, _: &App) -> bool {
+        matches!(self.content, Content::Text { .. }) && matches!(self.source, FileSource::Repo(_))
+    }
+
     fn tab_focus(&self, cx: &App) -> Option<FocusHandle> {
         Some(match &self.content {
             Content::Text {

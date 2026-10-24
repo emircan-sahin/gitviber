@@ -28,7 +28,7 @@ use gpui_kit::{
     Global, SharedString, Subscription, WeakEntity, Window,
 };
 
-pub use item::{Panel, PanelHandle, Tab, TabHandle, TabIcon, TabItem};
+pub use item::{Panel, PanelHandle, SaveDone, Tab, TabHandle, TabIcon, TabItem, save_signal};
 pub use project::{Project, ProjectEvent, RepoState};
 pub use registry::{
     BarItem, BarSlot, PanelContext, PanelSpec, QuickItem, QuickOpenSource, Registry, RenderBarItem,
@@ -125,6 +125,26 @@ impl Global for CloseGuardGlobal {}
 /// Sets what asks before tabs with unsaved edits close (the editor's save / discard / keep).
 pub fn set_close_guard(cx: &mut App, guard: CloseGuard) {
     cx.set_global(CloseGuardGlobal(Some(guard)));
+}
+
+/// Asked about tabs' unsaved edits before something would drop them (a switch, a quit): the
+/// keys, the workspace, and what to run once they're settled: true when they were saved or
+/// dropped, false when the user kept them (Cancel) and nothing goes ahead. The app's dialog sets it.
+pub type SettleEdits =
+    Rc<dyn Fn(Vec<SharedString>, WeakEntity<Workspace>, Box<dyn FnOnce(bool, &mut App)>, &mut App)>;
+
+#[derive(Default)]
+struct SettleEditsGlobal(Option<SettleEdits>);
+impl Global for SettleEditsGlobal {}
+
+pub fn set_settle_edits(cx: &mut App, settle: SettleEdits) {
+    cx.set_global(SettleEditsGlobal(Some(settle)));
+}
+
+/// What `set_settle_edits` set, for the app's quit.
+pub fn settle_edits(cx: &App) -> Option<SettleEdits> {
+    cx.try_global::<SettleEditsGlobal>()
+        .and_then(|g| g.0.clone())
 }
 
 /// Asked before the window's repo changes (another project, another worktree of it): a reason
@@ -263,6 +283,27 @@ impl Workspace {
         if self.switch_refused(cx) {
             return;
         }
+        // Its tabs go: unsaved edits that wouldn't come back are asked about first.
+        let handle = window.window_handle();
+        let again = root.clone();
+        if self.settle_first(cx, move |ws, cx| {
+            let _ = handle.update(cx, |_, window, cx| {
+                ws.update(cx, |ws, cx| ws.open_project_settled(again, window, cx))
+            });
+        }) {
+            return;
+        }
+        self.open_project_settled(root, window, cx);
+    }
+
+    fn open_project_settled(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .project
+            .as_ref()
+            .is_some_and(|p| p.read(cx).root() == root)
+        {
+            return;
+        }
         self.drop_project(cx);
         let project = cx.new(|cx| Project::new(root, cx));
         self._project_events = Some(cx.subscribe_in(&project, window, Self::on_project_event));
@@ -335,9 +376,63 @@ impl Workspace {
         if self.switch_refused(cx) {
             return;
         }
+        let again = root.clone();
+        if self.settle_first(cx, move |ws, cx| {
+            ws.update(cx, |ws, cx| ws.switch_worktree_settled(again, cx))
+        }) {
+            return;
+        }
+        self.switch_worktree_settled(root, cx);
+    }
+
+    fn switch_worktree_settled(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         if let Some(project) = &self.project {
             project.update(cx, |p, cx| p.switch_worktree(root, cx));
         }
+    }
+
+    /// The tabs whose unsaved edits would be lost with them: dirty, and not kept by the tab.
+    pub fn unkept_dirty_tabs(&self, cx: &App) -> Vec<SharedString> {
+        self.tabs
+            .tabs()
+            .iter()
+            .filter(|t| t.item.is_dirty(cx))
+            .filter(|t| !t.item.handle.as_ref().is_some_and(|h| h.keeps_edits(cx)))
+            .map(|t| t.key.clone())
+            .collect()
+    }
+
+    /// True when `then` waits for the unsaved edits to be settled (the app asks); false when
+    /// there are none, or nothing to ask with, and the caller goes on now.
+    fn settle_first(
+        &mut self,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(Entity<Workspace>, &mut App) + 'static,
+    ) -> bool {
+        let dirty = self.unkept_dirty_tabs(cx);
+        let Some(settle) = settle_edits(cx).filter(|_| !dirty.is_empty()) else {
+            return false;
+        };
+        let weak = cx.weak_entity();
+        let after = weak.clone();
+        cx.defer(move |cx| {
+            settle(
+                dirty,
+                weak,
+                // After the update that settled them (a dialog's button, in this window).
+                Box::new(move |go, cx| {
+                    if go {
+                        cx.defer(move |cx| {
+                            if let Some(ws) = after.upgrade() {
+                                then(ws, cx);
+                            }
+                        })
+                    }
+                }),
+                cx,
+            )
+        });
+        true
     }
 
     /// The switch guard's reason to stay, toasted; false when the repo may change.
@@ -1513,5 +1608,86 @@ mod tests {
         assert_eq!(*asked.borrow(), vec![SharedString::from("edited")]);
         cx.update(|_, cx| ws.update(cx, |ws, cx| ws.force_close_tabs(&["edited".into()], cx)));
         assert!(cx.update(|_, cx| ws.read(cx).tabs().is_empty()));
+    }
+
+    struct Kept;
+    impl Render for Kept {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+    impl TabItem for Kept {
+        fn tab_title(&self, _: &App) -> SharedString {
+            "kept".into()
+        }
+        fn is_dirty(&self, _: &App) -> bool {
+            true
+        }
+        fn keeps_edits(&self, _: &App) -> bool {
+            true
+        }
+    }
+
+    type Waiting =
+        Rc<std::cell::RefCell<Vec<(Vec<SharedString>, Box<dyn FnOnce(bool, &mut App)>)>>>;
+
+    #[gpui_kit::test]
+    fn a_switch_waits_for_unsaved_edits_that_would_be_lost(cx: &mut TestAppContext) {
+        setup(cx);
+        let waiting: Waiting = Rc::default();
+        let asks = waiting.clone();
+        cx.update(|cx| {
+            set_settle_edits(
+                cx,
+                Rc::new(move |keys, _, then, _| asks.borrow_mut().push((keys, then))),
+            )
+        });
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        let a = PathBuf::from("/tmp/gitviber-project-settle-a");
+        let b = PathBuf::from("/tmp/gitviber-project-settle-b");
+        let c = PathBuf::from("/tmp/gitviber-project-settle-c");
+        let root = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+            cx.update(|_, cx| {
+                ws.read(cx)
+                    .project()
+                    .map(|p| p.read(cx).root().to_path_buf())
+            })
+        };
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_project(a.clone(), window, cx);
+                // Edits the tab keeps itself don't stop anything.
+                ws.open_tab("kept", false, |_, cx| cx.new(|_| Kept), window, cx);
+                ws.open_project(b.clone(), window, cx);
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(root(&ws, cx), Some(b.clone()));
+        assert!(waiting.borrow().is_empty());
+        // Ones that would go with the tab wait for the ask; Cancel (never running it) stays.
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_tab("edited", false, |_, cx| cx.new(|_| Edited), window, cx);
+                assert_eq!(ws.unkept_dirty_tabs(cx), vec![SharedString::from("edited")]);
+                ws.open_project(c.clone(), window, cx);
+                ws.switch_worktree(c.clone(), cx);
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(root(&ws, cx), Some(b.clone()));
+        let asked: Vec<_> = waiting.borrow_mut().drain(..).collect();
+        assert_eq!(asked.len(), 2);
+        assert_eq!(asked[0].0, vec![SharedString::from("edited")]);
+        // Kept (Cancel): it stays; settled (saved or dropped): the switch goes on.
+        let mut asked = asked.into_iter();
+        let (_, first) = asked.next().unwrap();
+        let (_, second) = asked.next().unwrap();
+        cx.update(|_, cx| second(false, cx));
+        cx.run_until_parked();
+        assert_eq!(root(&ws, cx), Some(b.clone()));
+        cx.update(|_, cx| first(true, cx));
+        cx.run_until_parked();
+        assert_eq!(root(&ws, cx), Some(c));
     }
 }

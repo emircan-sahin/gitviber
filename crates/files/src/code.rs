@@ -394,9 +394,15 @@ impl CodeView {
     }
 
     pub fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_task(window, cx);
+    }
+
+    /// `save`, answered once it's on disk (true) or failed; None where nothing can be saved.
+    pub fn save_task(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<Task<bool>> {
         if self.readonly || self.source.root.is_none() {
-            return;
+            return None;
         }
+        let (done, answer) = gitviber_ui::workspace::save_signal(cx);
         let at = self.edits;
         let mut content = self.state.read(cx).text().to_string();
         if self.crlf {
@@ -415,14 +421,17 @@ impl CodeView {
                     cx.emit(CodeEvent::Saved);
                     cx.emit(CodeEvent::DirtyChanged);
                     cx.notify();
+                    done.done(true);
                 }
                 Err(e) => {
                     _ = this.workspace.update(cx, |ws, cx| {
                         ws.toast(Toast::error(e).title("Could not save"), cx)
                     });
+                    done.done(false);
                 }
             });
         });
+        Some(answer)
     }
 
     /// Shows a line: a link's at its column, or a search result's with its match selected.

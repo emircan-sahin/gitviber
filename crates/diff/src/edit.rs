@@ -5,6 +5,7 @@
 use crate::highlight::language_for;
 use crate::model::ADDED;
 use crate::style::DiffStyle;
+use futures::channel::oneshot;
 use gitviber_core::Core;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::input::{
@@ -46,6 +47,8 @@ pub struct DiffEditor {
     _change: Subscription,
     _tint: Task<()>,
     _save: Task<()>,
+    /// The asks (before a close or a switch) waiting for the save on its way.
+    waiters: Vec<oneshot::Sender<bool>>,
 }
 
 impl EventEmitter<EditEvent> for DiffEditor {}
@@ -91,6 +94,7 @@ impl DiffEditor {
             _change: change,
             _tint: Task::ready(()),
             _save: Task::ready(()),
+            waiters: Vec::new(),
         };
         editor.tint_soon(cx);
         editor
@@ -156,6 +160,24 @@ impl DiffEditor {
         self.write(false, window, cx);
     }
 
+    /// `save`, answered once it's on disk, or once it isn't: refused, failed, overwrite declined.
+    pub fn save_task(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
+        let (done, answer) = oneshot::channel();
+        self.save(window, cx);
+        if self.saving {
+            self.waiters.push(done);
+        } else {
+            let _ = done.send(!self.is_dirty(cx));
+        }
+        cx.background_spawn(async move { answer.await.unwrap_or(false) })
+    }
+
+    fn answer_waiters(&mut self, saved: bool) {
+        for w in self.waiters.drain(..) {
+            let _ = w.send(saved);
+        }
+    }
+
     fn write(&mut self, force: bool, window: &mut Window, cx: &mut Context<Self>) {
         let text: Arc<str> = self.state.read(cx).value().as_ref().into();
         let expected = self.saved.clone();
@@ -179,10 +201,14 @@ impl DiffEditor {
                 match result {
                     Ok(true) => {
                         this.saved = text;
+                        this.answer_waiters(true);
                         cx.emit(EditEvent::Saved);
                     }
                     Ok(false) => this.ask_overwrite(window, cx),
-                    Err(e) => cx.emit(EditEvent::Failed(e)),
+                    Err(e) => {
+                        this.answer_waiters(false);
+                        cx.emit(EditEvent::Failed(e))
+                    }
                 }
             })
             .ok();
@@ -205,8 +231,15 @@ impl DiffEditor {
                 .description(format!("{name} changed on disk since you started editing it. Overwrite it with your edits?"))
                 .ok_text("Overwrite")
                 .show_cancel(true)
-                .on_ok(move |_, window, cx| {
-                    weak.update(cx, |this, cx| this.write(true, window, cx)).ok();
+                .on_ok({
+                    let weak = weak.clone();
+                    move |_, window, cx| {
+                        weak.update(cx, |this, cx| this.write(true, window, cx)).ok();
+                        true
+                    }
+                })
+                .on_cancel(move |_, _, cx| {
+                    weak.update(cx, |this, _| this.answer_waiters(false)).ok();
                     true
                 })
         });

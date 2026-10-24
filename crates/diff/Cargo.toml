@@ -11,6 +11,8 @@ repository.workspace = true
 name = "gitviber_diff"
 
 [dependencies]
+# A save's answer to the ask before a close or a switch.
+futures.workspace = true
 gpui-kit.workspace = true
 gitviber-core = { path = "../core" }
 

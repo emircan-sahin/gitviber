@@ -479,6 +479,13 @@ impl DiffView {
         self.edit.as_ref().is_some_and(|e| e.read(cx).is_dirty(cx))
     }
 
+    /// Saves what's typed, for the ask before a close or a switch: true once it's on disk.
+    /// None when nothing is being edited.
+    pub fn save_task(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<Task<bool>> {
+        let edit = self.edit.clone()?;
+        Some(edit.update(cx, |e, cx| e.save_task(window, cx)))
+    }
+
     /// What's typed into the new side and not saved, and the file's text it was typed over:
     /// for the app to keep across restarts.
     pub fn unsaved_edit(&self, cx: &App) -> Option<(String, String)> {

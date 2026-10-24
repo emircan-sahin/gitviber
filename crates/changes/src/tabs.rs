@@ -518,6 +518,28 @@ impl TabItem for ChangeTab {
             .is_some_and(|v| v.read(cx).has_unsaved_edits(cx))
     }
 
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<Task<bool>> {
+        let diff = self.diff()?.clone();
+        diff.update(cx, |v, cx| v.save_task(window, cx))
+    }
+
+    fn can_save(&self, cx: &App) -> bool {
+        self.is_dirty(cx)
+    }
+
+    /// Don't Save: what's typed goes, here and in the store that would bring it back.
+    fn discard(&mut self, cx: &mut Context<Self>) {
+        self.edit_pending = false;
+        if let (Some(root), Some(path)) = (&self.root, self.sel.edit_path()) {
+            store::set_edit(root, &path, None, cx);
+        }
+    }
+
+    /// Typing is kept in the store as the tab goes and comes back with it.
+    fn keeps_edits(&self, _: &App) -> bool {
+        true
+    }
+
     fn tab_focus(&self, cx: &App) -> Option<FocusHandle> {
         Some(Focusable::focus_handle(self, cx))
     }
