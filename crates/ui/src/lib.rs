@@ -8,6 +8,7 @@ extern crate gpui_kit as gpui;
 pub mod assets;
 mod backend;
 pub mod dev;
+pub mod fonts;
 pub mod fuzzy;
 pub mod keymap;
 pub mod memory;

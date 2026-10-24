@@ -410,6 +410,7 @@ fn installed(name: &str, cx: &mut App) -> bool {
     if let Some(hit) = cx.default_global::<InstalledFonts>().0.get(name) {
         return *hit;
     }
+    crate::fonts::ensure(name, cx);
     let names = cx.text_system().all_font_names();
     let found = names.iter().any(|n| n == name);
     cx.global_mut::<InstalledFonts>()
