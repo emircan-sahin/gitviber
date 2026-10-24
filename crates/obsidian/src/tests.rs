@@ -6,12 +6,13 @@ use std::path::{Path, PathBuf};
 
 use gitviber_core::Event;
 use gitviber_core::obsidian::VaultChanged;
-use gitviber_ui::workspace::{PanelContext, Workspace};
+use gitviber_ui::workspace::{PanelContext, TabItem, Workspace};
 use gitviber_ui::{CoreEvents, memory};
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::{
-    AnyView, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
-    Styled as _, TestAppContext, VisualTestContext, WeakEntity, Window, div,
+    AnyView, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext, WeakEntity, Window,
+    div,
 };
 
 use crate::panel::VaultPanel;
@@ -22,7 +23,11 @@ struct Host(Option<AnyView>);
 
 impl Render for Host {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().children(self.0.clone())
+        // The app's root context: the global commands' bindings (⌘F) ask for it.
+        div()
+            .size_full()
+            .key_context(gitviber_ui::keymap::ROOT_CONTEXT)
+            .children(self.0.clone())
     }
 }
 
@@ -322,9 +327,48 @@ fn a_lossy_note_stays_read_only_whichever_way_it_gets_to_code(cx: &mut TestAppCo
     cx.run_until_parked();
     assert_eq!(std::fs::read(&file).unwrap(), b"caf\xe9 au lait\n");
     // The tab can't save it, so the ask before closing offers only to drop it.
+    assert!(!cx.update(|_, cx| TabItem::can_save(view.read(cx), cx)));
     assert!(cx.update(|window, cx| view.update(cx, |t, cx| {
         gitviber_ui::workspace::TabItem::save(t, window, cx).is_none()
     })));
+}
+
+#[gpui_kit::test]
+fn an_unsaved_note_asks_and_dont_save_puts_it_back(cx: &mut TestAppContext) {
+    let vault = setup("discard", cx);
+    let (host, cx) = cx.add_window_view(|_, _| Host(None));
+    let view = cx.update(|window, cx| tab(&vault, "Plan.md", window, cx));
+    show(&host, Some(view.clone().into()), cx);
+    let mode = |m: Mode, cx: &mut VisualTestContext| {
+        cx.update(|window, cx| view.update(cx, |t, cx| t.set_mode(m, window, cx)));
+        show(&host, Some(view.clone().into()), cx);
+    };
+    let shown = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| view.read(cx).note().unwrap().read(cx).source().to_string())
+    };
+    mode(Mode::Code, cx);
+    assert!(!dirty(&view, cx));
+    type_all(&view, "typed\n", cx);
+    // The close and quit guards ask about it, and may offer Save.
+    assert!(dirty(&view, cx));
+    assert!(cx.update(|_, cx| TabItem::can_save(view.read(cx), cx)));
+    mode(Mode::Preview, cx);
+    assert_eq!(shown(cx), "typed\n");
+    // Don't Save: clean, the note as the file has it, nothing kept for next time.
+    cx.update(|_, cx| view.update(cx, TabItem::discard));
+    assert!(!dirty(&view, cx));
+    assert_eq!(shown(cx), PLAN);
+    drop(view);
+    show(&host, None, cx);
+    let view = cx.update(|window, cx| tab(&vault, "Plan.md", window, cx));
+    show(&host, Some(view.clone().into()), cx);
+    assert!(!dirty(&view, cx));
+    let source = cx.update(|_, cx| view.read(cx).note().unwrap().read(cx).source().to_string());
+    assert_eq!(source, PLAN);
+    assert_eq!(
+        std::fs::read_to_string(Path::new(&vault).join("Plan.md")).unwrap(),
+        PLAN
+    );
 }
 
 #[gpui_kit::test]
@@ -430,23 +474,56 @@ fn find_in_a_rendered_note(cx: &mut TestAppContext) {
     show(&host, Some(view.clone().into()), cx);
     let note = cx.update(|_, cx| view.read(cx).note().expect("the note"));
     let hits = |cx: &mut VisualTestContext| cx.update(|_, cx| note.read(cx).find_hits());
-    // ⌘F's action on the note, then the query typed into the box it opens.
-    cx.update(|window, cx| note.update(cx, |n, cx| n.open_find(window, cx)));
-    cx.run_until_parked();
+    // The built parts' marks: (part, (current, count)).
+    let marks = |cx: &mut VisualTestContext| cx.update(|_, cx| note.read(cx).doc().marks(cx));
+    let current = |cx: &mut VisualTestContext| {
+        let marks = marks(cx);
+        marks.iter().filter(|(_, (at, _))| at.is_some()).count()
+    };
+    let focus = |cx: &mut VisualTestContext, handle: FocusHandle| {
+        cx.update(|window, cx| window.focus(&handle, cx));
+        cx.run_until_parked();
+    };
+    // ⌘F where the workspace puts focus on showing the tab.
+    let shown = cx.update(|_, cx| TabItem::tab_focus(view.read(cx), cx).unwrap());
+    focus(cx, shown);
+    cx.simulate_keystrokes("cmd-f");
     assert_eq!(hits(cx), Some((0, 0)));
     // As it reads: "[[Plan#Goals]]" shows "Plan > Goals", "## Later" shows "Later".
     cx.simulate_input("goals");
     assert_eq!(hits(cx), Some((0, 1)));
-    cx.simulate_keystrokes("cmd-a");
+    // Washed where it reads, as the current match.
+    assert!(
+        marks(cx).iter().any(|(_, m)| *m == (Some(0), 1)),
+        "{:?}",
+        marks(cx)
+    );
+    // ⌘F again selects the query, so what's typed next replaces it.
+    cx.simulate_keystrokes("cmd-f");
     cx.simulate_input("e");
     let (_, n) = hits(cx).unwrap();
     assert!(n > 3, "{n}");
     cx.simulate_keystrokes("enter");
     assert_eq!(hits(cx), Some((1, n)));
+    assert_eq!(current(cx), 1, "{:?}", marks(cx));
     cx.simulate_keystrokes("shift-enter shift-enter");
     assert_eq!(hits(cx), Some((n - 1, n)), "round to the last");
     cx.simulate_keystrokes("escape");
     assert_eq!(hits(cx), None);
+    assert!(
+        marks(cx).iter().all(|(_, m)| *m == (None, 0)),
+        "{:?}",
+        marks(cx)
+    );
+    // The tab's own focus (its header clicked) finds in the note too.
+    let own = cx.update(|_, cx| view.read(cx).own_focus());
+    focus(cx, own);
+    cx.simulate_keystrokes("cmd-f");
+    assert_eq!(
+        hits(cx),
+        Some((n - 1, n)),
+        "the query and its match are kept"
+    );
 }
 
 #[gpui_kit::test]

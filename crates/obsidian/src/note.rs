@@ -11,6 +11,7 @@ use std::sync::Arc;
 use gitviber_core::api;
 use gitviber_files::MediaView;
 use gitviber_files::media::{MediaKind, media_kind};
+use gitviber_markdown::find::{FindQuery, find_matches};
 use gitviber_markdown::{BoundedImageCache, Callouts, MarkdownBase, MarkdownEvent, MarkdownView};
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::keymap::editor;
@@ -19,7 +20,7 @@ use gitviber_ui::workspace::{Selection, Toast, Workspace};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
+use gpui_kit::component::input::{Enter, Escape, Input, InputEvent, InputState};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
     IntoElement, ListAlignment, ListOffset, ListState, ObjectFit, ParentElement as _, Render,
@@ -190,6 +191,11 @@ pub(crate) struct Doc {
     props: Vec<(String, properties::Value)>,
     built: HashMap<usize, (Built, u64)>,
     frame: u64,
+    /// ⌘F's query and its current match (the part, and which of that part's matches), marked
+    /// in each text part as it's built.
+    find: Option<(FindQuery, Option<(usize, usize)>)>,
+    /// The current match's part wasn't built yet: it scrolls to the match once it is.
+    reveal: bool,
 }
 
 impl Doc {
@@ -202,6 +208,8 @@ impl Doc {
             by_heading,
             built: HashMap::new(),
             frame: 0,
+            find: None,
+            reveal: false,
         }
     }
 
@@ -369,6 +377,9 @@ impl Doc {
             Built::Embed(view) => view.clone().into_any_element(),
         };
         self.built.insert(ix, (built, self.frame));
+        let reveal = self.reveal && self.current_part() == Some(ix);
+        self.reveal &= !reveal;
+        self.mark(ix, reveal, cx);
         self.evict();
         element
     }
@@ -391,25 +402,77 @@ impl Doc {
         }
     }
 
-    /// The parts `query` is found in, one entry per match (at most MAX_MATCHES), case aside.
-    pub fn search(&self, query: &str) -> Vec<usize> {
-        let query = query.to_lowercase();
-        if query.is_empty() {
-            return vec![];
-        }
+    /// Where `query` is found as the note reads: (part, which match in it), at most MAX_MATCHES.
+    /// Counted in every part's text, built or not, so scrolling doesn't change the count.
+    pub fn search(&self, query: &FindQuery) -> Vec<(usize, usize)> {
         let mut hits = Vec::new();
+        if query.text.is_empty() {
+            return hits;
+        }
         for (ix, part) in self.parts.iter().enumerate() {
             let Part::Text { source, .. } = part else {
                 continue;
             };
-            let text = markup::plain(source).to_lowercase();
-            let n = text.matches(&query).count().min(MAX_MATCHES - hits.len());
-            hits.extend(std::iter::repeat_n(ix, n));
+            let left = MAX_MATCHES - hits.len();
+            let n = find_matches(&markup::plain(source), query, left).map_or(0, |m| m.len());
+            hits.extend((0..n).map(|k| (ix, k)));
             if hits.len() >= MAX_MATCHES {
                 break;
             }
         }
         hits
+    }
+
+    /// Marks a find in the parts built (None clears them); `reveal` scrolls to its current
+    /// match, now or once its part is built.
+    pub fn set_find(
+        &mut self,
+        find: Option<(FindQuery, Option<(usize, usize)>)>,
+        reveal: bool,
+        cx: &mut App,
+    ) {
+        self.find = find;
+        let current = self.current_part();
+        self.reveal = reveal && current.is_some_and(|ix| !self.built.contains_key(&ix));
+        let ixs: Vec<usize> = self.built.keys().copied().collect();
+        for ix in ixs {
+            self.mark(ix, reveal && current == Some(ix), cx);
+        }
+    }
+
+    fn current_part(&self) -> Option<usize> {
+        self.find.as_ref()?.1.map(|(part, _)| part)
+    }
+
+    /// The find's matches washed in the part at `ix` (its rendered text), the current one apart.
+    fn mark(&self, ix: usize, reveal: bool, cx: &mut App) {
+        let Some((Built::Text { view, .. }, _)) = self.built.get(&ix) else {
+            return;
+        };
+        let none = FindQuery::default();
+        let (query, current) = match &self.find {
+            Some((q, at)) => (q, at.filter(|(part, _)| *part == ix).map(|(_, k)| k)),
+            None => (&none, None),
+        };
+        view.update(cx, |v, cx| {
+            _ = v.find(query, cx);
+            v.select_match(current, reveal, cx);
+        });
+    }
+
+    /// The built text parts' find marks: (part, (current, count)).
+    #[cfg(test)]
+    pub fn marks(&self, cx: &App) -> Vec<(usize, (Option<usize>, usize))> {
+        let mut out: Vec<_> = self
+            .built
+            .iter()
+            .filter_map(|(ix, (b, _))| match b {
+                Built::Text { view, .. } => Some((*ix, view.read(cx).matches())),
+                Built::Embed(_) => None,
+            })
+            .collect();
+        out.sort();
+        out
     }
 
     /// Whether the part at `ix` starts with a heading: it keeps the heading's space above it.
@@ -461,17 +524,28 @@ pub struct NoteView {
     /// A #heading or #^block to show once the vault's files are read.
     pending: Option<String>,
     find: Option<Find>,
+    /// The query and match the find box closed on: ⌘F opens on them again.
+    last_find: (String, usize),
     focus: FocusHandle,
     _subs: Vec<Subscription>,
     _live: Live,
 }
 
-/// ⌘F's box: its query, the parts its matches are in (one entry per match), the one shown.
+/// ⌘F's box: its query, its matches as (part, which in it), the one shown.
 struct Find {
     input: Entity<InputState>,
-    hits: Vec<usize>,
+    hits: Vec<(usize, usize)>,
     current: usize,
     _sub: Subscription,
+}
+
+impl Find {
+    fn query(&self, cx: &App) -> FindQuery {
+        FindQuery {
+            text: self.input.read(cx).value().to_string(),
+            ..FindQuery::default()
+        }
+    }
 }
 
 impl NoteView {
@@ -518,6 +592,7 @@ impl NoteView {
             images: BoundedImageCache::new(BoundedImageCache::display_side(window), cx),
             pending: None,
             find: None,
+            last_find: Default::default(),
             focus: cx.focus_handle(),
             _subs: vec![sub],
             _live: Live::new("NoteView"),
@@ -545,18 +620,25 @@ impl NoteView {
     /// ⌘F: the find box, focused with its query selected.
     pub fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.find.is_none() {
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder("Find"));
-            let sub = cx.subscribe_in(&input, window, |this, _, e: &InputEvent, _, cx| match e {
-                InputEvent::Change => this.search(true, cx),
-                InputEvent::PressEnter { shift, .. } => this.step(if *shift { -1 } else { 1 }, cx),
-                _ => {}
+            let (query, current) = std::mem::take(&mut self.last_find);
+            let input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Find")
+                    .default_value(query)
+            });
+            let sub = cx.subscribe(&input, |this, _, e: &InputEvent, cx| {
+                if matches!(e, InputEvent::Change) {
+                    this.search(true, cx);
+                }
             });
             self.find = Some(Find {
                 input,
                 hits: vec![],
-                current: 0,
+                current,
                 _sub: sub,
             });
+            self.search(false, cx);
+            self.mark(true, cx);
         }
         if let Some(f) = &self.find {
             f.input.update(cx, |i, cx| {
@@ -568,21 +650,23 @@ impl NoteView {
     }
 
     fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.find = None;
+        if let Some(f) = self.find.take() {
+            self.last_find = (f.input.read(cx).value().to_string(), f.current);
+        }
+        self.doc.set_find(None, false, cx);
         self.focus.focus(window, cx);
         cx.notify();
     }
 
-    /// Looks for the query again (it changed, or the note did); `show` scrolls to the first.
+    /// Looks for the query again (it changed, or the note did); `show` goes to the first.
     fn search(&mut self, show: bool, cx: &mut Context<Self>) {
         let Some(f) = &mut self.find else { return };
-        let query = f.input.read(cx).value().to_string();
-        f.hits = self.doc.search(&query);
+        f.hits = self.doc.search(&f.query(cx));
         f.current = f.current.min(f.hits.len().saturating_sub(1));
         if show {
             f.current = 0;
-            self.show_hit();
         }
+        self.mark(show, cx);
         cx.notify();
     }
 
@@ -594,14 +678,19 @@ impl NoteView {
         }
         let n = f.hits.len() as isize;
         f.current = (f.current as isize + dir).rem_euclid(n) as usize;
-        self.show_hit();
+        self.mark(true, cx);
         cx.notify();
     }
 
-    fn show_hit(&self) {
-        if let Some(ix) = self.find.as_ref().and_then(|f| f.hits.get(f.current)) {
-            self.list.scroll_to_reveal_item(*ix);
+    /// The matches marked in the note; `reveal` scrolls the current one into view.
+    fn mark(&mut self, reveal: bool, cx: &mut Context<Self>) {
+        let Some(f) = &self.find else { return };
+        let (query, current) = (f.query(cx), f.hits.get(f.current).copied());
+        if reveal && let Some((part, _)) = current {
+            // The part first; its view then scrolls the list to the match once it's laid out.
+            self.list.scroll_to_reveal_item(part);
         }
+        self.doc.set_find(Some((query, current)), reveal, cx);
     }
 
     fn find_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -630,6 +719,13 @@ impl NoteView {
                 .border_color(t.border_strong)
                 .key_context("NoteFind")
                 .on_action(cx.listener(|this, _: &Escape, window, cx| this.close_find(window, cx)))
+                // A one-line Input lets Enter go on, and the keystroke would then be typed into
+                // it: nothing lands, but its Change starts the search over at the first match.
+                .on_action(
+                    cx.listener(|this, e: &Enter, _, cx| {
+                        this.step(if e.shift { -1 } else { 1 }, cx)
+                    }),
+                )
                 .child(div().flex_1().child(Input::new(&f.input).small()))
                 .child(
                     div()

@@ -894,8 +894,8 @@ fn md_link(image_link: bool, text: &str, link: &MdLink, cx: &Context) -> String 
     format!("[{text}]({}{title})", cx.link_href(&path, &anchor))
 }
 
-/// A part's text as it reads, roughly as it renders: what Find searches until gitviber-markdown
-/// can say what it drew. Links read as their text, embeds and markup characters go, code stays.
+/// A part's text as it reads, roughly as it renders: what Find counts in, since a part not built
+/// has no rendered text. Links read as their text, embeds and markup characters go, code stays.
 pub fn plain(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
     let mut fences = Fences::default();

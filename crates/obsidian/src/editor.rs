@@ -164,6 +164,11 @@ impl NoteEditor {
         self.readonly
     }
 
+    /// The file as it was read or last saved.
+    pub fn base(&self) -> Arc<str> {
+        self.base.clone()
+    }
+
     pub fn editor_focus(&self, cx: &App) -> FocusHandle {
         self.state.read(cx).focus_handle(cx)
     }

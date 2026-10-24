@@ -10,7 +10,7 @@ use gitviber_core::{Core, api, obsidian};
 use gitviber_files::MediaView;
 use gitviber_files::media::{MediaKind, media_kind};
 use gitviber_ui::ActiveAppTheme as _;
-use gitviber_ui::keymap::file;
+use gitviber_ui::keymap::{editor, file};
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{TabIcon, TabItem, Toast, Workspace, save_signal};
 use gpui_kit::component::Sizable as _;
@@ -524,6 +524,11 @@ impl VaultTab {
     }
 
     #[cfg(test)]
+    pub(crate) fn own_focus(&self) -> FocusHandle {
+        self.focus.clone()
+    }
+
+    #[cfg(test)]
     pub(crate) fn editor(&self) -> Option<Entity<NoteEditor>> {
         self.editor.as_ref().map(|(e, _)| e.clone())
     }
@@ -563,9 +568,26 @@ impl TabItem for VaultTab {
         Some(task)
     }
 
+    /// A code view that can write the file back: never a lossy read's.
+    fn can_save(&self, cx: &App) -> bool {
+        self.editor
+            .as_ref()
+            .is_some_and(|(e, _)| !e.read(cx).is_readonly())
+    }
+
+    /// The rendered view goes back to the file's text. A code view on show keeps what's typed
+    /// (setting its text wants a window): Don't Save closes the tab right after.
     fn discard(&mut self, cx: &mut Context<Self>) {
-        if let Some((editor, _)) = &self.editor {
-            editor.update(cx, |e, cx| e.forget(cx));
+        let Some((editor, _)) = &self.editor else {
+            return;
+        };
+        let base = editor.update(cx, |e, cx| {
+            e.forget(cx);
+            e.base()
+        });
+        if self.mode == Mode::Preview {
+            self.editor = None;
+            self.text_saved(&base, cx);
         }
     }
 
@@ -624,6 +646,13 @@ impl Render for VaultTab {
             .flex()
             .flex_col()
             .bg(t.code(t.background))
+            // ⌘F with the tab's own focus (its header clicked) finds in the note too.
+            .on_action(
+                cx.listener(|this, _: &editor::Find, window, cx| match &this.content {
+                    Content::Note(n) => n.update(cx, |n, cx| n.open_find(window, cx)),
+                    _ => cx.propagate(),
+                }),
+            )
             .on_action(cx.listener(|this, _: &file::Reveal, _, cx| {
                 let (core, vault, path) =
                     (this.core.clone(), this.vault.clone(), this.path.clone());
