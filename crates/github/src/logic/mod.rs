@@ -5,6 +5,7 @@ pub mod branch_pulls;
 pub mod checks;
 pub mod connect;
 pub mod issue_work;
+pub mod keys;
 pub mod narrow;
 pub mod permalink;
 pub mod pull_commits;

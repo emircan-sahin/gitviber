@@ -50,6 +50,34 @@ impl Saved {
         )
     }
 
+    /// The labels and author `kind`'s list was last narrowed to in `repo`.
+    pub fn picked(
+        &self,
+        repo: &str,
+        kind: ListKind,
+    ) -> (Vec<crate::model::LabelItem>, Option<String>) {
+        crate::logic::narrow::parse_picked(
+            self.narrow.iter().find(|(k, _)| k == repo).map(|(_, v)| v),
+            kind,
+        )
+    }
+
+    pub fn set_picked(
+        &mut self,
+        repo: &str,
+        kind: ListKind,
+        labels: &[crate::model::LabelItem],
+        author: Option<&str>,
+    ) {
+        let saved = self
+            .narrow
+            .iter()
+            .find(|(k, _)| k == repo)
+            .map(|(_, v)| v.clone());
+        let next = crate::logic::narrow::with_picked(saved.as_ref(), kind, labels, author);
+        put_recent(&mut self.narrow, repo, next, NARROW_REPOS);
+    }
+
     pub fn set_choice(&mut self, repo: &str, kind: ListKind, choice: Choice) {
         let saved = self
             .narrow

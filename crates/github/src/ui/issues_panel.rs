@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gitviber_core::api;
+use gitviber_ui::actions::editor;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::CountBadge;
 use gitviber_ui::workspace::{Panel, PanelContext};
@@ -32,6 +33,7 @@ use crate::ui::list::{
     ListControls, ListPanel, filter_tabs, find_box, narrow_bar, selected_labels,
 };
 use crate::ui::pulls_panel::{main_of, use_project};
+use crate::ui::rows::{RowKey, Rows, focus_page, row_key};
 
 const ROW: f32 = 44.;
 
@@ -43,6 +45,8 @@ pub struct IssuesPanel {
     stamp: u64,
     connect: Option<Entity<ConnectView>>,
     focus: FocusHandle,
+    /// Each pane's rows and their keyboard: origin's, and a fork's original's.
+    rows: [Rows; 2],
     _subs: Vec<Subscription>,
     _live: Live,
 }
@@ -53,13 +57,18 @@ impl ListPanel for IssuesPanel {
     }
 
     fn narrowed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        self.controls.save_picked(cx);
         self.ask(false, cx);
+    }
+
+    fn focus_rows(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.rows[0].focus.focus(window, cx);
     }
 }
 
 impl Panel for IssuesPanel {
     fn panel_focus(&self, _: &App) -> Option<FocusHandle> {
-        Some(self.focus.clone())
+        Some(self.rows[0].focus.clone())
     }
 }
 
@@ -95,6 +104,7 @@ impl IssuesPanel {
             stamp: 0,
             connect: None,
             focus: cx.focus_handle(),
+            rows: [Rows::new(cx), Rows::new(cx)],
             _subs: subs,
             _live: Live::new("IssuesPanel"),
         }
@@ -210,12 +220,54 @@ impl IssuesPanel {
         );
     }
 
+    /// A key on a pane's rows (see `rows`).
+    fn row_key(
+        &mut self,
+        pane: usize,
+        rows: &[IssueItem],
+        ev: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let urls: Vec<&str> = rows.iter().map(|i| i.url.as_str()).collect();
+        let active = self.ctx.workspace.upgrade().and_then(|w| {
+            w.read(cx)
+                .tabs()
+                .active_key()
+                .and_then(|k| k.strip_prefix("issue:").map(str::to_string))
+        });
+        let nav = &mut self.rows[pane];
+        let at = nav.at(&urls, active.as_deref());
+        let Some(key) = row_key(ev, at, urls.len(), false) else {
+            return;
+        };
+        cx.stop_propagation();
+        let at = at.unwrap_or(0);
+        match key {
+            RowKey::Move(to) => {
+                nav.put(&urls, to);
+                self.open(rows[to].clone(), true, window, cx);
+            }
+            RowKey::Keep => self.open(rows[at].clone(), false, window, cx),
+            RowKey::Preview => self.open(rows[at].clone(), true, window, cx),
+            RowKey::Page => {
+                if active.as_deref() != Some(urls[at]) {
+                    self.open(rows[at].clone(), true, window, cx);
+                }
+                focus_page(&self.ctx.workspace, window, cx);
+            }
+            RowKey::More => {}
+        }
+        cx.notify();
+    }
+
     fn rows_view(
         &self,
         pane: usize,
         name: &str,
         roomy: bool,
         failure: Option<String>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let t = theme(cx);
@@ -277,15 +329,43 @@ impl IssuesPanel {
             .and_then(|w| w.read(cx).tabs().active_key().cloned());
         let weak = cx.weak_entity();
         let count = rows.len();
+        let nav = &self.rows[pane];
+        let cursor = nav.cursor.clone().filter(|_| nav.is_focused(window));
+        let key_rows = rows.clone();
         col.child(
-            uniform_list(("issues", pane), count, move |range, _, cx| {
-                let t = theme(cx);
-                range
-                    .map(|ix| issue_row(pane, ix, &rows[ix], active.as_ref(), weak.clone(), &t))
-                    .collect::<Vec<_>>()
-            })
-            .flex_1()
-            .min_h_0(),
+            div()
+                .id(("issue-rows", pane))
+                .track_focus(&nav.focus)
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .on_key_down(
+                    cx.listener(move |this, ev: &gpui::KeyDownEvent, window, cx| {
+                        this.row_key(pane, &key_rows, ev, window, cx)
+                    }),
+                )
+                .child(
+                    uniform_list(("issues", pane), count, move |range, _, cx| {
+                        let t = theme(cx);
+                        range
+                            .map(|ix| {
+                                issue_row(
+                                    pane,
+                                    ix,
+                                    &rows[ix],
+                                    active.as_ref(),
+                                    cursor.as_deref(),
+                                    weak.clone(),
+                                    &t,
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .track_scroll(&nav.scroll)
+                    .flex_1()
+                    .min_h_0(),
+                ),
         )
         .into_any_element()
     }
@@ -296,10 +376,13 @@ fn issue_row(
     ix: usize,
     i: &IssueItem,
     active: Option<&SharedString>,
+    cursor: Option<&str>,
     panel: WeakEntity<IssuesPanel>,
     t: &gitviber_ui::AppTheme,
 ) -> AnyElement {
     let on = active.is_some_and(|a| a.as_ref() == format!("issue:{}", i.url));
+    let keys_here = cursor == Some(i.url.as_str());
+    let (author, author_panel, underline) = (i.author.clone(), panel.clone(), t.foreground);
     let hover = t.hover;
     let item = i.clone();
     let mut meta = div()
@@ -316,7 +399,30 @@ fn issue_row(
                 .child(format!("#{}", i.number)),
         )
         .child("·")
-        .child(div().flex_none().child(i.author.clone()));
+        // A click on the author narrows the list to theirs, as GitHub's lists do.
+        .child(
+            div()
+                .id(("author", pane * 100_000 + ix))
+                .flex_none()
+                .cursor_pointer()
+                .hover(move |s| s.text_color(underline).underline())
+                .child(i.author.clone())
+                .on_click(move |ev, window, cx| {
+                    let m = ev.modifiers();
+                    if m.platform || m.control || m.shift || m.alt {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    let author = author.clone();
+                    author_panel
+                        .update(cx, |this, cx| {
+                            this.controls.set_author(Some(author), cx);
+                            this.narrowed(window, cx);
+                            cx.notify();
+                        })
+                        .ok();
+                }),
+        );
     if i.comments > 0 {
         meta = meta.child(
             div()
@@ -387,6 +493,8 @@ fn issue_row(
             )
         })
         .when(!on, |d| d.hover(move |s| s.bg(hover)))
+        .when(keys_here && !on, |d| d.bg(hover))
+        .when(keys_here, |d| d.border_1().border_color(t.ring))
         .child(div().mt(px(2.)).child(issue_icon(i, t)))
         .child(
             div()
@@ -405,7 +513,10 @@ fn issue_row(
             let pin = ev.click_count() > 1;
             let item = item.clone();
             panel
-                .update(cx, |this, cx| this.open(item, !pin, window, cx))
+                .update(cx, |this, cx| {
+                    this.rows[pane].cursor = Some(item.url.clone());
+                    this.open(item, !pin, window, cx)
+                })
                 .ok();
         })
         .context_menu(move |menu, _, _| {
@@ -501,7 +612,7 @@ fn pane_header(
 }
 
 impl Render for IssuesPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx);
         let account = self.account(cx);
         let parent = account.as_ref().and_then(|a| a.parent.clone());
@@ -575,7 +686,7 @@ impl Render for IssuesPanel {
             .px(px(8.))
             .border_b_1()
             .border_color(t.border)
-            .child(filter_tabs(self.controls.filter, header_counts, cx))
+            .child(filter_tabs(&self.controls, header_counts, cx))
             .child(div().flex_1())
             .child(
                 Button::new("pick-labels")
@@ -640,12 +751,12 @@ impl Render for IssuesPanel {
                             .into_any_element()
                     };
                 let own_view = if own_on {
-                    self.rows_view(0, "origin", false, failure.clone(), cx)
+                    self.rows_view(0, "origin", false, failure.clone(), window, cx)
                 } else {
                     off(&origin_name)
                 };
                 let up_view = if parent.issues {
-                    self.rows_view(1, &up, false, None, cx)
+                    self.rows_view(1, &up, false, None, window, cx)
                 } else {
                     off(&up)
                 };
@@ -676,7 +787,7 @@ impl Render for IssuesPanel {
                     .into_any_element()
             }
             None => {
-                let view = self.rows_view(0, "origin", true, failure.clone(), cx);
+                let view = self.rows_view(0, "origin", true, failure.clone(), window, cx);
                 div()
                     .flex_1()
                     .min_h_0()
@@ -688,13 +799,17 @@ impl Render for IssuesPanel {
         div()
             .id("issues-panel")
             .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &editor::Find, window, cx| {
+                this.controls.open_find(window, cx);
+                cx.notify();
+            }))
             .size_full()
             .flex()
             .flex_col()
             .child(header)
             .child(narrow_bar(&self.controls, me_off, cx))
             .children(selected_labels(&self.controls.labels, cx))
-            .child(find_box(&self.controls, &t))
+            .children(find_box(&self.controls, cx))
             .child(body)
             .children(account.map(|a| signed_in_as(&a.login, &a.source, &t)))
             .into_any_element()

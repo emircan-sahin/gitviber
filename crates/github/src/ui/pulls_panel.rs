@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gitviber_core::api;
+use gitviber_ui::actions::editor;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::CountBadge;
 use gitviber_ui::workspace::{Panel, PanelContext, ProjectEvent, Slot};
@@ -34,6 +35,7 @@ use crate::ui::labels::LabelPicker;
 use crate::ui::list::{
     ListControls, ListPanel, filter_tabs, find_box, narrow_bar, selected_labels,
 };
+use crate::ui::rows::{RowKey, Rows, focus_page, row_key};
 
 /// github/client.rs reads at most this many pages; a search stops at GitHub's 1000 results.
 const MAX_PAGES: usize = 30;
@@ -96,6 +98,8 @@ pub struct PullsPanel {
     ci_shas: Vec<String>,
     connect: Option<Entity<ConnectView>>,
     focus: FocusHandle,
+    /// Each pane's rows and their keyboard: origin's, and a fork's original's.
+    rows: [Rows; 2],
     _ci: Vec<CiWatch>,
     _status: Task<()>,
     _subs: Vec<Subscription>,
@@ -109,7 +113,12 @@ impl ListPanel for PullsPanel {
 
     fn narrowed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.pages = [1, 1];
+        self.controls.save_picked(cx);
         self.ask(false, cx);
+    }
+
+    fn focus_rows(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.rows[0].focus.focus(window, cx);
     }
 }
 
@@ -119,7 +128,7 @@ impl Panel for PullsPanel {
     }
 
     fn panel_focus(&self, _: &App) -> Option<FocusHandle> {
-        Some(self.focus.clone())
+        Some(self.rows[0].focus.clone())
     }
 }
 
@@ -200,6 +209,7 @@ impl PullsPanel {
             ci_shas: vec![],
             connect: None,
             focus: cx.focus_handle(),
+            rows: [Rows::new(cx), Rows::new(cx)],
             _ci: vec![],
             _status: Task::ready(()),
             _subs: subs,
@@ -453,6 +463,49 @@ impl PullsPanel {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// A key on a pane's rows (see `rows`).
+    fn row_key(
+        &mut self,
+        pane: Pane,
+        rows: &[PullItem],
+        more: bool,
+        ev: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let urls: Vec<&str> = rows.iter().map(|p| p.url.as_str()).collect();
+        let active = self
+            .active_key(cx)
+            .and_then(|k| k.strip_prefix("pull:").map(str::to_string));
+        let nav = &mut self.rows[pane as usize];
+        let at = nav.at(&urls, active.as_deref());
+        let Some(key) = row_key(ev, at, urls.len(), more) else {
+            return;
+        };
+        cx.stop_propagation();
+        let at = at.unwrap_or(0);
+        match key {
+            RowKey::Move(to) => {
+                nav.put(&urls, to);
+                self.open(rows[to].clone(), true, window, cx);
+            }
+            RowKey::Keep => self.open(rows[at].clone(), false, window, cx),
+            RowKey::Preview => self.open(rows[at].clone(), true, window, cx),
+            RowKey::Page => {
+                if active.as_deref() != Some(urls[at]) {
+                    self.open(rows[at].clone(), true, window, cx);
+                }
+                focus_page(&self.ctx.workspace, window, cx);
+            }
+            RowKey::More => {
+                self.pages[pane as usize] += 1;
+                self.ask(false, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn rows_view(
         &self,
         pane: Pane,
@@ -462,6 +515,7 @@ impl PullsPanel {
         loading: bool,
         error: Option<String>,
         roomy: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let t = theme(cx);
@@ -527,15 +581,20 @@ impl PullsPanel {
         let account = self.account(cx);
         let count = rows.len();
         let list_target = target.clone();
+        let nav = &self.rows[pane as usize];
+        let cursor = nav.cursor.clone().filter(|_| nav.is_focused(window));
+        let (key_rows, more) = (rows.clone(), full && shown_pages < max_pages);
         let list = uniform_list(("pulls", pane as usize), count, move |range, _, cx| {
             let t = theme(cx);
             range
                 .map(|ix| {
                     pull_row(
                         ix,
+                        pane,
                         &rows[ix],
                         list_target.clone(),
                         active.as_ref(),
+                        cursor.as_deref(),
                         account.clone(),
                         weak.clone(),
                         &t,
@@ -544,9 +603,24 @@ impl PullsPanel {
                 })
                 .collect::<Vec<_>>()
         })
+        .track_scroll(&nav.scroll)
         .flex_1()
         .min_h_0();
-        col = col.child(list);
+        col = col.child(
+            div()
+                .id(("pull-rows", pane as usize))
+                .track_focus(&nav.focus)
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .on_key_down(
+                    cx.listener(move |this, ev: &gpui::KeyDownEvent, window, cx| {
+                        this.row_key(pane, &key_rows, more, ev, window, cx)
+                    }),
+                )
+                .child(list),
+        );
         if full && shown_pages < max_pages {
             col = col.child(
                 div().p(px(8.)).flex_none().child(
@@ -583,9 +657,11 @@ impl PullsPanel {
 #[allow(clippy::too_many_arguments)]
 fn pull_row(
     ix: usize,
+    pane: Pane,
     p: &PullItem,
     target: Option<String>,
     active: Option<&SharedString>,
+    cursor: Option<&str>,
     account: Option<Arc<Account>>,
     panel: WeakEntity<PullsPanel>,
     t: &gitviber_ui::AppTheme,
@@ -593,6 +669,9 @@ fn pull_row(
 ) -> AnyElement {
     let key = crate::ui::pull_key(&p.url);
     let on = active.is_some_and(|a| *a == key);
+    let keys_here = cursor == Some(p.url.as_str());
+    let (author, author_panel) = (p.author.clone(), panel.clone());
+    let underline = t.foreground;
     let state = if p.state == PullState::Open {
         ci::state(cx, &target, &p.head_sha)
     } else {
@@ -615,7 +694,30 @@ fn pull_row(
                 .child(format!("#{}", p.number)),
         )
         .child("·")
-        .child(div().flex_none().child(p.author.clone()))
+        // A click on the author narrows the list to theirs, as GitHub's lists do.
+        .child(
+            div()
+                .id(("author", ix))
+                .flex_none()
+                .cursor_pointer()
+                .hover(move |s| s.text_color(underline).underline())
+                .child(p.author.clone())
+                .on_click(move |ev, window, cx| {
+                    let m = ev.modifiers();
+                    if m.platform || m.control || m.shift || m.alt {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    let author = author.clone();
+                    author_panel
+                        .update(cx, |this, cx| {
+                            this.controls.set_author(Some(author), cx);
+                            this.narrowed(window, cx);
+                            cx.notify();
+                        })
+                        .ok();
+                }),
+        )
         .child("·")
         .child(
             div()
@@ -649,6 +751,8 @@ fn pull_row(
             )
         })
         .when(!on, |d| d.hover(move |s| s.bg(hover)))
+        .when(keys_here && !on, |d| d.bg(hover))
+        .when(keys_here, |d| d.border_1().border_color(t.ring))
         .child(div().mt(px(2.)).child(pull_icon(p.state, p.draft, t)))
         .child(
             div()
@@ -667,7 +771,10 @@ fn pull_row(
             let pin = ev.click_count() > 1;
             let item = item.clone();
             panel
-                .update(cx, |this, cx| this.open(item, !pin, window, cx))
+                .update(cx, |this, cx| {
+                    this.rows[pane as usize].cursor = Some(item.url.clone());
+                    this.open(item, !pin, window, cx)
+                })
                 .ok();
         })
         .context_menu(move |menu, _, _| {
@@ -875,7 +982,7 @@ impl Render for PullsPanel {
             .px(px(8.))
             .border_b_1()
             .border_color(t.border)
-            .child(filter_tabs(self.controls.filter, header_counts, cx))
+            .child(filter_tabs(&self.controls, header_counts, cx))
             .child(div().flex_1())
             .child(
                 Button::new("pick-labels")
@@ -953,6 +1060,7 @@ impl Render for PullsPanel {
                 own_loading,
                 failure.clone(),
                 false,
+                window,
                 cx,
             );
             let up_view = self.rows_view(
@@ -963,6 +1071,7 @@ impl Render for PullsPanel {
                 up_loading,
                 up_error,
                 false,
+                window,
                 cx,
             );
             div()
@@ -996,6 +1105,7 @@ impl Render for PullsPanel {
                 own_loading,
                 failure.clone(),
                 true,
+                window,
                 cx,
             );
             div()
@@ -1009,13 +1119,17 @@ impl Render for PullsPanel {
         div()
             .id("pulls-panel")
             .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &editor::Find, window, cx| {
+                this.controls.open_find(window, cx);
+                cx.notify();
+            }))
             .size_full()
             .flex()
             .flex_col()
             .child(header)
             .child(narrow_bar(&self.controls, me_off, cx))
             .children(selected_labels(&self.controls.labels, cx))
-            .child(find_box(&self.controls, &t))
+            .children(find_box(&self.controls, cx))
             .child(body)
             .children(account.map(|a| signed_in_as(&a.login, &a.source, &t)))
             .into_any_element()

@@ -125,7 +125,7 @@ impl From<&github::Pull> for PullItem {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct LabelItem {
     pub name: String,
     /// Hex without the '#', as its author typed it.

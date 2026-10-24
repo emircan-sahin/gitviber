@@ -10,6 +10,7 @@ mod list;
 mod pull_file;
 pub(crate) mod pull_view;
 mod pulls_panel;
+mod rows;
 
 pub(crate) use dialogs::confirm;
 

@@ -2,6 +2,8 @@
 //! labels and an author. The chips' choice is kept per repository; labels and an author aren't.
 
 use gitviber_core::github::ListFilter;
+
+use crate::model::LabelItem;
 use serde_json::{Map, Value, json};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -117,17 +119,63 @@ pub fn parse_choice(saved: Option<&Value>, kind: ListKind) -> Choice {
     Choice { scope, draft }
 }
 
-/// `saved` with `choice` as `kind`'s; the other kind's stays.
-pub fn with_choice(saved: Option<&Value>, kind: ListKind, choice: Choice) -> Value {
+/// `saved` with `kind`'s fields set from `fields`; the rest of `kind`'s and the other kind's stay.
+fn with_fields(saved: Option<&Value>, kind: ListKind, fields: Value) -> Value {
     let mut map = saved
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_else(Map::new);
-    map.insert(
-        kind.key().into(),
-        json!({ "scope": choice.scope.map(|s| info(s).key), "draft": choice.draft }),
-    );
+    let mut mine = map
+        .get(kind.key())
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_else(Map::new);
+    if let Value::Object(fields) = fields {
+        mine.extend(fields);
+    }
+    map.insert(kind.key().into(), Value::Object(mine));
     Value::Object(map)
+}
+
+/// `saved` with `choice` as `kind`'s; the other kind's stays.
+pub fn with_choice(saved: Option<&Value>, kind: ListKind, choice: Choice) -> Value {
+    with_fields(
+        saved,
+        kind,
+        json!({ "scope": choice.scope.map(|s| info(s).key), "draft": choice.draft }),
+    )
+}
+
+/// The labels and author a list was last narrowed to in a repository, as they were stored:
+/// anything unreadable is none.
+pub fn parse_picked(saved: Option<&Value>, kind: ListKind) -> (Vec<LabelItem>, Option<String>) {
+    let Some(v) = saved
+        .and_then(|s| s.get(kind.key()))
+        .and_then(Value::as_object)
+    else {
+        return (vec![], None);
+    };
+    let labels = v
+        .get("labels")
+        .cloned()
+        .and_then(|l| serde_json::from_value::<Vec<LabelItem>>(l).ok())
+        .unwrap_or_default();
+    let author = v
+        .get("author")
+        .and_then(Value::as_str)
+        .filter(|a| !a.is_empty())
+        .map(str::to_string);
+    (labels, author)
+}
+
+/// `saved` with `kind`'s labels and author; its chips and the other kind's stay.
+pub fn with_picked(
+    saved: Option<&Value>,
+    kind: ListKind,
+    labels: &[LabelItem],
+    author: Option<&str>,
+) -> Value {
+    with_fields(saved, kind, json!({ "labels": labels, "author": author }))
 }
 
 /// What a list is narrowed to.
@@ -480,6 +528,50 @@ mod tests {
         .to_core();
         assert!(f.scope.is_some() && f.labels == ["bug"] && f.author.is_none());
         assert!(Narrow::default().to_core().scope.is_none());
+    }
+
+    #[test]
+    fn labels_and_an_author_are_kept_per_kind_beside_the_chips() {
+        let bug = LabelItem {
+            name: "bug".into(),
+            color: "d73a4a".into(),
+            description: "Broken".into(),
+        };
+        let chips = with_choice(
+            None,
+            ListKind::Pulls,
+            Choice {
+                scope: Some(Scope::Created),
+                draft: None,
+            },
+        );
+        let saved = with_picked(
+            Some(&chips),
+            ListKind::Pulls,
+            std::slice::from_ref(&bug),
+            Some("mona"),
+        );
+        assert_eq!(
+            parse_picked(Some(&saved), ListKind::Pulls),
+            (vec![bug.clone()], Some("mona".into()))
+        );
+        // The chips stay beside them, and setting the chips again keeps them.
+        assert_eq!(
+            parse_choice(Some(&saved), ListKind::Pulls).scope,
+            Some(Scope::Created)
+        );
+        let again = with_choice(Some(&saved), ListKind::Pulls, Choice::default());
+        assert_eq!(
+            parse_picked(Some(&again), ListKind::Pulls),
+            (vec![bug], Some("mona".into()))
+        );
+        assert_eq!(parse_picked(Some(&again), ListKind::Issues), (vec![], None));
+        for bad in [
+            json!({ "pulls": { "labels": "bug", "author": 3 } }),
+            json!(null),
+        ] {
+            assert_eq!(parse_picked(Some(&bad), ListKind::Pulls), (vec![], None));
+        }
     }
 
     #[test]
