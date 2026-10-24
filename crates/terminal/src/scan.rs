@@ -2,6 +2,10 @@
 //! marks), OSC 7 (the shell's folder) and XTVERSION (CSI > q). Watched alongside the parser, with
 //! where each one ends, so a mark lands where the cursor was at it. Plain text is skipped a chunk
 //! at a time; OSCs of other numbers (an OSC 52 of megabytes) aren't kept.
+//!
+//! It also bounds what alacritty's parser holds: vte keeps an OSC's bytes in a buffer that only
+//! grows, so one past `MAX_OSC` is cut (`CutOsc`) and the rest of it skipped, and after a big one
+//! the pane starts a fresh parser.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Found {
@@ -10,6 +14,14 @@ pub enum Found {
     /// What follows `7;`: a file URL.
     Cwd(String),
     XtVersion,
+    /// An OSC past MAX_OSC: cancel it in the parser and skip what's left of it.
+    CutOsc,
+    /// The cut OSC ended here; `esc`: an ESC that ended it, to feed first.
+    OscSkipped {
+        esc: bool,
+    },
+    /// An OSC past BIG_OSC ended (whole): the parser's buffer stayed that big.
+    BigOscEnded,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,17 +31,25 @@ enum State {
     Csi,
     Osc,
     OscEsc,
+    Skip,
+    SkipEsc,
 }
 
 /// Longer than any mark a shell sends (zsh's command line is cut at 200 characters, encoded).
 const MAX_KEPT: usize = 4096;
 const MAX_CSI: usize = 16;
+/// An OSC 52 of the most the clipboard takes (about 1 MB decoded) fits.
+pub const MAX_OSC: usize = 1_500_000;
+/// Past this an OSC's buffer is worth giving back.
+const BIG_OSC: usize = 64 * 1024;
 
 pub struct Scanner {
     state: State,
     buf: Vec<u8>,
     /// Whether this OSC's payload is still kept: its number may be one we read.
     keep: bool,
+    /// This OSC's length so far.
+    osc_len: usize,
 }
 
 impl Default for Scanner {
@@ -38,6 +58,7 @@ impl Default for Scanner {
             state: State::Ground,
             buf: Vec::new(),
             keep: true,
+            osc_len: 0,
         }
     }
 }
@@ -65,6 +86,7 @@ impl Scanner {
                     };
                     self.buf.clear();
                     self.keep = true;
+                    self.osc_len = 0;
                 }
                 State::Csi => match b {
                     0x40..=0x7e => {
@@ -85,11 +107,60 @@ impl Scanner {
                     0x1b => self.state = State::OscEsc,
                     0x18 | 0x1a => self.state = State::Ground,
                     _ if self.keep => {
+                        self.osc_len += 1;
                         self.buf.push(b);
                         self.check_number();
                     }
-                    _ => {}
+                    _ => {
+                        // A payload not kept, an OSC 52's: on to its end, or to the cap.
+                        let room = MAX_OSC.saturating_sub(self.osc_len);
+                        let rest = &bytes[i..bytes.len().min(i + room)];
+                        match rest
+                            .iter()
+                            .position(|&b| matches!(b, 0x07 | 0x1b | 0x18 | 0x1a))
+                        {
+                            Some(at) => {
+                                self.osc_len += at;
+                                i += at;
+                            }
+                            None => {
+                                self.osc_len += rest.len();
+                                i += rest.len();
+                                if self.osc_len >= MAX_OSC {
+                                    out.push((i, Found::CutOsc));
+                                    self.state = State::Skip;
+                                }
+                            }
+                        }
+                        continue;
+                    }
                 },
+                State::Skip => match bytes[i..]
+                    .iter()
+                    .position(|&b| matches!(b, 0x07 | 0x1b | 0x18 | 0x1a))
+                {
+                    Some(at) => {
+                        i += at;
+                        if bytes[i] == 0x1b {
+                            self.state = State::SkipEsc;
+                        } else {
+                            out.push((i + 1, Found::OscSkipped { esc: false }));
+                            self.state = State::Ground;
+                        }
+                    }
+                    None => return,
+                },
+                State::SkipEsc => {
+                    if b == b'\\' {
+                        out.push((i + 1, Found::OscSkipped { esc: false }));
+                        self.state = State::Ground;
+                    } else {
+                        // An escape that starts something else: it goes to the parser again.
+                        out.push((i, Found::OscSkipped { esc: true }));
+                        self.state = State::Esc;
+                        continue;
+                    }
+                }
                 State::OscEsc => {
                     if b == b'\\' {
                         self.end_osc(i + 1, out);
@@ -121,6 +192,9 @@ impl Scanner {
 
     fn end_osc(&mut self, end: usize, out: &mut Vec<(usize, Found)>) {
         self.state = State::Ground;
+        if self.osc_len > BIG_OSC {
+            out.push((end, Found::BigOscEnded));
+        }
         if !self.keep {
             return;
         }
@@ -233,7 +307,13 @@ mod tests {
         let mut s = Scanner::default();
         let mut out = vec![];
         s.feed(&big, &mut out);
-        assert_eq!(out, vec![(big.len(), Found::Mark("B".into()))]);
+        assert_eq!(
+            out,
+            vec![
+                (big.len() - 8, Found::BigOscEnded),
+                (big.len(), Found::Mark("B".into()))
+            ]
+        );
         assert!(s.buf.capacity() < MAX_KEPT * 2);
         // DA2 and DECSCUSR aren't XTVERSION; an ESC inside an OSC ends it.
         assert!(scan(&[b"\x1b[>c\x1b[2 q\x1b[>1q"]).is_empty());
@@ -256,5 +336,42 @@ mod tests {
         );
         assert_eq!(cwd_from_url("file://some-other-host.example/tmp"), None);
         assert_eq!(cwd_from_url("http://x/tmp"), None);
+    }
+
+    #[test]
+    fn an_osc_past_the_cap_is_cut_and_the_rest_skipped() {
+        let mut s = Scanner::default();
+        let mut out = vec![];
+        s.feed(b"\x1b]52;c;", &mut out);
+        let chunk = vec![b'A'; 1 << 20];
+        s.feed(&chunk, &mut out);
+        assert!(out.is_empty());
+        s.feed(&chunk, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1, Found::CutOsc);
+        out.clear();
+        s.feed(&chunk, &mut out);
+        s.feed(b"AAA\x07ok", &mut out);
+        assert_eq!(out, vec![(4, Found::OscSkipped { esc: false })]);
+        // Ended by another sequence's ESC: that ESC is the parser's again.
+        let mut s = Scanner::default();
+        let mut out = vec![];
+        s.feed(b"\x1b]52;c;", &mut out);
+        s.feed(&vec![b'A'; MAX_OSC + 10], &mut out);
+        s.feed(b"\x1b", &mut out);
+        s.feed(b"[>q", &mut out);
+        assert_eq!(
+            out[1..],
+            [(0, Found::OscSkipped { esc: true }), (3, Found::XtVersion)]
+        );
+    }
+
+    #[test]
+    fn a_big_osc_that_ends_says_so() {
+        let mut big = b"\x1b]52;c;".to_vec();
+        big.extend(std::iter::repeat_n(b'A', 100_000));
+        big.push(0x07);
+        let found = scan(&[&big]);
+        assert_eq!(found, vec![(0, big.len(), Found::BigOscEnded)]);
     }
 }

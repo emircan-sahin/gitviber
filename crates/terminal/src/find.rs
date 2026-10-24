@@ -63,12 +63,31 @@ fn char_at<T>(term: &Term<T>, p: Point) -> Option<char> {
     Some(term.grid()[line][p.column].c)
 }
 
-/// Every match in the scrollback and the screen, top to bottom, up to MAX_MATCHES; true when
-/// there were more. Empty matches are left out; whole word wants no word character either side.
-pub fn find_all<T>(term: &Term<T>, regex: &mut RegexSearch, o: FindOptions) -> (Vec<Match>, bool) {
+/// Matches marked at once, around the current one.
+#[derive(Clone, Debug, Default)]
+pub struct Window {
+    pub matches: Vec<Match>,
+    /// The first one's number among all.
+    pub first: usize,
+    pub total: usize,
+    /// The first at or past the center, in `matches`.
+    pub at: Option<usize>,
+}
+
+/// Every match in the scrollback and the screen, top to bottom, counted, with up to MAX_MATCHES
+/// kept around `center` (half before it at most): the newest output is as reachable as the
+/// oldest. Empty matches are left out; whole word wants no word character either side.
+pub fn find_around<T>(
+    term: &Term<T>,
+    regex: &mut RegexSearch,
+    o: FindOptions,
+    center: Point,
+) -> Window {
     let start = Point::new(term.topmost_line(), Column(0));
     let end = Point::new(term.bottommost_line(), term.last_column());
-    let mut out = Vec::new();
+    let half = MAX_MATCHES / 2;
+    let mut kept = std::collections::VecDeque::new();
+    let mut w = Window::default();
     for m in RegexIter::new(start, end, Direction::Right, term, regex) {
         if o.whole_word {
             let before = char_at(term, m.start().sub(term, Boundary::None, 1))
@@ -79,12 +98,24 @@ pub fn find_all<T>(term: &Term<T>, regex: &mut RegexSearch, o: FindOptions) -> (
                 continue;
             }
         }
-        if out.len() == MAX_MATCHES {
-            return (out, true);
+        w.total += 1;
+        if w.at.is_none() && *m.start() >= center {
+            w.at = Some(kept.len());
         }
-        out.push(m);
+        match w.at {
+            None => {
+                kept.push_back(m);
+                if kept.len() > half {
+                    kept.pop_front();
+                    w.first += 1;
+                }
+            }
+            Some(_) if kept.len() < MAX_MATCHES => kept.push_back(m),
+            Some(_) => {}
+        }
     }
-    (out, false)
+    w.matches = kept.into();
+    w
 }
 
 #[cfg(test)]
@@ -101,8 +132,12 @@ mod tests {
         t
     }
 
+    fn top(t: &Term<VoidListener>) -> Point {
+        Point::new(t.topmost_line(), Column(0))
+    }
+
     fn count(t: &Term<VoidListener>, q: &str, o: FindOptions) -> usize {
-        find_all(t, &mut compile(q, o).unwrap(), o).0.len()
+        find_around(t, &mut compile(q, o).unwrap(), o, top(t)).total
     }
 
     #[test]
@@ -165,13 +200,44 @@ mod tests {
     #[test]
     fn matches_scrolled_into_the_history_are_found_too() {
         let t = term(&"needle\r\nhay\r\n".repeat(10));
-        let (found, more) = find_all(
-            &t,
-            &mut compile("needle", FindOptions::default()).unwrap(),
-            FindOptions::default(),
+        let o = FindOptions::default();
+        let w = find_around(&t, &mut compile("needle", o).unwrap(), o, top(&t));
+        assert_eq!(
+            (w.matches.len(), w.total, w.first, w.at),
+            (10, 10, 0, Some(0))
         );
-        assert_eq!(found.len(), 10);
-        assert!(!more);
-        assert!(found[0].start().line < found[9].start().line);
+        assert!(w.matches[0].start().line < w.matches[9].start().line);
+    }
+
+    #[test]
+    fn past_the_marked_ones_the_newest_are_kept_around_the_center() {
+        let lines = MAX_MATCHES * 3;
+        let t = Term::new(
+            Config {
+                scrolling_history: lines + 10,
+                ..Config::default()
+            },
+            &TermSize::new(30, 4),
+            VoidListener,
+        );
+        let mut t = t;
+        let mut p = Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new();
+        for i in 0..lines {
+            p.advance(&mut t, format!("hit {i}\r\n").as_bytes());
+        }
+        let o = FindOptions::default();
+        let mut regex = compile("hit", o).unwrap();
+        // From the bottom: the last ones, the newest output.
+        let bottom = Point::new(t.bottommost_line(), Column(0));
+        let w = find_around(&t, &mut regex, o, bottom);
+        assert_eq!(w.total, lines);
+        assert_eq!(w.at, None);
+        assert_eq!(w.first + w.matches.len(), lines);
+        // From the middle: half before it, the rest after.
+        let middle = *find_around(&t, &mut regex, o, top(&t)).matches[MAX_MATCHES - 1].start();
+        let w = find_around(&t, &mut regex, o, middle);
+        assert_eq!(w.matches.len(), MAX_MATCHES);
+        assert_eq!(w.at, Some(MAX_MATCHES / 2));
+        assert_eq!(w.first + MAX_MATCHES / 2, MAX_MATCHES - 1);
     }
 }

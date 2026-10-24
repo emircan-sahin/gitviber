@@ -2252,6 +2252,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "gitviber-browser"
+version = "0.1.17"
+dependencies = [
+ "block2 0.6.2",
+ "futures",
+ "gitviber-core",
+ "gitviber-ui",
+ "gpui-kit",
+ "gpui-pre",
+ "libc",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "objc2-web-kit",
+ "raw-window-handle",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "url",
+]
+
+[[package]]
 name = "gitviber-changes"
 version = "0.1.17"
 dependencies = [
@@ -2316,6 +2338,9 @@ dependencies = [
  "chrono",
  "gitviber-core",
  "gitviber-diff",
+ "gitviber-history",
+ "gitviber-markdown",
+ "gitviber-refs",
  "gitviber-ui",
  "gpui-kit",
  "gpui-pre",
@@ -2350,6 +2375,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gitviber-obsidian"
+version = "0.1.17"
+dependencies = [
+ "gitviber-core",
+ "gitviber-files",
+ "gitviber-markdown",
+ "gitviber-ui",
+ "gpui-kit",
+ "gpui-pre",
+ "serde_json",
+]
+
+[[package]]
 name = "gitviber-refs"
 version = "0.1.17"
 dependencies = [
@@ -2363,11 +2401,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "gitviber-review"
+version = "0.1.17"
+dependencies = [
+ "gitviber-core",
+ "gitviber-diff",
+ "gitviber-refs",
+ "gitviber-terminal",
+ "gitviber-ui",
+ "gpui-kit",
+ "gpui-pre",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "gitviber-terminal"
 version = "0.1.17"
 dependencies = [
  "alacritty_terminal",
  "gitviber-core",
+ "gitviber-refs",
  "gitviber-ui",
  "gpui-kit",
  "gpui-pre",
@@ -4905,6 +4959,20 @@ dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
  "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
+name = "objc2-web-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2e5aaab980c433cf470df9d7af96a7b46a9d892d521a2cbbb2f8a4c16751e7f"
+dependencies = [
+ "bitflags 2.13.2",
+ "block2 0.6.2",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
  "objc2-foundation 0.3.2",
 ]
 

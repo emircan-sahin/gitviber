@@ -156,7 +156,8 @@ fn indexed(i: u8, theme: &TerminalTheme) -> Hsla {
 
 struct Palette<'a> {
     theme: &'a TerminalTheme,
-    colors: &'a Colors,
+    /// A program's own colors, copied: rows are shaped after the terminal's lock is let go.
+    colors: Colors,
 }
 
 impl Palette<'_> {
@@ -527,7 +528,7 @@ impl Element for TerminalElement {
         let offset = grid.display_offset() as i32;
         let palette = Palette {
             theme: &theme,
-            colors: term.colors(),
+            colors: *term.colors(),
         };
 
         // The shapes depend on the font, the cell size and a program's palette changes too.
@@ -546,21 +547,25 @@ impl Element for TerminalElement {
             cache.key = key;
         }
         let mut next: HashMap<u64, Rc<RowShape>> = HashMap::with_capacity(screen);
-        let mut rows = Vec::with_capacity(screen);
+        let mut rows: Vec<(Pixels, Option<Rc<RowShape>>)> = Vec::with_capacity(screen);
+        // Rows to shape, copied out: the reader thread waits on the lock while it's held.
+        let mut missed = Vec::new();
         let mut marks = Vec::new();
         for r in 0..screen {
             let line = Line(r as i32 - offset);
             let row = &grid[line];
             let h = hash_row(row, cols);
-            let shape = match next.get(&h).cloned().or_else(|| cache.rows.remove(&h)) {
-                Some(s) => s,
-                None => Rc::new(build_row(
-                    row, cols, &palette, &fonts, font_size, cell_w, window,
-                )),
-            };
             let y = origin.y + cell_h * r as f32;
-            next.insert(h, shape.clone());
-            rows.push((y, shape));
+            match next.get(&h).cloned().or_else(|| cache.rows.remove(&h)) {
+                Some(shape) => {
+                    next.insert(h, shape.clone());
+                    rows.push((y, Some(shape)));
+                }
+                None => {
+                    missed.push((rows.len(), h, row.clone()));
+                    rows.push((y, None));
+                }
+            }
             if let Some(id) = mark_on(term, line)
                 && let Some(ended) = emu.marks.command(id).and_then(|c| c.end.as_ref())
             {
@@ -577,9 +582,6 @@ impl Element for TerminalElement {
                 ));
             }
         }
-        cache.rows = next;
-        drop(cache);
-
         let mut highlights = Vec::new();
         let row_bounds = |r: usize, from: usize, to: usize| {
             Bounds::new(
@@ -591,10 +593,15 @@ impl Element for TerminalElement {
             )
         };
         if let Some(find) = pane.find.as_ref() {
-            let top = Line(-offset);
-            let bottom = Line(screen as i32 - 1 - offset);
-            for (i, m) in find.matches.iter().enumerate() {
-                if m.end().line < top || m.start().line > bottom {
+            let (top, bottom) = (-offset, screen as i32 - 1 - offset);
+            // Found before the rows that came since scrolled them up.
+            let delta = emu.scrolled - find.scanned_at;
+            for (i, m) in find.window.matches.iter().enumerate() {
+                let (start, end) = (
+                    crate::pane::shifted(*m.start(), delta),
+                    crate::pane::shifted(*m.end(), delta),
+                );
+                if end.line.0 < top || start.line.0 > bottom {
                     continue;
                 }
                 let color = if find.current == Some(i) {
@@ -602,10 +609,9 @@ impl Element for TerminalElement {
                 } else {
                     theme.find_match
                 };
-                for r in 0..screen {
-                    let line = Line(r as i32 - offset);
-                    if let Some((a, b)) = spans(*m.start(), *m.end(), false, line, cols) {
-                        highlights.push((row_bounds(r, a, b), color));
+                for l in start.line.0.max(top)..=end.line.0.min(bottom) {
+                    if let Some((a, b)) = spans(start, end, false, Line(l), cols) {
+                        highlights.push((row_bounds((l + offset) as usize, a, b), color));
                     }
                 }
             }
@@ -704,6 +710,25 @@ impl Element for TerminalElement {
 
         let takes_mouse = mode.intersects(TermMode::MOUSE_MODE);
         drop(emu);
+        for (i, h, row) in missed {
+            let shape = match next.get(&h) {
+                Some(shape) => shape.clone(),
+                None => {
+                    let shape = Rc::new(build_row(
+                        &row, cols, &palette, &fonts, font_size, cell_w, window,
+                    ));
+                    next.insert(h, shape.clone());
+                    shape
+                }
+            };
+            rows[i].1 = Some(shape);
+        }
+        cache.rows = next;
+        drop(cache);
+        let rows: Vec<(Pixels, Rc<RowShape>)> = rows
+            .into_iter()
+            .map(|(y, shape)| (y, shape.unwrap_or_default()))
+            .collect();
         Frame {
             hitbox,
             metrics,

@@ -251,25 +251,25 @@ pub struct Command {
     pub id: u32,
     pub command: Option<String>,
     started: Instant,
-    /// Rows from the prompt to where the output starts.
-    out_offset: i32,
+    /// Where the output starts from the prompt's row, in logical lines and cells: rows would be
+    /// wrong once a column change reflows them.
+    out: (u32, usize),
     pub end: Option<Ended>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Ended {
     pub end: CommandEnd,
-    /// Rows from the prompt to the output's last row, and the cursor's column there.
-    end_offset: i32,
-    end_x: usize,
+    /// Where the cursor was at the end, as `out`.
+    at: (u32, usize),
 }
 
 /// The prompt shown now, or the command running from it.
 #[derive(Debug)]
 struct Current {
-    /// Where A was, and the history's length then: the prompt's row once C comes.
+    /// Where A was, and the rows scrolled since: the prompt's row once C comes.
     line: i32,
-    history: usize,
+    scrolled: i32,
     id: Option<u32>,
 }
 
@@ -307,7 +307,7 @@ impl Marks {
                 }
                 self.current = Some(Current {
                     line: cursor.line.0,
-                    history: term.history_size(),
+                    scrolled: 0,
                     id: None,
                 });
                 // An unmarked prompt matters too: it's what a waiting command is typed at.
@@ -315,10 +315,9 @@ impl Marks {
             }
             MarkKind::C => {
                 let current = self.current.as_mut().filter(|c| c.id.is_none())?;
-                // Where the prompt went since A: up by what scrolled into the history, inside the
-                // screen (a ⌃L cleared it), above the output.
-                let scrolled = term.history_size().saturating_sub(current.history) as i32;
-                let row = (current.line - scrolled).clamp(0, (cursor.line.0 - 1).max(0));
+                // Where the prompt went since A: up by what scrolled, inside the screen (a ⌃L
+                // cleared it), above the output.
+                let row = (current.line - current.scrolled).clamp(0, (cursor.line.0 - 1).max(0));
                 let id = self.next_id;
                 self.next_id = self.next_id.wrapping_add(1);
                 term.grid_mut()[Line(row)][Column(0)].push_zerowidth(mark_char(id));
@@ -327,7 +326,7 @@ impl Marks {
                     id,
                     command: mark.command.clone(),
                     started: Instant::now(),
-                    out_offset: cursor.line.0 - row,
+                    out: logical_offset(term, Line(row), cursor),
                     end: None,
                 });
                 if self.commands.len() > MAX_COMMANDS {
@@ -358,11 +357,21 @@ impl Marks {
         };
         c.end = Some(Ended {
             end: end.clone(),
-            end_offset: row.map_or(0, |r| cursor.line.0 - r.0),
-            end_x: cursor.column.0,
+            at: row.map_or((0, 0), |r| logical_offset(term, r, cursor)),
         });
         self.last = Some(id);
         Some(end)
+    }
+
+    /// Between a prompt and its command's output: the rows scrolled are counted (`scrolled`).
+    pub fn waiting_for_output(&self) -> bool {
+        self.current.as_ref().is_some_and(|c| c.id.is_none())
+    }
+
+    pub fn scrolled(&mut self, rows: i32) {
+        if let Some(c) = self.current.as_mut() {
+            c.scrolled += rows;
+        }
     }
 
     /// Whether any command is marked, for the jump keys.
@@ -400,9 +409,9 @@ impl Marks {
         let c = self.command(self.last?)?;
         let ended = c.end.as_ref()?;
         let row = find_mark(term, c.id, term.bottommost_line())?;
-        // Its start scrolled off the history: what's left of it.
-        let start = Line((row.0 + c.out_offset).max(term.topmost_line().0));
-        Some((start, Line(row.0 + ended.end_offset), ended.end_x))
+        let start = logical_point(term, row, c.out).line;
+        let end = logical_point(term, row, ended.at);
+        Some((start, end.line, end.column.0))
     }
 
     pub fn has_output<T>(&self, term: &Term<T>) -> bool {
@@ -448,6 +457,95 @@ impl Marks {
             term.scroll_display(alacritty_terminal::grid::Scroll::Delta(delta));
         }
     }
+}
+
+/// Counts the rows scrolled into the history as bytes are parsed: held off the bottom, alacritty's
+/// view moves along with each row going in, full or not, where the history's length stops growing
+/// once it's full. Marks and find's matches move up by it.
+#[derive(Default)]
+pub struct ScrollCounter {
+    /// A switch to the other screen came with the view held up: the history's view goes back down
+    /// once that screen is left.
+    lower_primary: bool,
+}
+
+impl ScrollCounter {
+    pub fn advance<T: alacritty_terminal::event::EventListener>(
+        &mut self,
+        parser: &mut alacritty_terminal::vte::ansi::Processor,
+        term: &mut Term<T>,
+        bytes: &[u8],
+    ) -> usize {
+        use alacritty_terminal::grid::Scroll;
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            parser.advance(term, bytes);
+            if self.lower_primary && !term.mode().contains(TermMode::ALT_SCREEN) {
+                term.grid_mut().scroll_display(Scroll::Bottom);
+                self.lower_primary = false;
+            }
+            return 0;
+        }
+        let user = term.grid().display_offset();
+        let history = term.history_size();
+        let base = user.max(1).min(history);
+        if base == 0 {
+            // No history yet, so none is full: its growth is the rows scrolled.
+            parser.advance(term, bytes);
+            return term.history_size().saturating_sub(history);
+        }
+        term.grid_mut()
+            .scroll_display(Scroll::Delta(base as i32 - user as i32));
+        parser.advance(term, bytes);
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            self.lower_primary = user == 0;
+            return 0;
+        }
+        let after = term.grid().display_offset();
+        // Back at the bottom, or where the rows the user was reading went.
+        if user == 0 {
+            term.grid_mut().scroll_display(Scroll::Bottom);
+        }
+        after.saturating_sub(base)
+    }
+}
+
+fn wraps<T>(term: &Term<T>, row: Line) -> bool {
+    term.grid()[row][term.last_column()]
+        .flags
+        .contains(alacritty_terminal::term::cell::Flags::WRAPLINE)
+}
+
+/// `to` from `from`'s row: the logical lines (rows not wrapping on) started since, and the cells
+/// into the last one.
+fn logical_offset<T>(term: &Term<T>, from: Line, to: Point) -> (u32, usize) {
+    let mut lines = 0;
+    let mut start = from;
+    let mut row = from;
+    while row < to.line {
+        if !wraps(term, row) {
+            lines += 1;
+            start = row + 1;
+        }
+        row += 1;
+    }
+    let cells = (to.line.0 - start.0).max(0) as usize * term.columns() + to.column.0;
+    (lines, cells)
+}
+
+/// `logical_offset` back to a point in the grid as it is now, inside it.
+fn logical_point<T>(term: &Term<T>, from: Line, (lines, cells): (u32, usize)) -> Point {
+    let bottom = term.bottommost_line();
+    let cols = term.columns();
+    let mut row = from.max(term.topmost_line());
+    let mut n = 0;
+    while n < lines && row < bottom {
+        if !wraps(term, row) {
+            n += 1;
+        }
+        row += 1;
+    }
+    let row = Line((row.0 + (cells / cols) as i32).min(bottom.0));
+    Point::new(row, Column((cells % cols).min(cols - 1)))
 }
 
 /// The row marked for `id`, looking up from `from`.
@@ -617,6 +715,7 @@ mod tests {
         term: Term<VoidListener>,
         parser: Processor,
         marks: Marks,
+        counter: ScrollCounter,
         effects: Vec<Effect>,
     }
 
@@ -630,11 +729,17 @@ mod tests {
                 term: Term::new(config, &TermSize::new(20, 5), VoidListener),
                 parser: Processor::new(),
                 marks: Marks::default(),
+                counter: ScrollCounter::default(),
                 effects: vec![],
             }
         }
         fn print(&mut self, text: &str) {
-            self.parser.advance(&mut self.term, text.as_bytes());
+            let rows = self
+                .counter
+                .advance(&mut self.parser, &mut self.term, text.as_bytes());
+            if self.marks.waiting_for_output() {
+                self.marks.scrolled(rows as i32);
+            }
         }
         fn mark(&mut self, data: &str) {
             let mark = parse_mark(data).unwrap();
@@ -778,5 +883,64 @@ mod tests {
             sh.term.selection_to_string().map(strip_marks).as_deref(),
             Some("one\ntwo\n")
         );
+    }
+
+    #[test]
+    fn a_column_change_that_reflows_the_output_keeps_it_whole() {
+        let mut sh = Shell::new(100);
+        sh.run("cat", &format!("{}\r\nshort\r\n", "x".repeat(18)), 0);
+        assert_eq!(
+            sh.marks.last_output(&sh.term).as_deref(),
+            Some(&*format!("{}\nshort", "x".repeat(18)))
+        );
+        // Narrower: the long line wraps onto two rows; rows counted from the prompt would run
+        // past the grid's end.
+        sh.term.resize(TermSize::new(8, 5));
+        let out = sh.marks.last_output(&sh.term).unwrap();
+        assert_eq!(out.replace('\n', ""), format!("{}short", "x".repeat(18)));
+        sh.marks.select_last_output(&mut sh.term);
+        assert!(sh.term.selection_to_string().is_some());
+        sh.term.resize(TermSize::new(30, 5));
+        assert!(sh.marks.last_output(&sh.term).is_some());
+    }
+
+    #[test]
+    fn with_the_history_full_a_two_line_prompt_is_marked_on_its_first_line() {
+        let mut sh = Shell::new(3);
+        sh.print(&"y\r\n".repeat(20));
+        assert_eq!(sh.term.history_size(), 3);
+        // A at the bottom row, then the prompt's two lines scroll the screen.
+        sh.print("\x1b[5;1H");
+        sh.mark("A");
+        sh.print("~/repo main\r\n$ ls\r\n");
+        sh.mark("C;cmdline=ls");
+        sh.print("a\r\n");
+        sh.mark("D;0");
+        let lines = sh.marked_lines();
+        assert_eq!(lines.len(), 1);
+        let row = sh.term.bounds_to_string(
+            Point::new(Line(lines[0]), Column(0)),
+            Point::new(Line(lines[0]), Column(10)),
+        );
+        assert_eq!(strip_marks(row), "~/repo main");
+        assert_eq!(sh.marks.last_output(&sh.term).as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn counting_rows_leaves_the_view_where_it_was() {
+        let mut sh = Shell::new(5);
+        sh.print(&"y\r\n".repeat(8));
+        assert_eq!(sh.term.grid().display_offset(), 0);
+        // A full-screen program comes and goes within reads: the history's view stays down.
+        sh.print("a\r\n\x1b[?1049h");
+        sh.print("x\x1b[?1049l");
+        assert_eq!(sh.term.grid().display_offset(), 0);
+        // Scrolled up, the view stays on the rows it showed as more come.
+        sh.term
+            .grid_mut()
+            .scroll_display(alacritty_terminal::grid::Scroll::Delta(2));
+        let rows = sh.counter.advance(&mut sh.parser, &mut sh.term, b"z\r\n");
+        assert_eq!(rows, 1);
+        assert_eq!(sh.term.grid().display_offset(), 3);
     }
 }

@@ -8,10 +8,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::index::Boundary;
 use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::TermMode;
-use alacritty_terminal::term::search::Match;
+use alacritty_terminal::term::search::RegexSearch;
 use gitviber_core::{Core, api::app as pty, clipboard::Paste};
 use gpui::{
     App, AppContext as _, Bounds, ClipboardItem, Context, Entity, EntityInputHandler, EventEmitter,
@@ -116,11 +117,22 @@ pub struct FindResult {
 pub(crate) struct FindState {
     query: String,
     options: FindOptions,
-    regex: Option<alacritty_terminal::term::search::RegexSearch>,
-    pub matches: Vec<Match>,
+    regex: RegexSearch,
+    pub window: find::Window,
+    /// In `window.matches`.
     pub current: Option<usize>,
-    more: bool,
-    stale: bool,
+    /// `Emu::scrolled` when they were found: their points have moved up by what scrolled since.
+    pub scanned_at: u64,
+    /// Bumped by a new query or a step, so a refresh found for an older one is dropped.
+    generation: u64,
+}
+
+/// `p` moved up by `rows` scrolled.
+pub(crate) fn shifted(p: GridPoint, rows: u64) -> GridPoint {
+    GridPoint::new(
+        Line(p.line.0.saturating_sub(rows.min(i32::MAX as u64) as i32)),
+        p.column,
+    )
 }
 
 pub struct TerminalPane {
@@ -534,17 +546,8 @@ impl TerminalPane {
                 });
             }));
         }
-        if let Some(find) = self.find.as_mut() {
-            find.stale = true;
-            if self.find_task.is_none() {
-                self.find_task = Some(cx.spawn(async move |this, cx| {
-                    cx.background_executor().timer(FIND_REFRESH).await;
-                    let _ = this.update(cx, |pane, cx| {
-                        pane.find_task = None;
-                        pane.refresh_find(cx);
-                    });
-                }));
-            }
+        if self.session.outbox.take_output() && self.find.is_some() {
+            self.refresh_find_soon(cx);
         }
         cx.notify();
     }
@@ -749,6 +752,20 @@ impl TerminalPane {
                 self.typed(cx);
                 cx.stop_propagation();
                 cx.notify();
+            }
+            // A held key's repeats go to the IME's press-and-hold on macOS: one letter, then the
+            // accent picker, where less, vim and htop want it repeated.
+            keys::Action::Text if e.is_held && !m.control && !m.platform => {
+                if let Some(text) = k
+                    .key_char
+                    .as_ref()
+                    .filter(|t| !t.chars().any(char::is_control))
+                {
+                    self.session.write(text.clone());
+                    self.typed(cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
             }
             keys::Action::Text | keys::Action::Pass => {}
         }
@@ -1291,94 +1308,154 @@ impl TerminalPane {
             self.clear_find(cx);
             return Ok(FindResult::default());
         }
-        let same = self
+        let new = self
             .find
             .as_ref()
-            .is_some_and(|f| f.query == query && f.options == options && !f.stale);
-        if !same {
-            let regex = find::compile(query, options).inspect_err(|_| self.clear_find(cx))?;
-            let current = self
-                .find
-                .as_ref()
-                .and_then(|f| f.current.and_then(|i| f.matches.get(i).cloned()));
+            .is_none_or(|f| f.query != query || f.options != options);
+        if new {
+            let mut regex = find::compile(query, options).inspect_err(|_| self.clear_find(cx))?;
+            let emu = self.session.emu.lock();
+            // Stay on the match on show while it still matches; else from the top of the view.
+            let was = self.find.as_ref().and_then(|f| {
+                let m = f.window.matches.get(f.current?)?;
+                Some(shifted(*m.start(), emu.scrolled - f.scanned_at))
+            });
+            let center = was
+                .filter(|p| p.line >= emu.term.topmost_line())
+                .unwrap_or_else(|| view_top(&emu.term));
+            let window = find::find_around(&emu.term, &mut regex, options, center);
+            let generation = self.find.as_ref().map_or(0, |f| f.generation + 1);
             self.find = Some(FindState {
                 query: query.into(),
                 options,
-                regex: Some(regex),
-                matches: vec![],
-                current: None,
-                more: false,
-                stale: true,
-            });
-            self.refresh_find(cx);
-            // Stay on the match on show while it still matches.
-            if let (Some(f), Some(was)) = (self.find.as_mut(), current) {
-                f.current = f
-                    .matches
-                    .iter()
-                    .position(|m| m.start() == was.start())
-                    .or(f.current);
-            }
-        }
-        let Some(f) = self.find.as_mut() else {
-            return Ok(FindResult::default());
-        };
-        let n = f.matches.len();
-        if n > 0 && step != 0 {
-            f.current = Some(match f.current {
-                Some(i) => (i as i64 + step as i64).rem_euclid(n as i64) as usize,
-                None if step > 0 => 0,
-                None => n - 1,
+                regex,
+                current: window.at.or(window.matches.len().checked_sub(1)),
+                window,
+                scanned_at: emu.scrolled,
+                generation,
             });
         }
-        let target = f.current.and_then(|i| f.matches.get(i)).map(|m| *m.start());
-        if let Some(point) = target {
-            self.session.emu.lock().term.scroll_to_point(point);
+        if step != 0 {
+            self.step_find(step);
         }
+        let mut emu = self.session.emu.lock();
+        let target = self.find.as_ref().and_then(|f| {
+            let m = f.window.matches.get(f.current?)?;
+            Some(shifted(*m.start(), emu.scrolled - f.scanned_at))
+        });
+        if let Some(point) = target.filter(|p| p.line >= emu.term.topmost_line()) {
+            emu.term.scroll_to_point(point);
+        }
+        drop(emu);
         cx.notify();
         Ok(self.find_result())
+    }
+
+    /// The next or previous match; past the ones marked, those around the next are found.
+    fn step_find(&mut self, step: i32) {
+        let emu = self.session.emu.lock();
+        let Some(f) = self.find.as_mut() else { return };
+        f.generation += 1;
+        let n = f.window.matches.len();
+        if f.window.total == 0 || n == 0 {
+            return;
+        }
+        let Some(i) = f.current else {
+            f.current = Some(if step > 0 { 0 } else { n - 1 });
+            return;
+        };
+        let j = i as i64 + step as i64;
+        if (0..n as i64).contains(&j) {
+            f.current = Some(j as usize);
+            return;
+        }
+        let term = &emu.term;
+        let delta = emu.scrolled - f.scanned_at;
+        let past_end = GridPoint::new(term.bottommost_line() + 1, Column(0));
+        let top = GridPoint::new(term.topmost_line(), Column(0));
+        let (center, back) = if j >= n as i64 {
+            if f.window.first + n >= f.window.total {
+                (top, false)
+            } else {
+                let last = shifted(*f.window.matches[n - 1].start(), delta);
+                (last.add(term, Boundary::None, 1), false)
+            }
+        } else if f.window.first == 0 {
+            (past_end, false)
+        } else {
+            (shifted(*f.window.matches[0].start(), delta).max(top), true)
+        };
+        let window = find::find_around(term, &mut f.regex, f.options, center);
+        let last = window.matches.len().checked_sub(1);
+        f.current = match (window.at, back) {
+            (Some(at), true) => at.checked_sub(1).or(last),
+            (Some(at), false) => Some(at),
+            (None, _) => last,
+        };
+        f.window = window;
+        f.scanned_at = emu.scrolled;
     }
 
     pub fn find_result(&self) -> FindResult {
         match &self.find {
             Some(f) => FindResult {
-                index: f.current.map_or(0, |i| i + 1),
-                total: f.matches.len(),
-                more: f.more,
+                index: f.current.map_or(0, |i| f.window.first + i + 1),
+                total: f.window.total,
+                more: false,
             },
             None => FindResult::default(),
         }
     }
 
-    fn refresh_find(&mut self, cx: &mut Context<Self>) {
-        let Some(f) = self.find.as_mut() else { return };
-        if !f.stale {
+    /// Finds again once output has come, off the UI thread: the current match stays current.
+    fn refresh_find_soon(&mut self, cx: &mut Context<Self>) {
+        if self.find_task.is_some() {
             return;
         }
-        f.stale = false;
-        let Some(regex) = f.regex.as_mut() else {
-            return;
-        };
-        let emu = self.session.emu.lock();
-        let was = f.current.and_then(|i| f.matches.get(i)).map(|m| *m.start());
-        let (matches, more) = find::find_all(&emu.term, regex, f.options);
-        let top = Line(-(emu.term.grid().display_offset() as i32));
-        drop(emu);
-        f.current = match was {
-            Some(p) => matches
-                .iter()
-                .position(|m| *m.start() >= p)
-                .or(matches.len().checked_sub(1)),
-            // The first one from the top of the view down, else the last above it.
-            None => matches
-                .iter()
-                .position(|m| m.start().line >= top)
-                .or(matches.len().checked_sub(1)),
-        };
-        f.matches = matches;
-        f.more = more;
-        cx.emit(PaneEvent::FindChanged);
-        cx.notify();
+        let emu = Arc::downgrade(&self.session.emu);
+        self.find_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(FIND_REFRESH).await;
+            let Ok(Some((mut regex, options, was, scanned_at, generation))) =
+                this.update(cx, |p, _| {
+                    let f = p.find.as_ref()?;
+                    let was = f
+                        .current
+                        .and_then(|i| f.window.matches.get(i))
+                        .map(|m| *m.start());
+                    Some((f.regex.clone(), f.options, was, f.scanned_at, f.generation))
+                })
+            else {
+                return;
+            };
+            let found = cx
+                .background_spawn(async move {
+                    let emu = emu.upgrade()?;
+                    let emu = emu.lock();
+                    let was = was.map(|p| shifted(p, emu.scrolled - scanned_at));
+                    let center = was
+                        .filter(|p| p.line >= emu.term.topmost_line())
+                        .unwrap_or_else(|| view_top(&emu.term));
+                    Some((
+                        find::find_around(&emu.term, &mut regex, options, center),
+                        emu.scrolled,
+                    ))
+                })
+                .await;
+            let _ = this.update(cx, |p, cx| {
+                p.find_task = None;
+                let Some((window, scanned_at)) = found else {
+                    return;
+                };
+                let Some(f) = p.find.as_mut().filter(|f| f.generation == generation) else {
+                    return;
+                };
+                f.current = window.at.or(window.matches.len().checked_sub(1));
+                f.window = window;
+                f.scanned_at = scanned_at;
+                cx.emit(PaneEvent::FindChanged);
+                cx.notify();
+            });
+        }));
     }
 
     /// Find's marks go.
@@ -1590,6 +1667,11 @@ impl EntityInputHandler for TerminalPane {
     ) -> Option<usize> {
         None
     }
+}
+
+/// The top row of the view, as a point find starts from.
+fn view_top<T>(term: &alacritty_terminal::Term<T>) -> GridPoint {
+    GridPoint::new(Line(-(term.grid().display_offset() as i32)), Column(0))
 }
 
 /// A new pane entity, for the panel.

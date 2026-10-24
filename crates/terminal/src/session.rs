@@ -187,6 +187,8 @@ pub(crate) struct Outbox {
     answers: Mutex<Answers>,
     sync_deadline: Mutex<Option<Instant>>,
     closed: AtomicBool,
+    /// Output parsed since the UI last looked.
+    output: AtomicBool,
 }
 
 impl Outbox {
@@ -213,6 +215,10 @@ impl Outbox {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take()
+    }
+
+    pub fn take_output(&self) -> bool {
+        self.output.swap(false, Ordering::AcqRel)
     }
 
     fn closed(&self) -> bool {
@@ -259,6 +265,11 @@ pub(crate) struct Emu {
     scanner: Scanner,
     pub marks: Marks,
     found: Vec<(usize, Found)>,
+    /// Inside an OSC that was cut: its bytes don't reach the parser.
+    skipping: bool,
+    counter: marks::ScrollCounter,
+    /// Rows scrolled into the history since the start: what a point found earlier moved up by.
+    pub scrolled: u64,
     outbox: Arc<Outbox>,
     /// The terminal's grid and scrollback, counted in the debug memory readout.
     _live: gitviber_ui::memory::Live,
@@ -273,6 +284,9 @@ impl Emu {
             scanner: Scanner::default(),
             marks: Marks::default(),
             found: Vec::new(),
+            skipping: false,
+            counter: marks::ScrollCounter::default(),
+            scrolled: 0,
             outbox,
             _live: gitviber_ui::memory::Live::new("Terminal"),
         }
@@ -283,22 +297,54 @@ impl Emu {
         self.found.clear();
         self.scanner.feed(bytes, &mut self.found);
         if self.found.is_empty() {
-            self.parser.advance(&mut self.term, bytes);
+            self.advance(bytes);
             return;
         }
         let found = std::mem::take(&mut self.found);
         let mut at = 0;
         for (end, f) in &found {
-            self.parser.advance(&mut self.term, &bytes[at..*end]);
+            self.advance(&bytes[at..*end]);
             at = *end;
             self.act(f);
         }
-        self.parser.advance(&mut self.term, &bytes[at..]);
+        self.advance(&bytes[at..]);
         self.found = found;
+    }
+
+    fn advance(&mut self, bytes: &[u8]) {
+        if self.skipping || bytes.is_empty() {
+            return;
+        }
+        let rows = self
+            .counter
+            .advance(&mut self.parser, &mut self.term, bytes);
+        self.scrolled += rows as u64;
+        if self.marks.waiting_for_output() {
+            self.marks.scrolled(rows as i32);
+        }
+    }
+
+    /// A fresh parser gives back the one that held a big OSC, unless a synchronized frame is in it.
+    fn renew_parser(&mut self) {
+        if self.parser.sync_timeout().sync_timeout().is_none() {
+            self.parser = Processor::new();
+        }
     }
 
     fn act(&mut self, found: &Found) {
         match found {
+            Found::CutOsc => {
+                self.parser.advance(&mut self.term, b"\x18");
+                self.skipping = true;
+            }
+            Found::OscSkipped { esc } => {
+                self.skipping = false;
+                self.renew_parser();
+                if *esc {
+                    self.parser.advance(&mut self.term, b"\x1b");
+                }
+            }
+            Found::BigOscEnded => self.renew_parser(),
             // XTVERSION names this app: answered as xterm.js, Claude Code took the pane for VS Code's
             // terminal and its wheel and glyph atlas workarounds.
             Found::XtVersion => self.outbox.write("\x1bP>|GitViber\x1b\\".into(), false),
@@ -539,6 +585,7 @@ fn io_thread(
                     .lock()
                     .unwrap_or_else(|e| e.into_inner()) = deadline;
             }
+            outbox.output.store(true, Ordering::Release);
             outbox.signal.notify();
             true
         }
@@ -692,5 +739,24 @@ mod tests {
             .c,
             'f'
         );
+    }
+
+    #[test]
+    fn an_endless_osc_is_cut_and_the_screen_goes_on_after_it() {
+        let outbox = Arc::new(Outbox::default());
+        let mut emu = Emu::new(20, 5, test_config(), outbox);
+        emu.feed(b"\x1b]52;c;");
+        for _ in 0..3 {
+            emu.feed(&vec![b'A'; 1 << 20]);
+        }
+        emu.feed(b"\x07ok");
+        let row: String = (0..2)
+            .map(|c| {
+                emu.term.grid()[alacritty_terminal::index::Line(0)]
+                    [alacritty_terminal::index::Column(c)]
+                .c
+            })
+            .collect();
+        assert_eq!(row, "ok");
     }
 }

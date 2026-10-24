@@ -13,6 +13,8 @@ name = "gitviber_terminal"
 [dependencies]
 gitviber-core = { path = "../core" }
 gitviber-ui = { path = "../ui" }
+# Worktree events (new, open terminal, resume) come from it; it asks how many terminals run in one.
+gitviber-refs = { path = "../refs" }
 gpui-kit.workspace = true
 # VT parsing, grid, scrollback, modes, selection and search; core owns the PTY.
 alacritty_terminal = "=0.26.0"

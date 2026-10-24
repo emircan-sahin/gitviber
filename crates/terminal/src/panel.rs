@@ -60,6 +60,11 @@ pub enum PanelEvent {
     Bell {
         pane: PaneId,
     },
+    /// A terminal opened for the worktree picker's Resume: where the resume command goes.
+    ResumeAsked {
+        pane: PaneId,
+        path: PathBuf,
+    },
 }
 
 /// A tab: one or more panes, split right and down.
@@ -164,8 +169,28 @@ impl gitviber_ui::workspace::Panel for TerminalPanel {
     }
 }
 
+/// The workspaces' panels, weakly: refs asks how many terminals run in a folder.
+#[derive(Default)]
+struct LivePanels(Vec<WeakEntity<TerminalPanel>>);
+
+impl gpui::Global for LivePanels {}
+
 /// The terminal in every workspace's bottom slot, kept across project switches.
 pub(crate) fn register(cx: &mut App) {
+    gitviber_refs::hooks::set_terminals_in(
+        cx,
+        Rc::new(|dir: &str, cx: &App| {
+            let Some(live) = cx.try_global::<LivePanels>() else {
+                return 0;
+            };
+            let dir = Path::new(dir);
+            live.0
+                .iter()
+                .filter_map(|p| p.upgrade())
+                .map(|p| p.read(cx).running_in(dir, cx))
+                .sum()
+        }),
+    );
     gitviber_ui::workspace::register_panel(
         cx,
         PanelSpec::new("terminal", Slot::Bottom, "Terminal", |ctx, window, cx| {
@@ -299,6 +324,20 @@ impl TerminalPanel {
                 },
             ));
         }
+        let worktrees = gitviber_refs::worktrees::WorktreeEvents::global(cx);
+        subscriptions.push(
+            cx.subscribe_in(&worktrees, window, |this, _, event, window, cx| {
+                // The window it was asked in.
+                let here = window.window_handle();
+                if cx.active_window().is_none_or(|w| w == here) {
+                    this.on_worktree(event, window, cx);
+                }
+            }),
+        );
+        let me = cx.entity().downgrade();
+        let live = cx.default_global::<LivePanels>();
+        live.0.retain(|p| p.upgrade().is_some());
+        live.0.push(me);
         let project = ctx.project.as_ref().map(|p| this.watch(p, window, cx));
         this.bound = Some(Bound {
             workspace: ctx.workspace.clone(),
@@ -368,6 +407,47 @@ impl TerminalPanel {
             }
             WorkspaceEvent::TabsChanged => {}
         }
+    }
+
+    fn on_worktree(
+        &mut self,
+        event: &gitviber_refs::worktrees::WorktreeEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gitviber_refs::worktrees::WorktreeEvent;
+        let (path, run) = match event {
+            WorktreeEvent::Created { command: None, .. } => return,
+            WorktreeEvent::Created {
+                path,
+                command: Some(c),
+            } => (path, Some(format!("{c}\r"))),
+            WorktreeEvent::OpenTerminal { path } | WorktreeEvent::ResumeConversation { path } => {
+                (path, None)
+            }
+        };
+        let path = PathBuf::from(path);
+        self.open_terminal(path.clone(), run, window, cx);
+        if let Some(ws) = self.workspace() {
+            ws.update(cx, |ws, cx| ws.set_open(Slot::Bottom, true, cx));
+        }
+        self.focus_active(window, cx);
+        if let (WorktreeEvent::ResumeConversation { .. }, Some(pane)) = (event, self.active_pane())
+        {
+            let pane = pane.read(cx).id();
+            cx.emit(PanelEvent::ResumeAsked { pane, path });
+        }
+    }
+
+    /// Terminals whose shell runs in `dir` or below it, which removing it would end.
+    fn running_in(&self, dir: &Path, cx: &App) -> usize {
+        self.panes
+            .values()
+            .filter(|s| {
+                let p = s.view.read(cx);
+                !p.has_exited() && p.cwd().starts_with(dir)
+            })
+            .count()
     }
 
     fn sync_look(&mut self, cx: &mut Context<Self>) {
@@ -2190,6 +2270,12 @@ mod tests {
                 panel.update_in(cx, |p, window, cx| p.split(Dir::Row, None, window, cx));
                 cx.update(|window, cx| window.draw(cx).clear(cx));
                 cx.run_until_parked();
+                // What refs asks before removing a worktree: the folder's terminals, none above it.
+                assert_eq!(panel.read_with(cx, |p, cx| p.running_in(&dir, cx)), 4);
+                assert_eq!(
+                    panel.read_with(cx, |p, cx| p.running_in(&dir.join("elsewhere"), cx)),
+                    0
+                );
                 let terms: Vec<_> = panel.read_with(cx, |p, cx| {
                     p.panes()
                         .map(|v| Arc::downgrade(&v.read(cx).session.emu))
@@ -2208,6 +2294,7 @@ mod tests {
                 cx.update(|window, cx| window.draw(cx).clear(cx));
                 cx.run_until_parked();
                 assert_eq!(panel.read_with(cx, |p, _| p.panes.len()), 0);
+                assert_eq!(panel.read_with(cx, |p, cx| p.running_in(&dir, cx)), 0);
                 // The terminals, scrollback and all, went with their panes: a reader thread holds
                 // one only for the read it's parsing.
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
