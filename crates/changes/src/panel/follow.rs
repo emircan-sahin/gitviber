@@ -1,8 +1,9 @@
 //! Tabs follow git. The open row leaving its list (staged, unstaged, discarded here) hands over
 //! to the row now in its place at once, without waiting for git, so S, S, S walks down the
-//! list. After each read, a change tab whose file moved lists goes with it, and one whose file
-//! is gone (committed, discarded) closes. Branch review tabs follow the review the same way: onto
-//! the new merge base after a rebase or another base, closed once their file is out of it.
+//! list. After each read, a change tab whose file moved lists goes with it, in its place and
+//! with nothing left to reopen, and one whose file is gone (committed, discarded) closes. Branch
+//! review tabs follow the review the same way: onto the new merge base after a rebase or another
+//! base, closed once their file is out of it. A tab with edits typed in stays as it is.
 
 use super::*;
 use crate::model::list::{relocate, row_in_place};
@@ -46,8 +47,7 @@ impl ChangesPanel {
         }
     }
 
-    /// The change tabs whose file is elsewhere in the lists just read, or gone. A tab with
-    /// edits typed in stays as it is.
+    /// The change tabs whose file is elsewhere in the lists just read, or gone.
     pub(super) fn follow_git(&self, cx: &mut Context<Self>) {
         let Some(ws) = self.workspace() else { return };
         let moves: Vec<(SharedString, Option<Selection>)> = ws
@@ -62,9 +62,6 @@ impl ChangesPanel {
                     Selection::Conflict { file } => (Kind::Conflict, file),
                     _ => return None,
                 };
-                if t.item.is_dirty(cx) {
-                    return None;
-                }
                 match relocate(&self.lists, kind, &file.path) {
                     Some((k, _)) if k == kind => None,
                     Some((k, f)) => Some((t.key.clone(), Some(selection_of(k, f)))),
@@ -138,8 +135,8 @@ impl ChangesPanel {
     }
 }
 
-/// Each tab under a key opens its new selection in its place (or closes, for None); the
-/// active tab stays the one it was.
+/// Each tab under a key shows its new selection in its place, or closes for None; one with
+/// edits typed in stays, which a new view would lose (`retarget_tab` refuses it).
 fn retarget(
     ws: &mut Workspace,
     moves: Vec<(SharedString, Option<Selection>)>,
@@ -147,31 +144,14 @@ fn retarget(
     cx: &mut Context<Workspace>,
 ) {
     for (key, to) in moves {
-        let Some(at) = ws.tabs().position(&key) else {
-            continue;
-        };
-        let Some(sel) = to else {
-            ws.close_tab(&key, cx);
-            continue;
-        };
-        let new_key = SharedString::from(selection_key(&sel));
-        // Open there already (both lists had it once): that tab stays, this one goes.
-        if ws.tabs().get(&new_key).is_some() {
-            ws.close_tab(&key, cx);
-            continue;
-        }
-        let active = ws.tabs().active_key().cloned();
-        let preview = ws.tabs().get(&key).is_some_and(|t| t.preview);
-        // A preview open takes the preview tab's place, which is this one when it's preview.
-        ws.open(sel, preview, window, cx);
-        if ws.tabs().get(&key).is_some() {
-            ws.close_tab(&key, cx);
-        }
-        if let Some(now) = ws.tabs().position(&new_key) {
-            ws.move_tab(now, at.min(ws.tabs().len() - 1), cx);
-        }
-        if let Some(a) = active.filter(|a| *a != key) {
-            ws.activate_tab(&a, window, cx);
+        match to {
+            Some(sel) => {
+                ws.retarget_tab(&key, sel, window, cx);
+            }
+            None if ws.tabs().get(&key).is_some_and(|t| !t.item.is_dirty(cx)) => {
+                ws.close_tab(&key, cx);
+            }
+            None => {}
         }
     }
 }

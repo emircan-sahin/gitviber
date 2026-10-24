@@ -16,6 +16,7 @@ use gitviber_core::api;
 use gitviber_core::git::{Commit, ExternalTools, FileChange, Side as GitSide};
 use gitviber_core::network::CANCELLED;
 use gitviber_diff::{Compare, DiffSource};
+use gitviber_history::BisectBar;
 use gitviber_refs::net::NetActivity;
 use gitviber_ui::actions::{git, review};
 use gitviber_ui::memory::Live;
@@ -292,6 +293,8 @@ pub struct ChangesPanel {
     head: Option<Arc<Commit>>,
     pushed: bool,
     operation: Option<Op>,
+    /// A bisect under way: History's bar where a merge's banner goes.
+    bisect: Option<Entity<BisectBar>>,
     prepared: Option<String>,
     lists: Lists,
     mtimes: Option<Mtimes>,
@@ -407,6 +410,7 @@ impl ChangesPanel {
             head: None,
             pushed: false,
             operation: None,
+            bisect: None,
             prepared: None,
             lists: Lists::default(),
             mtimes: None,
@@ -464,6 +468,19 @@ impl ChangesPanel {
 
     fn workspace(&self) -> Option<Entity<Workspace>> {
         self.ctx.workspace.upgrade()
+    }
+
+    /// The bisect bar comes with a bisect and goes with it.
+    fn sync_bisect(&mut self, cx: &mut Context<Self>) {
+        let on = self.operation.as_ref().is_some_and(|o| o.kind == "bisect");
+        if !on {
+            self.bisect = None;
+        } else if self.bisect.is_none()
+            && let Some(project) = &self.ctx.project
+        {
+            let repo = gitviber_refs::RepoState::get(project, cx);
+            self.bisect = Some(cx.new(|_| BisectBar::new(repo)));
+        }
     }
 
     fn toast(&self, toast: Toast, cx: &mut App) {
@@ -553,6 +570,7 @@ impl ChangesPanel {
                             total: o.total,
                             split: o.split,
                         });
+                        this.sync_bisect(cx);
                         this.prepared = status.prepared_message.clone();
                         this.lists = Lists::of(&status);
                         this.mtimes = mtimes;
@@ -2961,6 +2979,7 @@ impl ChangesPanel {
 
     fn render_banner(&self, t: &AppTheme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let op = self.operation.as_ref()?;
+        // The bisect bar instead.
         if op.kind == "bisect" {
             return None;
         }
@@ -3335,6 +3354,7 @@ impl Render for ChangesPanel {
             .text_color(t.foreground)
             .child(toolbar)
             .children(banner)
+            .children(self.bisect.clone())
             .children(review_bar)
             .children(summary)
             .child(match (&self.error, self.loaded) {
@@ -4222,10 +4242,83 @@ mod tests {
             keys(cx),
             (vec![b.clone(), "staged::c.txt".into()], Some(b.clone()))
         );
+        // Moved, not closed: nothing to reopen.
+        assert!(!ws.read_with(cx, |ws, _| ws.can_reopen_tab()));
         // Committed: its tab closes.
         git(&dir, &["commit", "-q", "-m", "a and c"]);
         reread(cx);
+        assert_eq!(keys(cx), (vec![b.clone()], Some(b.clone())));
+        // b.txt typed into, then staged and committed outside: its tab stays as it is, the
+        // typing with it.
+        let tab = cx
+            .update(|window, cx| ws.update(cx, |ws, cx| ws.active_view(window, cx)))
+            .and_then(|v| v.downcast::<ChangeTab>().ok())
+            .expect("b.txt's diff tab");
+        cx.update(|_, cx| {
+            host.update(cx, |h, cx| {
+                h.center = Some(tab.clone().into());
+                cx.notify();
+            })
+        });
+        cx.run_until_parked();
+        let diff = cx.update(|_, cx| tab.read(cx).diff().cloned().expect("a diff"));
+        cx.update(|window, cx| {
+            diff.update(cx, |v, cx| {
+                v.toggle_edit(window, cx);
+                v.set_edit_text("mine\n", window, cx);
+            })
+        });
+        cx.run_until_parked();
+        git(&dir, &["add", "b.txt"]);
+        reread(cx);
+        assert_eq!(keys(cx), (vec![b.clone()], Some(b.clone())));
+        git(&dir, &["commit", "-q", "-m", "b"]);
+        reread(cx);
         assert_eq!(keys(cx), (vec![b.clone()], Some(b)));
+        assert!(cx.update(|_, cx| diff.read(cx).has_unsaved_edits(cx)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_bisect_shows_its_bar_in_the_banners_place(cx: &mut TestAppContext) {
+        let dir = repo("bisect");
+        let first = git(&dir, &["rev-parse", "HEAD"]).trim().to_string();
+        // Commits of a file of their own: the changed files stay as they are at each checkout.
+        for n in 1..=3 {
+            std::fs::write(dir.join("d.txt"), format!("{n}\n")).unwrap();
+            git(&dir, &["add", "d.txt"]);
+            git(&dir, &["commit", "-q", "-m", &format!("d{n}")]);
+        }
+        git(&dir, &["bisect", "start", "HEAD", &first]);
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        // The bar marks through the project's repo state: a panel made with the project open.
+        let p = cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| ws.open_project(dir.clone(), window, cx));
+            let ctx = ws.update(cx, |ws, cx| ws.context(cx));
+            let panel = cx.new(|cx| ChangesPanel::new(&ctx, window, cx));
+            host.update(cx, |h, cx| {
+                h.panel = Some(panel.clone());
+                cx.notify();
+            });
+            panel
+        });
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let bar = p
+            .read_with(cx, |p, _| p.bisect.clone())
+            .expect("the bisect bar");
+        // Stopped outside: the bar goes with its entity.
+        let weak = bar.downgrade();
+        drop(bar);
+        git(&dir, &["bisect", "reset"]);
+        p.update(cx, |p, cx| p.read(cx));
+        cx.run_until_parked();
+        assert!(p.read_with(cx, |p, _| p.bisect.is_none()));
+        cx.update(|_, _| {});
+        cx.run_until_parked();
+        assert!(weak.upgrade().is_none(), "the bar is released");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4499,6 +4592,17 @@ mod tests {
         let later = review("refs/heads/later", cx);
         assert_ne!(later, main);
         assert_eq!(tabs(cx), vec![format!("branch:{later}:b.txt")]);
+        // Only the closed one comes back: the moved one's old key isn't left to reopen.
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.reopen_closed_tab(window, cx)));
+        cx.run_until_parked();
+        assert_eq!(
+            tabs(cx),
+            vec![
+                format!("branch:{main}:a.txt"),
+                format!("branch:{later}:b.txt")
+            ]
+        );
+        assert!(!ws.read_with(cx, |ws, _| ws.can_reopen_tab()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
