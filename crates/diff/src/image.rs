@@ -34,6 +34,20 @@ pub fn image_format(path: &str) -> Option<ImageFormat> {
 struct Version {
     image: Arc<RenderImage>,
     bytes: usize,
+    /// Of the file's bytes: the same again isn't decoded again.
+    hash: u64,
+}
+
+/// Past this the compressed file isn't decoded, and past this many pixels the decoded one isn't
+/// kept: a 10000×10000 screenshot is 400 MB as pixels.
+const MAX_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PIXELS: u64 = 40_000_000;
+
+fn hash(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
 }
 
 enum Side {
@@ -41,6 +55,8 @@ enum Side {
     Missing,
     Ready(Version),
     Failed(String),
+    /// What a refresh found: the same bytes as the version shown.
+    Same,
 }
 
 pub struct ImageCompare {
@@ -93,11 +109,15 @@ impl ImageCompare {
         };
         let (core, source) = (self.core.clone(), self.source.clone());
         let svg = cx.svg_renderer();
+        let shown = [0, 1].map(|i| match &self.sides[i] {
+            Side::Ready(v) => Some(v.hash),
+            _ => None,
+        });
         self._load = cx.spawn(async move |this, cx| {
             let sides = cx
                 .background_spawn(async move {
                     let c = &source.compare;
-                    [true, false].map(|original| {
+                    [(true, shown[0]), (false, shown[1])].map(|(original, shown)| {
                         let bytes = gitviber_core::api::files::media(
                             &core,
                             c.kind().to_string(),
@@ -109,10 +129,28 @@ impl ImageCompare {
                         );
                         match bytes {
                             Ok(b) if b.is_empty() => Side::Missing,
+                            Ok(b) if shown == Some(hash(&b)) => Side::Same,
+                            Ok(b) if b.len() > MAX_BYTES => {
+                                Side::Failed("Too large to preview".into())
+                            }
                             Ok(b) => {
-                                let len = b.len();
+                                let (len, h) = (b.len(), hash(&b));
                                 match Image::from_bytes(format, b).to_image_data(svg.clone()) {
-                                    Ok(image) => Side::Ready(Version { image, bytes: len }),
+                                    Ok(image) => {
+                                        let size = image.size(0);
+                                        if size.width.0 as u64 * size.height.0 as u64 > MAX_PIXELS {
+                                            Side::Failed(format!(
+                                                "{}×{} is too large to preview",
+                                                size.width.0, size.height.0
+                                            ))
+                                        } else {
+                                            Side::Ready(Version {
+                                                image,
+                                                bytes: len,
+                                                hash: h,
+                                            })
+                                        }
+                                    }
                                     Err(e) => Side::Failed(e.to_string()),
                                 }
                             }
@@ -123,8 +161,14 @@ impl ImageCompare {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.drop_images(cx);
-                this.sides = sides;
+                for (i, side) in sides.into_iter().enumerate() {
+                    if matches!(side, Side::Same) {
+                        continue;
+                    }
+                    if let Side::Ready(old) = std::mem::replace(&mut this.sides[i], side) {
+                        cx.drop_image(old.image, None);
+                    }
+                }
                 cx.notify();
             })
             .ok();

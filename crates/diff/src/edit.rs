@@ -6,6 +6,7 @@ use crate::highlight::language_for;
 use crate::model::ADDED;
 use crate::style::DiffStyle;
 use gitviber_core::Core;
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::input::{
     Editor, EditorState, InputEvent, RangeDecoration, RangeDecorationCollection,
     RangeDecorationStyle,
@@ -23,6 +24,8 @@ const SETTLE: Duration = Duration::from_millis(150);
 pub enum EditEvent {
     Saved,
     Failed(String),
+    /// ⌘S did nothing: why.
+    Refused(String),
 }
 
 pub struct DiffEditor {
@@ -34,6 +37,10 @@ pub struct DiffEditor {
     saved: Arc<str>,
     state: Entity<EditorState>,
     tints: RangeDecorationCollection,
+    /// A save is on its way: the next ⌘S waits for it rather than race it to the disk.
+    saving: bool,
+    /// Saving is off: the file on disk became something the editor can't write back as it was.
+    refused: Option<String>,
     _change: Subscription,
     _tint: Task<()>,
     _save: Task<()>,
@@ -76,6 +83,8 @@ impl DiffEditor {
             saved: text.into(),
             state,
             tints,
+            saving: false,
+            refused: None,
             _change: change,
             _tint: Task::ready(()),
             _save: Task::ready(()),
@@ -105,23 +114,85 @@ impl DiffEditor {
         self.tint_soon(cx);
     }
 
-    pub fn save(&mut self, cx: &mut Context<Self>) {
+    /// Replaces what's typed (tests, and the app's own edits).
+    pub fn set_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let text = text.to_string();
+        self.state.update(cx, |s, cx| s.set_value(text, window, cx));
+    }
+
+    /// Saving stops (Some) or goes on (None).
+    pub fn refuse_saves(&mut self, why: Option<String>) {
+        self.refused = why;
+    }
+
+    /// Writes what's typed, unless the file changed on disk since it was read: then it asks.
+    pub fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving {
+            return;
+        }
+        if let Some(why) = &self.refused {
+            cx.emit(EditEvent::Refused(why.clone()));
+            return;
+        }
+        if !self.is_dirty(cx) {
+            return;
+        }
+        self.write(false, window, cx);
+    }
+
+    fn write(&mut self, force: bool, window: &mut Window, cx: &mut Context<Self>) {
         let text: Arc<str> = self.state.read(cx).value().as_ref().into();
+        let expected = self.saved.clone();
         let (core, path, content) = (self.core.clone(), self.path.clone(), text.to_string());
-        self._save = cx.spawn(async move |this, cx| {
+        self.saving = true;
+        self._save = cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    gitviber_core::api::files::write_file(&core, path, content)
+                    // An agent may have written it meanwhile: its change would be lost.
+                    if !force {
+                        let now = gitviber_core::api::files::read_file(&core, path.clone())?;
+                        if !now.exists || now.text != *expected {
+                            return Ok(false);
+                        }
+                    }
+                    gitviber_core::api::files::write_file(&core, path, content).map(|_| true)
                 })
                 .await;
-            this.update(cx, |this, cx| match result {
-                Ok(()) => {
-                    this.saved = text;
-                    cx.emit(EditEvent::Saved);
+            this.update_in(cx, |this, window, cx| {
+                this.saving = false;
+                match result {
+                    Ok(true) => {
+                        this.saved = text;
+                        cx.emit(EditEvent::Saved);
+                    }
+                    Ok(false) => this.ask_overwrite(window, cx),
+                    Err(e) => cx.emit(EditEvent::Failed(e)),
                 }
-                Err(e) => cx.emit(EditEvent::Failed(e)),
             })
             .ok();
+        });
+    }
+
+    fn ask_overwrite(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let weak = cx.entity().downgrade();
+        let name = self
+            .path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&self.path)
+            .to_string();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let weak = weak.clone();
+            alert
+                .ok_variant(gpui_kit::component::button::ButtonVariant::Danger)
+                .title("Changed on disk")
+                .description(format!("{name} changed on disk since you started editing it. Overwrite it with your edits?"))
+                .ok_text("Overwrite")
+                .show_cancel(true)
+                .on_ok(move |_, window, cx| {
+                    weak.update(cx, |this, cx| this.write(true, window, cx)).ok();
+                    true
+                })
         });
     }
 

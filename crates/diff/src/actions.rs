@@ -5,6 +5,8 @@ use gpui_kit::{App, KeyBinding};
 
 /// The key context of a focused diff.
 pub const CONTEXT: &str = "DiffView";
+/// A diff whose new side is being typed into: none of its keys may take what's typed.
+pub const EDITING_CONTEXT: &str = "DiffViewEditing";
 /// The key context of a list of files shown as one scroll.
 pub const STACKED_CONTEXT: &str = "StackedDiff";
 
@@ -34,6 +36,19 @@ gpui_kit::actions!(
     ]
 );
 
+/// Only the keys the app's own commands don't cover: copy, picking lines with ⇧↑/⇧↓, Esc.
+/// The app hands its diff and review commands to the views itself, so a rebinding applies.
+pub fn init_local(cx: &mut App) {
+    let c = Some(CONTEXT);
+    cx.bind_keys([
+        KeyBinding::new("cmd-c", CopyLines, c),
+        KeyBinding::new("escape", ClearSelection, c),
+        KeyBinding::new("shift-up", SelectUp, c),
+        KeyBinding::new("shift-down", SelectDown, c),
+    ]);
+}
+
+/// Every key, for a diff shown without the app (the demo).
 pub fn init(cx: &mut App) {
     let c = Some(CONTEXT);
     let s = Some(STACKED_CONTEXT);
@@ -54,6 +69,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("shift-up", SelectUp, c),
         KeyBinding::new("shift-down", SelectDown, c),
         KeyBinding::new("cmd-s", Save, c),
+        KeyBinding::new("cmd-s", Save, Some(EDITING_CONTEXT)),
         // The stacked view walks its own files; a single diff leaves J/K to the app.
         KeyBinding::new("j", NextFile, s),
         KeyBinding::new("k", PrevFile, s),

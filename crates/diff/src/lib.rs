@@ -10,6 +10,7 @@
 extern crate gpui_kit as gpui;
 
 pub mod actions;
+mod annotate;
 pub mod data;
 mod edit;
 mod highlight;
@@ -22,6 +23,7 @@ mod stacked;
 pub mod style;
 mod view;
 
+pub use annotate::{Annotation, RenderAnnotation};
 pub use data::DiffData;
 pub use image::{ImageCompare, image_format};
 pub use model::{LinePos, LineRange, Side};
@@ -47,7 +49,12 @@ struct AppCore(std::sync::Arc<gitviber_core::Core>);
 
 impl gpui_kit::Global for AppCore {}
 
-/// Binds the diff's keys (see `actions`).
+/// Binds every diff key (see `actions`), for a diff shown without the app.
 pub fn init(cx: &mut gpui_kit::App) {
     actions::init(cx);
+}
+
+/// Binds only the keys the app's commands don't cover; the app hands the rest to the views.
+pub fn init_local(cx: &mut gpui_kit::App) {
+    actions::init_local(cx);
 }

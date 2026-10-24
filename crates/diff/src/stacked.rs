@@ -5,6 +5,7 @@
 //! puts a note on the line under the pointer, else the first changed one in view.
 
 use crate::actions::{AddNote, NextFile, PrevFile, STACKED_CONTEXT, ToggleViewed};
+use crate::annotate::{self, Annotation};
 use crate::data::DiffData;
 use crate::highlight::{self, Highlighted};
 use crate::list::{Heights, Place, Scroll, vlist};
@@ -25,7 +26,7 @@ use gpui_kit::{
     Render, SharedString, StatefulInteractiveElement as _, Styled as _, Task, Window, div,
     prelude::FluentBuilder as _, px,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -43,6 +44,8 @@ const LOADING_AT_ONCE: usize = 4;
 const HEADER: f32 = 32.;
 const MESSAGE: f32 = 40.;
 const NOTE: f32 = 22.;
+/// And never more text than this, both sides counted: a few lockfiles are already a lot.
+const MAX_LOADED_BYTES: usize = 48 * 1024 * 1024;
 
 /// One file of the list, as its owner knows it.
 #[derive(Clone, Debug, PartialEq)]
@@ -98,11 +101,18 @@ enum Body {
         _task: Task<()>,
     },
     Ready(Box<Loaded>),
+    /// Over LARGE lines and not asked for: only its size is kept, its text read again on Show.
+    Held {
+        lines: usize,
+    },
     Failed(String),
 }
 
 /// What a file keeps while the list is open.
 struct Slot {
+    /// Who a read's or a parse's result is for: the slot may move (set_files) or be replaced
+    /// (a new sig) before it lands.
+    id: u64,
     file: StackedFile,
     /// Opened or closed by hand; None: closed once viewed (staged ones count as viewed, and stay open).
     shut: Option<bool>,
@@ -113,6 +123,9 @@ struct Slot {
     /// Its body's height as last laid out: the room it keeps while it isn't.
     height: Option<Pixels>,
     body: Body,
+    /// Blocks under its lines, and their rooms as measured.
+    annotations: Vec<Annotation>,
+    measured: HashMap<SharedString, Pixels>,
 }
 
 impl Slot {
@@ -164,6 +177,9 @@ pub struct StackedDiff {
     notes: bool,
     /// The bar above the files: what they are ("All Changes", a commit's subject); None hides it.
     title: Option<SharedString>,
+    ids: u64,
+    /// The rows with blocks under them: their file and its annotations' indexes.
+    placed: HashMap<usize, (usize, Vec<usize>)>,
 }
 
 impl EventEmitter<StackedEvent> for StackedDiff {}
@@ -190,6 +206,8 @@ impl StackedDiff {
             hover: None,
             notes: false,
             title: None,
+            ids: 0,
+            placed: HashMap::new(),
         };
         view.set_files(files, cx);
         view
@@ -218,26 +236,91 @@ impl StackedDiff {
                     slot
                 }
                 Some(slot) => Slot {
+                    id: self.next_id(),
                     file,
                     shut: slot.shut,
                     large: slot.large,
                     revealed: HashSet::new(),
                     height: slot.height,
                     body: Body::Idle,
+                    annotations: slot.annotations,
+                    measured: slot.measured,
                 },
                 None => Slot {
+                    id: self.next_id(),
                     file,
                     shut: None,
                     large: false,
                     revealed: HashSet::new(),
                     height: None,
                     body: Body::Idle,
+                    annotations: vec![],
+                    measured: HashMap::new(),
                 },
             };
             self.slots.push(slot);
         }
         self.dirty = true;
         cx.notify();
+    }
+
+    /// The blocks under one file's lines (by its `DiffSource::key`), replacing those before.
+    pub fn set_annotations(
+        &mut self,
+        key: &str,
+        annotations: Vec<Annotation>,
+        cx: &mut Context<Self>,
+    ) {
+        let collapse = self.options.collapse;
+        let Some(slot) = self.slots.iter_mut().find(|s| s.file.source.key() == key) else {
+            return;
+        };
+        let ids: HashSet<&str> = annotations.iter().map(|a| a.id.as_ref()).collect();
+        slot.measured
+            .retain(|k, _| k.split('\u{1f}').all(|id| ids.contains(id)));
+        slot.annotations = annotations;
+        if let Body::Ready(l) = &mut slot.body {
+            l.items = file_items(&l.data, collapse, &slot.revealed, &slot.annotations);
+        }
+        self.dirty = true;
+        cx.notify();
+    }
+
+    /// A row laid out at another height than its blocks were given: theirs from now on. One
+    /// above the view moves what's below it, so the view moves with it.
+    fn measured_row(&mut self, ix: usize, height: Pixels, cx: &mut Context<Self>) {
+        let Some((f, placed)) = self.placed.get(&ix).cloned() else {
+            return;
+        };
+        let Some(slot) = self.slots.get_mut(f) else {
+            return;
+        };
+        let key = annotate::measure_key(&slot.annotations, &placed);
+        let extra = (height - self.line).max(Pixels::ZERO);
+        if slot
+            .measured
+            .get(&key)
+            .is_some_and(|h| (*h - extra).abs() < px(0.5))
+        {
+            return;
+        }
+        let before = self.heights.height(ix);
+        slot.measured.insert(key, extra);
+        if self.heights.top(ix) < self.scroll.top() {
+            self.scroll
+                .set_top(self.scroll.top() + (self.line + extra - before));
+        }
+        self.dirty = true;
+        cx.notify();
+    }
+
+    fn next_id(&mut self) -> u64 {
+        self.ids += 1;
+        self.ids
+    }
+
+    fn slot_of(&self, id: u64) -> Option<usize> {
+        self.slots.iter().position(|s| s.id == id)
     }
 
     /// Lines take review notes (C, the line buttons).
@@ -259,6 +342,28 @@ impl StackedDiff {
 
     pub fn files(&self) -> impl Iterator<Item = &StackedFile> {
         self.slots.iter().map(|s| &s.file)
+    }
+
+    /// Each file's path with the path of the diff it holds, when it holds one (tests).
+    #[doc(hidden)]
+    pub fn held(&self) -> Vec<(String, Option<String>)> {
+        self.slots
+            .iter()
+            .map(|s| {
+                let shown = match &s.body {
+                    Body::Ready(l) => Some(l.data.new.line(1)),
+                    _ => None,
+                };
+                (s.file.source.path.clone(), shown)
+            })
+            .collect()
+    }
+
+    /// Lays out and starts the reads near the screen, as a frame would (tests).
+    #[doc(hidden)]
+    pub fn schedule_now(&mut self, cx: &mut Context<Self>) {
+        self.rebuild_if_dirty(None);
+        self.schedule(cx);
     }
 
     /// Files whose text is held now (the rest keep only their height).
@@ -321,7 +426,8 @@ impl StackedDiff {
         cx.notify();
     }
 
-    fn toggle_top_viewed(&mut self, cx: &mut Context<Self>) {
+    /// V: the file on top, viewed or not (staged ones stay as they are).
+    pub fn toggle_top_viewed(&mut self, cx: &mut Context<Self>) {
         let Some(f) = self.top_file() else { return };
         if self.slots[f].file.source.compare == Compare::Staged {
             return;
@@ -357,13 +463,16 @@ impl StackedDiff {
     }
 
     fn row_range(&self, f: usize, ix: usize) -> Option<LineRange> {
-        let Row::Line(_, Item::Line(r)) = *self.rows.get(ix)? else {
+        let Row::Line(rf, Item::Line(r)) = *self.rows.get(ix)? else {
             return None;
         };
-        let Body::Ready(l) = &self.slots[f].body else {
+        if rf != f {
+            return None;
+        }
+        let Body::Ready(l) = &self.slots.get(f)?.body else {
             return None;
         };
-        let row = &l.data.rows[r as usize];
+        let row = l.data.rows.get(r as usize)?;
         let pos = if row.k == REMOVED {
             LinePos {
                 side: Side::Old,
@@ -407,7 +516,8 @@ impl StackedDiff {
         self.slots[f].body = Body::Loading {
             _task: Task::ready(()),
         };
-        self.loaded(f, Ok(data), cx);
+        let id = self.slots[f].id;
+        self.loaded(id, Ok(data), cx);
         let language = highlight::language_for(&self.slots[f].file.source.path);
         let theme = DiffStyle::get(cx).syntax.clone();
         if parse_now && let Body::Ready(l) = &mut self.slots[f].body {
@@ -426,32 +536,58 @@ impl StackedDiff {
     // Loading and giving back
 
     fn load(&mut self, f: usize, cx: &mut Context<Self>) {
-        let (core, source, ws) = (
+        let (core, source, ws, id) = (
             self.core.clone(),
             self.slots[f].file.source.clone(),
             self.options.whitespace,
+            self.slots[f].id,
         );
         let task = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move { DiffData::load(&core, &source, ws) })
                 .await;
-            this.update(cx, |this, cx| this.loaded(f, result, cx)).ok();
+            this.update(cx, |this, cx| this.loaded(id, result, cx)).ok();
         });
         self.slots[f].body = Body::Loading { _task: task };
     }
 
-    fn loaded(&mut self, f: usize, result: Result<DiffData, String>, cx: &mut Context<Self>) {
-        let Some(slot) = self.slots.get_mut(f) else {
+    fn loaded(&mut self, id: u64, result: Result<DiffData, String>, cx: &mut Context<Self>) {
+        // Gone, or replaced by a newer version of the file: this read isn't its.
+        let Some(f) = self.slot_of(id) else {
             return;
         };
+        let slot = &mut self.slots[f];
         if !matches!(slot.body, Body::Loading { .. }) {
             return;
         }
         slot.body = match result {
             Err(e) => Body::Failed(e),
+            // Shown only as "A large diff" until asked for: its text isn't kept, or parsed.
+            Ok(data)
+                if !slot.large
+                    && data.placeholder.is_none()
+                    && file_items(
+                        &data,
+                        self.options.collapse,
+                        &slot.revealed,
+                        &slot.annotations,
+                    )
+                    .len()
+                        > LARGE =>
+            {
+                Body::Held {
+                    lines: file_items(
+                        &data,
+                        self.options.collapse,
+                        &slot.revealed,
+                        &slot.annotations,
+                    )
+                    .len(),
+                }
+            }
             Ok(data) => {
                 let collapse = self.options.collapse;
-                let items = file_items(&data, collapse, &slot.revealed);
+                let items = file_items(&data, collapse, &slot.revealed, &slot.annotations);
                 let language =
                     slot.file.source.language.clone().unwrap_or_else(|| {
                         highlight::language_for(&slot.file.source.path).to_string()
@@ -468,7 +604,8 @@ impl StackedDiff {
                         })
                         .await;
                     this.update(cx, |this, cx| {
-                        if let Some(Body::Ready(l)) = this.slots.get_mut(f).map(|s| &mut s.body) {
+                        let Some(f) = this.slot_of(id) else { return };
+                        if let Body::Ready(l) = &mut this.slots[f].body {
                             for (i, p) in parsed.into_iter().enumerate() {
                                 if let Some((h, rope)) = p {
                                     l.hl[i] = Some(Highlighted::new(h, rope, theme.clone()));
@@ -549,9 +686,25 @@ impl StackedDiff {
                 (d, f)
             })
             .collect();
-        if ready.len() > MAX_LOADED {
-            ready.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-            give_back.extend(ready.iter().take(ready.len() - MAX_LOADED).map(|(_, f)| *f));
+        let bytes = |f: usize| match &self.slots[f].body {
+            Body::Ready(l) => l.data.old.len() + l.data.new.len(),
+            _ => 0,
+        };
+        let mut held: usize = ready.iter().map(|(_, f)| bytes(*f)).sum();
+        // Over the count or the bytes, the farthest go first.
+        ready.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut count = ready.len();
+        for (d, f) in ready {
+            if count <= MAX_LOADED && held <= MAX_LOADED_BYTES {
+                break;
+            }
+            // The files on screen stay, whatever they weigh.
+            if d == px(0.) {
+                continue;
+            }
+            held -= bytes(f);
+            count -= 1;
+            give_back.push(f);
         }
         for f in give_back {
             self.slots[f].body = Body::Idle;
@@ -575,6 +728,7 @@ impl StackedDiff {
         let mut rows = Vec::new();
         let mut heights = Vec::new();
         self.starts.clear();
+        self.placed.clear();
         for (f, slot) in self.slots.iter_mut().enumerate() {
             self.starts.push(rows.len());
             rows.push(Row::Header(f));
@@ -589,7 +743,7 @@ impl StackedDiff {
                     heights.push(slot.height.unwrap_or_else(|| slot.estimate(line)));
                     continue;
                 }
-                Body::Failed(_) => {
+                Body::Failed(_) | Body::Held { .. } => {
                     rows.push(Row::Message(f));
                     heights.push(px(MESSAGE));
                 }
@@ -603,15 +757,31 @@ impl StackedDiff {
                         heights.push(px(MESSAGE));
                     } else {
                         if collapse != l.collapse {
-                            l.items = file_items(&l.data, collapse, &slot.revealed);
+                            l.items =
+                                file_items(&l.data, collapse, &slot.revealed, &slot.annotations);
                             l.collapse = collapse;
                         }
                         if l.data.note.is_some() {
                             rows.push(Row::Note(f));
                             heights.push(px(NOTE));
                         }
-                        rows.extend(l.items.iter().map(|it| Row::Line(f, *it)));
-                        heights.extend(std::iter::repeat_n(line, l.items.len()));
+                        let placed = annotate::place(&l.data.rows, &l.items, &slot.annotations);
+                        for (i, it) in l.items.iter().enumerate() {
+                            match placed.get(&i) {
+                                Some(p) => {
+                                    self.placed.insert(rows.len(), (f, p.clone()));
+                                    heights.push(
+                                        line + annotate::extra(
+                                            &slot.annotations,
+                                            p,
+                                            &slot.measured,
+                                        ),
+                                    );
+                                }
+                                None => heights.push(line),
+                            }
+                            rows.push(Row::Line(f, *it));
+                        }
                     }
                 }
             }
@@ -619,6 +789,8 @@ impl StackedDiff {
         }
         self.rows = rows;
         self.heights = Rc::new(Heights::from_heights(heights));
+        // Its (file, row) is someone else's row now.
+        self.hover = None;
         if let Some((f, offset)) = anchor
             && let Some(&ix) = self.starts.get(f)
         {
@@ -635,7 +807,12 @@ impl StackedDiff {
         };
         slot.revealed
             .extend(display::reveal(&l.data.rows, start, count));
-        l.items = file_items(&l.data, self.options.collapse, &slot.revealed);
+        l.items = file_items(
+            &l.data,
+            self.options.collapse,
+            &slot.revealed,
+            &slot.annotations,
+        );
         self.dirty = true;
         cx.notify();
     }
@@ -678,7 +855,24 @@ impl StackedDiff {
             .unwrap_or(1);
         let m = Metrics::new(window, &style, lines, self.line, self.scroll.left());
         range
-            .map(|ix| self.render_row(ix, &m, &style, cx))
+            .map(|ix| {
+                let row = self.render_row(ix, &m, &style, cx);
+                match self.placed.get(&ix) {
+                    Some((f, placed)) => {
+                        let notes = &self.slots[*f].annotations;
+                        v_flex()
+                            .w_full()
+                            .child(row)
+                            .children(
+                                placed
+                                    .iter()
+                                    .map(|&i| div().w_full().child((notes[i].render)(window, cx))),
+                            )
+                            .into_any_element()
+                    }
+                    None => row,
+                }
+            })
             .collect()
     }
 
@@ -708,7 +902,11 @@ impl StackedDiff {
                     .children(note)
                     .into_any_element()
             }
-            Row::Room(_) => div().size_full().bg(c.background).into_any_element(),
+            Row::Room(_) => div()
+                .w_full()
+                .h(self.heights.height(ix))
+                .bg(c.background)
+                .into_any_element(),
             Row::Message(f) => self.message(f, style, cx),
             Row::Line(f, Item::Gap { start, count }) => {
                 let more = count.min(display::FOLD_REVEAL);
@@ -895,6 +1093,7 @@ impl StackedDiff {
             Body::Ready(_) if is_media(&slot.file.source.path) => {
                 ("Open the file to compare its versions".into(), Some("Open"))
             }
+            Body::Held { lines } => (format!("A large diff, {lines} lines"), Some("Show")),
             Body::Ready(l) => match &l.data.placeholder {
                 Some(p) => (p.clone(), None),
                 None => (
@@ -919,6 +1118,10 @@ impl StackedDiff {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if label == "Show" {
                                 this.slots[f].large = true;
+                                // Read again, its text kept this time.
+                                if matches!(this.slots[f].body, Body::Held { .. }) {
+                                    this.slots[f].body = Body::Idle;
+                                }
                                 this.dirty = true;
                                 cx.notify();
                             } else {
@@ -932,9 +1135,17 @@ impl StackedDiff {
 }
 
 /// The display items of one file, unified.
-fn file_items(data: &DiffData, collapse: bool, revealed: &HashSet<u32>) -> Vec<Item> {
+fn file_items(
+    data: &DiffData,
+    collapse: bool,
+    revealed: &HashSet<u32>,
+    annotations: &[Annotation],
+) -> Vec<Item> {
     let shown = if collapse {
-        display::shown_rows(&data.rows, CONTEXT_LINES, FOLD_MIN, revealed)
+        // An unchanged line under an annotation stays out of its fold.
+        let mut open = revealed.clone();
+        open.extend(annotate::lines_to_open(&data.rows, annotations));
+        display::shown_rows(&data.rows, CONTEXT_LINES, FOLD_MIN, &open)
     } else {
         display::all_rows(&data.rows)
     };
@@ -1014,16 +1225,24 @@ impl Render for StackedDiff {
             .min_h_0()
             .w_full()
             .flex()
-            .child(vlist(
-                "stacked-rows",
-                &self.scroll,
-                self.heights.clone(),
-                cx.entity_id(),
-                move |range, window, cx| {
-                    view.update(cx, |this, cx| this.render_rows(range, window, cx))
-                        .unwrap_or_default()
-                },
-            ))
+            .child({
+                let measure = view.clone();
+                vlist(
+                    "stacked-rows",
+                    &self.scroll,
+                    self.heights.clone(),
+                    cx.entity_id(),
+                    move |range, window, cx| {
+                        view.update(cx, |this, cx| this.render_rows(range, window, cx))
+                            .unwrap_or_default()
+                    },
+                )
+                .on_measure(move |ix, height, _, cx| {
+                    measure
+                        .update(cx, |this, cx| this.measured_row(ix, height, cx))
+                        .ok();
+                })
+            })
             .when_some(sticky, |el, f| {
                 el.child(
                     div()
@@ -1124,5 +1343,43 @@ impl Render for StackedDiff {
             .on_action(cx.listener(|this, _: &PrevFile, _, cx| this.step(false, cx)))
             .on_action(cx.listener(|this, _: &ToggleViewed, _, cx| this.toggle_top_viewed(cx)))
             .on_action(cx.listener(|this, _: &AddNote, _, cx| this.add_note(cx)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::TestAppContext;
+
+    fn data(old: &str, new: &str, path: &str) -> DiffData {
+        DiffData::from_texts(old, new, &DiffSource::new(Compare::Unstaged, path))
+    }
+
+    #[gpui_kit::test]
+    fn a_hover_left_from_before_a_rebuild_names_no_line(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_core(Arc::new(Core::new(Arc::new(|_| {}))), cx));
+        let file = |p: &str| StackedFile::new(DiffSource::new(Compare::Unstaged, p));
+        let view = cx.update(|cx| cx.new(|cx| StackedDiff::new(vec![file("a"), file("b")], cx)));
+        view.update(cx, |v, cx| {
+            v.preload(0, data("x\n", "y\n", "a"), false, cx);
+            v.preload(1, data("1\n2\n", "1\n3\n", "b"), false, cx);
+            v.rebuild_if_dirty(None);
+            // The pointer rests on a line of b.
+            let ix = v
+                .rows
+                .iter()
+                .position(|r| matches!(r, Row::Line(1, Item::Line(_))))
+                .unwrap();
+            v.hover = Some((1, ix));
+            assert!(v.row_range(1, ix).is_some());
+            // a's file is given back: b's rows move up, the old index is another row now.
+            v.slots[0].body = Body::Idle;
+            v.dirty = true;
+            v.rebuild_if_dirty(None);
+            assert_eq!(v.hover, None);
+            // Asked anyway, a row of another file names nothing.
+            assert_eq!(v.row_range(0, ix), None);
+            assert_eq!(v.row_range(1, usize::MAX), None);
+        });
     }
 }

@@ -149,6 +149,21 @@ pub struct VList {
     /// The view to redraw when the wheel scrolls.
     view: EntityId,
     render: RenderItems,
+    /// Told when an item lays out taller or shorter than its height says (one with blocks
+    /// under its line); the owner gives it that height from the next frame.
+    measured: Option<Measured>,
+}
+
+type Measured = Box<dyn FnMut(usize, Pixels, &mut Window, &mut App)>;
+
+impl VList {
+    pub fn on_measure(
+        mut self,
+        f: impl FnMut(usize, Pixels, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.measured = Some(Box::new(f));
+        self
+    }
 }
 
 /// A list of `heights.len()` items; `render` draws those of a range, in order.
@@ -165,6 +180,7 @@ pub fn vlist(
         heights,
         view,
         render: Box::new(render),
+        measured: None,
     }
 }
 
@@ -252,9 +268,14 @@ impl Element for VList {
             for (item, ix) in items.iter_mut().zip(range) {
                 let space = size(
                     AvailableSpace::Definite(bounds.size.width),
-                    AvailableSpace::Definite(heights.height(ix)),
+                    AvailableSpace::MinContent,
                 );
-                item.layout_as_root(space, window, cx);
+                let laid = item.layout_as_root(space, window, cx);
+                if (laid.height - heights.height(ix)).abs() > px(0.5)
+                    && let Some(f) = self.measured.as_mut()
+                {
+                    f(ix, laid.height, window, cx);
+                }
                 item.prepaint_at(
                     bounds.origin + point(px(0.), heights.top(ix) - top),
                     window,

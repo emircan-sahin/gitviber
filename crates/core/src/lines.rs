@@ -49,16 +49,26 @@ pub fn apply(base: &str, target: &str, drop: &HashSet<u32>, take: &HashSet<u32>)
         }
         out.push_str(line);
     };
-    // A run of changed lines is all its deletes, then all its inserts; taking some of them must
-    // keep each line where its pair is (the 2nd old line stays before the 2nd new one), or a
-    // block with one line picked comes out shuffled.
+    // A run of changed lines is all its deletes, then all its inserts. Of a run picked in part,
+    // each insert taken goes where the next delete taken was, and the deletes not taken stay
+    // put: `-2 -3 +two +three` with `-2 +two` picked is `two 3` (line 2 changed, 3 kept), and
+    // `-o1 -o2 -o3 +n1` with `-o3 +n1` is `o1 o2 n1`. Inserts beyond those go after.
     let (mut old, mut new) = (vec![], vec![]);
     let flush =
         |old: &mut Vec<Option<&str>>, new: &mut Vec<Option<&str>>, push: &mut dyn FnMut(&str)| {
-            for k in 0..old.len().max(new.len()) {
-                for line in [old.get(k), new.get(k)].into_iter().flatten().flatten() {
-                    push(line);
+            let mut taken = new.iter().flatten();
+            for line in old.iter() {
+                match line {
+                    Some(kept) => push(kept),
+                    None => {
+                        if let Some(line) = taken.next() {
+                            push(line);
+                        }
+                    }
                 }
+            }
+            for line in taken {
+                push(line);
             }
             old.clear();
             new.clear();
@@ -200,11 +210,7 @@ pub fn run(repo: &Path, req: &Request) -> Result<(), String> {
 }
 
 fn text(f: &FileText) -> &str {
-    if f.exists {
-        &f.text
-    } else {
-        ""
-    }
+    if f.exists { &f.text } else { "" }
 }
 
 /// Puts `text` in the index as `path`'s content (through its clean filters, as `git add` would),
@@ -294,6 +300,24 @@ mod tests {
         // Only the newline itself: b (no newline) becomes b\n.
         assert_eq!(apply(old, new, &set(&[2]), &set(&[2])), "a\nb\n");
         assert_eq!(apply("a\n", "a\nb", &set(&[]), &set(&[2])), "a\nb");
+    }
+
+    #[test]
+    fn picks_on_both_sides_put_new_lines_where_the_taken_old_ones_were() {
+        let old = "o1\no2\no3\nz\n";
+        let new = "n1\nz\n";
+        // -o1 -o2 -o3 +n1, pick -o3 +n1: o1 and o2 stay, n1 takes o3's place.
+        assert_eq!(apply(old, new, &set(&[3]), &set(&[1])), "o1\no2\nn1\nz\n");
+        // -o1 +n2 of -o1 -o2 -o3 +n1 +n2: n2 takes o1's place, n1 stays out.
+        let new = "n1\nn2\nz\n";
+        assert_eq!(apply(old, new, &set(&[1]), &set(&[2])), "n2\no2\no3\nz\n");
+        // Nothing removed: the inserts go after what stays.
+        assert_eq!(
+            apply(old, new, &set(&[]), &set(&[1])),
+            "o1\no2\no3\nn1\nz\n"
+        );
+        // Discard goes the other way: n2 goes, o2 comes back in its place.
+        assert_eq!(apply(new, old, &set(&[2]), &set(&[2])), "n1\no2\nz\n");
     }
 
     #[test]

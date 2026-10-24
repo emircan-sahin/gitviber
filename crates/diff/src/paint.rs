@@ -197,7 +197,14 @@ pub fn path_label(path: &str, style: &DiffStyle) -> Div {
     h_flex()
         .min_w_0()
         .overflow_hidden()
-        .child(div().flex_none().text_color(style.colors.subtle).child(dir))
+        // In a narrow header the folder gives way first, so the name stays readable.
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .text_color(style.colors.subtle)
+                .child(dir),
+        )
         .child(div().flex_none().child(name))
 }
 

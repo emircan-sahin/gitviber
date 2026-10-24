@@ -3,6 +3,7 @@
 //! `refresh` without moving what's at the top of the view.
 
 use crate::actions::*;
+use crate::annotate::{self, Annotation};
 use crate::data::DiffData;
 use crate::edit::{DiffEditor, EditEvent};
 use crate::highlight::{self, Highlighted};
@@ -27,7 +28,7 @@ use gpui_kit::{
     ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
     StyledText, Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -127,6 +128,8 @@ struct Sel {
     column: Column,
     anchor: usize,
     head: usize,
+    /// Next Change's cursor: acts on its whole change. A clicked row is just that line.
+    whole: bool,
 }
 
 impl Sel {
@@ -176,6 +179,10 @@ pub struct DiffView {
     viewed: Option<bool>,
     header: bool,
     notes: bool,
+    /// Blocks under lines (review threads, notes), where each goes, and their rooms as measured.
+    annotations: Vec<Annotation>,
+    placed: HashMap<usize, Vec<usize>>,
+    measured: HashMap<SharedString, Pixels>,
     /// A changed image shows its two versions instead of lines.
     image: Option<Entity<ImageCompare>>,
     /// The new side being typed into (an unstaged diff's file on disk).
@@ -186,6 +193,7 @@ pub struct DiffView {
     _load: Task<()>,
     _highlight: Task<()>,
     _action: Task<()>,
+    _copy: Task<()>,
 }
 
 impl EventEmitter<DiffEvent> for DiffView {}
@@ -242,12 +250,16 @@ impl DiffView {
             header: true,
             notes: false,
             image,
+            annotations: vec![],
+            placed: HashMap::new(),
+            measured: HashMap::new(),
             edit: None,
             edit_stale: false,
             _edit: None,
             _load: Task::ready(()),
             _highlight: Task::ready(()),
             _action: Task::ready(()),
+            _copy: Task::ready(()),
         }
     }
 
@@ -255,10 +267,20 @@ impl DiffView {
         &self.source
     }
 
-    /// Shows another file in this view; nothing of the last one stays.
-    pub fn set_source(&mut self, source: DiffSource, cx: &mut Context<Self>) {
+    /// Shows another file in this view; nothing of the last one stays. False, and nothing
+    /// changes, while the new side has edits not saved.
+    pub fn set_source(&mut self, source: DiffSource, cx: &mut Context<Self>) -> bool {
         if source == self.source {
-            return;
+            return true;
+        }
+        if self.has_unsaved_edits(cx) {
+            self.notice(
+                NoticeLevel::Info,
+                "Unsaved changes",
+                Some("Save them with ⌘S, or undo them, first."),
+                cx,
+            );
+            return false;
         }
         self.image = image_format(&source.path).map(|_| {
             let source = source.clone();
@@ -271,10 +293,12 @@ impl DiffView {
         self.hl = [None, None];
         self.revealed.clear();
         self.sel = None;
+        self.busy = false;
         self.state = State::Loading;
         self.scroll.set_top(px(0.));
         self.rebuild(None, cx);
         self.load(cx);
+        true
     }
 
     /// Reads the file again, keeping the line at the top where it is.
@@ -378,6 +402,7 @@ impl DiffView {
                 column,
                 anchor: first,
                 head: last,
+                whole: false,
             });
             self.scroll.scroll_to(first, px(0.), Place::Nearest);
             cx.emit(DiffEvent::SelectionChanged(self.selection()));
@@ -434,6 +459,19 @@ impl DiffView {
         self.edit.is_some()
     }
 
+    /// Types `text` over the new side being edited (tests).
+    #[doc(hidden)]
+    pub fn set_edit_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(edit) = &self.edit {
+            edit.update(cx, |e, cx| e.set_text(text, window, cx));
+        }
+    }
+
+    /// The new side was typed into and not saved: the tab should ask before it closes.
+    pub fn has_unsaved_edits(&self, cx: &App) -> bool {
+        self.edit.as_ref().is_some_and(|e| e.read(cx).is_dirty(cx))
+    }
+
     /// Into the editor, or back to the diff (not while there's typing to save).
     pub fn toggle_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(edit) = &self.edit {
@@ -451,6 +489,9 @@ impl DiffView {
             cx.notify();
             return;
         }
+        // Lines picked in the diff aren't the editor's.
+        self.sel = None;
+        self.hover = None;
         let Some(data) = self.data.as_ref().filter(|_| self.is_editable()) else {
             return;
         };
@@ -463,14 +504,16 @@ impl DiffView {
                 this.refresh(cx);
             }
             EditEvent::Failed(e) => this.notice(NoticeLevel::Error, "Could not save", Some(e), cx),
+            EditEvent::Refused(why) => this.notice(NoticeLevel::Info, "Not saved", Some(why), cx),
         }));
         self.edit = Some(edit);
         cx.notify();
     }
 
-    fn save(&mut self, cx: &mut Context<Self>) {
+    /// ⌘S: writes the edited new side; nothing to save leaves the key to others.
+    pub fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match &self.edit {
-            Some(edit) => edit.update(cx, |e, cx| e.save(cx)),
+            Some(edit) => edit.update(cx, |e, cx| e.save(window, cx)),
             None => cx.propagate(),
         }
     }
@@ -510,6 +553,7 @@ impl DiffView {
         if seq != self.seq {
             return;
         }
+        self.busy = false;
         let data = match result {
             Ok(data) => data,
             Err(e) => {
@@ -523,6 +567,8 @@ impl DiffView {
         };
         self.state = State::Ready;
         if self.data.as_ref().is_some_and(|d| d.same_as(&data)) {
+            // A refresh while the sides were parsing dropped that parse (its seq is old).
+            self.highlight(cx);
             cx.notify();
             return;
         }
@@ -635,7 +681,10 @@ impl DiffView {
             return;
         };
         let shown = if self.options.collapse {
-            display::shown_rows(&data.rows, CONTEXT_LINES, FOLD_MIN, &self.revealed)
+            // An unchanged line under an annotation stays out of its fold.
+            let mut open = self.revealed.clone();
+            open.extend(annotate::lines_to_open(&data.rows, &self.annotations));
+            display::shown_rows(&data.rows, CONTEXT_LINES, FOLD_MIN, &open)
         } else {
             display::all_rows(&data.rows)
         };
@@ -643,13 +692,74 @@ impl DiffView {
             Layout::Unified => display::unified(&shown),
             Layout::Split => display::split(&data.rows, &shown),
         };
-        self.heights = Rc::new(Heights::uniform(self.items.len(), self.line));
+        self.placed = annotate::place(&data.rows, &self.items, &self.annotations);
+        self.heights = Rc::new(self.item_heights());
         self.sel = None;
         if let Some(a) = anchor
             && let Some(ix) = self.item_at_pos(a.pos)
         {
             self.scroll.scroll_to(ix, a.offset, Place::Top);
         }
+    }
+
+    fn item_heights(&self) -> Heights {
+        if self.placed.is_empty() {
+            return Heights::uniform(self.items.len(), self.line);
+        }
+        Heights::from_heights((0..self.items.len()).map(|ix| match self.placed.get(&ix) {
+            Some(p) => self.line + annotate::extra(&self.annotations, p, &self.measured),
+            None => self.line,
+        }))
+    }
+
+    /// The blocks under lines, replacing those before: each under its side's line, a folded
+    /// one's fold opened. The line at the top stays where it is.
+    pub fn set_annotations(&mut self, annotations: Vec<Annotation>, cx: &mut Context<Self>) {
+        let ids: HashSet<&str> = annotations.iter().map(|a| a.id.as_ref()).collect();
+        self.measured
+            .retain(|k, _| k.split('\u{1f}').all(|id| ids.contains(id)));
+        self.annotations = annotations;
+        let anchor = self.anchor();
+        self.rebuild(anchor, cx);
+        cx.notify();
+    }
+
+    /// The height the line `pos` takes with what's under it; None when it doesn't show (tests).
+    #[doc(hidden)]
+    pub fn line_height_at(&self, pos: LinePos) -> Option<Pixels> {
+        let data = self.data.as_ref()?;
+        let r = annotate::row_of(&data.rows, pos)? as u32;
+        let ix = self.items.iter().position(|it| match *it {
+            Item::Line(x) => x == r,
+            Item::Pair { old, new } => old == Some(r) || new == Some(r),
+            Item::Gap { .. } => false,
+        })?;
+        Some(self.heights.height(ix))
+    }
+
+    /// An item laid out at another height than its blocks were given: theirs from now on.
+    fn measured_item(&mut self, ix: usize, height: Pixels, cx: &mut Context<Self>) {
+        let Some(placed) = self.placed.get(&ix) else {
+            return;
+        };
+        let key = annotate::measure_key(&self.annotations, placed);
+        let extra = (height - self.line).max(Pixels::ZERO);
+        if self
+            .measured
+            .get(&key)
+            .is_some_and(|h| (*h - extra).abs() < px(0.5))
+        {
+            return;
+        }
+        self.measured.insert(key, extra);
+        let anchor = self.anchor();
+        self.heights = Rc::new(self.item_heights());
+        if let Some(a) = anchor
+            && let Some(ix) = self.item_at_pos(a.pos)
+        {
+            self.scroll.scroll_to(ix, a.offset, Place::Top);
+        }
+        cx.notify();
     }
 
     fn anchor(&self) -> Option<Anchor> {
@@ -805,6 +915,7 @@ impl DiffView {
                 column,
                 anchor: ix,
                 head: ix,
+                whole: true,
             });
             self.scroll.scroll_to(ix, px(0.), Place::Center);
             cx.emit(DiffEvent::SelectionChanged(self.selection()));
@@ -824,12 +935,16 @@ impl DiffView {
     ) {
         window.focus(&self.focus, cx);
         match self.sel.as_mut() {
-            Some(s) if e.modifiers.shift && s.column == column => s.head = ix,
+            Some(s) if e.modifiers.shift && s.column == column => {
+                s.head = ix;
+                s.whole = false;
+            }
             _ => {
                 self.sel = Some(Sel {
                     column,
                     anchor: ix,
                     head: ix,
+                    whole: false,
                 })
             }
         }
@@ -890,7 +1005,7 @@ impl DiffView {
                 .map(staging::whole);
         }
         let sel = self.sel?;
-        if sel.is_cursor() {
+        if sel.is_cursor() && sel.whole {
             let c = self.change_of_item(sel.head)?;
             return Some(staging::whole(&self.changes[c]));
         }
@@ -944,7 +1059,18 @@ impl DiffView {
     }
 
     fn run_action(&mut self, action: LineAction, from_hover: bool, cx: &mut Context<Self>) {
-        if self.busy || !action.fits(&self.source.compare) {
+        if self.busy || self.edit.is_some() || !action.fits(&self.source.compare) {
+            return;
+        }
+        // The lines were picked from a diff that skips whitespace; core writes them into the
+        // exact one, where they pair up otherwise (a re-indented block wrapped in `if`).
+        if self.options.whitespace != Whitespace::Exact {
+            self.notice(
+                NoticeLevel::Info,
+                "Showing the diff without whitespace changes",
+                Some("Lines are staged, discarded and reverted from the exact diff: turn off Ignore Whitespace first."),
+                cx,
+            );
             return;
         }
         let Some(picked) = self.picked(from_hover).filter(|p| !p.is_empty()) else {
@@ -986,7 +1112,7 @@ impl DiffView {
                     use gitviber_core::api;
                     match (action, compare) {
                         (LineAction::Stash, _) => {
-                            api::stash::stash_lines(&core, String::new(), request)
+                            api::stash::stash_lines(&core, String::new(), request).map(|_| vec![])
                         }
                         (LineAction::Revert, Compare::Commit { sha }) => api::patch::revert_lines(
                             &core,
@@ -997,16 +1123,25 @@ impl DiffView {
                                 removed: request.removed,
                                 added: request.added,
                             },
-                        )
-                        .map(|_| ()),
-                        _ => api::changes::change_lines(&core, request),
+                        ),
+                        _ => api::changes::change_lines(&core, request).map(|_| vec![]),
                     }
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.busy = false;
                 match result {
-                    Ok(()) => {
+                    Ok(conflicts) => {
+                        if !conflicts.is_empty() {
+                            this.notice(
+                                NoticeLevel::Info,
+                                "Reverted with conflicts",
+                                Some(&format!(
+                                    "Conflicts are marked in {}.",
+                                    conflicts.join(", ")
+                                )),
+                                cx,
+                            );
+                        }
                         if action == LineAction::Stash {
                             this.notice(
                                 NoticeLevel::Success,
@@ -1019,6 +1154,7 @@ impl DiffView {
                     }
                     Err(e) => this.notice(NoticeLevel::Error, &action.failed(), Some(&e), cx),
                 }
+                // Busy until the refresh lands: a second action now would act on stale lines.
                 this.refresh(cx);
             })
             .ok();
@@ -1075,7 +1211,7 @@ impl DiffView {
             added: picked.added,
         };
         let core = self.core.clone();
-        self._action = cx.spawn(async move |this, cx| {
+        self._copy = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(
                     async move { gitviber_core::api::patch::lines_patch(&core, request) },
@@ -1194,7 +1330,18 @@ impl DiffView {
                 } else {
                     el
                 };
-                el.into_any_element()
+                match self.placed.get(&ix) {
+                    Some(placed) => v_flex()
+                        .w_full()
+                        .child(el)
+                        .children(placed.iter().map(|&i| {
+                            div()
+                                .w_full()
+                                .child((self.annotations[i].render)(window, cx))
+                        }))
+                        .into_any_element(),
+                    None => el.into_any_element(),
+                }
             })
             .collect()
     }
@@ -1687,10 +1834,25 @@ impl Render for DiffView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_options(cx);
         if std::mem::take(&mut self.edit_stale)
-            && let (Some(edit), Some(data)) = (&self.edit, &self.data)
+            && let Some(edit) = self.edit.clone()
         {
-            let (base, text) = (data.old.text(), data.new.text());
-            edit.update(cx, |e, cx| e.file_changed(&base, &text, window, cx));
+            match &self.data {
+                Some(data) if self.is_editable() => {
+                    let (base, text) = (data.old.text(), data.new.text());
+                    edit.update(cx, |e, cx| e.file_changed(&base, &text, window, cx));
+                }
+                // Now binary, too large, not UTF-8 or CRLF: nothing typed may go over it.
+                _ if edit.read(cx).is_dirty(cx) => edit.update(cx, |e, _| {
+                    e.refuse_saves(Some(
+                        "The file on disk is no longer text the editor can write back as it was."
+                            .into(),
+                    ))
+                }),
+                _ => {
+                    self.edit = None;
+                    self._edit = None;
+                }
+            }
         }
         let style = DiffStyle::get(cx).clone();
         for h in self.hl.iter_mut().flatten() {
@@ -1745,16 +1907,24 @@ impl Render for DiffView {
                     .w_full()
                     .flex()
                     .bg(style.colors.background)
-                    .child(vlist(
-                        "diff-rows",
-                        &self.scroll,
-                        self.heights.clone(),
-                        cx.entity_id(),
-                        move |range, window, cx| {
-                            view.update(cx, |this, cx| this.render_items(range, window, cx))
-                                .unwrap_or_default()
-                        },
-                    ))
+                    .child({
+                        let measure = view.clone();
+                        vlist(
+                            "diff-rows",
+                            &self.scroll,
+                            self.heights.clone(),
+                            cx.entity_id(),
+                            move |range, window, cx| {
+                                view.update(cx, |this, cx| this.render_items(range, window, cx))
+                                    .unwrap_or_default()
+                            },
+                        )
+                        .on_measure(move |ix, height, _, cx| {
+                            measure
+                                .update(cx, |this, cx| this.measured_item(ix, height, cx))
+                                .ok();
+                        })
+                    })
                     .child(Scrollbar::vertical(&self.scroll))
                     .child(Scrollbar::horizontal(&self.scroll))
                     .on_mouse_up(
@@ -1777,7 +1947,11 @@ impl Render for DiffView {
         };
         v_flex()
             .id("diff-view")
-            .key_context(CONTEXT)
+            .key_context(if self.edit.is_some() {
+                EDITING_CONTEXT
+            } else {
+                CONTEXT
+            })
             .track_focus(&self.focus)
             .size_full()
             .min_h_0()
@@ -1841,8 +2015,39 @@ impl Render for DiffView {
                     cx.propagate();
                 }
             }))
-            .on_action(cx.listener(|this, _: &Save, _, cx| this.save(cx)))
+            .on_action(cx.listener(|this, _: &Save, window, cx| this.save(window, cx)))
             .on_action(cx.listener(|this, _: &SelectUp, _, cx| this.select_step(false, cx)))
             .on_action(cx.listener(|this, _: &SelectDown, _, cx| this.select_step(true, cx)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::TestAppContext;
+
+    #[gpui_kit::test]
+    fn a_clicked_row_is_one_line_and_next_change_is_the_whole_change(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_core(Arc::new(Core::new(Arc::new(|_| {}))), cx));
+        let old = "a\nz\n";
+        let new: String = std::iter::once("a\n".to_string())
+            .chain((1..=30).map(|i| format!("n{i}\n")))
+            .chain(std::iter::once("z\n".to_string()))
+            .collect();
+        let source = DiffSource::new(Compare::Unstaged, "f.txt");
+        let view = cx.update(|cx| {
+            cx.new(|cx| {
+                DiffView::with_data(source.clone(), DiffData::from_texts(old, &new, &source), cx)
+            })
+        });
+        view.update(cx, |v, cx| {
+            // The 5th added line, clicked.
+            let ix = v.items.iter().position(|it| matches!(it, Item::Line(r) if v.data.as_ref().unwrap().rows[*r as usize].n == 6)).unwrap();
+            v.sel = Some(Sel { column: Column::Both, anchor: ix, head: ix, whole: false });
+            assert_eq!(v.picked(false), Some(Picked { removed: vec![], added: vec![6] }));
+            // Next Change's cursor takes the whole change.
+            v.step_change(true, cx);
+            assert_eq!(v.picked(false).map(|p| p.added.len()), Some(30));
+        });
     }
 }
