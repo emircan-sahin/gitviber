@@ -2,7 +2,7 @@
 resolver = "2"
 members = ["crates/*"]
 # The Tauri app stays buildable as a reference until the native app replaces it.
-exclude = ["src-tauri"]
+exclude = ["src-tauri", "vendor"]
 
 [workspace.package]
 version = "0.1.17"
@@ -58,10 +58,15 @@ gpui-test = { package = "gpui-pre", version = "=0.3.9", features = ["test-suppor
 gpui-snapshot-platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["test-support"] }
 # Already in the tree through gpui-kit; pinned to the locked versions.
 serde = { version = "=1.0.229", features = ["derive"] }
-serde_json = "=1.0.154"
+serde_json = "=1.0.151"
 chrono = "=0.4.45"
 # Core's events cross to the UI thread over its channel.
 futures = "=0.3.34"
+
+# gpui-base with one fix (vendor/gpui-base/PATCH.md): closed markdown documents' shaped text
+# was kept in a table swept only every 4096 entries.
+[patch.crates-io]
+gpui-base = { path = "vendor/gpui-base" }
 
 # Line tables keep file:line in backtraces and panics; full debug info only slows the link.
 [profile.dev]
