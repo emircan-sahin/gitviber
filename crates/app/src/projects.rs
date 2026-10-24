@@ -84,6 +84,17 @@ fn info(path: &str, cx: &App) -> Option<Info> {
     cx.try_global::<Infos>()?.by_path.get(path).cloned()
 }
 
+/// `path` with the home folder written as ~, as a shell shows it.
+fn home_relative(path: &str, home: Option<&str>) -> String {
+    let home = home
+        .map(|h| h.trim_end_matches('/'))
+        .filter(|h| !h.is_empty());
+    match home.and_then(|h| path.strip_prefix(h)) {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("~{rest}"),
+        _ => path.to_string(),
+    }
+}
+
 pub fn folder_name(path: &str) -> &str {
     path.trim_end_matches('/')
         .rsplit('/')
@@ -386,6 +397,7 @@ pub fn list(
     let key_at = focused.then(|| key_row(&shown, keys.read(cx).row.as_deref(), current.as_deref()));
     let ring = keys.read(cx).by_key;
     let first = recent.first().cloned();
+    let home = std::env::var("HOME").ok().filter(|h| !h.is_empty());
     let t = cx.app_theme().clone();
     let rows = shown.clone().into_iter().enumerate().map(|(i, path)| {
         let keyed = key_at == Some(i);
@@ -399,9 +411,9 @@ pub fn list(
         // Opening the open project does nothing, unless the window is in one of its worktrees.
         let here = is_current && away.is_none();
         let detail = match &away {
-            _ if missing => "Folder not found".to_string(),
+            _ if missing => format!("Not found · {}", home_relative(&path, home.as_deref())),
             Some(a) => format!("In worktree {}", a.folder),
-            None => path.clone(),
+            None => home_relative(&path, home.as_deref()),
         };
         let open_label: SharedString = away
             .as_ref()
@@ -509,9 +521,12 @@ pub fn list(
                             .child(name.clone()),
                     )
                     .when(!compact, |d| {
+                        // The middle goes: a path's start says where, its end which one.
                         d.child(
                             div()
-                                .truncate()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis_middle()
                                 .text_size(rems(0.65625))
                                 .text_color(if missing { t.conflict } else { t.subtle })
                                 .child(detail.clone()),
@@ -671,6 +686,20 @@ mod tests {
         assert_eq!(moved(&list, "/a", "/c"), ["/b", "/c", "/a"]);
         assert_eq!(moved(&list, "/x", "/a"), list);
         assert_eq!(folder_name("/Users/me/repo/"), "repo");
+    }
+
+    #[test]
+    fn paths_under_home_read_from_tilde() {
+        let home = Some("/Users/me");
+        assert_eq!(home_relative("/Users/me/code/app", home), "~/code/app");
+        assert_eq!(home_relative("/Users/me", Some("/Users/me/")), "~");
+        // Another user whose name starts the same isn't home.
+        assert_eq!(
+            home_relative("/Users/mechanic/app", home),
+            "/Users/mechanic/app"
+        );
+        assert_eq!(home_relative("/tmp/app", home), "/tmp/app");
+        assert_eq!(home_relative("/tmp/app", None), "/tmp/app");
     }
 
     #[test]

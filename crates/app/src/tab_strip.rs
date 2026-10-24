@@ -16,6 +16,8 @@ use gpui_kit::{
 };
 
 pub const TAB_STRIP_HEIGHT: f32 = 36.;
+/// A tab is at most 260 wide; past this its title ellipsizes too, so a detail can still show.
+const TITLE_MAX: f32 = 170.;
 
 /// A tab being dragged, drawn under the pointer as its title.
 #[derive(Clone)]
@@ -342,9 +344,12 @@ pub fn tab_strip(
                     d.child(div().absolute().inset_0().border_1().border_color(t.ring))
                 })
                 .children(icon(tab_icon, &t))
+                // The detail gives way first ("Compare main...feature/search"), the title only
+                // past its cap.
                 .child(
                     div()
-                        .min_w_0()
+                        .flex_shrink_0()
+                        .max_w(px(TITLE_MAX))
                         .truncate()
                         .text_size(rems(0.8125))
                         .when(preview, |d| d.italic())
@@ -353,7 +358,8 @@ pub fn tab_strip(
                 .when_some(detail, |d, detail| {
                     d.child(
                         div()
-                            .flex_none()
+                            .min_w_0()
+                            .truncate()
                             .font_family(t.fonts.code.clone())
                             .text_size(rems(0.6875))
                             .text_color(t.subtle)

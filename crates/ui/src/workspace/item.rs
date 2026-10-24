@@ -328,7 +328,11 @@ impl Tab {
     }
 
     pub fn detail(&self, cx: &App) -> Option<SharedString> {
-        self.handle.as_ref().and_then(|h| h.detail(cx))
+        match (&self.handle, &self.selection) {
+            (Some(h), _) => h.detail(cx),
+            (None, Some(s)) => s.detail(),
+            _ => None,
+        }
     }
 
     pub fn icon(&self, cx: &App) -> TabIcon {

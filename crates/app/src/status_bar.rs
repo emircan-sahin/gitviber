@@ -138,6 +138,9 @@ pub fn status_bar(
     let font = format!("{} {}", t.fonts.code, s.code_font_size);
     let layout = if s.side_by_side { "Split" } else { "Unified" };
     let wrap = s.word_wrap;
+    // The code and diff views' settings and Open in are about a repo: with none open, only the
+    // version (and the memory readout) stay.
+    let repo = ctx.project.is_some();
     let os = cx
         .try_global::<SystemName>()
         .and_then(|n| n.0.clone())
@@ -178,26 +181,28 @@ pub fn status_bar(
                 .items_center()
                 .h_full()
                 .gap_px()
-                .child(item("status-syntax", cx).child(syntax))
-                .child(item("status-font", cx).child(font))
-                .child(
-                    item("status-layout", cx)
-                        .pressable(cx)
-                        .child(layout)
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(Box::new(diff::ToggleSplit), cx)
-                        }),
-                )
-                .child(
-                    item("status-wrap", cx)
-                        .pressable(cx)
-                        .when(wrap, |d| d.text_color(t.primary))
-                        .child(Icon::new(IconName::TextWrap).xsmall())
-                        .child("Wrap")
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(Box::new(editor::ToggleWrap), cx)
-                        }),
-                )
+                .when(repo, |d| {
+                    d.child(item("status-syntax", cx).child(syntax))
+                        .child(item("status-font", cx).child(font))
+                        .child(
+                            item("status-layout", cx)
+                                .pressable(cx)
+                                .child(layout)
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(diff::ToggleSplit), cx)
+                                }),
+                        )
+                        .child(
+                            item("status-wrap", cx)
+                                .pressable(cx)
+                                .when(wrap, |d| d.text_color(t.primary))
+                                .child(Icon::new(IconName::TextWrap).xsmall())
+                                .child("Wrap")
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(editor::ToggleWrap), cx)
+                                }),
+                        )
+                })
                 // Features' own (the open file's language) after the view's settings.
                 .children(right)
                 .when(memory::readout_enabled(), |d| {
@@ -232,7 +237,7 @@ pub fn status_bar(
                             }),
                     ),
                 })
-                .child(open_in.clone()),
+                .when(repo, |d| d.child(open_in.clone())),
         )
         .into_any_element()
 }

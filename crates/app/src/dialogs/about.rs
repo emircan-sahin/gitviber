@@ -12,8 +12,9 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClipboardItem, Context, IntoElement, ParentElement as _,
-    Render, SharedString, Styled as _, Window, div, img, px, rems,
+    AnyElement, App, AppContext as _, ClipboardItem, Context, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    div, img, px, rems,
 };
 
 use crate::help::{REPO, bug_report_url, diagnostics, open_url, toast, with_about};
@@ -79,20 +80,28 @@ impl Render for AboutView {
         let a = self.about.as_ref();
         let pending = || dim("…", t.subtle);
         let commit = match a {
+            // Text, not a link Button: a Button centres in its cell and has its own font size.
             Some(a) if !a.commit.is_empty() => {
                 let url = format!("{REPO}/commit/{}", a.commit);
-                Button::new("about-commit")
-                    .link()
-                    .xsmall()
-                    .label(a.commit.clone())
+                div()
+                    .id("about-commit")
+                    .cursor_pointer()
+                    .text_color(t.primary)
+                    .underline()
+                    .child(a.commit.clone())
                     .on_click(move |_, _, cx| open_url(url.clone(), cx))
                     .into_any_element()
             }
             Some(_) => dim("unknown", t.subtle),
             None => pending(),
         };
+        // No row where there is no web view to name (Linux), or none was found.
+        let webview = match a {
+            Some(a) => a.webview.clone().map(text),
+            None => cfg!(target_os = "macos").then(pending),
+        };
         let mut cells: Vec<AnyElement> = Vec::new();
-        let rows: [(&'static str, AnyElement); 6] = [
+        let rows: [(&'static str, AnyElement); 5] = [
             ("Version", text(env!("CARGO_PKG_VERSION").to_string())),
             ("Commit", commit),
             (
@@ -119,18 +128,8 @@ impl Render for AboutView {
                     None => pending(),
                 },
             ),
-            (
-                "Web view",
-                match a {
-                    Some(a) => match &a.webview {
-                        Some(w) => text(w.clone()),
-                        None => dim("unknown", t.subtle),
-                    },
-                    None => pending(),
-                },
-            ),
         ];
-        for (label, value) in rows {
+        for (label, value) in rows.into_iter().chain(webview.map(|w| ("Web view", w))) {
             cells.extend(row(label, value, cx));
         }
         let line: Option<SharedString> = a.map(|a| diagnostics(a).into());

@@ -144,8 +144,8 @@ pub struct Palette {
     workspace: WeakEntity<Workspace>,
     /// The worktree it opened on, for recent files.
     root: Option<PathBuf>,
-    /// The commands that applied where focus was, with their titles as listed.
-    commands: Vec<(&'static keymap::Command, SharedString)>,
+    /// The commands that applied where focus was.
+    commands: Vec<Listed>,
     quick: Option<Vec<QuickItem>>,
     recent: Vec<String>,
     changes: Option<Vec<(Selection, Arc<FileChange>, &'static str)>>,
@@ -157,6 +157,39 @@ pub struct Palette {
     _live: Live,
 }
 
+/// A command as the palette lists it: its title alone, as the menus and shortcut lists name it
+/// (the titles are unique and say their area: "Toggle Terminal", "Reload Page"). `search` puts
+/// the category first ("Git Push"), so typing an area still finds its commands.
+struct Listed {
+    command: &'static keymap::Command,
+    label: SharedString,
+    search: String,
+}
+
+impl Listed {
+    fn new(command: &'static keymap::Command, workspace: Option<&Workspace>) -> Self {
+        let label = command_label(command, workspace);
+        let search = if command.category == Category::General {
+            label.to_string()
+        } else {
+            format!("{} {label}", command.category.label())
+        };
+        Self {
+            command,
+            label,
+            search,
+        }
+    }
+
+    /// `search`'s matched chars as the label's: those in the category aren't drawn.
+    fn label_hits(&self, hits: Vec<usize>) -> Vec<usize> {
+        let skip = self.search.chars().count() - self.label.chars().count();
+        hits.into_iter()
+            .filter_map(|h| h.checked_sub(skip))
+            .collect()
+    }
+}
+
 fn command_label(c: &keymap::Command, workspace: Option<&Workspace>) -> SharedString {
     let title = match (c.id, workspace) {
         ("terminal.toggle", Some(ws)) if ws.is_open(Slot::Bottom) => "Hide Terminal",
@@ -166,11 +199,7 @@ fn command_label(c: &keymap::Command, workspace: Option<&Workspace>) -> SharedSt
         }
         _ => c.title,
     };
-    if c.category == Category::General {
-        title.into()
-    } else {
-        format!("{}: {title}", c.category.label()).into()
-    }
+    title.into()
 }
 
 /// Best matches first; with an empty query, recent ones first, then the list's own order.
@@ -233,15 +262,15 @@ impl Palette {
         }
         let ws = workspace.read(cx);
         let available = window.available_actions(cx);
-        let mut commands: Vec<(&'static keymap::Command, SharedString)> = keymap::all_commands()
+        let mut commands: Vec<Listed> = keymap::all_commands()
             .filter(|c| c.id != "workbench.showCommands")
             .filter(|c| {
                 let name = c.action().name();
                 available.iter().any(|a| a.name() == name)
             })
-            .map(|c| (c, command_label(c, Some(ws))))
+            .map(|c| Listed::new(c, Some(ws)))
             .collect();
-        commands.sort_by_key(|(c, _)| keymap::all_commands().position(|o| o.id == c.id));
+        commands.sort_by_key(|l| keymap::all_commands().position(|o| o.id == l.command.id));
         let project = ws.project().cloned();
         let root = project.as_ref().map(|p| p.read(cx).root().to_path_buf());
         let ctx = PanelContext {
@@ -346,18 +375,19 @@ impl Palette {
             self.rows = rank(
                 q,
                 &self.commands,
-                |(_, label)| label.as_ref(),
+                |l| l.search.as_str(),
                 false,
-                |(c, _)| recent.iter().position(|r| r == c.id),
+                |l| recent.iter().position(|r| r == l.command.id),
             )
             .into_iter()
             .map(|(at, m)| {
-                let (c, label) = &self.commands[at];
+                let listed = &self.commands[at];
+                let (c, label) = (listed.command, &listed.label);
                 let chord = bindings_for(c, overrides, IS_MAC).into_iter().next();
                 let recent_tag = q.trim().is_empty() && recent.iter().any(|r| r == c.id);
                 Row {
                     label: label.clone(),
-                    hits: m.hits,
+                    hits: listed.label_hits(m.hits),
                     hint: chord
                         .map(|k| format_chord(&k, IS_MAC).into())
                         .or(recent_tag.then(|| "recently used".into())),
@@ -717,6 +747,24 @@ mod tests {
         assert_eq!(files["/r/a"], ["src/x.rs", "README.md"]);
         assert!(legacy_files(Some(serde_json::json!([1]))).is_none());
         assert!(legacy_files(None).is_none());
+    }
+
+    #[test]
+    fn commands_read_without_a_prefix_and_are_found_by_their_area() {
+        let by_id = |id| keymap::all_commands().find(|c| c.id == id).unwrap();
+        let push = Listed::new(by_id("git.push"), None);
+        assert_eq!(push.label.as_ref(), "Push");
+        assert_eq!(push.search, "Git Push");
+        let m = fuzzy_match(&prepare_query("git push"), &push.search).unwrap();
+        assert_eq!(push.label_hits(m.hits), [0, 1, 2, 3]);
+        let open = Listed::new(by_id("workbench.quickOpen"), None);
+        assert_eq!(open.label.as_ref(), open.search);
+        // Unique titles are what lets the palette drop the prefix.
+        let mut titles: Vec<_> = keymap::all_commands().map(|c| c.title).collect();
+        titles.sort_unstable();
+        let n = titles.len();
+        titles.dedup();
+        assert_eq!(titles.len(), n);
     }
 
     #[test]

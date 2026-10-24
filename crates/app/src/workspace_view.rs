@@ -24,8 +24,9 @@ use gpui_kit::component::resize_handle;
 use gpui_kit::{
     AnyElement, AnyWindowHandle, App, AppContext as _, Axis, Context, DragMoveEvent, Empty, Entity,
     FocusHandle, Global, InteractiveElement as _, IntoElement, KeyDownEvent, ModifiersChangedEvent,
-    ParentElement as _, PathPromptOptions, Render, ScrollHandle, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Task, WeakEntity, Window, div, prelude::*, px, size,
+    MouseButton, ParentElement as _, PathPromptOptions, Render, ScrollHandle,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
+    prelude::*, px, size,
 };
 
 use crate::layout::{self, LEFT, RIGHT};
@@ -40,6 +41,8 @@ use crate::welcome;
 
 pub const DEFAULT_SIZE: (f32, f32) = (1480., 920.);
 pub const MIN_SIZE: (f32, f32) = (900., 560.);
+/// A sidebar, for what shows while the pointer is over it.
+const SIDE_GROUP: &str = "side-panel";
 
 /// The drags of the panels' edges, drawn as nothing: the panel itself follows the pointer.
 #[derive(Clone)]
@@ -168,6 +171,8 @@ impl WorkspaceView {
             }
         }));
         subs.push(cx.observe_global::<UiState>(|_, cx| crate::projects::refresh(false, cx)));
+        // A window opened behind others isn't activated: its list still marks a gone folder.
+        crate::projects::refresh(false, cx);
         // Set by the terminal whenever an agent's look changes; drawn again only when news did.
         subs.push(
             cx.observe_global::<gitviber_refs::hooks::AgentLooks>(|this, cx| {
@@ -460,8 +465,6 @@ impl WorkspaceView {
         };
         let ws = self.workspace.clone();
         let _ = window;
-        let explorer =
-            (active == Some(gitviber_files::explorer::PANEL_ID)).then(|| self.explorer_buttons(cx));
         div()
             .flex()
             .flex_none()
@@ -484,28 +487,21 @@ impl WorkspaceView {
                     .children(tabs),
             )
             .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap_px()
-                    .children(explorer.into_iter().flatten())
-                    .child(
-                        gpui_kit::component::button::Button::new(("hide-slot", slot as usize))
-                            .ghost()
-                            .xsmall()
-                            .icon(close_icon)
-                            .tooltip(close_title)
-                            .on_click(move |_, _, cx| {
-                                ws.update(cx, |ws, cx| ws.set_open(close, false, cx))
-                            }),
-                    ),
+                gpui_kit::component::button::Button::new(("hide-slot", slot as usize))
+                    .ghost()
+                    .xsmall()
+                    .icon(close_icon)
+                    .tooltip(close_title)
+                    .on_click(move |_, _, cx| {
+                        ws.update(cx, |ws, cx| ws.set_open(close, false, cx))
+                    }),
             )
             .into_any_element()
     }
 
-    /// The explorer's header: Filter (⌘F in the tree) and Collapse folders.
-    fn explorer_buttons(&self, cx: &App) -> Vec<AnyElement> {
+    /// The explorer's Filter (⌘F in the tree) and Collapse folders, over the tree's top right
+    /// while the pointer is over the panel: in the header they squeezed its tabs.
+    fn explorer_buttons(&self, cx: &App) -> AnyElement {
         use gitviber_files::explorer::{ExplorerPanel, PANEL_ID};
         use gpui_kit::component::button::Button;
         let (filter_ws, collapse_ws) = (self.workspace.downgrade(), self.workspace.downgrade());
@@ -514,36 +510,57 @@ impl WorkspaceView {
                 .and_then(|ws| ws.read(cx).built_panel(PANEL_ID).cloned())
         };
         let find = gitviber_ui::keymap::shortcut_label("editor.find", cx);
-        vec![
-            Button::new("explorer-filter")
-                .ghost()
-                .xsmall()
-                .icon(gpui_kit::assets::IconName::Search)
-                .tooltip(match find {
-                    Some(key) => format!("Filter files ({key})"),
-                    None => "Filter files".into(),
-                })
-                .on_click(move |_, window, cx| {
-                    if let Some(f) = panel(&filter_ws, cx).and_then(|p| p.focus_handle(cx)) {
-                        f.focus(window, cx);
-                        f.dispatch_action(&editor::Find, window, cx);
-                    }
-                })
-                .into_any_element(),
-            Button::new("explorer-collapse")
-                .ghost()
-                .xsmall()
-                .icon(gpui_kit::assets::IconName::ChevronsDownUp)
-                .tooltip("Collapse folders")
-                .on_click(move |_, _, cx| {
-                    let explorer = panel(&collapse_ws, cx)
-                        .and_then(|p| p.view().downcast::<ExplorerPanel>().ok());
-                    if let Some(e) = explorer {
-                        e.update(cx, |e, cx| e.collapse_all(cx));
-                    }
-                })
-                .into_any_element(),
-        ]
+        let t = cx.app_theme();
+        div()
+            .absolute()
+            .top_1()
+            .right_2()
+            .flex()
+            .items_center()
+            .gap_px()
+            .p_px()
+            .rounded(px(4.))
+            .border_1()
+            .border_color(t.border)
+            .bg(t.chrome(t.sidebar))
+            .invisible()
+            .group_hover(SIDE_GROUP, |s| s.visible())
+            // Over the tree's rows: a click here is the buttons' alone. Not occluded, which would
+            // end the panel's hover and hide them.
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                Button::new("explorer-filter")
+                    .ghost()
+                    .xsmall()
+                    .icon(gpui_kit::assets::IconName::Search)
+                    .tooltip(match find {
+                        Some(key) => format!("Filter files ({key})"),
+                        None => "Filter files".into(),
+                    })
+                    .on_click(move |_, window, cx| {
+                        if let Some(f) = panel(&filter_ws, cx).and_then(|p| p.focus_handle(cx)) {
+                            f.focus(window, cx);
+                            f.dispatch_action(&editor::Find, window, cx);
+                        }
+                    }),
+            )
+            .child(
+                Button::new("explorer-collapse")
+                    .ghost()
+                    .xsmall()
+                    .icon(gpui_kit::assets::IconName::ChevronsDownUp)
+                    .tooltip("Collapse folders")
+                    .on_click(move |_, _, cx| {
+                        let explorer = panel(&collapse_ws, cx)
+                            .and_then(|p| p.view().downcast::<ExplorerPanel>().ok());
+                        if let Some(e) = explorer {
+                            e.update(cx, |e, cx| e.collapse_all(cx));
+                        }
+                    }),
+            )
+            .into_any_element()
     }
 
     fn side(
@@ -554,11 +571,9 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let header = self.side_header(slot, window, cx);
-        let panel = self
-            .workspace
-            .read(cx)
-            .active_panel(slot, cx)
-            .and_then(|id| Workspace::ensure_panel(&self.workspace, id, window, cx));
+        let active = self.workspace.read(cx).active_panel(slot, cx);
+        let explorer = active == Some(gitviber_files::explorer::PANEL_ID);
+        let panel = active.and_then(|id| Workspace::ensure_panel(&self.workspace, id, window, cx));
         reachable(panel.as_ref().and_then(|p| p.focus_handle(cx)));
         let t = cx.app_theme().clone();
         let focus = self.workspace.read(cx).slot_focus(slot).clone();
@@ -591,6 +606,7 @@ impl WorkspaceView {
                 "right-panel"
             })
             .track_focus(&focus)
+            .group(SIDE_GROUP)
             .relative()
             .flex()
             .flex_col()
@@ -637,7 +653,14 @@ impl WorkspaceView {
             .when(slot == Slot::Right, |d| d.border_l_1())
             .border_color(t.border)
             .child(header)
-            .child(div().flex_1().min_h_0().children(panel.map(|p| p.view())))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .children(panel.map(|p| p.view()))
+                    .when(explorer, |d| d.child(self.explorer_buttons(cx))),
+            )
             .child(handle)
             .children(focus_line(&focus, window, cx))
             .into_any_element()

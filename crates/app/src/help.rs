@@ -93,15 +93,45 @@ fn encode(text: &str) -> String {
     out
 }
 
-/// Version, commit, OS, git and gh: asked off the UI thread, as `gh --version` can take a moment.
+/// Version, commit, OS, git, gh and the web view: asked off the UI thread, as `gh --version`
+/// can take a moment.
 pub fn with_about(cx: &mut App, then: impl FnOnce(Option<api::app::About>, &mut App) + 'static) {
     let core = gitviber_ui::core(cx);
-    let about = cx.background_spawn(async move { api::app::about(&core).ok() });
+    let about = cx.background_spawn(async move {
+        let mut about = api::app::about(&core).ok()?;
+        about.webview = about.webview.or_else(webkit_version);
+        Some(about)
+    });
     cx.spawn(async move |cx| {
         let about = about.await;
         cx.update(|cx| then(about, cx));
     })
     .detach();
+}
+
+/// The browser tab's engine, "WebKit 21624.1.16.11.4", from the framework's bundle. macOS 13 and
+/// later load it from the OS cryptex, which security updates replace; older ones from /System.
+fn webkit_version() -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    [
+        "/System/Cryptexes/OS/System/Library/Frameworks/WebKit.framework/Resources/Info.plist",
+        "/System/Library/Frameworks/WebKit.framework/Resources/Info.plist",
+    ]
+    .iter()
+    .find_map(|p| {
+        let plist = std::fs::read_to_string(p).ok()?;
+        bundle_version(&plist).map(|v| format!("WebKit {v}"))
+    })
+}
+
+/// CFBundleVersion's value in an XML property list.
+fn bundle_version(plist: &str) -> Option<&str> {
+    let (_, after) = plist.split_once("<key>CFBundleVersion</key>")?;
+    let (_, value) = after.split_once("<string>")?;
+    let (value, _) = value.split_once("</string>")?;
+    Some(value.trim()).filter(|v| !v.is_empty())
 }
 
 fn install_cli(cx: &mut App) {
@@ -163,6 +193,17 @@ mod tests {
             git: Some("2.50.1 (Apple Git-155)".into()),
             gh: None,
             webview: None,
+        }
+    }
+
+    #[test]
+    fn the_web_view_is_webkits_bundle_version() {
+        let plist = "<dict>\n\t<key>CFBundleShortVersionString</key>\n\t<string>21624</string>\n\
+                     \t<key>CFBundleVersion</key>\n\t<string>21624.1.16.11.4</string>\n</dict>";
+        assert_eq!(bundle_version(plist), Some("21624.1.16.11.4"));
+        assert_eq!(bundle_version("<dict></dict>"), None);
+        if cfg!(target_os = "macos") {
+            assert!(webkit_version().is_some_and(|v| v.starts_with("WebKit ")));
         }
     }
 

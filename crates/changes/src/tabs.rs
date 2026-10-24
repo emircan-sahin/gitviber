@@ -489,16 +489,7 @@ impl TabItem for ChangeTab {
     }
 
     fn tab_detail(&self, _: &App) -> Option<SharedString> {
-        Some(
-            match self.sel.kind() {
-                "staged" => "staged",
-                "conflict" => "conflict",
-                "branch" => "branch",
-                "changes" => return None,
-                _ => "diff",
-            }
-            .into(),
-        )
+        self.sel.detail()
     }
 
     fn tab_icon(&self, _: &App) -> TabIcon {

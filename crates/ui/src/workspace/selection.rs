@@ -334,6 +334,32 @@ impl Selection {
         }
     }
 
+    /// The faint word after a tab's title, so a file's diff and the file don't read alike. Read
+    /// from the selection, so a restored tab whose view isn't built yet keeps it.
+    pub fn detail(&self) -> Option<SharedString> {
+        Some(match self {
+            Self::Unstaged { .. } => "diff".into(),
+            Self::Staged { .. } => "staged".into(),
+            Self::Conflict { .. } => "conflict".into(),
+            Self::Branch { .. } => "branch".into(),
+            Self::Commit { commit, .. } => commit.short_sha.clone().into(),
+            Self::PrFile { range, .. } => match (range.number, &range.label) {
+                (Some(n), None) => format!("#{n}").into(),
+                _ => range.label().into(),
+            },
+            Self::Compare {
+                base,
+                head,
+                merge_base,
+            } => {
+                let dots = if *merge_base { "..." } else { ".." };
+                format!("{}{dots}{}", base.label, head.label).into()
+            }
+            Self::External { .. } => "read-only".into(),
+            _ => return None,
+        })
+    }
+
     /// The tab's file is in the working tree: not a commit's or a pull request's version, nor deleted.
     pub fn on_disk(&self) -> bool {
         match self {
@@ -357,8 +383,9 @@ impl Selection {
     }
 }
 
+// The unstaged list is what the Changes panel's "Changes" section holds, not staged ones too.
 const LIST_TITLES: [(ChangeList, &str); 3] = [
-    (ChangeList::Unstaged, "All Changes"),
+    (ChangeList::Unstaged, "All Unstaged Changes"),
     (ChangeList::Staged, "All Staged Changes"),
     (ChangeList::Branch, "All Branch Changes"),
 ];
@@ -761,6 +788,74 @@ mod tests {
         };
         assert_eq!(selection_key(&one), selection_key(&two));
         assert_eq!(selection_path(&one), "Compare");
+        assert_eq!(one.detail().as_deref(), Some("main...a"));
+        assert_eq!(two.detail().as_deref(), Some("dev..b"));
+    }
+
+    #[test]
+    fn a_tab_not_built_yet_keeps_its_detail() {
+        let file = || de_file(serde_json::json!({ "path": "src/main.rs", "status": "M" })).unwrap();
+        let detail = |s: Selection| s.detail().map(|d| d.to_string());
+        assert_eq!(
+            detail(Selection::Unstaged { file: file() }).as_deref(),
+            Some("diff")
+        );
+        assert_eq!(
+            detail(Selection::Staged { file: file() }).as_deref(),
+            Some("staged")
+        );
+        assert_eq!(
+            detail(Selection::Conflict { file: file() }).as_deref(),
+            Some("conflict")
+        );
+        assert_eq!(
+            detail(Selection::Commit {
+                commit: commit(&"a".repeat(40)),
+                file: file(),
+                url: None
+            })
+            .as_deref(),
+            Some("aaaaaaa")
+        );
+        let range = PullRange {
+            number: Some(7),
+            pull_url: None,
+            label: None,
+            base: "1".repeat(40),
+            head: "2".repeat(40),
+        };
+        let pr = |range| Selection::PrFile {
+            range,
+            file: file(),
+        };
+        assert_eq!(detail(pr(range.clone())).as_deref(), Some("#7"));
+        assert_eq!(
+            detail(pr(PullRange {
+                label: Some("main...x".into()),
+                ..range
+            }))
+            .as_deref(),
+            Some("main...x")
+        );
+        // The file itself has none, so it reads apart from its diff.
+        assert_eq!(
+            detail(Selection::File {
+                path: "src/main.rs".into()
+            }),
+            None
+        );
+        assert_eq!(
+            detail(Selection::Changes {
+                of: ChangesOf::Unstaged
+            }),
+            None
+        );
+        assert_eq!(
+            selection_path(&Selection::Changes {
+                of: ChangesOf::Unstaged
+            }),
+            "All Unstaged Changes"
+        );
     }
 
     #[test]
