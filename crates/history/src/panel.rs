@@ -195,6 +195,7 @@ impl HistoryPanel {
                 filter_author: true,
                 ref_menu: true,
                 show_refs: Some(refs.clone()),
+                web: None,
             };
             return (Source::All(refs.clone()), options);
         }

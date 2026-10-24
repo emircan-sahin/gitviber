@@ -56,12 +56,15 @@ pub enum Source {
     Compare { with: String, incoming: bool },
     /// What `head` has that `base` doesn't (commit ids).
     Between { base: String, head: String },
+    /// A remote-tracking branch's history (a fork's original, refs/remotes/upstream/main), with
+    /// what HEAD lacks marked.
+    Rev(String),
 }
 
 impl Source {
     /// Branches and merges drawn; off for lists whose neighbours aren't parent and child.
     pub fn graph(&self) -> bool {
-        matches!(self, Source::Head | Source::All(_))
+        matches!(self, Source::Head | Source::All(_) | Source::Rev(_))
     }
 
     fn read(&self, core: &gitviber_core::Core, skip: u32, limit: u32) -> Res<Vec<git::Commit>> {
@@ -84,6 +87,7 @@ impl Source {
             Source::Between { base, head } => {
                 api::history::log_between(core, base.clone(), head.clone(), skip, limit)
             }
+            Source::Rev(rev) => api::history::log(core, Some(rev.clone()), skip, limit, None, None),
         }
     }
 
@@ -178,6 +182,9 @@ pub struct ListOptions {
     pub ref_menu: bool,
     /// Only these refs' badges show.
     pub show_refs: Option<GraphRefs>,
+    /// Where these commits live on GitHub when that's not origin: a fork's original has them
+    /// all, so every one links there.
+    pub web: Option<String>,
 }
 
 pub struct CommitList {
@@ -209,6 +216,12 @@ pub struct CommitList {
     anchor: Option<String>,
     /// The row the keys move.
     cursor: Option<usize>,
+    /// The cursor is on this file of the open commit, under its row.
+    on_file: Option<usize>,
+    /// The drag's label, to say whether it squashes or moves as the target changes.
+    drag_label: Option<WeakEntity<DragLabel>>,
+    /// ↓ on the last row read the next page: the row to move on to once it's in.
+    down_after_page: bool,
     /// The row under the pointer: its branches come forward.
     lit: Option<usize>,
     drop_at: Option<DropAt>,
@@ -220,6 +233,7 @@ pub struct CommitList {
     focus: FocusHandle,
     pub(crate) flow: Option<Task<()>>,
     _repo: gpui_kit::Subscription,
+    _tabs: Option<gpui_kit::Subscription>,
     _live: Live,
 }
 
@@ -279,6 +293,12 @@ impl CommitList {
                 }
             },
         );
+        // The active tab marks its file's row.
+        let tabs = workspace.upgrade().map(|ws| cx.observe(&ws, |this, _, cx| {
+            if this.open.is_some() {
+                cx.notify();
+            }
+        }));
         let mut list = CommitList {
             repo,
             workspace,
@@ -302,6 +322,9 @@ impl CommitList {
             picked: vec![],
             anchor: None,
             cursor: None,
+            on_file: None,
+            drag_label: None,
+            down_after_page: false,
             lit: None,
             drop_at: None,
             dragging: None,
@@ -310,6 +333,7 @@ impl CommitList {
             focus: cx.focus_handle(),
             flow: None,
             _repo: sub,
+            _tabs: tabs,
             _live: Live::new("CommitList"),
         };
         // Before the project opens core has no repo: its first read comes with RepoEvent::Changed.
@@ -630,6 +654,14 @@ impl CommitList {
         self.items.extend(tail);
         self.state.splice(at..at + old, count);
         self.try_jump(cx);
+        // ↓ on the last row asked for this page: the cursor goes on to its first commit.
+        if std::mem::take(&mut self.down_after_page) && first < self.commits.len() {
+            self.cursor = Some(first);
+            self.on_file = None;
+            if let Some(ix) = self.items.iter().position(|it| *it == Item::Commit(first)) {
+                self.state.scroll_to_reveal_item(ix);
+            }
+        }
         if self.to_end {
             self.load_more(cx);
         }
@@ -715,6 +747,10 @@ impl CommitList {
                     let Some(open) = this.open.as_mut().filter(|o| o.sha == sha) else {
                         return;
                     };
+                    if let Err(e) = &files {
+                        let e = e.clone();
+                        let _ = this.workspace.update(cx, |ws, cx| ws.toast(gitviber_ui::workspace::Toast::error(e).title("Could not load commit"), cx));
+                    }
                     let files = Rc::new(files.unwrap_or_default());
                     open.files = Some(files.clone());
                     this.relayout(cx);
@@ -789,6 +825,7 @@ impl CommitList {
         let Some(i) = self.index_of(sha) else { return };
         let commit = self.commits[i].clone();
         self.cursor = Some(i);
+        self.on_file = None;
         let m = e.modifiers();
         if m.secondary() {
             if self.picked.is_empty()
@@ -851,52 +888,168 @@ impl CommitList {
             .collect()
     }
 
-    pub(crate) fn key_down(
-        &mut self,
-        e: &KeyDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let rows: Vec<usize> = (0..self.commits.len()).collect();
+    /// The rows keys move along, top to bottom: each commit, and the open one's files under it.
+    fn nav_rows(&self) -> Vec<(usize, Option<usize>)> {
+        let open = self.open_sha().and_then(|s| self.index_of(s));
+        self.items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Commit(i) => Some((*i, None)),
+                Item::File(f) => open.map(|o| (o, Some(*f))),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn item_of(&self, row: (usize, Option<usize>)) -> Option<usize> {
+        self.items.iter().position(|it| match (it, row.1) {
+            (Item::Commit(i), None) => *i == row.0,
+            (Item::File(f), Some(g)) => *f == g,
+            _ => false,
+        })
+    }
+
+    /// Rows a PageUp/PageDown moves: as many as fit, one kept for context.
+    fn page_rows(&self) -> usize {
+        let height = self.state.viewport_bounds().size.height;
+        ((height / px(44.)) as usize).saturating_sub(1).max(1)
+    }
+
+    /// Puts the cursor on a row and scrolls it into view; a file row previews its diff, as a
+    /// click does, while a commit's row only takes the cursor.
+    fn land(&mut self, row: (usize, Option<usize>), window: &mut Window, cx: &mut Context<Self>) {
+        self.cursor = Some(row.0);
+        self.on_file = row.1;
+        if let Some(ix) = self.item_of(row) {
+            self.state.scroll_to_reveal_item(ix);
+        }
+        if let (Some(f), Some((commit, files))) = (row.1, self.files_of_open())
+            && let Some(file) = files.get(f)
+        {
+            crate::open::open_commit_file(self, &commit, file, true, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// The keys do what the mouse does on the rows: ↵ and Space open and close a commit (↵ keeps
+    /// a file's tab), → steps into a commit's files and on to the code, ← back out, ⇧ with a move
+    /// picks commits along, ⇧F10 the row's menu.
+    pub(crate) fn key_down(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.nav_rows();
         if rows.is_empty() {
             return;
         }
         let k = e.keystroke.key.as_str();
-        let shift = e.keystroke.modifiers.shift;
+        let m = e.keystroke.modifiers;
+        let menu = k == "menu" || (k == "f10" && m.shift && !m.alt && !m.platform && !m.control);
+        if (m.alt || m.platform || m.control) && !menu {
+            return;
+        }
         // The list may have been read again shorter since the cursor was put there.
-        let at = self.cursor.unwrap_or(0).min(rows.len() - 1);
+        let here = (self.cursor.unwrap_or(0).min(self.commits.len().saturating_sub(1)), self.on_file);
+        let at = rows.iter().position(|r| *r == here).or_else(|| rows.iter().position(|r| r.0 == here.0)).unwrap_or(0);
+        let row = rows[at];
+        let last = rows.len() - 1;
+        let page = self.page_rows();
         let to = match k {
-            "down" => (at + 1).min(rows.len() - 1),
-            "up" => at.saturating_sub(1),
-            "enter" => {
-                let commit = self.commits[at].clone();
-                self.toggle_open(&commit, Some(window), cx);
-                cx.stop_propagation();
-                return;
-            }
-            "escape" if !self.picked.is_empty() => {
-                self.picked.clear();
-                cx.stop_propagation();
-                cx.notify();
-                return;
-            }
-            _ => return,
+            "down" => Some((at + 1).min(last)),
+            "up" => Some(at.saturating_sub(1)),
+            "home" => Some(0),
+            "end" => Some(last),
+            "pagedown" => Some((at + page).min(last)),
+            "pageup" => Some(at.saturating_sub(page)),
+            _ => None,
         };
         cx.stop_propagation();
-        if shift {
-            if self.picked.is_empty() {
-                self.anchor = Some(self.commits[at].sha.clone());
+        if menu {
+            self.open_row_menu(row, window, cx);
+            return;
+        }
+        if let Some(to) = to {
+            if m.shift {
+                // Along the commits only, for picking them.
+                let commits: Vec<usize> = rows.iter().filter(|r| r.1.is_none()).map(|r| r.0).collect();
+                let i = commits.iter().position(|c| *c == row.0).unwrap_or(0);
+                let j = match k {
+                    "down" => (i + 1).min(commits.len() - 1),
+                    "up" => i.saturating_sub(1),
+                    "home" => 0,
+                    "end" => commits.len() - 1,
+                    "pagedown" => (i + page).min(commits.len() - 1),
+                    _ => i.saturating_sub(page),
+                };
+                if self.picked.is_empty() {
+                    self.anchor = Some(self.commits[row.0].sha.clone());
+                }
+                self.pick_range(commits[j]);
+                self.land((commits[j], None), window, cx);
+                return;
             }
-            self.pick_range(to);
-        } else {
+            if k == "down" && at == last && self.has_more {
+                self.down_after_page = true;
+                self.load_more(cx);
+                return;
+            }
             self.picked.clear();
-            self.anchor = Some(self.commits[to].sha.clone());
+            self.anchor = Some(self.commits[rows[to].0].sha.clone());
+            self.land(rows[to], window, cx);
+            return;
         }
-        self.cursor = Some(to);
-        if let Some(ix) = self.items.iter().position(|it| *it == Item::Commit(to)) {
-            self.state.scroll_to_reveal_item(ix);
+        let open = self.open_sha() == Some(self.commits[row.0].sha.as_str());
+        match (k, row.1) {
+            ("enter" | "space", None) => {
+                let commit = self.commits[row.0].clone();
+                self.toggle_open(&commit, Some(window), cx);
+            }
+            ("enter", Some(f)) => {
+                if let Some((commit, files)) = self.files_of_open()
+                    && let Some(file) = files.get(f)
+                {
+                    crate::open::open_commit_file(self, &commit, file, false, window, cx);
+                }
+            }
+            ("space", Some(_)) => self.land(row, window, cx),
+            ("right", None) if !open => {
+                let commit = self.commits[row.0].clone();
+                self.toggle_open(&commit, Some(window), cx);
+            }
+            ("right", None) => {
+                if let Some(next) = rows.get(at + 1).filter(|r| r.1.is_some()) {
+                    self.land(*next, window, cx);
+                }
+            }
+            ("right", Some(_)) => {
+                self.land(row, window, cx);
+                if let Some(ws) = self.workspace.upgrade() {
+                    ws.update(cx, |ws, cx| ws.focus_center(window, cx));
+                }
+            }
+            ("left", None) if open => {
+                let commit = self.commits[row.0].clone();
+                self.toggle_open(&commit, None, cx);
+            }
+            ("left", Some(_)) => self.land((row.0, None), window, cx),
+            ("escape", _) if !self.picked.is_empty() => {
+                self.picked.clear();
+                cx.notify();
+            }
+            _ => cx.propagate(),
         }
-        cx.notify();
+    }
+
+    /// A row's right-click menu from the keyboard, just under the row's start.
+    fn open_row_menu(&mut self, row: (usize, Option<usize>), window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.item_of(row) else { return };
+        self.state.scroll_to_reveal_item(ix);
+        let Some(bounds) = self.state.bounds_for_item(ix) else { return };
+        let position = bounds.origin + point(px(24.), bounds.size.height - px(4.));
+        // After this key's dispatch: the menu opens as a right-click there would open it.
+        window.defer(cx, move |window, cx| {
+            let down = gpui_kit::MouseDownEvent { button: MouseButton::Right, position, modifiers: Default::default(), click_count: 1, first_mouse: false };
+            window.dispatch_event(gpui_kit::PlatformInput::MouseDown(down), cx);
+            let up = gpui_kit::MouseUpEvent { button: MouseButton::Right, position, modifiers: Default::default(), click_count: 1 };
+            window.dispatch_event(gpui_kit::PlatformInput::MouseUp(up), cx);
+        });
     }
 
     // MARK: Drag
@@ -917,6 +1070,14 @@ impl CommitList {
         let droppable = !dragged.iter().any(|d| d == sha) && self.line(cx).contains(sha);
         let over = drop_over(e.event.position, e.bounds, inside, droppable);
         if let Some(next) = next_drop(&self.drop_at, sha, over) {
+            // Onto a commit, that one is squashed too.
+            let onto = next.as_ref().is_some_and(|d| d.at == Where::Onto);
+            if let Some(label) = self.drag_label.as_ref().and_then(|l| l.upgrade()) {
+                label.update(cx, |l, cx| {
+                    l.0 = drag_text(dragged.len(), onto);
+                    cx.notify();
+                });
+            }
             self.drop_at = next;
             self.dragging = Some(dragged);
             cx.notify();
@@ -943,7 +1104,7 @@ impl CommitList {
         match self.items.get(ix).copied() {
             Some(Item::Commit(i)) => self.render_commit(i, window, cx),
             Some(Item::Files) => self.render_files_header(cx),
-            Some(Item::File(f)) => self.render_file(f, cx),
+            Some(Item::File(f)) => self.render_file(f, window, cx),
             Some(Item::FilesLoading) => {
                 let t = cx.app_theme();
                 div()
@@ -989,7 +1150,7 @@ impl CommitList {
         let is_head = commit.sha == head;
         let open = self.open_sha() == Some(commit.sha.as_str());
         let picked = self.picked.iter().any(|s| *s == commit.sha);
-        let cursor = self.cursor == Some(i) && self.focus.is_focused(window);
+        let cursor = self.cursor == Some(i) && self.on_file.is_none() && self.focus.is_focused(window);
         let lit: Option<Vec<usize>> = self.lit.map(|l| {
             let r = self.row_graph(l);
             std::iter::once(r.id)
@@ -1253,15 +1414,13 @@ impl CommitList {
                 vec![sha.clone()]
             };
             let label_n = shas.len();
+            let list = cx.weak_entity();
             el = el
                 .on_drag(Dragged(shas), move |_, _, _, cx| {
-                    cx.new(|_| {
-                        DragLabel(if label_n == 1 {
-                            "Move 1 commit".into()
-                        } else {
-                            format!("Move {label_n} commits").into()
-                        })
-                    })
+                    let label = cx.new(|_| DragLabel(drag_text(label_n, false)));
+                    let weak = label.downgrade();
+                    let _ = list.update(cx, |l, _| l.drag_label = Some(weak));
+                    label
                 })
                 .on_drag_move(cx.listener(move |this, e: &DragMoveEvent<Dragged>, _, cx| {
                     this.drag_move(&row_sha, e, cx)
@@ -1345,18 +1504,31 @@ impl CommitList {
             .into_any_element()
     }
 
-    fn render_file(&mut self, f: usize, cx: &mut Context<Self>) -> AnyElement {
+    /// The commit file the active tab shows, so its row says so.
+    fn active_file(&self, cx: &App) -> Option<(String, String)> {
+        let ws = self.workspace.upgrade()?;
+        let ws = ws.read(cx);
+        match ws.tabs().active()?.item.selection()? {
+            gitviber_ui::workspace::Selection::Commit { commit, file, .. } => Some((commit.sha.clone(), file.path.clone())),
+            _ => None,
+        }
+    }
+
+    fn render_file(&mut self, f: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.app_theme().clone();
         let Some((commit, files)) = self.files_of_open() else {
             return div().into_any_element();
         };
         let file = files[f].clone();
         let last = f + 1 == files.len();
+        let active = self.active_file(cx).is_some_and(|(sha, path)| sha == commit.sha && path == file.path);
+        let cursor = self.on_file == Some(f) && self.focus.is_focused(window);
         let menu_file = file.clone();
         let menu_commit = commit.clone();
         let list = cx.weak_entity();
         div()
             .id(("file", f))
+            .relative()
             .w_full()
             .flex()
             .h(px(26.))
@@ -1366,7 +1538,9 @@ impl CommitList {
             .pl_8()
             .text_size(rems(0.75))
             .cursor_pointer()
-            .hover(|s| s.bg(t.hover))
+            .when(active, |d| d.bg(t.primary.opacity(0.15)).child(div().absolute().top_0().bottom_0().left_0().w(px(2.)).bg(t.primary)))
+            .when(!active, |d| d.hover(|s| s.bg(t.hover)))
+            .when(cursor, |d| d.border_1().border_color(t.ring))
             .when(last, |d| d.border_b_1().border_color(t.border))
             .child(FileIcon::file(&file.path))
             .child(
@@ -1380,6 +1554,7 @@ impl CommitList {
                 file.status.chars().next().unwrap_or('M'),
             )))
             .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                this.on_file = Some(f);
                 crate::open::open_commit_file(
                     this,
                     &commit,
@@ -1396,6 +1571,17 @@ impl CommitList {
                 crate::menu::file_menu(menu, &list, &menu_commit, &menu_file, window, cx)
             })
             .into_any_element()
+    }
+}
+
+/// What a drag's label says: "Move 2 commits", or onto a commit "Squash 3 commits".
+fn drag_text(n: usize, onto: bool) -> SharedString {
+    if onto {
+        format!("Squash {} commits", n + 1).into()
+    } else if n == 1 {
+        "Move 1 commit".into()
+    } else {
+        format!("Move {n} commits").into()
     }
 }
 
@@ -1584,6 +1770,7 @@ impl Render for CommitList {
         if !cx.has_active_drag() && (self.drop_at.is_some() || self.dragging.is_some()) {
             self.drop_at = None;
             self.dragging = None;
+            self.drag_label = None;
         }
         if self.commits.is_empty() {
             let text: SharedString = match (&self.error, self.loaded) {
@@ -1669,6 +1856,13 @@ mod tests {
             drop_over(point(px(10.), px(78.)), row(40.), true, true),
             Some(Some(Where::Below))
         );
+    }
+
+    #[test]
+    fn a_drags_label_says_whether_it_squashes_or_moves() {
+        assert_eq!(drag_text(1, false), "Move 1 commit");
+        assert_eq!(drag_text(2, false), "Move 2 commits");
+        assert_eq!(drag_text(2, true), "Squash 3 commits");
     }
 
     #[test]

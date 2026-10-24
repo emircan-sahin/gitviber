@@ -109,6 +109,9 @@ pub fn web_url(list: &CommitList, cx: &App) -> Option<String> {
 
 /// GitHub only has commits that reached one of origin's branches.
 pub fn commit_url(list: &CommitList, c: &Commit, cx: &App) -> Option<String> {
+    if let Some(web) = &list.options.web {
+        return Some(format!("{web}/commit/{}", c.sha));
+    }
     let web = web_url(list, cx)?;
     c.on_origin.then(|| format!("{web}/commit/{}", c.sha))
 }

@@ -92,7 +92,7 @@ pub fn commit_menu(
         .filter_map(|w| Some((w.path.clone(), w.branch.clone()?)))
         .collect();
     let url = commit_url(l, c, cx);
-    let web = web_url(l, cx).is_some();
+    let web = l.options.web.is_some() || web_url(l, cx).is_some();
     let marked = mark(&root, cx);
     let ref_menu = l.options.ref_menu;
     let filter_author = l.options.filter_author && !c.author.is_empty();
