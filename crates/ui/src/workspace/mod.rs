@@ -58,6 +58,23 @@ pub struct Toast {
     pub kind: ToastKind,
     pub title: Option<SharedString>,
     pub message: SharedString,
+    pub action: Option<ToastAction>,
+}
+
+/// What a toast's button does.
+pub type ToastRun = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// A toast's button: its label, and what a click does (the toast then goes).
+#[derive(Clone)]
+pub struct ToastAction {
+    pub label: SharedString,
+    pub run: ToastRun,
+}
+
+impl std::fmt::Debug for ToastAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToastAction").field("label", &self.label).finish()
+    }
 }
 
 impl Toast {
@@ -66,6 +83,7 @@ impl Toast {
             kind,
             title: None,
             message: message.into(),
+            action: None,
         }
     }
     pub fn info(message: impl Into<SharedString>) -> Self {
@@ -85,6 +103,19 @@ impl Toast {
         self
     }
 
+    /// A button on it; a toast with one stays until it's clicked or closed.
+    pub fn action(
+        mut self,
+        label: impl Into<SharedString>,
+        run: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.action = Some(ToastAction {
+            label: label.into(),
+            run: Rc::new(run),
+        });
+        self
+    }
+
     /// Shows it in `window` now.
     pub fn show(self, window: &mut Window, cx: &mut App) {
         let note = match self.kind {
@@ -95,6 +126,18 @@ impl Toast {
         };
         let note = match self.title {
             Some(title) => note.title(title),
+            None => note,
+        };
+        let note = match self.action {
+            Some(a) => note.action(move |_, _, cx| {
+                let (run, toast) = (a.run.clone(), cx.entity().downgrade());
+                gpui_kit::component::button::Button::new("toast-action")
+                    .label(a.label.clone())
+                    .on_click(move |_, window, cx| {
+                        run(window, cx);
+                        toast.update(cx, |t, cx| t.dismiss(window, cx)).ok();
+                    })
+            }),
             None => note,
         };
         window.push_notification(note, cx);

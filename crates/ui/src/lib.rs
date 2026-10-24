@@ -13,6 +13,7 @@ pub mod fuzzy;
 pub mod keymap;
 pub mod legacy;
 pub mod memory;
+pub mod open_in;
 pub mod settings;
 pub mod state;
 pub mod store;
