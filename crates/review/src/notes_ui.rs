@@ -3,6 +3,7 @@
 //! Changes panel (`NotesSection`), with what hands them to the agent.
 
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use gitviber_diff::{Annotation, DiffEvent, DiffView, LinePos, LineRange, Side};
 use gitviber_ui::memory::Live;
@@ -269,8 +270,15 @@ impl DiffNotes {
                 side: d.side,
                 line: end as u32,
             };
+            let (cancel, add) = (this.clone(), this);
+            let on_cancel: OnNote = Rc::new(move |cx| {
+                let _ = cancel.update(cx, |this, cx| this.cancel(cx));
+            });
+            let on_add: OnNote = Rc::new(move |cx| {
+                let _ = add.update(cx, |this, cx| this.submit(cx));
+            });
             out.push(Annotation::new("draft", pos, px(120.), move |_, _| {
-                composer(&label, &input, &this, &t)
+                composer(&label, &input, on_cancel.clone(), on_add.clone(), &t)
             }));
         }
         self.drawn = true;
@@ -283,7 +291,7 @@ fn card_button(id: SharedString, icon: IconName, tip: &'static str) -> Button {
 }
 
 /// A note as it shows under its lines.
-fn note_card(note: &ReviewNote, root: &str, t: &AppTheme) -> AnyElement {
+pub(crate) fn note_card(note: &ReviewNote, root: &str, t: &AppTheme) -> AnyElement {
     let (resolve, remove) = (
         (root.to_string(), note.id.clone()),
         (root.to_string(), note.id.clone()),
@@ -353,19 +361,24 @@ fn note_card(note: &ReviewNote, root: &str, t: &AppTheme) -> AnyElement {
         .into_any_element()
 }
 
-fn composer(
+/// What a composer's buttons (and Esc) do.
+pub(crate) type OnNote = Rc<dyn Fn(&mut App)>;
+
+/// A new note's box under its lines: Add Note (⌘↵) or Cancel (Esc).
+pub(crate) fn composer(
     label: &str,
     input: &Entity<TextareaState>,
-    this: &WeakEntity<DiffNotes>,
+    on_cancel: OnNote,
+    on_add: OnNote,
     t: &AppTheme,
 ) -> AnyElement {
-    let (cancel, add, escape) = (this.clone(), this.clone(), this.clone());
+    let (cancel, add, escape) = (on_cancel.clone(), on_add, on_cancel);
     div()
         .px(px(12.))
         .py(px(4.))
         .on_key_down(move |e: &gpui_kit::KeyDownEvent, _, cx| {
             if e.keystroke.key == "escape" {
-                let _ = escape.update(cx, |this, cx| this.cancel(cx));
+                escape(cx);
                 cx.stop_propagation();
             }
         })
@@ -398,18 +411,14 @@ fn composer(
                                 .small()
                                 .ghost()
                                 .label("Cancel")
-                                .on_click(move |_, _, cx| {
-                                    let _ = cancel.update(cx, |this, cx| this.cancel(cx));
-                                }),
+                                .on_click(move |_, _, cx| cancel(cx)),
                         )
                         .child(
                             Button::new("note-add")
                                 .small()
                                 .primary()
                                 .label("Add Note")
-                                .on_click(move |_, _, cx| {
-                                    let _ = add.update(cx, |this, cx| this.submit(cx));
-                                }),
+                                .on_click(move |_, _, cx| add(cx)),
                         ),
                 ),
         )

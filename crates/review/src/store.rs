@@ -11,8 +11,12 @@ use std::time::Instant;
 use gitviber_core::Core;
 use gitviber_core::api;
 use gitviber_core::suggest::{self, Guided, Kind, Target};
-use gitviber_ui::workspace::{GuideOf, Selection, Workspace, WorkspaceEvent, selection_path};
-use gpui_kit::{App, AppContext as _, BorrowAppContext as _, Entity, Global, Subscription, Task};
+use gitviber_ui::workspace::{
+    GuideOf, Selection, Toast, Workspace, WorkspaceEvent, selection_path,
+};
+use gpui_kit::{
+    App, AppContext as _, BorrowAppContext as _, Entity, Global, Subscription, Task, WeakEntity,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::model::agent::{ReviewAgent, is_unknown_option, run_details};
@@ -222,6 +226,8 @@ struct Active {
     label: String,
     token: u64,
     _task: Task<()>,
+    /// Where its news goes.
+    workspace: Option<WeakEntity<Workspace>>,
     /// The workspace's tabs, to stop it when its tab closes, and the workspace itself.
     _tabs: Option<Subscription>,
     _window: Option<Subscription>,
@@ -314,6 +320,25 @@ pub fn guide_id(root: &str, of: &GuideOf, branch: Option<&str>) -> String {
 pub enum Done {
     Stopped,
     Failed(String),
+    /// It ran, and printed nothing.
+    Empty(String),
+}
+
+/// Said once a launch: an old Claude Code runs every review without the lean flags.
+static TOLD_OLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A failed run's news, in the window it was started from, wherever its tab is.
+fn tell(ws: Option<&WeakEntity<Workspace>>, toast: Toast, cx: &mut App) {
+    if let Some(ws) = ws.and_then(WeakEntity::upgrade) {
+        ws.update(cx, |ws, cx| ws.toast(toast, cx));
+    }
+}
+
+/// Settings, where the agent is picked: what a failed run's toast offers.
+fn to_settings(toast: Toast) -> Toast {
+    toast.action("Open Settings", |window, cx| {
+        window.dispatch_action(Box::new(gitviber_ui::actions::workbench::OpenSettings), cx)
+    })
 }
 
 impl Guides {
@@ -493,6 +518,7 @@ impl Guides {
                 tail: tail.clone(),
             },
         );
+        let workspace = tab.as_ref().map(|(ws, _)| ws.downgrade());
         // Its window closed: the workspace goes, and no tab of it is left to tell.
         let window = tab.as_ref().map(|(ws, _)| {
             let id = id.clone();
@@ -516,8 +542,8 @@ impl Guides {
         });
         let run_id = id.clone();
         let task = cx.spawn(async move |cx| {
-            let done = run(&core, &agent, kind, &of, token, tail, cx).await;
-            cx.update(|cx| Guides::finish(cx, kind, &run_id, token, done));
+            let (done, old) = run(&core, &agent, kind, &of, token, tail, cx).await;
+            cx.update(|cx| Guides::finish(cx, kind, &run_id, token, done, old));
         });
         cx.global_mut::<Guides>().active.insert(
             kind,
@@ -526,6 +552,7 @@ impl Guides {
                 label,
                 token,
                 _task: task,
+                workspace,
                 _tabs: tabs,
                 _window: window,
             },
@@ -539,9 +566,43 @@ impl Guides {
             .is_some_and(|a| a.token == token)
     }
 
-    fn finish(cx: &mut App, kind: RunKind, id: &str, token: u64, done: Result<SavedRun, Done>) {
+    fn finish(
+        cx: &mut App,
+        kind: RunKind,
+        id: &str,
+        token: u64,
+        done: Result<SavedRun, Done>,
+        old: bool,
+    ) {
         if !Self::still(cx, kind, token) {
             return;
+        }
+        let ws = cx
+            .global::<Guides>()
+            .active
+            .get(&kind)
+            .and_then(|a| a.workspace.clone());
+        let noun = kind.noun();
+        match &done {
+            Err(Done::Failed(why)) => tell(
+                ws.as_ref(),
+                to_settings(Toast::error(why.clone()).title(format!("Couldn't write a {noun}"))),
+                cx,
+            ),
+            Err(Done::Empty(why)) => tell(
+                ws.as_ref(),
+                to_settings(Toast::error(why.clone()).title(format!("No {noun} written"))),
+                cx,
+            ),
+            _ => {}
+        }
+        if old && !TOLD_OLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tell(
+                ws.as_ref(),
+                Toast::info("It doesn't know the flags that make suggestions faster, so it ran without them. Run `claude update` in Terminal to get them.")
+                    .title("Claude Code is out of date"),
+                cx,
+            );
         }
         cx.update_global::<Guides, _>(|g, cx| {
             g.active.remove(&kind);
@@ -563,7 +624,7 @@ impl Guides {
                 Err(Done::Stopped) => {
                     g.runs.insert(key, Run::Stopped);
                 }
-                Err(Done::Failed(why)) => {
+                Err(Done::Failed(why) | Done::Empty(why)) => {
                     g.runs.insert(key, Run::Failed(why));
                 }
             }
@@ -636,6 +697,7 @@ impl Of {
 
 /// One run: a pull request's commits fetched first when they're missing (as its page does),
 /// then the agent, once more without the lean flags when its Claude Code is too old for them.
+/// A run, and whether it took the second try an old Claude Code needs.
 async fn run(
     core: &Arc<Core>,
     agent: &ReviewAgent,
@@ -643,6 +705,22 @@ async fn run(
     of: &GuideOf,
     token: u64,
     tail: Tail,
+    cx: &mut gpui_kit::AsyncApp,
+) -> (Result<SavedRun, Done>, bool) {
+    let old = std::cell::Cell::new(false);
+    let done = run_inner(core, agent, kind, of, token, tail, &old, cx).await;
+    (done, old.get())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_inner(
+    core: &Arc<Core>,
+    agent: &ReviewAgent,
+    kind: RunKind,
+    of: &GuideOf,
+    token: u64,
+    tail: Tail,
+    old: &std::cell::Cell<bool>,
     cx: &mut gpui_kit::AsyncApp,
 ) -> Result<SavedRun, Done> {
     let program = agent.program();
@@ -725,6 +803,7 @@ async fn run(
             return Err(Done::Stopped);
         }
         (answer, ran) = ask(false).await;
+        old.set(answer.is_ok());
     }
     match answer {
         Ok(Guided {
@@ -734,7 +813,7 @@ async fn run(
             stamp,
         }) => {
             if text.trim().is_empty() {
-                return Err(Done::Failed(format!("{program} printed nothing.")));
+                return Err(Done::Empty(format!("{program} printed nothing.")));
             }
             Ok(SavedRun {
                 text,

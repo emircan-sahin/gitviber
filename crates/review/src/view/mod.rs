@@ -5,6 +5,7 @@
 //! the section they're of.
 
 mod diagram;
+mod notes;
 mod parts;
 
 use std::cell::RefCell;
@@ -33,7 +34,7 @@ use gpui_kit::base::text::{TextView, TextViewState};
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _,
@@ -72,7 +73,7 @@ enum AskAt {
 
 struct Asking {
     at: AskAt,
-    input: Entity<InputState>,
+    input: Entity<TextareaState>,
     _events: Subscription,
 }
 
@@ -123,6 +124,8 @@ pub struct GuideView {
     in_diff: Vec<(String, usize, String)>,
     /// The section whose files are at the top of the diffs.
     current: Option<usize>,
+    /// The user's notes on a commit guide's diffs.
+    notes: notes::GuideNotes,
     /// How many of the change's files are marked viewed.
     viewed: usize,
     filter: Filter,
@@ -159,13 +162,19 @@ fn file_sig(f: &FileChange) -> String {
 
 impl GuideView {
     pub fn new(of: GuideOf, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let stacked = cx.new(|cx| StackedDiff::new(vec![], cx));
+        let stacked = cx.new(|cx| {
+            let mut s = StackedDiff::new(vec![], cx);
+            // A commit's version takes the user's notes; a range's takes none.
+            s.set_notes(matches!(of, GuideOf::Commit { .. }), cx);
+            s
+        });
         let mut subscriptions = vec![
             cx.subscribe_in(&stacked, window, |this, _, e: &StackedEvent, window, cx| {
                 this.stacked_event(e, window, cx)
             }),
             cx.observe(&stacked, |this, _, cx| this.follow_diffs(cx)),
             cx.observe_global::<Guides>(|this, cx| this.reload(cx)),
+            cx.observe_global::<crate::ReviewNotes>(|this, cx| this.annotate(cx)),
             cx.observe_global::<Settings>(|_, cx| cx.notify()),
         ];
         subscriptions.shrink_to_fit();
@@ -190,6 +199,7 @@ impl GuideView {
             stacked,
             in_diff: vec![],
             current: None,
+            notes: notes::GuideNotes::default(),
             viewed: 0,
             filter: Filter::default(),
             asking: None,
@@ -625,6 +635,18 @@ impl GuideView {
                 }
             }
         }
+        // The user's own, on a commit's version.
+        if self.notes_at().is_some() {
+            let (compare, list) = (self.compare(), self.file_list());
+            for (i, (path, _, _)) in self.in_diff.clone().into_iter().enumerate() {
+                let source = compare.clone().zip(list.as_ref()).and_then(|(c, l)| {
+                    let f = l.iter().find(|f| f.path == path)?;
+                    Some(DiffSource::from_change(c, f))
+                });
+                let mine = self.note_annotations(&path, source.as_ref(), cx);
+                by_file[i].1.extend(mine);
+            }
+        }
         self.stacked.update(cx, |s, cx| {
             for (key, notes) in by_file {
                 s.set_annotations(&key, notes, cx);
@@ -768,8 +790,11 @@ impl GuideView {
                 .title(n.title.clone());
                 self.toast(toast, cx);
             }
-            // A guide's diffs take no review notes of the user's.
-            StackedEvent::AddNote { .. } => {}
+            // A commit's guide takes the user's notes, on the commit's version.
+            StackedEvent::AddNote { source, range } => {
+                let (source, range) = (source.clone(), *range);
+                self.begin_note(&source, range, window, cx);
+            }
         }
     }
 
@@ -895,20 +920,24 @@ impl GuideView {
             cx.notify();
             return;
         }
-        let agent = agent_name(&ReviewAgent::from_settings(Settings::get(cx)).command);
+        // Three lines, growing with what's typed up to about sixteen; ↵ asks, ⇧↵ is a new line.
         let input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(format!(
-                "Ask {agent}… (Enter sends, empty leaves it to you)"
-            ))
+            TextareaState::new(window, cx)
+                .auto_grow(3, 16)
+                .submit_on_enter(true)
+                .placeholder("Your question (optional). ↵ asks, ⇧↵ is a new line.")
         });
         input.update(cx, |i, cx| i.focus(window, cx));
         let events = cx.subscribe_in(
             &input,
             window,
             move |this, input, e: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { .. } = e {
+                if let InputEvent::PressEnter { shift: false, .. } = e {
                     let q = input.read(cx).value().to_string();
-                    this.ask(at, q, window, cx);
+                    // An empty question asks nothing: Skip leaves it to the agent's prompt box.
+                    if !q.trim().is_empty() {
+                        this.ask(at, q, window, cx);
+                    }
                 }
             },
         );

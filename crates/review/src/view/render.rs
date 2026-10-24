@@ -307,7 +307,20 @@ impl GuideView {
                 .flex()
                 .flex_col()
                 .gap(px(6.))
-                .child(Input::new(&input).small())
+                .child(
+                    div()
+                        .text_size(rems(0.75))
+                        .font_weight(gpui_kit::FontWeight::MEDIUM)
+                        .child(format!(
+                            "Ask {} about {}",
+                            agent_name(&ReviewAgent::from_settings(Settings::get(cx)).command),
+                            match at {
+                                AskAt::Whole => "this review",
+                                AskAt::Section(_) => "this section",
+                            }
+                        )),
+                )
+                .child(Textarea::new(&input).small())
                 .child(
                     div()
                         .flex()
