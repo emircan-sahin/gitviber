@@ -1,0 +1,73 @@
+[package]
+name = "gitviber-files"
+description = "GitViber's files: the explorer, search in files, quick open, the file view and media."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "gitviber_files"
+
+[dependencies]
+# The code editor's grammars: gpui-component's own optional ones, the same set the diff enables.
+# SQL is left out: tree-sitter-sequel wants cc ~1.2, tree-sitter 0.26 a newer cc.
+gpui-kit = { workspace = true, features = [
+    "tree-sitter",
+    "tree-sitter-astro",
+    "tree-sitter-bash",
+    "tree-sitter-c",
+    "tree-sitter-cmake",
+    "tree-sitter-cpp",
+    "tree-sitter-csharp",
+    "tree-sitter-css",
+    "tree-sitter-diff",
+    "tree-sitter-ejs",
+    "tree-sitter-elixir",
+    "tree-sitter-erb",
+    "tree-sitter-go",
+    "tree-sitter-graphql",
+    "tree-sitter-html",
+    "tree-sitter-java",
+    "tree-sitter-javascript",
+    "tree-sitter-jsdoc",
+    "tree-sitter-kotlin",
+    "tree-sitter-lua",
+    "tree-sitter-make",
+    "tree-sitter-markdown",
+    "tree-sitter-php",
+    "tree-sitter-proto",
+    "tree-sitter-python",
+    "tree-sitter-ruby",
+    "tree-sitter-rust",
+    "tree-sitter-scala",
+    "tree-sitter-svelte",
+    "tree-sitter-swift",
+    "tree-sitter-toml",
+    "tree-sitter-tsx",
+    "tree-sitter-typescript",
+    "tree-sitter-yaml",
+    "tree-sitter-zig",
+] }
+gitviber-core = { path = "../core" }
+gitviber-ui = { path = "../ui" }
+gitviber-markdown = { path = "../markdown" }
+gitviber-diff = { path = "../diff" }
+# Already in the tree through gpui: an image's size from its header (media.rs).
+image = { version = "=0.25.10", default-features = false }
+# Already in the tree through gpui-component's editor: Go to Definition's locations.
+lsp-types = "=0.97.0"
+
+[dev-dependencies]
+gitviber-ui = { path = "../ui", features = ["snapshot"] }
+# Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.
+gpui-test = { package = "gpui-pre", version = "=0.3.9", features = ["test-support", "leak-detection"] }
+
+[[example]]
+name = "files-demo"
+path = "examples/demo.rs"
+
+[[example]]
+name = "files-mem-probe"
+path = "examples/mem_probe.rs"

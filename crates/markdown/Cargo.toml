@@ -1,0 +1,22 @@
+[package]
+name = "gitviber-markdown"
+description = "GitViber's markdown: GitHub-flavored, rendered natively, for files, pull requests and notes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "gitviber_markdown"
+
+[dependencies]
+# tree-sitter: code blocks colored by gpui-component's highlighter; the languages come with the app.
+gpui-kit = { workspace = true, features = ["tree-sitter"] }
+gitviber-ui = { path = "../ui" }
+# Already in the tree through gpui; decodes still images scaled down (images.rs).
+image = { version = "=0.25.10", default-features = false }
+
+[dev-dependencies]
+# Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.
+gpui-test = { package = "gpui-pre", version = "=0.3.9", features = ["test-support", "leak-detection"] }
