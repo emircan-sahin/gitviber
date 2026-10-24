@@ -1009,7 +1009,7 @@ impl ExplorerPanel {
             let link = link.await;
             _ = this.update(cx, |this, cx| match link {
                 Ok(p) => {
-                    let url = permalink_url(&web, &p.sha, &path, p.tree || is_dir);
+                    let url = permalink_url(&web, &p.sha, &path, p.tree || is_dir, None);
                     if open {
                         cx.open_url(&url);
                     } else {
@@ -1560,8 +1560,14 @@ impl ExplorerPanel {
     }
 }
 
-/// GitHub's page of `path` at `sha`: a file's blob or a folder's tree.
-pub fn permalink_url(web: &str, sha: &str, path: &str, tree: bool) -> String {
+/// GitHub's page of `path` at `sha`: a file's blob (at `lines`, `#L10-L24`) or a folder's tree.
+pub fn permalink_url(
+    web: &str,
+    sha: &str,
+    path: &str,
+    tree: bool,
+    lines: Option<(u32, u32)>,
+) -> String {
     let at: String = if path.is_empty() {
         String::new()
     } else {
@@ -1569,7 +1575,15 @@ pub fn permalink_url(web: &str, sha: &str, path: &str, tree: bool) -> String {
             .map(|seg| format!("/{}", encode_segment(seg)))
             .collect()
     };
-    format!("{web}/{}/{sha}{at}", if tree { "tree" } else { "blob" })
+    let anchor = match lines {
+        Some((a, b)) if a == b => format!("#L{a}"),
+        Some((a, b)) => format!("#L{a}-L{b}"),
+        None => String::new(),
+    };
+    format!(
+        "{web}/{}/{sha}{at}{anchor}",
+        if tree { "tree" } else { "blob" }
+    )
 }
 
 /// A path segment percent-encoded as JavaScript's encodeURIComponent does.

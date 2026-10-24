@@ -32,10 +32,10 @@ use gitviber_ui::workspace::{
 };
 use gpui_kit::{App, AppContext as _, SharedString, WeakEntity, Window};
 
-pub use code::CodeView;
+pub use code::{CodeBlock, CodeEvent, CodeView};
 pub use compare::CompareTab;
 pub use explorer::ExplorerPanel;
-pub use file_view::{FileSource, FileView};
+pub use file_view::{FileSource, FileView, set_code_attacher};
 pub use media::MediaView;
 pub use search::SearchPanel;
 

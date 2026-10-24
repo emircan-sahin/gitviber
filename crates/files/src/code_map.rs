@@ -60,12 +60,14 @@ impl Rows for EditorRows<'_> {
     }
 
     fn line_rows(&self, line: usize) -> Range<usize> {
-        self.map
-            .buffer_line_to_display_row_range(line)
-            .unwrap_or_else(|| {
+        match self.map.buffer_line_to_display_row_range(line) {
+            // The text's rows, not a block's under it.
+            Some(r) => r.start..(r.end - self.map.gap_rows(line)).max(r.start + 1),
+            None => {
                 let row = self.map.buffer_line_to_display_row(line);
                 row..row + 1
-            })
+            }
+        }
     }
 
     fn row_line(&self, row: usize) -> usize {
@@ -192,6 +194,8 @@ struct Key {
     found: Option<Rc<Vec<Range<usize>>>>,
     text_len: usize,
     rows: (usize, usize),
+    /// Blocks between lines (line, rows): one moved keeps the row counts.
+    gaps: Vec<(usize, usize)>,
     line_height: Pixels,
     /// The text area: its height is the track's, its width the wrap's.
     area: Size<Pixels>,
@@ -207,6 +211,7 @@ impl PartialEq for Key {
             }
             && self.text_len == o.text_len
             && self.rows == o.rows
+            && self.gaps == o.gaps
             && self.line_height == o.line_height
             && self.area == o.area
     }
@@ -272,6 +277,7 @@ pub(crate) fn paint(
             s.display_map().wrap_row_count(),
             s.display_map().display_row_count(),
         ),
+        gaps: s.display_map().gaps().to_vec(),
         line_height: s.line_height().unwrap_or_default(),
         area: s.input_bounds().size,
     };

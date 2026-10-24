@@ -4,6 +4,7 @@
 //! file's modification time moved or git's state changed.
 
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gitviber_core::git::{DiffPair, FileText};
@@ -21,9 +22,9 @@ use gitviber_ui::workspace::{
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, WeakEntity, Window,
-    div, prelude::FluentBuilder as _, px,
+    AnyEntity, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::code::{CodeEvent, CodeSource, CodeView};
@@ -67,7 +68,24 @@ enum Content {
         preview: Option<Entity<MarkdownView>>,
         svg: Option<Entity<SvgPreview>>,
         _subs: Vec<Subscription>,
+        /// What another crate keeps on the code (review notes), dropped with it.
+        _attached: Option<AnyEntity>,
     },
+}
+
+type AttachCode = Rc<dyn Fn(&Entity<CodeView>, &mut App) -> Option<AnyEntity>>;
+
+struct CodeAttacher(AttachCode);
+
+impl gpui_kit::Global for CodeAttacher {}
+
+/// What a repo file's code view gets from another crate as it opens (the review crate: notes
+/// between its lines). What `attach` returns is kept with the view and dropped with it.
+pub fn set_code_attacher(
+    cx: &mut App,
+    attach: impl Fn(&Entity<CodeView>, &mut App) -> Option<AnyEntity> + 'static,
+) {
+    cx.set_global(CodeAttacher(Rc::new(attach)));
 }
 
 pub struct FileView {
@@ -88,8 +106,12 @@ pub struct FileView {
     /// ⌘F's box over the rendered preview, made the first time; its query stays for the next.
     find: Option<PreviewFind>,
     find_open: bool,
+    /// origin's page on GitHub, looked up as the project opens; None off GitHub.
+    web: Option<String>,
     focus: FocusHandle,
     _load: Task<()>,
+    _web: Task<()>,
+    _link: Task<()>,
     _subs: Vec<Subscription>,
     _live: Live,
 }
@@ -140,8 +162,11 @@ impl FileView {
             lfs: false,
             find: None,
             find_open: false,
+            web: None,
             focus: cx.focus_handle(),
             _load: Task::ready(()),
+            _web: Task::ready(()),
+            _link: Task::ready(()),
             _subs: Vec::new(),
             _live: Live::new("FileView"),
         }
@@ -162,13 +187,90 @@ impl FileView {
                     ProjectEvent::RepoChanged(change) => this.repo_changed(change.git, window, cx),
                     ProjectEvent::Opened | ProjectEvent::Switched { .. } => {
                         this.root = Some(project.read(cx).root().to_path_buf());
+                        this.load_web(cx);
                         this.load(window, cx);
                     }
                     ProjectEvent::Failed(_) => {}
                 },
             ));
+            self.load_web(cx);
         }
         self.load(window, cx);
+    }
+
+    /// Looks up origin's GitHub page in the background, for Copy GitHub Link / Open on GitHub.
+    fn load_web(&mut self, cx: &mut Context<Self>) {
+        let core = self.core.clone();
+        self._web = cx.spawn(async move |this, cx| {
+            let web = cx
+                .background_spawn(async move {
+                    let url = gitviber_core::git::remote_url(&core.repo().ok()?, "origin")?;
+                    let g = gitviber_core::github::parse_remote(&url)?;
+                    Some(format!("https://github.com/{}/{}", g.owner, g.name))
+                })
+                .await;
+            _ = this.update(cx, |this, cx| {
+                this.web = web;
+                if let Content::Text { code, .. } = &this.content {
+                    let on = this.web.is_some();
+                    code.update(cx, |c, _| c.set_github(on));
+                }
+            });
+        });
+    }
+
+    /// The code view, while it's what shows (not a preview).
+    fn shown_code(&self) -> Option<&Entity<CodeView>> {
+        match &self.content {
+            Content::Text {
+                code, preview, svg, ..
+            } if self.mode == Mode::Code || (preview.is_none() && svg.is_none()) => Some(code),
+            _ => None,
+        }
+    }
+
+    /// Copy GitHub Link (`open`: Open on GitHub): the code's selected lines at the newest pushed
+    /// commit where they're the same, else the file (also for a preview or media).
+    fn github_link(&mut self, open: bool, cx: &mut Context<Self>) {
+        let (Some(web), FileSource::Repo(path)) = (self.web.clone(), &self.source) else {
+            return cx.propagate();
+        };
+        let (lines, dirty) = self.shown_code().map_or((None, false), |code| {
+            let code = code.read(cx);
+            (code.selected_lines(cx), code.is_dirty())
+        });
+        // The saved file's lines are what's matched against GitHub's.
+        if lines.is_some() && dirty {
+            let toast = Toast::info("The link goes by the saved file's line numbers.")
+                .title("Save the file first");
+            _ = self.workspace.update(cx, |ws, cx| ws.toast(toast, cx));
+            return;
+        }
+        let (core, path) = (self.core.clone(), path.clone());
+        self._link = cx.spawn(async move |this, cx| {
+            let link = cx
+                .background_spawn({
+                    let path = path.clone();
+                    async move { api::github::github_permalink(&core, path, lines) }
+                })
+                .await;
+            _ = this.update(cx, |this, cx| {
+                let toast = match link {
+                    Ok(p) => {
+                        let url =
+                            crate::explorer::permalink_url(&web, &p.sha, &path, p.tree, p.lines);
+                        if open {
+                            cx.open_url(&url);
+                            return;
+                        }
+                        cx.write_to_clipboard(ClipboardItem::new_string(url));
+                        Toast::success("Link copied")
+                    }
+                    Err(e) => Toast::info(e).title("Not on GitHub yet"),
+                };
+                _ = this.workspace.update(cx, |ws, cx| ws.toast(toast, cx));
+            });
+        });
     }
 
     #[cfg(test)]
@@ -182,10 +284,7 @@ impl FileView {
     /// The language of the code on screen, for the status bar; None while a preview, media or
     /// a notice shows.
     pub fn shown_language(&self, cx: &App) -> Option<&'static str> {
-        match &self.content {
-            Content::Text { code, .. } if self.mode == Mode::Code => Some(code.read(cx).language()),
-            _ => None,
-        }
+        self.shown_code().map(|code| code.read(cx).language())
     }
 
     pub fn source(&self) -> &FileSource {
@@ -460,14 +559,23 @@ impl FileView {
         let ws = self.workspace.clone();
         let code =
             cx.new(|cx| CodeView::new(ws, source, file.text, head, bars, readonly, window, cx));
-        let sub = cx.subscribe(&code, |_, _, e: &CodeEvent, cx| match e {
-            CodeEvent::DirtyChanged | CodeEvent::Saved => cx.notify(),
+        let github = self.web.is_some();
+        code.update(cx, |c, _| c.set_github(github));
+        let sub = cx.subscribe(&code, |_, _, e: &CodeEvent, cx| {
+            if matches!(e, CodeEvent::DirtyChanged | CodeEvent::Saved) {
+                cx.notify()
+            }
         });
+        let attached = match (&self.source, cx.try_global::<CodeAttacher>()) {
+            (FileSource::Repo(_), Some(attach)) => (attach.0.clone())(&code, cx),
+            _ => None,
+        };
         self.content = Content::Text {
             code: code.clone(),
             preview: None,
             svg: None,
             _subs: vec![sub],
+            _attached: attached,
         };
         if let Some(reveal) = self.reveal.take() {
             self.mode = Mode::Code;
@@ -485,6 +593,7 @@ impl FileView {
             preview,
             svg,
             _subs,
+            ..
         } = &mut self.content
         else {
             return;
@@ -876,6 +985,12 @@ impl Render for FileView {
                 })
                 .detach();
             }))
+            .on_action(
+                cx.listener(|this, _: &editor::CopyGitHubLink, _, cx| this.github_link(false, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &editor::OpenOnGitHub, _, cx| this.github_link(true, cx)),
+            )
             .on_action(cx.listener(|this, _: &editor::Find, window, cx| {
                 if this.shown_preview().is_some() {
                     this.open_find(window, cx);

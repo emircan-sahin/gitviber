@@ -1,7 +1,7 @@
 //! A file's text in gpui-component's code editor: tree-sitter colors, line numbers, find (⌘F),
 //! go to line (⌃G), Go to Definition / References through core, the change bars against HEAD in
-//! the gutter and the whole file's on the scrollbar (with find's matches), and ⌘S writing it back
-//! with its own line endings. Read-only for what can't be written back as it was (outside the
+//! the gutter and the whole file's on the scrollbar (with find's matches), blocks of the host's
+//! between lines (review notes), and ⌘S writing it back with its own line endings. Read-only for what can't be written back as it was (outside the
 //! repo, lossy text, mixed line endings).
 
 use std::cell::RefCell;
@@ -13,14 +13,16 @@ use std::time::Duration;
 use gitviber_core::definitions::{self, Location};
 use gitviber_core::{Core, api};
 use gitviber_ui::ActiveAppTheme as _;
-use gitviber_ui::keymap::{editor, file, search};
+use gitviber_ui::keymap::{editor, file, review, search};
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{Toast, Workspace};
+use gpui_kit::base::input::LineBlock;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::input::{
     DefinitionProvider, Editor, EditorState, Input, InputEvent, InputState, Position, Rope,
     RopeExt as _, TabSize,
 };
+use gpui_kit::component::{input as edit, native_menu::NativeMenu};
 use gpui_kit::{
     App, AppContext as _, Bounds, ClickEvent, Context, Entity, FocusHandle, Focusable as _,
     InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
@@ -59,6 +61,43 @@ pub struct CodeSource {
 pub enum CodeEvent {
     Saved,
     DirtyChanged,
+    /// The file changed on disk and shows as it is now (not typed into).
+    Reloaded,
+    /// Add Review Note, on these lines (1-based, inclusive): the selection's, else the caret's.
+    AddNote {
+        lines: (u32, u32),
+    },
+}
+
+/// Something drawn between two lines of the code (a review note): under 1-based `line`, as wide
+/// as the text and as tall as its content, in whole rows of the line height. It follows its
+/// line as the text is typed into; a fold over the line hides it.
+#[derive(Clone)]
+pub struct CodeBlock {
+    /// Stable across updates: its measured height is kept under it.
+    pub id: SharedString,
+    pub line: u32,
+    /// Its height until it's laid out; then what it measures.
+    pub height: Pixels,
+    pub render: RenderBlock,
+}
+
+pub type RenderBlock = Rc<dyn Fn(&mut Window, &mut App) -> gpui_kit::AnyElement>;
+
+impl CodeBlock {
+    pub fn new(
+        id: impl Into<SharedString>,
+        line: u32,
+        height: Pixels,
+        render: impl Fn(&mut Window, &mut App) -> gpui_kit::AnyElement + 'static,
+    ) -> Self {
+        CodeBlock {
+            id: id.into(),
+            line,
+            height,
+            render: Rc::new(render),
+        }
+    }
 }
 
 /// A list of places (definitions, references) over the code.
@@ -88,6 +127,10 @@ pub struct CodeView {
     /// Who last changed each line, while Settings asks for it (View → Blame).
     blame: Option<Arc<Blamed>>,
     blame_on: bool,
+    /// The right-click menu has Copy GitHub Link / Open on GitHub.
+    github: bool,
+    /// Review notes are on: Add Review Note is offered.
+    notes: bool,
     focus: FocusHandle,
     _change: Subscription,
     _settings: Subscription,
@@ -380,6 +423,8 @@ impl CodeView {
             places: None,
             blame: None,
             blame_on: false,
+            github: false,
+            notes: false,
             focus: cx.focus_handle(),
             _change: change,
             _settings: settings,
@@ -392,6 +437,112 @@ impl CodeView {
         this.blame_on = gitviber_ui::Settings::get(cx).blame;
         this.load_blame(cx);
         this
+    }
+
+    /// The selected lines, 1-based and inclusive; a selection ending at a line's start leaves
+    /// that line out. None without a selection.
+    pub fn selected_lines(&self, cx: &App) -> Option<(u32, u32)> {
+        let s = self.state.read(cx);
+        let range = s.selected_range();
+        if range.is_empty() {
+            return None;
+        }
+        let (start, end) = (
+            s.text().offset_to_point(range.start),
+            s.text().offset_to_point(range.end),
+        );
+        let last = if end.column == 0 && end.row > start.row {
+            end.row - 1
+        } else {
+            end.row
+        };
+        Some((start.row as u32 + 1, last as u32 + 1))
+    }
+
+    /// Offers Add Review Note (menu, palette), which comes back as [`CodeEvent::AddNote`].
+    pub fn set_notes(&mut self, on: bool) {
+        self.notes = on;
+    }
+
+    /// Draws `blocks` between the lines, replacing the last set; several under one line stack
+    /// in the order given.
+    pub fn set_blocks(&mut self, blocks: Vec<CodeBlock>, cx: &mut Context<Self>) {
+        let t = cx.app_theme();
+        let line_height = t.fonts.code_size * t.fonts.code_line_height;
+        let blocks = blocks
+            .into_iter()
+            .map(|b| LineBlock {
+                id: b.id,
+                line: b.line.max(1) as usize - 1,
+                rows: ((b.height / line_height).ceil() as usize).max(1),
+                render: b.render,
+            })
+            .collect();
+        self.state.update(cx, |s, cx| s.set_line_blocks(blocks, cx));
+    }
+
+    /// The 1-based line each block is under now (typing moves them), in the order they were set.
+    pub fn block_lines(&self, cx: &App) -> Vec<u32> {
+        let s = self.state.read(cx);
+        s.display_map()
+            .gaps()
+            .iter()
+            .map(|g| g.0 as u32 + 1)
+            .collect()
+    }
+
+    pub fn source(&self) -> &CodeSource {
+        &self.source
+    }
+
+    /// Whether the right-click menu has the GitHub items: the file view says, once it knows
+    /// origin is on GitHub (it handles them, for previews and media too).
+    pub(crate) fn set_github(&mut self, on: bool) {
+        self.github = on;
+    }
+
+    /// Add Review Note's lines: the selection's, else the caret's.
+    fn note_lines(&self, cx: &App) -> (u32, u32) {
+        self.selected_lines(cx).unwrap_or_else(|| {
+            let s = self.state.read(cx);
+            let line = s.text().offset_to_point(s.cursor()).row as u32 + 1;
+            (line, line)
+        })
+    }
+
+    /// The right-click menu: Add Review Note, the editor's own items, References, and the
+    /// GitHub ones.
+    fn context_menu(&self, menu: NativeMenu, cx: &App) -> NativeMenu {
+        let picked = !self.state.read(cx).selected_range().is_empty();
+        let in_repo = self.source.root.is_some();
+        let menu = if self.notes {
+            menu.menu("Add Review Note…", Box::new(review::AddNote))
+                .separator()
+        } else {
+            menu
+        };
+        let mut menu = menu
+            .menu_with_disabled(
+                "Go to Definition",
+                !in_repo,
+                Box::new(editor::GoToDefinition),
+            )
+            .menu_with_disabled(
+                "Go to References",
+                !in_repo,
+                Box::new(editor::GoToReferences),
+            )
+            .separator()
+            .menu_with_disabled("Cut", self.readonly || !picked, Box::new(edit::Cut))
+            .menu_with_disabled("Copy", !picked, Box::new(edit::Copy))
+            .menu_with_disabled("Paste", self.readonly, Box::new(edit::Paste));
+        if self.github {
+            menu = menu
+                .menu("Copy GitHub Link", Box::new(editor::CopyGitHubLink))
+                .menu("Open on GitHub", Box::new(editor::OpenOnGitHub));
+        }
+        menu.separator()
+            .menu("Select All", Box::new(edit::SelectAll))
     }
 
     /// Reads who last changed each line in the background, or drops it when blame is off.
@@ -542,6 +693,7 @@ impl CodeView {
             // set_value's own change event isn't typing.
             self.dirty = false;
             self.load_blame(cx);
+            cx.emit(CodeEvent::Reloaded);
         }
         cx.notify();
     }
@@ -874,7 +1026,8 @@ impl CodeView {
         rows.into_iter().find(|&line| {
             map.buffer_line_to_display_row_range(line).is_some_and(|r| {
                 let top = text_bounds.origin.y + line_height * r.start as f32;
-                y >= top && y < top + line_height * r.len().max(1) as f32
+                let text_rows = (r.len() - map.gap_rows(line)).max(1);
+                y >= top && y < top + line_height * text_rows as f32
             })
         })
     }
@@ -903,21 +1056,11 @@ impl CodeView {
             if top > bounds.bottom() || top + line_height < bounds.top() {
                 continue;
             }
+            // The text's rows, not a block's under it.
+            let tall = line_height * (rows.len() - map.gap_rows(line)).max(1) as f32;
             let (color, quad) = match bar.kind {
-                BarKind::Added => (
-                    t.added,
-                    Bounds::new(
-                        point(x, top),
-                        size(px(3.), line_height * rows.len().max(1) as f32),
-                    ),
-                ),
-                BarKind::Modified => (
-                    t.primary,
-                    Bounds::new(
-                        point(x, top),
-                        size(px(3.), line_height * rows.len().max(1) as f32),
-                    ),
-                ),
+                BarKind::Added => (t.added, Bounds::new(point(x, top), size(px(3.), tall))),
+                BarKind::Modified => (t.primary, Bounds::new(point(x, top), size(px(3.), tall))),
                 BarKind::Deleted => (
                     t.removed,
                     Bounds::new(point(x, top - px(2.)), size(px(7.), px(4.))),
@@ -1006,6 +1149,7 @@ impl Render for CodeView {
                 )
         });
         let ligatures = gitviber_ui::Settings::get(cx).ligatures;
+        let me = cx.weak_entity();
         // While the file has unsaved edits the labels would name the saved file's lines: none.
         let blame_column = self.blame_on.then(|| {
             let blamed = self.blame.clone().filter(|_| !self.dirty);
@@ -1080,6 +1224,13 @@ impl Render for CodeView {
             .on_action(cx.listener(|_, _: &editor::ToggleWrap, _, cx| {
                 gitviber_ui::Settings::update(cx, |s| s.word_wrap = !s.word_wrap);
             }))
+            .on_action(cx.listener(|this, _: &review::AddNote, _, cx| {
+                if !this.notes {
+                    return cx.propagate();
+                }
+                let lines = this.note_lines(cx);
+                cx.emit(CodeEvent::AddNote { lines });
+            }))
             .child(
                 div()
                     .size_full()
@@ -1093,6 +1244,10 @@ impl Render for CodeView {
                             .h_full()
                             .child(
                                 Editor::new(&self.state)
+                                    .context_menu(move |menu, _, cx| match me.upgrade() {
+                                        Some(this) => this.read(cx).context_menu(menu, cx),
+                                        None => menu,
+                                    })
                                     .size_full()
                                     .bordered(false)
                                     .appearance(false)

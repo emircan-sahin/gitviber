@@ -340,6 +340,91 @@ fn blame_names_each_lines_commit_and_new_lines(cx: &mut TestAppContext) {
     _ = std::fs::remove_dir_all(&repo);
 }
 
+/// Copy GitHub Link from a file's code: the picked lines at the pushed commit, else the file.
+#[gpui_kit::test]
+fn copy_github_link_takes_the_picked_lines_or_the_file(cx: &mut TestAppContext) {
+    setup(cx);
+    let repo = std::env::temp_dir().join(format!("gitviber-files-link-{}", std::process::id()));
+    _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/a b.rs"), "one\ntwo\nthree\nfour\n").unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-qm",
+        "init",
+    ]);
+    git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/owner/name.git",
+    ]);
+    // As if pushed: origin has HEAD.
+    git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    let sha = git(&["rev-parse", "HEAD"]);
+    cx.update(gitviber_ui::install_core);
+    let (host, cx) = cx.add_window_view(|_, cx| WsHost(cx.new(Workspace::new)));
+    let ws = host.read_with(cx, |h, _| h.0.clone());
+    cx.update(|window, cx| {
+        Workspace::register_window(&ws, window, cx);
+        ws.update(cx, |ws, cx| ws.open_project(repo.clone(), window, cx));
+    });
+    cx.run_until_parked();
+    let weak = ws.downgrade();
+    cx.update(|window, cx| {
+        crate::open_file(
+            &weak,
+            "src/a b.rs",
+            crate::OpenOptions::default(),
+            window,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    let code = cx.update(|_, cx| {
+        let view = ws
+            .read(cx)
+            .tabs()
+            .active()
+            .and_then(|t| t.item.handle())
+            .map(|h| h.view())
+            .unwrap();
+        view.downcast::<crate::FileView>().unwrap().read(cx).code()
+    });
+    let code = code.unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let copy = |range: std::ops::Range<usize>, cx: &mut gpui_kit::VisualTestContext| {
+        cx.update(|window, cx| {
+            let state = code.read(cx).state().clone();
+            state.update(cx, |s, cx| s.set_selected_range(range, cx));
+            code.read(cx).editor_focus(cx).focus(window, cx);
+        });
+        cx.dispatch_action(gitviber_ui::keymap::editor::CopyGitHubLink);
+        cx.run_until_parked();
+        cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text()))
+    };
+    let blob = format!("https://github.com/owner/name/blob/{sha}/src/a%20b.rs");
+    // "two\nthree\n": the selection ends at the start of line 4, which isn't picked.
+    assert_eq!(copy(4..14, cx), Some(format!("{blob}#L2-L3")));
+    assert_eq!(copy(4..6, cx), Some(format!("{blob}#L2")));
+    assert_eq!(copy(0..0, cx), Some(blob));
+    _ = std::fs::remove_dir_all(&repo);
+}
+
 #[gpui_kit::test]
 fn find_in_the_rendered_markdown_preview(cx: &mut TestAppContext) {
     setup(cx);
@@ -671,4 +756,175 @@ fn the_code_map_marks_the_whole_file_without_scrolling(cx: &mut TestAppContext) 
             .any(|m| m.kind == MarkKind::Found && m.end < height / 5)
     );
     cx.update(|_, cx| gitviber_ui::Settings::update(cx, |s| s.word_wrap = false));
+}
+
+/// Blocks between lines (review notes): rows are left for them under their lines, as tall as
+/// they measure; the caret steps over them; typing moves them with their lines; closing the view
+/// gives everything back.
+#[gpui_kit::test]
+fn blocks_between_lines_take_rows_the_caret_steps_over(cx: &mut TestAppContext) {
+    use crate::code::CodeBlock;
+    use gpui_kit::component::input::{MoveDown, MoveUp, RopeExt as _};
+    use gpui_kit::{Bounds, Pixels, px};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    setup(cx);
+    let text: String = (1..=40).map(|i| format!("line {i}\n")).collect();
+    let (host, cx) = cx.add_window_view(|_, _| Host(None));
+    let snapshot = cx.update(|_, cx| cx.leak_detector_snapshot());
+    let view = cx.update(|window, cx| {
+        let source = CodeSource {
+            path: "src/lib.rs".into(),
+            root: None,
+        };
+        let view = cx.new(|cx| {
+            CodeView::new(
+                gpui_kit::WeakEntity::<Workspace>::new_invalid(),
+                source,
+                text,
+                None,
+                vec![],
+                false,
+                window,
+                cx,
+            )
+        });
+        host.update(cx, |h, cx| {
+            h.0 = Some(view.clone().into());
+            cx.notify();
+        });
+        view
+    });
+    let drawn: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::default();
+    let block = |id: &str, line: u32, tall: f32, drawn: &Rc<Cell<Option<Bounds<Pixels>>>>| {
+        let drawn = Rc::downgrade(drawn);
+        CodeBlock::new(id.to_string(), line, px(20.), move |_, _| {
+            let drawn = drawn.clone();
+            gpui_kit::canvas(
+                move |bounds, _, _| {
+                    if let Some(d) = drawn.upgrade() {
+                        d.set(Some(bounds));
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .w_full()
+            .h(px(tall))
+            .into_any_element()
+        })
+    };
+    let other: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::default();
+    cx.update(|_, cx| {
+        view.update(cx, |v, cx| {
+            v.set_blocks(
+                vec![block("a", 3, 50., &drawn), block("b", 10, 10., &other)],
+                cx,
+            )
+        })
+    });
+    let frame = |cx: &mut gpui_kit::VisualTestContext| {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    };
+    // The first frame measures; the second has the rows it measured.
+    frame(cx);
+    frame(cx);
+    let (lh, rows, gap3, gap10, top) = cx.update(|_, cx| {
+        let s = view.read(cx).state().read(cx);
+        let lh = s.line_height().unwrap();
+        let map = s.display_map();
+        (
+            lh,
+            map.display_row_count(),
+            map.gap_rows(2),
+            map.gap_rows(9),
+            s.text_bounds().unwrap().origin.y,
+        )
+    });
+    let want = (50. / f32::from(lh)).ceil() as usize;
+    assert_eq!((gap3, gap10), (want, 1));
+    assert_eq!(
+        rows,
+        41 + want + 1,
+        "40 lines, the empty last one and the gaps"
+    );
+    // Under line 3's text (three rows down), centred in its rows.
+    let at = drawn.get().expect("block drawn");
+    let centred = top + lh * 3. + (lh * want as f32 - px(50.)) / 2.;
+    assert!((at.origin.y - centred).abs() < px(0.5), "{at:?}");
+    // Line 4's text is below the gap, where the block ends.
+    let below = cx.update(|_, cx| {
+        let s = view.read(cx).state().read(cx);
+        s.display_map().buffer_line_to_display_row_range(3).unwrap()
+    });
+    assert_eq!(below.start, 3 + want);
+
+    // ↓ from line 3 lands on line 4, ↑ comes back.
+    let line_of = |cx: &mut gpui_kit::VisualTestContext| {
+        cx.update(|_, cx| {
+            let s = view.read(cx).state().read(cx);
+            s.text().offset_to_point(s.cursor()).row + 1
+        })
+    };
+    cx.update(|window, cx| {
+        let state = view.read(cx).state().clone();
+        let at = state.read(cx).text().line_start_offset(2);
+        state.update(cx, |s, cx| s.set_selected_range(at..at, cx));
+        view.read(cx).editor_focus(cx).focus(window, cx);
+    });
+    frame(cx);
+    cx.dispatch_action(MoveDown);
+    assert_eq!(line_of(cx), 4);
+    cx.dispatch_action(MoveUp);
+    assert_eq!(line_of(cx), 3);
+    // A click on a block is the block's: the caret stays.
+    cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
+    assert_eq!(line_of(cx), 3);
+    // A click on the text below it is the editor's.
+    let six = gpui_kit::point(at.center().x, top + lh * (5 + want) as f32 + lh / 2.);
+    cx.simulate_click(six, gpui_kit::Modifiers::none());
+    assert_eq!(line_of(cx), 6);
+    // Add Review Note, once notes are on: the caret's line comes back.
+    let asked: Rc<Cell<Option<(u32, u32)>>> = Rc::default();
+    let _sub = cx.update(|_, cx| {
+        let asked = asked.clone();
+        view.update(cx, |v, _| v.set_notes(true));
+        cx.subscribe(&view, move |_, e: &crate::CodeEvent, _| {
+            if let crate::CodeEvent::AddNote { lines } = e {
+                asked.set(Some(*lines));
+            }
+        })
+    });
+    cx.dispatch_action(gitviber_ui::keymap::review::AddNote);
+    assert_eq!(asked.get(), Some((6, 6)));
+
+    // A new first line moves both blocks down with their lines.
+    cx.update(|window, cx| {
+        let state = view.read(cx).state().clone();
+        state.update(cx, |s, cx| {
+            s.set_selected_range(0..0, cx);
+            s.insert("new\n", window, cx);
+        });
+    });
+    frame(cx);
+    assert_eq!(cx.update(|_, cx| view.read(cx).block_lines(cx)), [4, 11]);
+    // The file read again from disk: the blocks stay at their lines.
+    cx.update(|window, cx| {
+        let text: String = (1..=20).map(|i| format!("again {i}\n")).collect();
+        view.update(cx, |v, cx| v.file_changed(text, None, vec![], window, cx));
+    });
+    frame(cx);
+    assert_eq!(cx.update(|_, cx| view.read(cx).block_lines(cx)), [4, 11]);
+
+    drop(view);
+    cx.update(|window, cx| {
+        host.update(cx, |h, cx| {
+            h.0 = None;
+            cx.notify();
+        });
+        window.draw(cx).clear(cx);
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| cx.assert_no_new_leaks(&snapshot));
 }
