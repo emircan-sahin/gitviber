@@ -538,3 +538,59 @@ fn the_claude_preset_runs_lean_with_its_schema_and_retries_an_old_claude_without
         "no failure left"
     );
 }
+
+#[gpui_kit::test]
+fn a_branchs_guide_opens_once_its_branch_is_known(cx: &mut TestAppContext) {
+    let (repo, agent) = setup("branch");
+    boot(cx, &agent);
+    let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+    let ws = host.read_with(cx, |h, _| h.0.clone());
+    open_project(&ws, &repo, cx);
+    let of = GuideOf::Branch {
+        base: "refs/heads/main".into(),
+        label: "main".into(),
+    };
+    // Kept under HEAD's branch, as Branch Review's ✦ asks for it.
+    let id = crate::store::guide_id(&repo.to_string_lossy(), &of, Some("main"));
+    let kept = crate::SavedRun {
+        text: GUIDE.into(),
+        base: "HEAD~1".into(),
+        head: "HEAD".into(),
+        stamp: None,
+        program: "fake-agent".into(),
+        details: vec![],
+        at: 0,
+    };
+    cx.update(|_, cx| Guides::keep(cx, RunKind::Guide, &id, kept));
+    let sel = Selection::Guide { of: of.clone() };
+    cx.update(|window, cx| crate::open_guide(of, window, cx));
+    cx.run_until_parked();
+    let view = view_of(&ws, &sel, cx).expect("the branch's guide tab");
+    assert!(view.read_with(cx, |v, _| v.guide().is_some()));
+    assert_eq!(calls(&agent), 0);
+}
+
+#[gpui_kit::test]
+fn the_ask_box_starts_claude_code_with_the_model_last_picked(cx: &mut TestAppContext) {
+    let dir = std::env::temp_dir().join(format!("gitviber-review-model-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    // SAFETY: each test runs in its own process (nextest), before any thread reads it.
+    unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+    cx.update(|cx| {
+        gitviber_ui::init(cx);
+        Settings::update(cx, |s| s.review_command = Some("claude -p".into()));
+        let (choices, value) = GuideView::ask_models(cx).unwrap();
+        assert_eq!(
+            (choices.as_slice(), value.as_str()),
+            (&["sonnet", "opus", "haiku"].map(String::from)[..], "sonnet")
+        );
+        Guides::set_ask_model(cx, "haiku".into());
+        assert_eq!(GuideView::ask_models(cx).unwrap().1, "haiku");
+        // Only Claude Code starts with the question in hand.
+        Settings::update(cx, |s| s.review_command = Some("codex exec".into()));
+        assert!(GuideView::ask_models(cx).is_none());
+    });
+    cx.run_until_parked();
+    let kept = std::fs::read_to_string(dir.join("guides.json")).unwrap();
+    assert!(kept.contains("\"ask_model\":\"haiku\""), "{kept}");
+}

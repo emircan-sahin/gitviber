@@ -100,6 +100,21 @@ impl ReviewAgent {
     }
 }
 
+/// Claude Code's own names for its newest models of each size; Settings takes any id.
+const CLAUDE_MODELS: [&str; 3] = ["opus", "sonnet", "haiku"];
+
+/// The models to pick from for a preset: `now` (the one it runs with), the preset's default, and
+/// for Claude Code its models of each size; each once, "" (the CLI's own) kept as it is.
+pub fn model_choices(p: &Preset, now: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![now.to_string(), p.model.to_string()];
+    if p.key == "claude" {
+        out.extend(CLAUDE_MODELS.iter().map(|m| m.to_string()));
+    }
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|m| seen.insert(m.clone()));
+    out
+}
+
 /// A Claude Code too old for a flag says so as commander does.
 pub fn is_unknown_option(error: &str) -> bool {
     error.contains("unknown option '--")
@@ -215,6 +230,18 @@ mod tests {
         );
         assert_eq!(run_details("claude --model=haiku"), ["haiku"]);
         assert!(run_details("my-agent").is_empty());
+    }
+
+    #[test]
+    fn model_choices_keep_the_current_first_and_each_once() {
+        let claude = preset_of("claude -p").unwrap();
+        assert_eq!(model_choices(claude, "opus"), ["opus", "sonnet", "haiku"]);
+        assert_eq!(
+            model_choices(claude, "claude-x-1"),
+            ["claude-x-1", "sonnet", "opus", "haiku"]
+        );
+        let codex = preset_of("codex exec").unwrap();
+        assert_eq!(model_choices(codex, "gpt-6-luna"), ["gpt-6-luna"]);
     }
 
     #[test]

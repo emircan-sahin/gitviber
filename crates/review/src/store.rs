@@ -110,6 +110,9 @@ struct File {
     guides: Vec<(String, serde_json::Value)>,
     #[serde(default)]
     risks: Vec<(String, serde_json::Value)>,
+    /// The model Ask Agent's box last started Claude Code with; None: Settings' until one's picked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ask_model: Option<String>,
 }
 
 /// What a run over a guide's range is for.
@@ -231,6 +234,7 @@ pub struct Guides {
     runs: HashMap<(RunKind, String), Run>,
     active: HashMap<RunKind, Active>,
     next: u64,
+    ask_model: Option<String>,
 }
 
 impl Global for Guides {}
@@ -246,6 +250,7 @@ impl Default for Guides {
             runs: HashMap::new(),
             active: HashMap::new(),
             next: 0,
+            ask_model: None,
         }
     }
 }
@@ -263,6 +268,7 @@ fn from_legacy(value: impl Fn(&str) -> Option<serde_json::Value>) -> File {
     File {
         guides: entries("gitviber.guides"),
         risks: entries("gitviber.guideRisks"),
+        ask_model: value("gitviber.askModel.review").and_then(|v| v.as_str().map(str::to_string)),
     }
 }
 
@@ -273,7 +279,9 @@ pub(crate) fn import_legacy(cx: &mut App) {
 
 fn import_from(cx: &mut App, value: impl Fn(&str) -> Option<serde_json::Value>) {
     let file = from_legacy(value);
-    if path().exists() || (file.guides.is_empty() && file.risks.is_empty()) {
+    if path().exists()
+        || (file.guides.is_empty() && file.risks.is_empty() && file.ask_model.is_none())
+    {
         return;
     }
     cx.default_global::<Guides>();
@@ -326,6 +334,9 @@ impl Guides {
 
     /// What a file has, oldest first; one that isn't a guide (or risk list) as kept is left out.
     fn take(&mut self, file: File) {
+        if file.ask_model.is_some() {
+            self.ask_model = file.ask_model;
+        }
         for (id, v) in file.guides {
             if let Ok(g) = serde_json::from_value::<SavedGuide>(v) {
                 let size = g.run.text.len();
@@ -342,6 +353,7 @@ impl Guides {
 
     fn write(&self, cx: &mut App) {
         let file = File {
+            ask_model: self.ask_model.clone(),
             guides: self
                 .guides
                 .list
@@ -367,6 +379,20 @@ impl Guides {
             cx.default_global::<Guides>().ensure_loaded();
         }
         cx.global::<Guides>()
+    }
+
+    /// The model Ask Agent's box last started Claude Code with.
+    pub fn ask_model(cx: &mut App) -> Option<String> {
+        Self::loaded(cx).ask_model.clone()
+    }
+
+    pub fn set_ask_model(cx: &mut App, model: String) {
+        cx.default_global::<Guides>();
+        cx.update_global::<Guides, _>(|g, cx| {
+            g.ensure_loaded();
+            g.ask_model = Some(model);
+            g.write(cx);
+        });
     }
 
     pub fn guide(cx: &mut App, id: &str) -> Option<SavedGuide> {
@@ -772,6 +798,7 @@ mod tests {
                 "/r\u{0}changes": { "text": "{}", "base": "b", "head": "t", "stamp": "s1", "program": "codex", "at": 1700000001000i64, "done": [] },
                 "/r\u{0}bad": { "text": 3 }
             },
+            "gitviber.askModel.review": "opus",
             "gitviber.guideRisks": {
                 "/r\u{0}aaa": { "text": "{\"risks\": []}", "base": "aaa^", "head": "aaa", "program": "claude", "at": 1700000002000i64 }
             }
@@ -797,6 +824,7 @@ mod tests {
                 Guides::risks(cx, "/r\0aaa").unwrap().text,
                 "{\"risks\": []}"
             );
+            assert_eq!(Guides::ask_model(cx).as_deref(), Some("opus"));
         });
         cx.run_until_parked();
         let kept =

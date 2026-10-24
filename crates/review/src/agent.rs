@@ -71,11 +71,13 @@ fn placed(open: &Path, worktrees: &[Worktree], a: HandoffInput) -> (PathBuf, Han
 /// In a new terminal tab of the change's worktree: Claude Code with the review in its prompt
 /// box, sent when there's a question (the user's, or a risk's), or another CLI with it on the
 /// clipboard.
+/// `model`: the question box's pick for Claude Code; None runs as Settings say.
 pub fn ask_agent(
     open: &Path,
     worktrees: &[Worktree],
     a: HandoffInput,
     question: &str,
+    model: Option<String>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -93,16 +95,18 @@ pub fn ask_agent(
     let prompt = prompt_of(&a, question);
     let text = as_prompt(&handoff_context(&a), prompt.as_deref());
     let name = handoff_name(&a.of, &a.about);
-    start_agent_with(root, text, name, prompt.is_some(), window, cx);
+    start_agent_with(root, text, name, prompt.is_some(), model, window, cx);
 }
 
 /// The review agent (Settings) in a new terminal tab of `root`: Claude Code with `text` in its
-/// prompt box, another CLI with it on the clipboard.
+/// prompt box, another CLI with it on the clipboard. `model`: Claude Code's for this one (""
+/// the CLI's own), else the review agent's.
 pub fn start_agent_with(
     root: PathBuf,
     text: String,
     name: String,
     send: bool,
+    model: Option<String>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -128,13 +132,7 @@ pub fn start_agent_with(
         }
         return;
     }
-    // A preset's model and effort, as the review ran with; a custom command's are its own.
-    let model = preset
-        .map(|p| model_of(p, &agent.models))
-        .filter(|m| !m.is_empty());
-    let effort = preset
-        .map(|p| effort_of(p, &agent.efforts))
-        .filter(|e| !e.is_empty());
+    let (model, effort) = handoff_model(preset, &agent, model);
     let core = gitviber_ui::core(cx);
     let command = agent.command.clone();
     window
@@ -163,6 +161,24 @@ pub fn start_agent_with(
             });
         })
         .detach();
+}
+
+/// The model and effort a session starts with: the box's pick, or a preset's as the review ran
+/// with; a custom command's are its own. Settings' effort is for Settings' model: another may not
+/// take it (haiku has no max).
+fn handoff_model(
+    preset: Option<&'static crate::model::agent::Preset>,
+    agent: &ReviewAgent,
+    picked: Option<String>,
+) -> (Option<String>, Option<String>) {
+    let settings = preset.map(|p| model_of(p, &agent.models));
+    let same = picked.is_none() || picked == settings;
+    let model = picked.or(settings).filter(|m| !m.is_empty());
+    let effort = preset
+        .filter(|_| same)
+        .map(|p| effort_of(p, &agent.efforts))
+        .filter(|e| !e.is_empty());
+    (model, effort)
 }
 
 /// Into the agent already running in the change's worktree, Enter left to the user: its session
@@ -314,6 +330,29 @@ pub fn copy_as_prompt(a: &HandoffInput, window: &mut Window, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_boxs_model_drops_settings_effort_for_another_model() {
+        let mut s = gitviber_ui::Settings {
+            review_command: Some("claude -p".into()),
+            ..Default::default()
+        };
+        s.review_efforts.insert("claude".into(), "max".into());
+        let agent = ReviewAgent::from_settings(&s);
+        let claude = preset_of("claude -p");
+        let both = (Some("sonnet".to_string()), Some("max".to_string()));
+        assert_eq!(handoff_model(claude, &agent, None), both);
+        assert_eq!(handoff_model(claude, &agent, Some("sonnet".into())), both);
+        assert_eq!(
+            handoff_model(claude, &agent, Some("haiku".into())),
+            (Some("haiku".into()), None)
+        );
+        assert_eq!(
+            handoff_model(claude, &agent, Some(String::new())),
+            (None, None)
+        );
+        assert_eq!(handoff_model(None, &agent, None), (None, None));
+    }
 
     #[test]
     fn notes_go_to_the_agents_pane_before_a_shell_in_front() {

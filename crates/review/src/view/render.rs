@@ -1,7 +1,8 @@
 //! How the guide tab draws: its header and notices, the guide column and the diffs beside it.
 
 use super::*;
-use crate::model::agent::{PRESETS, effort_of, model_of, preset_of, program_of};
+use crate::model::agent::{PRESETS, effort_of, model_choices, model_of, preset_of, program_of};
+use gitviber_ui::settings::REVIEW_LANGUAGES;
 
 fn elapsed(run: &Option<Run>) -> String {
     match run {
@@ -78,7 +79,7 @@ impl GuideView {
             .ghost()
             .icon(IconName::Settings2)
             .tooltip("Guided Review agent")
-            .dropdown_menu(|menu, _, cx| {
+            .dropdown_menu(|menu, window, cx| {
                 let s = Settings::get(cx);
                 let current = s.review_command.clone();
                 let fallback = agent_name(&s.suggest_command);
@@ -121,12 +122,63 @@ impl GuideView {
                                 },
                             ));
                     }
-                    menu = menu.label(format!("Model: {}", model_of(p, &agent.models)));
                 }
-                menu.separator().label(format!(
-                    "Language: {}",
-                    crate::model::answer::language_name(&agent.language)
-                ))
+                if let Some(p) = preset_of(&agent.command) {
+                    let now = model_of(p, &agent.models);
+                    let key = p.key;
+                    menu = menu.separator().label("Model");
+                    for m in model_choices(p, &now) {
+                        let label = if m.is_empty() {
+                            "CLI default".to_string()
+                        } else {
+                            m.clone()
+                        };
+                        let checked = m == now;
+                        menu = menu.item(PopupMenuItem::new(label).checked(checked).on_click(
+                            move |_, _, cx| {
+                                Settings::update(cx, |s| {
+                                    s.review_models.insert(key.into(), m.clone());
+                                })
+                            },
+                        ));
+                    }
+                }
+                let language = agent.language.clone();
+                menu.separator().submenu(
+                    format!(
+                        "Language: {}",
+                        crate::model::answer::language_name(&language)
+                    ),
+                    window,
+                    cx,
+                    move |mut menu, _, _| {
+                        let known = REVIEW_LANGUAGES.iter().any(|(name, _)| *name == language);
+                        if !known {
+                            menu = menu.item(
+                                PopupMenuItem::new(language.clone())
+                                    .checked(true)
+                                    .disabled(true),
+                            );
+                        }
+                        for (name, own) in REVIEW_LANGUAGES {
+                            let label = if name == own {
+                                name.to_string()
+                            } else {
+                                format!("{own} ({name})")
+                            };
+                            menu = menu.item(
+                                PopupMenuItem::new(label)
+                                    .checked(*name == language)
+                                    .on_click(move |_, _, cx| {
+                                        Settings::update(cx, |s| {
+                                            s.review_language = name.to_string()
+                                        })
+                                    }),
+                            );
+                        }
+                        menu
+                    },
+                )
             })
     }
 
@@ -186,6 +238,53 @@ impl GuideView {
             .into_any_element()
     }
 
+    /// The model Claude Code starts with, each box remembering the last pick; Settings' until one
+    /// is picked. None for another agent, which doesn't start with the question in hand.
+    pub(crate) fn ask_models(cx: &mut App) -> Option<(Vec<String>, String)> {
+        let agent = ReviewAgent::from_settings(Settings::get(cx));
+        let p = preset_of(&agent.command).filter(|p| p.key == "claude")?;
+        let settings = model_of(p, &agent.models);
+        let value = Guides::ask_model(cx).unwrap_or_else(|| settings.clone());
+        let mut choices = vec![value.clone(), settings];
+        choices.extend(model_choices(p, &value));
+        let mut seen = HashSet::new();
+        choices.retain(|m| seen.insert(m.clone()));
+        Some((choices, value))
+    }
+
+    fn ask_model_picker(cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (choices, value) = Self::ask_models(cx)?;
+        let shown = if value.is_empty() {
+            "Default".to_string()
+        } else {
+            value.clone()
+        };
+        Some(
+            Button::new("ask-model")
+                .small()
+                .ghost()
+                .label(shown)
+                .icon(IconName::ChevronDown)
+                .tooltip("The model it starts with")
+                .dropdown_menu(move |menu, _, _| {
+                    choices.iter().fold(menu, |menu, m| {
+                        let pick = m.clone();
+                        let label = if m.is_empty() {
+                            "Default".to_string()
+                        } else {
+                            m.clone()
+                        };
+                        menu.item(
+                            PopupMenuItem::new(label)
+                                .checked(*m == value)
+                                .on_click(move |_, _, cx| Guides::set_ask_model(cx, pick.clone())),
+                        )
+                    })
+                })
+                .into_any_element(),
+        )
+    }
+
     fn ask_box(&self, at: AskAt, cx: &mut Context<Self>) -> Option<AnyElement> {
         let asking = self.asking.as_ref().filter(|a| a.at == at)?;
         let t = cx.app_theme().clone();
@@ -212,8 +311,11 @@ impl GuideView {
                 .child(
                     div()
                         .flex()
+                        .items_center()
                         .justify_end()
                         .gap(px(6.))
+                        .children(Self::ask_model_picker(cx))
+                        .child(div().flex_1())
                         .child(
                             Button::new("ask-skip")
                                 .small()

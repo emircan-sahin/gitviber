@@ -884,7 +884,8 @@ impl GuideView {
         let input = self.handoff(about, &saved.run, cx);
         let worktrees = self.worktrees(cx);
         self.asking = None;
-        crate::agent::ask_agent(&self.root, &worktrees, input, &question, window, cx);
+        let model = Self::ask_models(cx).map(|(_, m)| m);
+        crate::agent::ask_agent(&self.root, &worktrees, input, &question, model, window, cx);
         cx.notify();
     }
 
@@ -931,7 +932,10 @@ impl GuideView {
     fn hand(&mut self, how: How, input: HandoffInput, window: &mut Window, cx: &mut Context<Self>) {
         let worktrees = self.worktrees(cx);
         match how {
-            How::Ask => crate::agent::ask_agent(&self.root, &worktrees, input, "", window, cx),
+            // A risk's Send to Agent is the ask itself, run as Settings say.
+            How::Ask => {
+                crate::agent::ask_agent(&self.root, &worktrees, input, "", None, window, cx)
+            }
             How::Paste => {
                 crate::agent::paste_to_running_agent(&self.root, &worktrees, input, window, cx)
             }
