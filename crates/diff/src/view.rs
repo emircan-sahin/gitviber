@@ -1374,6 +1374,24 @@ impl DiffView {
         });
     }
 
+    /// One of the app's commands, as `answer` named it; one a single diff can't do goes on.
+    fn command(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
+        if self.edit.is_some() && command != Command::Save {
+            return cx.propagate();
+        }
+        match command {
+            Command::NextChange => self.next_change(cx),
+            Command::PrevChange => self.prev_change(cx),
+            Command::Stage => self.run_action(LineAction::Stage, false, cx),
+            Command::Unstage => self.run_action(LineAction::Unstage, false, cx),
+            Command::Discard => self.run_action(LineAction::Discard, false, cx),
+            Command::AddNote => self.add_note(cx),
+            Command::ToggleViewed if self.viewed.is_some() => cx.emit(DiffEvent::ToggleViewed),
+            Command::Save => self.save(window, cx),
+            Command::ToggleViewed | Command::NextFile | Command::PrevFile => cx.propagate(),
+        }
+    }
+
     fn add_note(&mut self, cx: &mut Context<Self>) {
         if !self.notes {
             cx.propagate();
@@ -2185,6 +2203,15 @@ impl Render for DiffView {
             .on_action(cx.listener(|this, _: &Save, window, cx| this.save(window, cx)))
             .on_action(cx.listener(|this, _: &SelectUp, _, cx| this.select_step(false, cx)))
             .on_action(cx.listener(|this, _: &SelectDown, _, cx| this.select_step(true, cx)))
+            .map(|mut el| {
+                for (action, command) in crate::actions::answers(cx).iter() {
+                    let (view, command) = (cx.weak_entity(), *command);
+                    el = el.on_boxed_action(&**action, move |_, window, cx| {
+                        view.update(cx, |v, cx| v.command(command, window, cx)).ok();
+                    });
+                }
+                el
+            })
     }
 }
 

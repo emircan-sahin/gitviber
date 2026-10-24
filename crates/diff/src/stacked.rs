@@ -4,7 +4,7 @@
 //! change holds a few dozen at a time. J/K walk the files, V marks the one on top viewed, C
 //! puts a note on the line under the pointer, else the first changed one in view.
 
-use crate::actions::{AddNote, NextFile, PrevFile, STACKED_CONTEXT, ToggleViewed};
+use crate::actions::{AddNote, Command, NextFile, PrevFile, STACKED_CONTEXT, ToggleViewed};
 use crate::annotate::{self, Annotation};
 use crate::data::DiffData;
 use crate::highlight::{self, Highlighted};
@@ -443,6 +443,18 @@ impl StackedDiff {
         // Closing the file being read would leave the view somewhere in the next one.
         if self.heights.top(self.starts[f]) < self.scroll.top() {
             self.scroll.scroll_to(self.starts[f], px(0.), Place::Top);
+        }
+    }
+
+    /// One of the app's commands, as `answer` named it: J/K walk the files, V marks the top one,
+    /// C writes a note; the rest go on to the host.
+    fn command(&mut self, command: Command, cx: &mut Context<Self>) {
+        match command {
+            Command::NextFile => self.step(true, cx),
+            Command::PrevFile => self.step(false, cx),
+            Command::ToggleViewed => self.toggle_top_viewed(cx),
+            Command::AddNote => self.add_note(cx),
+            _ => cx.propagate(),
         }
     }
 
@@ -1343,6 +1355,15 @@ impl Render for StackedDiff {
             .on_action(cx.listener(|this, _: &PrevFile, _, cx| this.step(false, cx)))
             .on_action(cx.listener(|this, _: &ToggleViewed, _, cx| this.toggle_top_viewed(cx)))
             .on_action(cx.listener(|this, _: &AddNote, _, cx| this.add_note(cx)))
+            .map(|mut el| {
+                for (action, command) in crate::actions::answers(cx).iter() {
+                    let (view, command) = (cx.weak_entity(), *command);
+                    el = el.on_boxed_action(&**action, move |_, _, cx| {
+                        view.update(cx, |v, cx| v.command(command, cx)).ok();
+                    });
+                }
+                el
+            })
     }
 }
 

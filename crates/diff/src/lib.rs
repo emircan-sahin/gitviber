@@ -23,6 +23,7 @@ mod stacked;
 pub mod style;
 mod view;
 
+pub use actions::{Command, answer};
 pub use annotate::{Annotation, RenderAnnotation};
 pub use data::DiffData;
 pub use image::{ImageCompare, image_format};
