@@ -94,7 +94,11 @@ fn main() {
         let root = a.root.clone();
         let run = |cmd: &Option<String>| cmd.as_ref().map(|c| format!("{c}\r"));
         let first = if a.memtest { None } else { run(&a.run) };
-        // A restore shows what came back.
+        // `--restore` takes up the offer the toast makes, and shows what came back.
+        if a.restore {
+            let root = panel.read(cx).worktree().to_path_buf();
+            panel.update(cx, |p, cx| p.accept_restore(&root, window, cx));
+        }
         if !panel.read(cx).has_terminals() {
             panel.update(cx, |p, cx| p.open_terminal(root.clone(), first, window, cx));
         }

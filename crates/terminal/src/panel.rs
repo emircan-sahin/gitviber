@@ -165,6 +165,8 @@ pub struct TerminalPanel {
     flash: Option<(PaneId, Task<()>)>,
     /// A link being followed that asked git or GitHub first.
     follow: Option<Task<()>>,
+    /// What find had when it closed, for its next open.
+    last_find: (String, FindOptions),
     link_cache: crate::linkhost::SharedCache,
     link_ctx: Option<Rc<LinkCtx>>,
     /// Agent lookups in flight.
@@ -174,6 +176,8 @@ pub struct TerminalPanel {
     epoch: std::time::Instant,
     /// The worktrees whose saved terminals this panel took up, and so saves.
     restored_here: std::collections::HashSet<PathBuf>,
+    /// Last run's terminals offered and not taken up yet, by worktree.
+    offers: HashMap<PathBuf, saved::SavedSet>,
     divider: Option<DividerDrag>,
     split_bounds: SplitBounds,
     killing: bool,
@@ -213,6 +217,46 @@ pub fn save_before_quit(cx: &mut App) {
     }
 }
 
+/// The key that flips a find option, Monaco's: ⌥⌘C / ⌥⌘W / ⌥⌘R on macOS, Alt+C / Alt+W / Alt+R
+/// elsewhere (0 case, 1 whole word, 2 regex).
+fn find_option_key(key: &str, m: &gpui::Modifiers, mac: bool) -> Option<u8> {
+    if !m.alt || m.shift || m.control || m.platform != mac {
+        return None;
+    }
+    match key {
+        "c" => Some(0),
+        "w" => Some(1),
+        "r" => Some(2),
+        _ => None,
+    }
+}
+
+/// Runs `f` on the terminal panel of the window in front once the key dispatch is over (the
+/// window is busy during it); `show`: the panel opened for it.
+fn in_front(
+    cx: &mut App,
+    show: bool,
+    f: impl FnOnce(&mut TerminalPanel, &mut Window, &mut Context<TerminalPanel>) + 'static,
+) {
+    let Some(handle) = cx.active_window() else {
+        return;
+    };
+    cx.defer(move |cx| {
+        let _ = handle.update(cx, |_, window, cx| {
+            let Some(ws) = Workspace::for_window(window, cx) else {
+                return;
+            };
+            if show {
+                ws.update(cx, |ws, cx| ws.set_open(Slot::Bottom, true, cx));
+            }
+            let panel = ws.update(cx, |ws, cx| ws.panel("terminal", window, cx));
+            if let Some(p) = panel.and_then(|p| p.view().downcast::<TerminalPanel>().ok()) {
+                p.update(cx, |p, cx| f(p, window, cx));
+            }
+        });
+    });
+}
+
 /// The terminal in every workspace's bottom slot, kept across project switches.
 pub(crate) fn register(cx: &mut App) {
     gitviber_refs::hooks::set_terminals_in(
@@ -234,22 +278,21 @@ pub(crate) fn register(cx: &mut App) {
         Rc::new(|dir: &str, cx: &App| agents_in(Path::new(dir), cx)),
     );
     agents_menu::register(cx);
-    // From anywhere in a window: the open worktree's conversations.
+    // Global as they were: they work whatever has the keys, the panel shown for them.
     cx.on_action(|_: &terminal::ResumeConversation, cx| {
-        let Some(handle) = cx.active_window() else {
-            return;
-        };
-        cx.defer(move |cx| {
-            let _ = handle.update(cx, |_, window, cx| {
-                let Some(ws) = Workspace::for_window(window, cx) else {
-                    return;
-                };
-                let panel = ws.update(cx, |ws, cx| ws.panel("terminal", window, cx));
-                if let Some(p) = panel.and_then(|p| p.view().downcast::<TerminalPanel>().ok()) {
-                    p.update(cx, |p, cx| p.ask_conversation(p.root.clone(), window, cx));
-                }
-            });
-        });
+        in_front(cx, false, |p, window, cx| {
+            p.ask_conversation(p.root.clone(), window, cx)
+        })
+    });
+    cx.on_action(|_: &terminal::New, cx| {
+        in_front(cx, true, |p, window, cx| p.new_terminal(window, cx))
+    });
+    cx.on_action(|_: &terminal::EqualizePanes, cx| {
+        in_front(cx, true, |p, _, cx| {
+            if let Some(gid) = p.active_group().map(|g| g.id) {
+                p.equalize(gid, None, cx);
+            }
+        })
     });
     gitviber_ui::workspace::register_panel(
         cx,
@@ -347,12 +390,14 @@ impl TerminalPanel {
             rename: None,
             flash: None,
             follow: None,
+            last_find: Default::default(),
             link_cache: Default::default(),
             link_ctx: None,
             agent_tasks: Vec::new(),
             round: None,
             epoch: std::time::Instant::now(),
             restored_here: Default::default(),
+            offers: HashMap::new(),
             divider: None,
             split_bounds: Rc::default(),
             killing: false,
@@ -571,6 +616,49 @@ impl TerminalPanel {
             revision: project.map_or(0, |p| p.read(cx).revision()),
             repos,
         }
+    }
+
+    /// The repo's other worktrees a terminal can open in, with their branches.
+    fn other_worktrees(&self, cx: &App) -> Vec<WorktreeInfo> {
+        let mut out: Vec<WorktreeInfo> = self.worktrees.clone();
+        if let Some(repo) = self
+            .workspace()
+            .and_then(|ws| ws.read(cx).project().cloned())
+            .and_then(|p| gitviber_refs::RepoState::existing(&p, cx))
+        {
+            for w in gitviber_refs::worktrees::list(&repo.read(cx).worktrees) {
+                let path = PathBuf::from(&w.path);
+                if !w.bare && !w.prunable && !out.iter().any(|o| o.path == path) {
+                    out.push(WorktreeInfo {
+                        path,
+                        branch: w.branch,
+                    });
+                }
+            }
+        }
+        out.retain(|w| w.path != self.root);
+        out
+    }
+
+    /// The saved projects other than this one: a terminal there leaves the window on this one.
+    fn other_projects(&self, cx: &App) -> Vec<String> {
+        let main = self
+            .workspace()
+            .and_then(|ws| ws.read(cx).project().cloned())
+            .map(|p| {
+                let p = p.read(cx);
+                p.main_worktree().unwrap_or(p.root()).to_path_buf()
+            })
+            .unwrap_or_else(|| self.root.clone());
+        cx.try_global::<gitviber_ui::UiState>()
+            .map(|s| {
+                s.recent_projects
+                    .iter()
+                    .filter(|p| Path::new(p) != main)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// A tab's color: its worktree's, as the picker shows it (picked, else its name's); a tab
@@ -1388,9 +1476,14 @@ impl TerminalPanel {
                         _ => {}
                     },
                 );
+            // Opened again: the last query, its options and its matches come back.
+            let (query, options) = self.last_find.clone();
+            if !query.is_empty() {
+                input.update(cx, |i, cx| i.set_value(query, window, cx));
+            }
             self.find = Some(FindBar {
                 input,
-                options: FindOptions::default(),
+                options,
                 result: Ok(FindResult::default()),
                 pane: None,
                 _events: events,
@@ -1435,10 +1528,11 @@ impl TerminalPanel {
     }
 
     fn close_find_bar(&mut self, cx: &mut Context<Self>) {
-        if let Some(f) = self.find.take()
-            && let Some(slot) = f.pane.and_then(|p| self.panes.get(&p))
-        {
-            slot.view.update(cx, |p, cx| p.clear_find(cx));
+        if let Some(f) = self.find.take() {
+            self.last_find = (f.input.read(cx).value().to_string(), f.options);
+            if let Some(slot) = f.pane.and_then(|p| self.panes.get(&p)) {
+                slot.view.update(cx, |p, cx| p.clear_find(cx));
+            }
         }
         cx.notify();
     }
@@ -1556,12 +1650,8 @@ impl TerminalPanel {
         let has = group.is_some();
         let root_name = folder_name(&self.root);
         let weak = cx.entity().downgrade();
-        let worktrees: Vec<WorktreeInfo> = self
-            .worktrees
-            .iter()
-            .filter(|w| w.path != self.root)
-            .cloned()
-            .collect();
+        let worktrees = self.other_worktrees(cx);
+        let projects = self.other_projects(cx);
         let pager = zoomed.then(|| {
             let (_, n, focused, order) = group.clone().unwrap_or((0, 0, 0, vec![]));
             let at = order
@@ -1635,10 +1725,20 @@ impl TerminalPanel {
                         Self::icon_button(
                             "new-elsewhere",
                             IconName::ChevronDown,
-                            "New terminal in another folder",
+                            "New terminal in another folder, or resume a conversation",
                         )
                         .dropdown_menu(move |menu, _, _| {
-                            let mut menu = menu.min_w(px(260.));
+                            let resume = weak.clone();
+                            let mut menu = menu
+                                .min_w(px(260.))
+                                .item(PopupMenuItem::new("Resume a Conversation…").on_click(
+                                    move |_, window, cx| {
+                                        let _ = resume.update(cx, |this, cx| {
+                                            this.ask_conversation(this.root.clone(), window, cx)
+                                        });
+                                    },
+                                ))
+                                .separator();
                             if !worktrees.is_empty() {
                                 menu = menu.label("New terminal in worktree");
                                 for w in &worktrees {
@@ -1651,6 +1751,24 @@ impl TerminalPanel {
                                         move |_, window, cx| {
                                             let _ = weak.update(cx, |this, cx| {
                                                 this.open_terminal(path.clone(), None, window, cx)
+                                            });
+                                        },
+                                    ));
+                                }
+                                menu = menu.separator();
+                            }
+                            if !projects.is_empty() {
+                                menu = menu.label("New terminal in project");
+                                for path in &projects {
+                                    let (weak, at) = (weak.clone(), PathBuf::from(path));
+                                    // Where it is, as a worktree shows its branch: same-named
+                                    // projects tell apart.
+                                    let parent = at.parent().map(folder_name).unwrap_or_default();
+                                    let label = format!("{}  {parent}", folder_name(&at));
+                                    menu = menu.item(PopupMenuItem::new(label).on_click(
+                                        move |_, window, cx| {
+                                            let _ = weak.update(cx, |this, cx| {
+                                                this.open_terminal(at.clone(), None, window, cx)
                                             });
                                         },
                                     ));
@@ -2226,6 +2344,13 @@ impl TerminalPanel {
         Some(
             h_flex()
                 .key_context("TerminalFind")
+                .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, _, cx| {
+                    let k = &e.keystroke;
+                    if let Some(which) = find_option_key(&k.key, &k.modifiers, cfg!(target_os = "macos")) {
+                        cx.stop_propagation();
+                        this.toggle_find_option(which, cx);
+                    }
+                }))
                 .absolute()
                 .top(px(8.))
                 .right(px(20.))
@@ -2447,6 +2572,19 @@ impl Render for TerminalPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_options_flip_on_monacos_keys() {
+        let m = |alt, platform, shift, control| gpui::Modifiers { alt, platform, shift, control, ..Default::default() };
+        assert_eq!(find_option_key("c", &m(true, true, false, false), true), Some(0));
+        assert_eq!(find_option_key("w", &m(true, true, false, false), true), Some(1));
+        assert_eq!(find_option_key("r", &m(true, false, false, false), false), Some(2));
+        // ⌥C alone types ç on a Mac; ⌥⌘C elsewhere is the desktop's; Shift is another key.
+        assert_eq!(find_option_key("c", &m(true, false, false, false), true), None);
+        assert_eq!(find_option_key("c", &m(true, true, false, false), false), None);
+        assert_eq!(find_option_key("c", &m(true, true, true, false), true), None);
+        assert_eq!(find_option_key("x", &m(true, true, false, false), true), None);
+    }
     use gpui::TestAppContext;
 
     /// Terminals opened and closed leave no entity behind: no task, subscription or callback
