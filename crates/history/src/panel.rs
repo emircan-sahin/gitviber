@@ -195,7 +195,6 @@ impl HistoryPanel {
                 filter_author: true,
                 ref_menu: true,
                 show_refs: Some(refs.clone()),
-                ..Default::default()
             };
             return (Source::All(refs.clone()), options);
         }
@@ -211,12 +210,8 @@ impl HistoryPanel {
 
     fn apply(&mut self, cx: &mut Context<Self>) {
         self.debounce = None;
-        let (source, mut options) =
-            Self::source_for(&self.query, &self.scope, self.all, &self.refs);
-        // Undo and reset act on HEAD, which a list of matches needn't start with.
-        if !matches!(source, Source::Head) {
-            options.head = self.repo.read(cx).head().map(str::to_string);
-        }
+        // Undo and reset act on HEAD, which the list reads with each of its pages.
+        let (source, options) = Self::source_for(&self.query, &self.scope, self.all, &self.refs);
         self.list
             .update(cx, |l, cx| l.set_source(source, options, cx));
         cx.notify();
@@ -242,6 +237,11 @@ impl HistoryPanel {
             .update(cx, |s, cx| s.set_value(q.clone(), window, cx));
         self.query = q;
         self.apply(cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn list(&self) -> &Entity<CommitList> {
+        &self.list
     }
 
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {

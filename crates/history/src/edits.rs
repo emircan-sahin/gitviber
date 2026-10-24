@@ -118,14 +118,15 @@ pub fn first_parent_line<N: Node>(commits: &[N], head: &str) -> HashSet<String> 
 
 /// What the rewrite keeps as it is, for asking whether it drops pushed commits: the parent of the
 /// oldest of `shas` in `commits` (newest first). None from the root: nothing is kept, so any
-/// pushed commit counts. One not listed yet stands in for its parent.
+/// pushed commit counts. One not listed (a search's gap, past the loaded page) has no parent
+/// known here: None too, the cautious answer, as it is made again itself.
 pub fn kept_up_to<N: Node>(shas: &[String], commits: &[N]) -> Option<String> {
     let at: Vec<Option<usize>> = shas
         .iter()
         .map(|s| commits.iter().position(|c| c.sha() == s))
         .collect();
-    if let Some(i) = at.iter().position(Option::is_none) {
-        return Some(shas[i].clone());
+    if at.iter().any(Option::is_none) {
+        return None;
     }
     let oldest = at.into_iter().flatten().max()?;
     commits[oldest].parents().first().cloned()
@@ -361,7 +362,9 @@ mod tests {
             &l[2..3],
         );
         assert_eq!(kept_up_to(&one, &l), None);
-        assert_eq!(kept_up_to(&v(&["e", "z"]), &l).as_deref(), Some("z"));
+        // Not listed yet (the next page, a search's gap): rewritten too, so anything pushed counts.
+        assert_eq!(kept_up_to(&v(&["e", "z"]), &l), None);
+        assert_eq!(kept_up_to(&v(&["z"]), &l), None);
     }
 
     #[test]

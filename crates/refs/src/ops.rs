@@ -179,6 +179,8 @@ pub fn sync(state: &Entity<RepoState>, autostash: bool, window: &mut Window, cx:
             )? {
                 return Ok(true);
             }
+            // The push goes from the worktree the pull ran in, not one opened since.
+            op.still_in(core)?;
             plain(api::sync::push(
                 core,
                 Some(false),

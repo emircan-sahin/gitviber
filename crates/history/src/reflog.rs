@@ -127,7 +127,7 @@ impl Reflog {
     ) {
         self.flow = Some(cx.spawn_in(window, async move |_, cx| {
             if done.await.unwrap_or(false) {
-                let _ = cx.update(|window, cx| window.close_dialog(cx));
+                let _ = cx.update(gitviber_refs::askpass::close_form);
             }
         }));
     }

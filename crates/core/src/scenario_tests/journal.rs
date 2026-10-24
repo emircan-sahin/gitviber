@@ -372,3 +372,27 @@ fn discarding_a_folder_and_undoing_it() {
         .collect();
     assert_eq!(back, ["other.txt", "src/a.txt", "src/lib/b.txt"]);
 }
+
+#[test]
+fn an_entry_id_names_one_worktrees_action_only() {
+    let sb = Sandbox::new("j-two-repos");
+    let (a, b) = (sb.path("a"), sb.path("b"));
+    let j = Journal::default();
+    for r in [&a, &b] {
+        init(r);
+        write_commit(r, "base.txt", "base\n", "base");
+        fs::write(r.join("x.txt"), "x\n").unwrap();
+        stage(r, &["x.txt".into()]).unwrap();
+        j.record(r, Action::new("Commit", Mode::Soft), |r| {
+            commit(r, "x", &CommitOptions::default(), &Net::default())
+        })
+        .unwrap();
+    }
+    let (ia, ib) = (j.last(&a).unwrap(), j.last(&b).unwrap());
+    assert_ne!(ia, ib);
+    // A toast's Undo from a, clicked once b is open, takes nothing back in b.
+    let tip = rev(&b, "HEAD");
+    assert!(j.step(&b, false, Some(ia), &Mutex::new(())).is_err());
+    assert_eq!(rev(&b, "HEAD"), tip);
+    j.step(&a, false, Some(ia), &Mutex::new(())).unwrap();
+}

@@ -170,8 +170,6 @@ impl Render for DragLabel {
 pub struct ListOptions {
     /// What an empty list says.
     pub empty: SharedString,
-    /// HEAD, when the list isn't HEAD's own history (a search, every branch).
-    pub head: Option<String>,
     /// Clicking an author narrows the search to them.
     pub filter_author: bool,
     /// The all-branches graph: badges offer Hide and Show only.
@@ -193,6 +191,13 @@ pub struct CommitList {
     error: Option<SharedString>,
     seq: u64,
     reading: Option<Task<()>>,
+    /// The repo moved while a read ran: read again once it's in.
+    again: bool,
+    /// HEAD as read with the list: what Undo, reset and rewrites start from.
+    head_sha: Option<String>,
+    /// HEAD and the branch tips when last read: a change that moved none of them (a staged
+    /// file, an agent saving) doesn't read the log again.
+    tips: String,
     paging: Option<Task<()>>,
     items: Vec<Item>,
     state: ListState,
@@ -285,6 +290,9 @@ impl CommitList {
             error: None,
             seq: 0,
             reading: None,
+            again: false,
+            head_sha: None,
+            tips: String::new(),
             paging: None,
             items: vec![],
             state,
@@ -351,12 +359,8 @@ impl CommitList {
     }
 
     /// HEAD as the history shows it: core refuses to move HEAD if it moved since.
-    pub fn head(&self, cx: &App) -> String {
-        self.options
-            .head
-            .clone()
-            .or_else(|| self.repo.read(cx).head().map(str::to_string))
-            .unwrap_or_default()
+    pub fn head(&self, _: &App) -> String {
+        self.head_sha.clone().unwrap_or_default()
     }
 
     pub fn commit(&self, sha: &str) -> Option<&Rc<Commit>> {
@@ -383,13 +387,31 @@ impl CommitList {
 
     /// HEAD or the refs may have moved: read again what's loaded.
     fn repo_changed(&mut self, cx: &mut Context<Self>) {
-        let tips = self.repo.read(cx).head().map(str::to_string);
         // A list of fixed commits never changes.
         if matches!(self.source, Source::Between { .. }) {
             return;
         }
-        let _ = tips;
+        if self.loaded && self.tips_now(cx) == self.tips {
+            return;
+        }
+        // One read at a time: a slow search isn't asked again under itself.
+        if self.reading.is_some() {
+            self.again = true;
+            return;
+        }
         self.reload(cx);
+    }
+
+    fn tips_now(&self, cx: &App) -> String {
+        let repo = self.repo.read(cx);
+        let mut tips = repo.head().unwrap_or_default().to_string();
+        for b in repo.branches.iter() {
+            tips.push(' ');
+            tips.push_str(&b.name);
+            tips.push(':');
+            tips.push_str(&b.sha);
+        }
+        tips
     }
 
     /// Reads the list again, as many as are loaded; what's on screen stays where it was.
@@ -400,15 +422,25 @@ impl CommitList {
         let source = self.source.clone();
         let core = gitviber_ui::core(cx);
         self.paging = None;
-        let read =
-            cx.background_spawn(async move { (source.read(&core, 0, limit), source.found(&core)) });
+        self.again = false;
+        self.tips = self.tips_now(cx);
+        let read = cx.background_spawn(async move {
+            let log = source.read(&core, 0, limit);
+            // HEAD read with the list, so what the menus act on is what's shown.
+            let head = match (&source, &log) {
+                (Source::Head, Ok(log)) => log.first().map(|c| c.sha.clone()),
+                _ => api::history::log(&core, None, 0, 1, None, None).ok().and_then(|l| l.into_iter().next()).map(|c| c.sha),
+            };
+            (log, source.found(&core), head)
+        });
         self.reading = Some(cx.spawn(async move |this, cx| {
-            let (log, found) = read.await;
+            let (log, found, head) = read.await;
             let _ = this.update(cx, |this, cx| {
                 if this.seq != seq {
                     return;
                 }
                 this.reading = None;
+                this.head_sha = head;
                 match log {
                     Ok(log) => {
                         let has_more = log.len() as u32 == limit;
@@ -425,17 +457,19 @@ impl CommitList {
                 this.loaded = true;
                 cx.emit(ListEvent::Loaded);
                 cx.notify();
-                if this.to_end {
+                if std::mem::take(&mut this.again) {
+                    this.repo_changed(cx);
+                } else if this.to_end {
                     this.load_more(cx);
                 }
             });
         }));
     }
 
-    fn graph_head(&self, cx: &App) -> Option<String> {
+    fn graph_head(&self) -> Option<String> {
         // Every branch is listed: HEAD's keeps the first lane even below newer branches' tips.
         match &self.source {
-            Source::All(_) => self.repo.read(cx).head().map(str::to_string),
+            Source::All(_) => self.head_sha.clone(),
             _ => None,
         }
     }
@@ -477,7 +511,7 @@ impl CommitList {
         }
         self.has_more = has_more;
         self.builder = GraphBuilder::new(
-            self.graph_head(cx)
+            self.graph_head()
                 .filter(|h| listed.contains(h.as_str()))
                 .as_deref(),
         );
@@ -709,13 +743,13 @@ impl CommitList {
 
     /// A plain click opens the commit; ⌘ picks one more, ⇧ the range from the last clicked,
     /// along commits on the same side of HEAD.
-    fn click_commit(
-        &mut self,
-        i: usize,
-        e: &ClickEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// A row's index now: a click lands on a row drawn with the list as it was.
+    fn index_of(&self, sha: &str) -> Option<usize> {
+        self.commits.iter().position(|c| c.sha == sha)
+    }
+
+    pub(crate) fn click_commit(&mut self, sha: &str, e: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(i) = self.index_of(sha) else { return };
         let commit = self.commits[i].clone();
         self.cursor = Some(i);
         let m = e.modifiers();
@@ -780,14 +814,15 @@ impl CommitList {
             .collect()
     }
 
-    fn key_down(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn key_down(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let rows: Vec<usize> = (0..self.commits.len()).collect();
         if rows.is_empty() {
             return;
         }
         let k = e.keystroke.key.as_str();
         let shift = e.keystroke.modifiers.shift;
-        let at = self.cursor.unwrap_or(0);
+        // The list may have been read again shorter since the cursor was put there.
+        let at = self.cursor.unwrap_or(0).min(rows.len() - 1);
         let to = match k {
             "down" => (at + 1).min(rows.len() - 1),
             "up" => at.saturating_sub(1),
@@ -833,22 +868,14 @@ impl CommitList {
         first_parent_line(&self.commits, &self.head(cx))
     }
 
-    fn drag_move(&mut self, i: usize, e: &DragMoveEvent<Dragged>, cx: &mut Context<Self>) {
+    fn drag_move(&mut self, sha: &str, e: &DragMoveEvent<Dragged>, cx: &mut Context<Self>) {
+        // Every row hears every move of the drag: only the one under the pointer has a say.
+        let inside = e.bounds.contains(&e.event.position);
         let dragged = e.drag(cx).0.clone();
-        let sha = self.commits[i].sha.clone();
-        let target = (!dragged.contains(&sha) && self.line(cx).contains(&sha)).then(|| {
-            let (y, top, h) = (e.event.position.y, e.bounds.origin.y, e.bounds.size.height);
-            let at = if y < top + h / 4. {
-                Where::Above
-            } else if y > top + h - h / 4. {
-                Where::Below
-            } else {
-                Where::Onto
-            };
-            DropAt { sha, at }
-        });
-        if target != self.drop_at {
-            self.drop_at = target;
+        let droppable = !dragged.iter().any(|d| d == sha) && self.line(cx).contains(sha);
+        let over = drop_over(e.event.position, e.bounds, inside, droppable);
+        if let Some(next) = next_drop(&self.drop_at, sha, over) {
+            self.drop_at = next;
             self.dragging = Some(dragged);
             cx.notify();
         }
@@ -1084,19 +1111,21 @@ impl CommitList {
                     cx.notify();
                 }
             }))
-            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-                this.click_commit(i, e, window, cx)
-            }))
+            .on_click({
+                let sha = sha.clone();
+                cx.listener(move |this, e: &ClickEvent, window, cx| this.click_commit(&sha, e, window, cx))
+            })
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(move |this, _, _, cx| {
+                cx.listener({
+                    let sha = sha.clone();
+                    move |this, _, _, cx| {
                     // A right-click off the picked commits lets them go: its menu is that commit's.
-                    let sha = &this.commits[i].sha;
-                    if !this.picked.iter().any(|s| s == sha) {
+                    if !this.picked.contains(&sha) {
                         this.picked.clear();
                         cx.notify();
                     }
-                }),
+                }}),
             )
             .child(graph_lines(row.clone(), lit, &t))
             .child(dot)
@@ -1171,6 +1200,7 @@ impl CommitList {
                 )
             });
         if draggable {
+            let row_sha = sha.clone();
             // A drag takes the picked commits it starts on, else its own.
             let shas = if self.picked.len() > 1 && picked {
                 self.picked.clone()
@@ -1189,7 +1219,7 @@ impl CommitList {
                     })
                 })
                 .on_drag_move(cx.listener(move |this, e: &DragMoveEvent<Dragged>, _, cx| {
-                    this.drag_move(i, e, cx)
+                    this.drag_move(&row_sha, e, cx)
                 }))
                 .on_drop(cx.listener(|this, d: &Dragged, window, cx| this.drop(d, window, cx)));
         }
@@ -1322,6 +1352,37 @@ impl CommitList {
             })
             .into_any_element()
     }
+}
+
+/// What the pointer says about a row during a drag: None when it's elsewhere (no say), Some(None)
+/// over a row it can't land on, else where on the row, by quarters: the top and bottom ones are
+/// the gaps around it.
+fn drop_over(pointer: Point<Pixels>, bounds: Bounds<Pixels>, inside: bool, droppable: bool) -> Option<Option<Where>> {
+    if !inside {
+        return None;
+    }
+    if !droppable {
+        return Some(None);
+    }
+    let (y, top, h) = (pointer.y, bounds.origin.y, bounds.size.height);
+    Some(Some(if y < top + h / 4. {
+        Where::Above
+    } else if y > top + h - h / 4. {
+        Where::Below
+    } else {
+        Where::Onto
+    }))
+}
+
+/// The drop target after a row heard a move; None when it stays as it is. A row the pointer left
+/// takes back only its own target.
+fn next_drop(current: &Option<DropAt>, sha: &str, over: Option<Option<Where>>) -> Option<Option<DropAt>> {
+    let next = match over {
+        None if current.as_ref().is_some_and(|d| d.sha == sha) => None,
+        None => return None,
+        Some(at) => at.map(|at| DropAt { sha: sha.to_string(), at }),
+    };
+    (next != *current).then_some(next)
 }
 
 /// The colored lines of one row: lanes passing by, ending at the dot, and leaving it for its
@@ -1462,6 +1523,11 @@ fn render_badges(badges: &[Badge], t: &AppTheme) -> impl IntoElement {
 impl Render for CommitList {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.app_theme().clone();
+        // A drag that ended off the rows left its mark: nothing is being dragged now.
+        if !cx.has_active_drag() && (self.drop_at.is_some() || self.dragging.is_some()) {
+            self.drop_at = None;
+            self.dragging = None;
+        }
         if self.commits.is_empty() {
             let text: SharedString = match (&self.error, self.loaded) {
                 (Some(e), _) => e.clone(),
@@ -1504,5 +1570,42 @@ impl Render for CommitList {
             )
             .child(Scrollbar::vertical(&self.state))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(top: f32) -> Bounds<Pixels> {
+        Bounds::new(point(px(0.), px(top)), size(px(300.), px(40.)))
+    }
+
+    #[test]
+    fn only_the_row_under_the_pointer_takes_the_drop() {
+        // The pointer on row b's middle; every row hears the move, a, b, c in paint order.
+        let pointer = point(px(10.), px(60.));
+        let mut at: Option<DropAt> = None;
+        for (sha, top) in [("a", 0.), ("b", 40.), ("c", 80.)] {
+            let bounds = row(top);
+            if let Some(next) = next_drop(&at, sha, drop_over(pointer, bounds, bounds.contains(&pointer), true)) {
+                at = next;
+            }
+        }
+        assert_eq!(at, Some(DropAt { sha: "b".into(), at: Where::Onto }));
+        // Its gaps: the top and bottom quarters.
+        assert_eq!(drop_over(point(px(10.), px(42.)), row(40.), true, true), Some(Some(Where::Above)));
+        assert_eq!(drop_over(point(px(10.), px(78.)), row(40.), true, true), Some(Some(Where::Below)));
+    }
+
+    #[test]
+    fn leaving_a_row_or_crossing_one_that_cant_take_it_drops_the_target() {
+        let b = Some(DropAt { sha: "b".into(), at: Where::Onto });
+        // Off b: b lets go; other rows the pointer isn't on change nothing.
+        assert_eq!(next_drop(&b, "c", None), None);
+        assert_eq!(next_drop(&b, "b", None), Some(None));
+        // Over a dragged row, or one off the branch's line: no target.
+        assert_eq!(next_drop(&b, "x", Some(None)), Some(None));
+        assert_eq!(next_drop(&None, "x", Some(None)), None);
     }
 }

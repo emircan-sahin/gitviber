@@ -59,7 +59,7 @@ impl MessageForm {
             let _ = this.update_in(cx, |this, window, cx| {
                 this.pending = false;
                 if ok {
-                    window.close_dialog(cx);
+                    gitviber_refs::askpass::close_form(window, cx);
                 }
                 cx.notify();
             });
@@ -212,7 +212,7 @@ impl NameForm {
             let _ = this.update_in(cx, |this, window, cx| {
                 this.pending = false;
                 if ok {
-                    window.close_dialog(cx);
+                    gitviber_refs::askpass::close_form(window, cx);
                 }
                 cx.notify();
             });

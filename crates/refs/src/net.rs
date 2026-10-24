@@ -10,6 +10,9 @@ use futures::channel::mpsc;
 use gitviber_core::network::Progress;
 use gpui_kit::{App, AppContext as _, Context, Entity, Global, SharedString, Task};
 
+/// Why a pinned action stopped: core had another worktree open by then.
+pub const STOPPED: &str = "Another worktree was opened while this ran, so it stopped before doing anything there.";
+
 static NEXT_OP: AtomicU64 = AtomicU64::new(1);
 
 /// A network command's id for core (`watch_network`, `cancel_network`), and where its progress goes.
@@ -17,6 +20,8 @@ static NEXT_OP: AtomicU64 = AtomicU64::new(1);
 pub struct NetOp {
     pub id: String,
     sink: Arc<dyn Fn(Progress) + Send + Sync>,
+    /// The worktree the action started in, when it was pinned to one.
+    root: Option<std::path::PathBuf>,
 }
 
 impl NetOp {
@@ -25,6 +30,23 @@ impl NetOp {
         NetOp {
             id: format!("net-{}", NEXT_OP.fetch_add(1, Ordering::Relaxed)),
             sink: Arc::new(|_| {}),
+            root: None,
+        }
+    }
+
+    /// Pinned to the worktree `root`: `still_in` refuses once core has another open.
+    pub fn pinned(mut self, root: std::path::PathBuf) -> Self {
+        self.root = Some(root);
+        self
+    }
+
+    /// Core still has the worktree open that the action started in: each step of one that runs
+    /// several (Sync's pull, then push) asks before it goes on.
+    pub fn still_in(&self, core: &gitviber_core::Core) -> gitviber_core::Res<()> {
+        let Some(root) = &self.root else { return Ok(()) };
+        match core.repo() {
+            Ok(open) if &open == root => Ok(()),
+            _ => Err(STOPPED.into()),
         }
     }
 
@@ -98,7 +120,7 @@ impl NetActivity {
             _pump: pump,
         });
         cx.notify();
-        NetOp { id, sink }
+        NetOp { id, sink, root: None }
     }
 
     pub fn finish(&mut self, id: &str, cx: &mut Context<Self>) {

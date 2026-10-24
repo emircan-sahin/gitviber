@@ -6,7 +6,6 @@ use std::rc::Rc;
 use gitviber_core::api;
 use gitviber_ui::memory::Live;
 use gitviber_ui::{ActiveAppTheme, Workspace};
-use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -39,7 +38,7 @@ fn close_on_ok<V: 'static>(
         let ok = rx.await.unwrap_or(false);
         let _ = handle.update(cx, |_, window, cx| {
             if ok {
-                window.close_dialog(cx);
+                crate::askpass::close_form(window, cx);
             } else {
                 let _ = this.update(cx, |this, cx| {
                     *pending(this) = false;
@@ -166,7 +165,7 @@ impl RenameBranch {
                 if ok {
                     // A branch renamed in the app keeps its pin.
                     crate::store::rename_pinned(&main, &old, &n, cx);
-                    window.close_dialog(cx);
+                    crate::askpass::close_form(window, cx);
                 } else {
                     let _ = this.update(cx, |this, cx| {
                         this.pending = false;

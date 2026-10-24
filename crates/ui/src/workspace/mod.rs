@@ -127,6 +127,19 @@ pub fn set_close_guard(cx: &mut App, guard: CloseGuard) {
     cx.set_global(CloseGuardGlobal(Some(guard)));
 }
 
+/// Asked before the window's repo changes (another project, another worktree of it): a reason
+/// keeps it where it is, said in a toast. The git actions' feature sets it, so an action still
+/// running isn't carried on in the other repo, core having one repo open at a time.
+pub type SwitchGuard = Rc<dyn Fn(&Entity<Project>, &App) -> Option<SharedString>>;
+
+#[derive(Default)]
+struct SwitchGuardGlobal(Option<SwitchGuard>);
+impl Global for SwitchGuardGlobal {}
+
+pub fn set_switch_guard(cx: &mut App, guard: SwitchGuard) {
+    cx.set_global(SwitchGuardGlobal(Some(guard)));
+}
+
 struct SideState {
     open: bool,
     active: Option<&'static str>,
@@ -247,6 +260,9 @@ impl Workspace {
         {
             return;
         }
+        if self.switch_refused(cx) {
+            return;
+        }
         self.drop_project(cx);
         let project = cx.new(|cx| Project::new(root, cx));
         self._project_events = Some(cx.subscribe_in(&project, window, Self::on_project_event));
@@ -316,9 +332,24 @@ impl Workspace {
 
     /// Opens another worktree of the open repo in this window (the worktree picker).
     pub fn switch_worktree(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        if self.switch_refused(cx) {
+            return;
+        }
         if let Some(project) = &self.project {
             project.update(cx, |p, cx| p.switch_worktree(root, cx));
         }
+    }
+
+    /// The switch guard's reason to stay, toasted; false when the repo may change.
+    fn switch_refused(&mut self, cx: &mut Context<Self>) -> bool {
+        let guard = cx.try_global::<SwitchGuardGlobal>().and_then(|g| g.0.clone());
+        let why = match (&self.project, guard) {
+            (Some(project), Some(guard)) => guard(project, cx),
+            _ => None,
+        };
+        let Some(why) = why else { return false };
+        self.toast(Toast::warning(why).title("Not switched"), cx);
+        true
     }
 
     /// Closes the project: its tabs and per-project panels go, with all they held.
@@ -1350,6 +1381,46 @@ mod tests {
         fn is_dirty(&self, _: &App) -> bool {
             true
         }
+    }
+
+    #[gpui_kit::test]
+    fn a_switch_guard_keeps_the_repo_where_it_is(cx: &mut TestAppContext) {
+        setup(cx);
+        let busy = std::rc::Rc::new(std::cell::Cell::new(true));
+        let held = busy.clone();
+        cx.update(|cx| {
+            set_switch_guard(
+                cx,
+                Rc::new(move |_, _| held.get().then(|| "Wait for Push to finish.".into())),
+            )
+        });
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        let a = PathBuf::from("/tmp/gitviber-project-guard-a");
+        let b = PathBuf::from("/tmp/gitviber-project-guard-b");
+        let root = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+            cx.update(|_, cx| ws.read(cx).project().map(|p| p.read(cx).root().to_path_buf()))
+        };
+        // Nothing open yet: nothing to keep.
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(a.clone(), window, cx)));
+        assert_eq!(root(&ws, cx), Some(a.clone()));
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_project(b.clone(), window, cx);
+                ws.switch_worktree(b.clone(), cx);
+                assert_eq!(ws.take_toasts().len(), 2);
+            })
+        });
+        assert_eq!(root(&ws, cx), Some(a.clone()));
+        busy.set(false);
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.switch_worktree(b.clone(), cx);
+                ws.open_project(b.clone(), window, cx);
+                assert!(ws.take_toasts().is_empty());
+            })
+        });
+        assert_eq!(root(&ws, cx), Some(b));
     }
 
     #[gpui_kit::test]

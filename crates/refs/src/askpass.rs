@@ -14,7 +14,7 @@ use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Context, Entity, Focusable as _, Global, IntoElement,
-    ParentElement as _, Render, Styled as _, Subscription, Window, div, px, rems,
+    ParentElement as _, Render, Styled as _, Subscription, WeakEntity, Window, div, px, rems,
 };
 
 /// How a prompt is asked: a field (masked for secrets), a yes/no, or a notice to dismiss.
@@ -170,10 +170,21 @@ pub fn prompt_form(p: &Prompt) -> PromptForm {
     secret("git asks".into(), trimmed.to_string())
 }
 
-/// The prompt showing, by window, so its Done closes the right dialog.
+/// A prompt's dialog, as it opened.
+struct Showing {
+    id: u64,
+    window: AnyWindowHandle,
+    /// Answered elsewhere, timed out, or its command stopped waiting: it goes once uncovered.
+    done: bool,
+    view: WeakEntity<AskView>,
+}
+
+/// The prompts showing, in the order they opened: a later one covers an earlier one, and only
+/// the top dialog can be closed. Forms that finished under a prompt close once it's gone.
 #[derive(Default)]
 struct Asking {
-    shown: Option<(u64, AnyWindowHandle)>,
+    showing: Vec<Showing>,
+    waiting: Vec<AnyWindowHandle>,
     _events: Option<Subscription>,
 }
 impl Global for Asking {}
@@ -193,33 +204,74 @@ pub fn install(cx: &mut App) {
         Event::AskpassDone(id) => done(*id, cx),
         _ => {}
     });
-    cx.set_global(Asking {
-        shown: None,
-        _events: Some(sub),
-    });
+    cx.set_global(Asking { showing: vec![], waiting: vec![], _events: Some(sub) });
     let core = gitviber_ui::core(cx);
     cx.background_spawn(async move { api::sync::askpass_ready(&core) })
         .detach();
 }
 
 fn answer(id: u64, value: Option<String>, cx: &mut App) {
-    if cx.has_global::<Asking>() && cx.global::<Asking>().shown.is_some_and(|(i, _)| i == id) {
-        cx.global_mut::<Asking>().shown = None;
-    }
     let core = gitviber_ui::core(cx);
     cx.background_spawn(async move { api::sync::askpass_answer(&core, id, value) })
         .detach();
 }
 
-fn done(id: u64, cx: &mut App) {
-    let Some((shown, handle)) = cx.try_global::<Asking>().and_then(|a| a.shown) else {
-        return;
-    };
-    if shown != id {
-        return;
+/// Closes the form a dialog shows once its action went through. A prompt that opened over it
+/// meanwhile (a background fetch's) is the top dialog: the form waits for it to go.
+pub fn close_form(window: &mut Window, cx: &mut App) {
+    let handle = window.window_handle();
+    let covered = cx.try_global::<Asking>().is_some_and(|a| a.showing.iter().any(|s| s.window == handle));
+    if covered {
+        cx.default_global::<Asking>().waiting.push(handle);
+    } else {
+        window.close_dialog(cx);
     }
-    cx.global_mut::<Asking>().shown = None;
-    let _ = handle.update(cx, |_, window, cx| window.close_dialog(cx));
+}
+
+/// The prompt `id`'s dialog closed (its buttons, Escape): whatever it covered may go now.
+fn closed(id: u64, window: &mut Window, cx: &mut App) {
+    cx.default_global::<Asking>().showing.retain(|s| s.id != id);
+    // After the close that's running: closing more under it would take the wrong one.
+    window.defer(cx, settle);
+}
+
+/// Closes the dialogs now on top that were only waiting to go: finished prompts, then forms.
+fn settle(window: &mut Window, cx: &mut App) {
+    let handle = window.window_handle();
+    loop {
+        let a = cx.default_global::<Asking>();
+        let top = a.showing.iter().rposition(|s| s.window == handle);
+        match top {
+            Some(i) if a.showing[i].done => {
+                a.showing.remove(i);
+                window.close_dialog(cx);
+            }
+            Some(_) => return,
+            None => break,
+        }
+    }
+    let a = cx.default_global::<Asking>();
+    let forms = a.waiting.iter().filter(|w| **w == handle).count();
+    a.waiting.retain(|w| *w != handle);
+    for _ in 0..forms {
+        window.close_dialog(cx);
+    }
+}
+
+fn done(id: u64, cx: &mut App) {
+    let a = cx.default_global::<Asking>();
+    let Some(i) = a.showing.iter().position(|s| s.id == id) else { return };
+    a.showing[i].done = true;
+    let (handle, view) = (a.showing[i].window, a.showing[i].view.clone());
+    let top = a.showing.iter().rposition(|s| s.window == handle) == Some(i);
+    let _ = view.update(cx, |v, cx| {
+        v.replied = true;
+        v.stopped = true;
+        cx.notify();
+    });
+    if top {
+        let _ = handle.update(cx, |_, window, cx| settle(window, cx));
+    }
 }
 
 fn show(p: Prompt, cx: &mut App) {
@@ -233,6 +285,7 @@ fn show(p: Prompt, cx: &mut App) {
     let opened = handle.update(cx, |_, window, cx| {
         let form = prompt_form(&p);
         let view = cx.new(|cx| AskView::new(p, form.clone(), window, cx));
+        let weak = view.downgrade();
         let focus = view.read(cx).input.as_ref().map(|i| i.focus_handle(cx));
         let first = Cell::new(true);
         let answered = Rc::new(Cell::new(false));
@@ -269,6 +322,7 @@ fn show(p: Prompt, cx: &mut App) {
                             a1.set(true);
                             v1.update(cx, |v, cx| v.reply(false, cx));
                             window.close_dialog(cx);
+                            closed(id, window, cx);
                         },
                     ))
                 })
@@ -277,6 +331,7 @@ fn show(p: Prompt, cx: &mut App) {
                         a2.set(true);
                         v2.update(cx, |v, cx| v.reply(true, cx));
                         window.close_dialog(cx);
+                        closed(id, window, cx);
                     },
                 ));
             dialog
@@ -284,15 +339,17 @@ fn show(p: Prompt, cx: &mut App) {
                 .w(px(440.))
                 .child(view.clone())
                 .footer(footer)
-                .on_close(move |_, _, cx| {
+                .on_close(move |_, window, cx| {
                     if !a3.replace(true) {
                         v3.update(cx, |v, cx| v.reply(false, cx));
                     }
+                    closed(id, window, cx);
                 })
         });
+        weak
     });
     match opened {
-        Ok(()) => cx.default_global::<Asking>().shown = Some((id, handle)),
+        Ok(view) => cx.default_global::<Asking>().showing.push(Showing { id, window: handle, done: false, view }),
         Err(_) => answer(id, None, cx),
     }
 }
@@ -310,6 +367,8 @@ pub struct AskView {
     form: PromptForm,
     input: Option<Entity<InputState>>,
     replied: bool,
+    /// git stopped waiting (timed out, its command ended) while another dialog covered this one.
+    stopped: bool,
     _subs: Vec<Subscription>,
     _live: Live,
 }
@@ -333,6 +392,7 @@ impl AskView {
                         if let InputEvent::PressEnter { .. } = e {
                             this.reply(true, cx);
                             window.close_dialog(cx);
+                            closed(this.prompt.id, window, cx);
                         }
                     },
                 )
@@ -343,6 +403,7 @@ impl AskView {
             form,
             input,
             replied: false,
+            stopped: false,
             _subs: subs,
             _live: Live::new("Askpass"),
         }
@@ -367,7 +428,11 @@ impl AskView {
 impl Render for AskView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.app_theme().clone();
-        let context = prompt_context(&self.prompt);
+        let context = if self.stopped {
+            "git stopped waiting for this answer: close it.".to_string()
+        } else {
+            prompt_context(&self.prompt)
+        };
         let body = match &self.form {
             PromptForm::Text { label, .. } | PromptForm::Secret { label, .. } => div()
                 .flex()

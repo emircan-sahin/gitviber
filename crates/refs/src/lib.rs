@@ -40,4 +40,14 @@ pub fn init(cx: &mut App) {
     topbar::register(cx);
     actions::install(cx);
     askpass::install(cx);
+    // Core has one repo open: a switch mid-action would carry the rest of it (Sync's push) into
+    // the other worktree.
+    gitviber_ui::workspace::set_switch_guard(
+        cx,
+        std::rc::Rc::new(|project, cx| {
+            let state = RepoState::existing(project, cx)?;
+            let busy = state.read(cx).busy()?;
+            Some(format!("Wait for {busy} to finish.").into())
+        }),
+    );
 }

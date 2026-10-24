@@ -9,6 +9,7 @@ use crate::git::{self, run, run_text};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Entries kept per repository.
@@ -131,7 +132,6 @@ struct Stack {
     undone: Vec<Entry>,
     /// An action stopped on conflicts: its start, until continuing finishes it.
     pending: Option<(Action, Snapshot)>,
-    next: u64,
 }
 
 #[derive(Default)]
@@ -139,6 +139,9 @@ pub struct Journal {
     /// Held for a whole action, so what one moved is never credited to another.
     acting: Mutex<()>,
     stacks: Mutex<HashMap<PathBuf, Stack>>,
+    /// Entry ids, one count for every worktree: a toast's Undo from one never names another's
+    /// entry, whichever is open when it's clicked.
+    next: AtomicU64,
 }
 
 #[derive(Serialize)]
@@ -247,8 +250,10 @@ impl Journal {
             Some(start) if stopped => s.pending = Some(start),
             Some((action, _)) if action.ok_only && result.is_err() => {}
             Some((action, before)) => {
-                if let Some(e) = diff(s.next, action, &before, &after, pushed) {
-                    s.next += 1;
+                let id = self.next.load(Ordering::Relaxed);
+                if let Some(e) = diff(id, action, &before, &after, pushed) {
+                    // Under the stacks' lock: no other entry takes this id.
+                    self.next.store(id + 1, Ordering::Relaxed);
                     s.done.push(e);
                     if s.done.len() > KEEP {
                         s.done.remove(0);
@@ -288,7 +293,7 @@ impl Journal {
         let s = stacks.entry(repo.to_path_buf()).or_default();
         s.undone.clear();
         s.done.push(Entry {
-            id: s.next,
+            id: self.next.fetch_add(1, Ordering::Relaxed),
             label,
             time: now(),
             mode: Mode::Keep,
@@ -298,7 +303,6 @@ impl Journal {
             pushed: None,
             files: Some(FileAction { files, write, word }),
         });
-        s.next += 1;
         if s.done.len() > KEEP {
             s.done.remove(0);
         }

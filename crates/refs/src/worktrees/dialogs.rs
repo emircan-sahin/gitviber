@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use gitviber_core::{api, git};
 use gitviber_ui::memory::Live;
 use gitviber_ui::{ActiveAppTheme, Workspace};
-use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -183,6 +182,10 @@ impl NewWorktree {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // "Create anyway" clicked twice, or after Create: one add_worktree at a time.
+        if self.pending {
+            return;
+        }
         let n = picked.name.clone();
         let base = match picked.base {
             WorktreeBase::Picked => Some(self.from.clone()),
@@ -242,7 +245,7 @@ impl NewWorktree {
                     },
                     cx,
                 );
-                window.close_dialog(cx);
+                crate::askpass::close_form(window, cx);
                 if switch_to {
                     open_worktree(path, window, cx);
                 }
@@ -593,7 +596,7 @@ impl RenameWorktree {
                         crate::store::set_color(&to, Some(super::hue_name(h)), cx);
                     }
                 }
-                window.close_dialog(cx);
+                crate::askpass::close_form(window, cx);
             });
         }));
     }
@@ -733,7 +736,7 @@ impl LockWorktree {
             let ok = rx.await.unwrap_or(false);
             let _ = handle.update(cx, |_, window, cx| {
                 if ok {
-                    window.close_dialog(cx);
+                    crate::askpass::close_form(window, cx);
                 } else {
                     let _ = this.update(cx, |this, cx| {
                         this.pending = false;
@@ -956,7 +959,7 @@ impl CleanUp {
                     report(done, entry.map(|id| undo_action(state.clone(), id))).show(window, cx);
                 }
                 if ok {
-                    window.close_dialog(cx);
+                    crate::askpass::close_form(window, cx);
                 } else {
                     let _ = this.update(cx, |this, cx| {
                         this.pending = false;
