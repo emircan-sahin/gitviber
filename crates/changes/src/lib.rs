@@ -11,6 +11,7 @@ mod conflict;
 mod dialogs;
 pub mod model;
 mod panel;
+mod store;
 mod sync;
 mod tabs;
 
@@ -40,8 +41,10 @@ pub(crate) struct TestCore(pub Arc<gitviber_core::Core>);
 impl gpui_kit::Global for TestCore {}
 
 /// The panel, its keys, the openers of its tabs, and the diffs kept in step with the theme and
-/// the settings. Once at startup, after gitviber-ui's init and core.
+/// the settings. Once at startup, after gitviber-ui's init and core; on the first launch it
+/// takes over what the old app kept.
 pub fn init(cx: &mut App) {
+    store::import_legacy(cx);
     gitviber_diff::init_local(cx);
     panel::bind_keys(cx);
     sync::install(cx);

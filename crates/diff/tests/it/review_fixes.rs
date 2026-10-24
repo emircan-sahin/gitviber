@@ -25,7 +25,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-fn repo(name: &str, files: &[(&str, &str, &str)]) -> PathBuf {
+pub(crate) fn repo(name: &str, files: &[(&str, &str, &str)]) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("gitviber-diff-fix-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -43,7 +43,7 @@ fn repo(name: &str, files: &[(&str, &str, &str)]) -> PathBuf {
     dir
 }
 
-fn setup(cx: &mut TestAppContext, dir: &Path) {
+pub(crate) fn setup(cx: &mut TestAppContext, dir: &Path) {
     let core = Arc::new(gitviber_core::Core::new(Arc::new(|_| {})));
     gitviber_core::api::repo::open_repo(&core, dir.to_string_lossy().into_owned()).unwrap();
     cx.update(|cx| {
@@ -53,7 +53,7 @@ fn setup(cx: &mut TestAppContext, dir: &Path) {
 }
 
 /// A window whose root is gpui-kit's, which draws dialogs.
-fn window_with<V: 'static + gpui_kit::Render>(
+pub(crate) fn window_with<V: 'static + gpui_kit::Render>(
     cx: &mut TestAppContext,
     build: impl FnOnce(&mut gpui_kit::Window, &mut gpui_kit::App) -> Entity<V>,
 ) -> (Entity<V>, &mut VisualTestContext) {

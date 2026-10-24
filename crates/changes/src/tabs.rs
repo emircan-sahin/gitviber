@@ -4,6 +4,7 @@
 
 use crate::conflict::ConflictView;
 use crate::panel::{self, ChangesPanel};
+use crate::store;
 use gitviber_core::api;
 use gitviber_core::git::FileChange;
 use gitviber_diff::{
@@ -74,10 +75,18 @@ pub struct ChangeTab {
     workspace: WeakEntity<Workspace>,
     body: Body,
     focus: FocusHandle,
+    /// The worktree the tab's typing is kept under, once attached.
+    root: Option<String>,
+    /// Typing not written to the store yet.
+    edit_pending: bool,
     _subscriptions: Vec<Subscription>,
     _load: Task<()>,
+    _keep: Task<()>,
     _live: Live,
 }
+
+/// How long typing must pause before what's typed is kept for the next launch.
+const KEEP_AFTER: std::time::Duration = std::time::Duration::from_millis(300);
 
 impl ChangeTab {
     fn new(
@@ -120,13 +129,25 @@ impl ChangeTab {
                 Body::Diff(view)
             }
         };
+        // Typing still waiting for its pause goes to the store as the tab closes or the app quits.
+        subscriptions.push(cx.on_release(|this, cx| this.keep_edit(cx)));
+        subscriptions.push(cx.on_app_quit(|this, cx| {
+            if this.edit_pending {
+                this.keep_edit(cx);
+                gitviber_ui::store::flush(cx);
+            }
+            async {}
+        }));
         let tab = ChangeTab {
             sel,
             workspace,
             body,
             focus: cx.focus_handle(),
+            root: None,
+            edit_pending: false,
             _subscriptions: subscriptions,
             _load: Task::ready(()),
+            _keep: Task::ready(()),
             _live: Live::new("ChangeTab"),
         };
         // Opened from inside the workspace's update: it can be read once that's done.
@@ -137,13 +158,15 @@ impl ChangeTab {
         tab
     }
 
-    /// Follows the project's changes on disk, and shows the viewed mark and the list's files.
+    /// Follows the project's changes on disk, shows the viewed mark and the list's files, and
+    /// brings back typing kept from before a restart.
     fn attach(&mut self, cx: &mut Context<Self>) {
         if let Some(project) = self
             .workspace
             .upgrade()
             .and_then(|ws| ws.read(cx).project().cloned())
         {
+            self.root = Some(project.read(cx).root().to_string_lossy().into_owned());
             self._subscriptions
                 .push(cx.subscribe(&project, |this, _, e: &ProjectEvent, cx| {
                     if let ProjectEvent::RepoChanged(_) = e {
@@ -153,6 +176,38 @@ impl ChangeTab {
         }
         self.sync_viewed(cx);
         self.repo_changed_stacked(cx);
+        if let (Some(root), Some(path), Body::Diff(view)) =
+            (&self.root, self.sel.edit_path(), &self.body)
+            && let Some(kept) = store::edit(root, &path, cx)
+        {
+            view.update(cx, |v, cx| v.restore_edit(kept.text, kept.base, cx));
+        }
+    }
+
+    fn keep_edit_soon(&mut self, cx: &mut Context<Self>) {
+        self.edit_pending = true;
+        self._keep = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(KEEP_AFTER).await;
+            this.update(cx, |this, cx| this.keep_edit(cx)).ok();
+        });
+    }
+
+    /// What's typed and not saved, kept under the file for the next launch; nothing once
+    /// it's saved or dropped.
+    fn keep_edit(&mut self, cx: &mut App) {
+        if !std::mem::take(&mut self.edit_pending) {
+            return;
+        }
+        let (Some(root), Some(path), Body::Diff(view)) =
+            (&self.root, self.sel.edit_path(), &self.body)
+        else {
+            return;
+        };
+        let edit = view
+            .read(cx)
+            .unsaved_edit(cx)
+            .map(|(text, base)| store::Edit { text, base });
+        store::set_edit(root, &path, edit, cx);
     }
 
     fn repo_changed(&mut self, cx: &mut Context<Self>) {
@@ -336,6 +391,7 @@ impl ChangeTab {
                 self.toast(toast.title(n.title.clone()), cx);
             }
             DiffEvent::LinesChanged | DiffEvent::Saved(_) => self.refresh_project(cx),
+            DiffEvent::Edited => self.keep_edit_soon(cx),
             DiffEvent::Loaded { .. } | DiffEvent::SelectionChanged(_) | DiffEvent::AddNote(_) => {}
         }
     }
@@ -390,7 +446,7 @@ impl ChangeTab {
         }
     }
 
-    fn diff(&self) -> Option<&Entity<DiffView>> {
+    pub(crate) fn diff(&self) -> Option<&Entity<DiffView>> {
         if let Body::Diff(v) = &self.body {
             Some(v)
         } else {

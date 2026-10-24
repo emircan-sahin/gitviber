@@ -2240,12 +2240,14 @@ dependencies = [
 name = "gitviber"
 version = "0.1.17"
 dependencies = [
+ "gitviber-browser",
  "gitviber-changes",
  "gitviber-core",
  "gitviber-diff",
  "gitviber-files",
  "gitviber-github",
  "gitviber-history",
+ "gitviber-obsidian",
  "gitviber-refs",
  "gitviber-terminal",
  "gitviber-ui",
@@ -2284,6 +2286,8 @@ dependencies = [
  "gitviber-ui",
  "gpui-kit",
  "gpui-pre",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

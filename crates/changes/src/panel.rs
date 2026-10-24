@@ -11,6 +11,7 @@ use crate::model::list::{
 };
 use crate::model::text::{describe_stash, has_conflict_markers, ignore_pattern};
 use crate::model::tree::folders_of;
+use crate::store;
 use gitviber_core::api;
 use gitviber_core::git::{Commit, FileChange, Side as GitSide};
 use gitviber_diff::{Compare, DiffSource};
@@ -186,6 +187,15 @@ enum Section {
 }
 
 impl Section {
+    const ALL: [Section; 6] = [
+        Section::List(Kind::Conflict),
+        Section::List(Kind::Staged),
+        Section::List(Kind::Unstaged),
+        Section::Review,
+        Section::Stashes,
+        Section::Submodules,
+    ];
+
     fn title(self) -> &'static str {
         match self {
             Section::List(k) => k.title(),
@@ -345,9 +355,15 @@ impl ChangesPanel {
             mtimes: None,
             stashes: vec![],
             submodules: vec![],
-            view: ChangesView::default(),
+            view: store::view(cx),
             closed: HashSet::new(),
-            collapsed: HashSet::new(),
+            collapsed: {
+                let titles = store::collapsed(cx);
+                Section::ALL
+                    .into_iter()
+                    .filter(|s| titles.iter().any(|t| t == s.title()))
+                    .collect()
+            },
             filter,
             picked: None,
             open_key: None,
@@ -668,10 +684,25 @@ impl ChangesPanel {
         cx.notify();
     }
 
-    /// List or tree, by name or newest first.
+    /// A section closed or opened again, as it'll be at the next launch.
+    fn toggle_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        if !self.collapsed.remove(&section) {
+            self.collapsed.insert(section);
+        }
+        let titles = Section::ALL
+            .into_iter()
+            .filter(|s| self.collapsed.contains(s))
+            .map(|s| s.title().to_string())
+            .collect();
+        store::set_collapsed(titles, cx);
+        self.rebuild(cx);
+    }
+
+    /// List or tree, by name or newest first; kept for the next launch.
     pub fn set_view(&mut self, view: ChangesView, cx: &mut Context<Self>) {
         let reread = view.recent && !self.view.recent;
         self.view = view;
+        store::set_view(view, cx);
         if reread {
             self.read(cx);
         }
@@ -2076,12 +2107,7 @@ impl ChangesPanel {
             .child(div().text_color(t.subtle).child(count.to_string()))
             .child(div().flex_1())
             .children(buttons)
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if !this.collapsed.remove(&section) {
-                    this.collapsed.insert(section);
-                }
-                this.rebuild(cx);
-            }))
+            .on_click(cx.listener(move |this, _, _, cx| this.toggle_section(section, cx)))
             .into_any_element()
     }
 
@@ -2903,12 +2929,9 @@ impl Render for ChangesPanel {
                         let set = |w: WeakEntity<ChangesPanel>, f: fn(&mut ChangesView)| {
                             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                                 w.update(cx, |this, cx| {
-                                    let before = this.view.recent;
-                                    f(&mut this.view);
-                                    if this.view.recent && !before {
-                                        this.read(cx);
-                                    }
-                                    this.rebuild(cx);
+                                    let mut next = this.view;
+                                    f(&mut next);
+                                    this.set_view(next, cx);
                                 })
                                 .ok();
                             }
@@ -3120,7 +3143,8 @@ pub fn reveal_folders(closed: &mut HashSet<String>, kind: Kind, path: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gitviber_ui::workspace::Workspace;
+    use crate::tabs::ChangeTab;
+    use gitviber_ui::workspace::{Workspace, selection_key};
     use gpui_kit::{TestAppContext, VisualTestContext};
     use std::path::{Path, PathBuf};
     use std::process::Command;
@@ -3161,17 +3185,23 @@ mod tests {
 
     struct Host {
         panel: Option<Entity<ChangesPanel>>,
+        /// A tab's view, drawn beside the panel.
+        center: Option<gpui_kit::AnyView>,
     }
 
     impl Render for Host {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div().size_full().children(self.panel.clone())
+            div()
+                .size_full()
+                .children(self.panel.clone())
+                .children(self.center.clone())
         }
     }
 
     fn setup(cx: &mut TestAppContext) {
         let config =
             std::env::temp_dir().join(format!("gitviber-changes-config-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&config);
         // SAFETY: these tests point the config dir at a temporary folder, as gitviber-ui's do.
         unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &config) };
         cx.update(|cx| {
@@ -3192,7 +3222,10 @@ mod tests {
         let core = cx.update(|cx| crate::core(cx));
         gitviber_core::api::repo::open_repo(&core, dir.to_string_lossy().into_owned()).unwrap();
         let ws = cx.update(|cx| cx.new(Workspace::new));
-        let (host, cx) = cx.add_window_view(|_, _| Host { panel: None });
+        let (host, cx) = cx.add_window_view(|_, _| Host {
+            panel: None,
+            center: None,
+        });
         cx.update(|window, cx| Workspace::register_window(&ws, window, cx));
         cx.update(|window, cx| {
             let ctx = ws.update(cx, |ws, cx| ws.context(cx));
@@ -3323,6 +3356,169 @@ mod tests {
             cx.run_until_parked();
         }
         cx.update(|_, cx| cx.assert_no_new_leaks(&snapshot));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A restart: what's in memory goes, the files on disk stay.
+    fn restart(cx: &mut VisualTestContext) {
+        cx.update(|_, cx| {
+            gitviber_ui::store::flush(cx);
+            if cx.has_global::<store::Saved>() {
+                cx.remove_global::<store::Saved>();
+            }
+            if cx.has_global::<store::Edits>() {
+                cx.remove_global::<store::Edits>();
+            }
+        });
+    }
+
+    #[gpui_kit::test]
+    fn the_view_sections_and_draft_outlive_the_app(cx: &mut TestAppContext) {
+        let dir = repo("keep");
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let root = dir.to_string_lossy().into_owned();
+        let p = panel(&host, cx);
+        cx.update(|window, cx| {
+            p.update(cx, |p, cx| {
+                p.set_view(
+                    ChangesView {
+                        tree: true,
+                        recent: false,
+                    },
+                    cx,
+                );
+                p.toggle_section(Section::Stashes, cx);
+                p.commit
+                    .clone()
+                    .update(cx, |b, cx| b.write_message("Half done", "why", window, cx));
+            })
+        });
+        cx.run_until_parked();
+        restart(cx);
+        assert!(
+            gitviber_ui::store::config_dir()
+                .join("changes.json")
+                .exists()
+        );
+        cx.update(|window, cx| {
+            let ctx = ws.update(cx, |ws, cx| ws.context(cx));
+            let next = cx.new(|cx| ChangesPanel::new(&ctx, window, cx));
+            host.update(cx, |h, cx| {
+                h.panel = Some(next);
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+        let p = panel(&host, cx);
+        cx.update(|_, cx| {
+            let p = p.read(cx);
+            assert!(p.view.tree && !p.view.recent);
+            assert!(p.collapsed.contains(&Section::Stashes) && p.collapsed.len() == 1);
+            let b = p.commit.read(cx);
+            assert_eq!(
+                (b.summary_text(cx), b.body_text(cx)),
+                ("Half done".into(), "why".into())
+            );
+        });
+        // Back to how it started: nothing is kept for the worktree.
+        cx.update(|window, cx| {
+            p.read(cx)
+                .commit
+                .clone()
+                .update(cx, |b, cx| b.write_message("", "", window, cx))
+        });
+        assert_eq!(cx.update(|_, cx| store::draft(&root, cx)), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn typing_in_a_diff_comes_back_after_a_restart(cx: &mut TestAppContext) {
+        let dir = repo("edit");
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let root = dir.to_string_lossy().into_owned();
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(dir.clone(), window, cx)));
+        let p = panel(&host, cx);
+        let sel = cx.update(|_, cx| {
+            p.read(cx)
+                .walk_list(&Selection::File {
+                    path: String::new(),
+                })
+                .into_iter()
+                .find(|s| matches!(s, Selection::Unstaged { file } if file.path == "a.txt"))
+                .expect("a.txt is changed")
+        });
+        // The tab of the file's diff, drawn.
+        let open_tab = |cx: &mut VisualTestContext| {
+            let tab = cx.update(|window, cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.open(sel.clone(), false, window, cx);
+                    ws.active_view(window, cx)
+                })
+            });
+            let tab = tab
+                .and_then(|v| v.downcast::<ChangeTab>().ok())
+                .expect("a diff tab");
+            cx.update(|_, cx| {
+                host.update(cx, |h, cx| {
+                    h.center = Some(tab.clone().into());
+                    cx.notify();
+                })
+            });
+            cx.run_until_parked();
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            cx.update(|_, cx| tab.read(cx).diff().cloned().expect("a diff"))
+        };
+        let settle = |cx: &mut VisualTestContext| {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(1));
+            cx.run_until_parked();
+        };
+        let diff = open_tab(cx);
+        cx.update(|window, cx| {
+            diff.update(cx, |v, cx| {
+                v.toggle_edit(window, cx);
+                v.set_edit_text("mine\n", window, cx);
+            })
+        });
+        settle(cx);
+        let kept = store::Edit {
+            text: "mine\n".into(),
+            base: "one\ntwo\n".into(),
+        };
+        assert_eq!(
+            cx.update(|_, cx| store::edit(&root, "a.txt", cx)),
+            Some(kept.clone())
+        );
+        // The tab closes and the app restarts: the typing comes back in the editor.
+        cx.update(|_, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.force_close_tabs(&[selection_key(&sel).into()], cx)
+            });
+            host.update(cx, |h, _| h.center = None);
+        });
+        cx.run_until_parked();
+        restart(cx);
+        assert!(gitviber_ui::store::config_dir().join("edits.json").exists());
+        let diff = open_tab(cx);
+        cx.update(|_, cx| {
+            let v = diff.read(cx);
+            assert!(v.is_editing());
+            assert_eq!(
+                v.unsaved_edit(cx),
+                Some((kept.text.clone(), kept.base.clone()))
+            );
+        });
+        // Saved: nothing is left to keep.
+        cx.update(|window, cx| diff.update(cx, |v, cx| v.save(window, cx)));
+        settle(cx);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "mine\n"
+        );
+        assert_eq!(cx.update(|_, cx| store::edit(&root, "a.txt", cx)), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

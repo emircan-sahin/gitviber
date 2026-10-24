@@ -21,7 +21,7 @@ use gpui_kit::base::input::Rope;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::highlighter::{HighlightTheme, SyntaxHighlighter};
 use gpui_kit::component::scroll::Scrollbar;
-use gpui_kit::component::{Icon, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{Icon, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
@@ -52,6 +52,9 @@ pub enum DiffEvent {
     Saved(String),
     /// Something to tell the user: a failed stage, a copied patch.
     Notice(Notice),
+    /// What's typed into the new side changed, was saved or was dropped: `unsaved_edit` says
+    /// what's left.
+    Edited,
 }
 
 #[derive(Clone, Debug)]
@@ -189,6 +192,9 @@ pub struct DiffView {
     edit: Option<Entity<DiffEditor>>,
     /// The file changed under the editor: shown again at the next frame.
     edit_stale: bool,
+    /// Typing kept from before a restart, and the file's text it was typed over: the editor
+    /// opens with it once the diff has loaded.
+    restore: Option<(String, String)>,
     _edit: Option<Subscription>,
     _load: Task<()>,
     _highlight: Task<()>,
@@ -255,6 +261,7 @@ impl DiffView {
             measured: HashMap::new(),
             edit: None,
             edit_stale: false,
+            restore: None,
             _edit: None,
             _load: Task::ready(()),
             _highlight: Task::ready(()),
@@ -472,23 +479,39 @@ impl DiffView {
         self.edit.as_ref().is_some_and(|e| e.read(cx).is_dirty(cx))
     }
 
-    /// Into the editor, or back to the diff (not while there's typing to save).
+    /// What's typed into the new side and not saved, and the file's text it was typed over:
+    /// for the app to keep across restarts.
+    pub fn unsaved_edit(&self, cx: &App) -> Option<(String, String)> {
+        self.edit.as_ref().and_then(|e| e.read(cx).unsaved(cx))
+    }
+
+    /// Opens the editor with `text` typed over `base` (the file as it was when the typing
+    /// began) once the diff has loaded; a save then asks first if the file changed since.
+    pub fn restore_edit(&mut self, text: String, base: String, cx: &mut Context<Self>) {
+        self.restore = Some((text, base));
+        cx.notify();
+    }
+
+    /// Into the editor, or back to the diff (asking first when there's typing to lose).
     pub fn toggle_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(edit) = &self.edit {
             if edit.read(cx).is_dirty(cx) {
-                self.notice(
-                    NoticeLevel::Info,
-                    "Unsaved changes",
-                    Some("Save them with ⌘S first."),
-                    cx,
-                );
+                self.ask_discard(window, cx);
                 return;
             }
-            self.edit = None;
-            self._edit = None;
-            cx.notify();
+            self.close_editor(cx);
             return;
         }
+        self.open_editor(None, window, cx);
+    }
+
+    /// `kept`: what was typed and the file's text it was typed over, from before a restart.
+    fn open_editor(
+        &mut self,
+        kept: Option<(String, String)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // Lines picked in the diff aren't the editor's.
         self.sel = None;
         self.hover = None;
@@ -497,17 +520,52 @@ impl DiffView {
         };
         let (base, text) = (data.old.text(), data.new.text());
         let path = self.source.path.clone();
-        let edit = cx.new(|cx| DiffEditor::new(path, &base, &text, window, cx));
+        let read = kept.as_ref().map_or(text, |(_, read)| read.clone());
+        let edit = cx.new(|cx| DiffEditor::new(path, &base, &read, window, cx));
+        if let Some((typed, _)) = &kept {
+            edit.update(cx, |e, cx| e.set_text(typed, window, cx));
+        }
         self._edit = Some(cx.subscribe(&edit, |this, _, e: &EditEvent, cx| match e {
+            EditEvent::Changed => cx.emit(DiffEvent::Edited),
             EditEvent::Saved => {
                 cx.emit(DiffEvent::Saved(this.source.path.clone()));
+                cx.emit(DiffEvent::Edited);
                 this.refresh(cx);
             }
             EditEvent::Failed(e) => this.notice(NoticeLevel::Error, "Could not save", Some(e), cx),
             EditEvent::Refused(why) => this.notice(NoticeLevel::Info, "Not saved", Some(why), cx),
         }));
         self.edit = Some(edit);
+        if kept.is_some() {
+            cx.emit(DiffEvent::Edited);
+        }
         cx.notify();
+    }
+
+    fn close_editor(&mut self, cx: &mut Context<Self>) {
+        self.edit = None;
+        self._edit = None;
+        cx.emit(DiffEvent::Edited);
+        cx.notify();
+    }
+
+    fn ask_discard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let weak = cx.entity().downgrade();
+        let path = &self.source.path;
+        let name = path.rsplit('/').next().unwrap_or(path).to_string();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let weak = weak.clone();
+            alert
+                .ok_variant(gpui_kit::component::button::ButtonVariant::Danger)
+                .title("Discard edits")
+                .description(format!("Your edits to {name} aren't saved. Discard them?"))
+                .ok_text("Discard")
+                .show_cancel(true)
+                .on_ok(move |_, _, cx| {
+                    weak.update(cx, |this, cx| this.close_editor(cx)).ok();
+                    true
+                })
+        });
     }
 
     /// ⌘S: writes the edited new side; nothing to save leaves the key to others.
@@ -1853,6 +1911,12 @@ impl Render for DiffView {
                     self._edit = None;
                 }
             }
+        }
+        if self.data.is_some()
+            && self.edit.is_none()
+            && let Some(kept) = self.restore.take()
+        {
+            self.open_editor(Some(kept), window, cx);
         }
         let style = DiffStyle::get(cx).clone();
         for h in self.hl.iter_mut().flatten() {

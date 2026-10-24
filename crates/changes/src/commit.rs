@@ -6,6 +6,7 @@ use crate::model::commit::{Facts, SUMMARY_LIMIT, plan};
 use crate::model::list::{left_out, stageable};
 use crate::model::text::{SUGGEST_PROMPT, command_line, parse_suggestion, program_of};
 use crate::model::{Kind, Lists};
+use crate::store::{self, Draft};
 use gitviber_core::api;
 use gitviber_core::git::{Commit, CommitOptions};
 use gitviber_core::suggest::{Kind as SuggestKind, Scope};
@@ -19,26 +20,11 @@ use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, Textar
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, Global, InteractiveElement as _, IntoElement,
+    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
     Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
-use std::collections::HashMap;
 use std::sync::Arc;
-
-/// What was written, per worktree, for the session: a panel built again (another worktree and
-/// back) finds it.
-#[derive(Default)]
-struct Drafts(HashMap<String, Draft>);
-
-impl Global for Drafts {}
-
-#[derive(Clone, Default, PartialEq)]
-struct Draft {
-    summary: String,
-    body: String,
-    co_authors: Vec<String>,
-}
 
 /// While amending: HEAD's message in the fields, the user's own draft aside.
 struct Amend {
@@ -126,11 +112,11 @@ impl CommitBox {
         }
     }
 
-    fn summary_text(&self, cx: &App) -> String {
+    pub(crate) fn summary_text(&self, cx: &App) -> String {
         self.summary.read(cx).value().to_string()
     }
 
-    fn body_text(&self, cx: &App) -> String {
+    pub(crate) fn body_text(&self, cx: &App) -> String {
         self.body.read(cx).value().to_string()
     }
 
@@ -142,15 +128,17 @@ impl CommitBox {
         }
     }
 
-    /// The draft outlives the box; an amend message isn't one.
+    /// The draft outlives the box and the app, per worktree; an amend message isn't one, nor
+    /// a message as it started (empty, the prepared one or commit.template).
     fn keep_draft(&self, cx: &mut Context<Self>) {
         if self.amend.is_some() || self.facts.root.is_empty() {
             return;
         }
         let draft = self.draft(cx);
-        cx.default_global::<Drafts>()
-            .0
-            .insert(self.facts.root.clone(), draft);
+        let untouched = draft.summary.trim().is_empty()
+            && (draft.body.trim().is_empty() || draft.body == self.start_body)
+            && draft.co_authors.is_empty();
+        store::set_draft(&self.facts.root, (!untouched).then_some(draft), cx);
     }
 
     fn set_fields(
@@ -164,6 +152,9 @@ impl CommitBox {
         self.summary
             .update(cx, |s, cx| s.set_value(summary, window, cx));
         self.body.update(cx, |s, cx| s.set_value(body, window, cx));
+        // set_value says nothing of the change: a suggestion or an amend's draft coming back
+        // is kept as typing is.
+        self.keep_draft(cx);
     }
 
     /// The panel's news: what's staged and changed, HEAD, the branch.
@@ -172,10 +163,7 @@ impl CommitBox {
         let prepared_changed = facts.prepared != self.facts.prepared;
         self.facts = facts;
         if new_root {
-            let draft = cx
-                .try_global::<Drafts>()
-                .and_then(|d| d.0.get(&self.facts.root).cloned())
-                .unwrap_or_default();
+            let draft = store::draft(&self.facts.root, cx).unwrap_or_default();
             self.co_authors = draft.co_authors.clone();
             self.amend = None;
             self.set_fields(&draft.summary, &draft.body, window, cx);
@@ -481,11 +469,6 @@ impl CommitBox {
         });
         self.co_authors = next.co_authors.clone();
         self.set_fields(&next.summary, &next.body, window, cx);
-        if !self.facts.root.is_empty() {
-            cx.default_global::<Drafts>()
-                .0
-                .insert(self.facts.root.clone(), next);
-        }
     }
 
     fn can_suggest(&self, cx: &App) -> bool {

@@ -22,6 +22,8 @@ use std::time::Duration;
 const SETTLE: Duration = Duration::from_millis(150);
 
 pub enum EditEvent {
+    /// Something was typed.
+    Changed,
     Saved,
     Failed(String),
     /// ⌘S did nothing: why.
@@ -73,6 +75,7 @@ impl DiffEditor {
             |this: &mut Self, _, e: &InputEvent, _, cx| {
                 if matches!(e, InputEvent::Change) {
                     this.tint_soon(cx);
+                    cx.emit(EditEvent::Changed);
                 }
             },
         );
@@ -97,6 +100,16 @@ impl DiffEditor {
         *self.state.read(cx).value() != *self.saved
     }
 
+    /// What's typed and not saved, and the file's text it was typed over.
+    pub fn unsaved(&self, cx: &gpui_kit::App) -> Option<(String, String)> {
+        self.is_dirty(cx).then(|| {
+            (
+                self.state.read(cx).value().to_string(),
+                self.saved.to_string(),
+            )
+        })
+    }
+
     /// The file changed on disk: shown as it is now, unless there's typing to keep.
     pub fn file_changed(
         &mut self,
@@ -114,10 +127,13 @@ impl DiffEditor {
         self.tint_soon(cx);
     }
 
-    /// Replaces what's typed (tests, and the app's own edits).
+    /// Replaces what's typed (tests, and the app's own edits), as typing would: set_value
+    /// itself says nothing.
     pub fn set_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         let text = text.to_string();
         self.state.update(cx, |s, cx| s.set_value(text, window, cx));
+        self.tint_soon(cx);
+        cx.emit(EditEvent::Changed);
     }
 
     /// Saving stops (Some) or goes on (None).
