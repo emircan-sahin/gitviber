@@ -9,7 +9,7 @@ use crate::edit::{DiffEditor, EditEvent};
 use crate::highlight::{self, Highlighted};
 use crate::image::{ImageCompare, image_format};
 use crate::language;
-use crate::list::{Heights, Place, Scroll, vlist};
+use crate::list::{Heights, Place, Scroll, Step, vlist};
 use crate::model::display::{self, CONTEXT as CONTEXT_LINES, FOLD_MIN, Item};
 use crate::model::overview::item_marks;
 use crate::model::staging::{self, Change, Picked};
@@ -530,6 +530,24 @@ impl DiffView {
 
     pub fn is_editing(&self) -> bool {
         self.edit.is_some()
+    }
+
+    /// The lines are what's shown: a text diff, not an image, a preview or the editor.
+    fn shows_lines(&self) -> bool {
+        self.image.is_none()
+            && self.edit.is_none()
+            && !self.previewing()
+            && self.data.as_ref().is_some_and(|d| d.placeholder.is_none())
+    }
+
+    /// A scroll key moves the lines; with something else shown, it goes on to that.
+    fn scroll_key(&mut self, step: Step, cx: &mut Context<Self>) {
+        if !self.shows_lines() {
+            return cx.propagate();
+        }
+        if self.scroll.step(step, self.line, self.line) {
+            cx.notify();
+        }
     }
 
     /// Types `text` over the new side being edited (tests).
@@ -1548,6 +1566,12 @@ impl DiffView {
     pub fn scroll_top(&self) -> Pixels {
         self.scroll.top()
     }
+
+    /// How far the lines are scrolled sideways (tests).
+    #[doc(hidden)]
+    pub fn scroll_left(&self) -> Pixels {
+        self.scroll.left()
+    }
 }
 
 fn item_first_row(item: &Item) -> u32 {
@@ -2381,6 +2405,7 @@ impl Render for DiffView {
             .on_action(cx.listener(|this, _: &Save, window, cx| this.save(window, cx)))
             .on_action(cx.listener(|this, _: &SelectUp, _, cx| this.select_step(false, cx)))
             .on_action(cx.listener(|this, _: &SelectDown, _, cx| this.select_step(true, cx)))
+            .map(|el| on_scroll_keys(el, Self::scroll_key, cx))
             .on_action(cx.listener(|this, _: &editor::Find, window, cx| this.open_find(window, cx)))
             .on_action(cx.listener(|this, _: &editor::CopyGitHubLink, window, cx| {
                 this.github_link(false, window, cx)

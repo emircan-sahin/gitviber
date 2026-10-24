@@ -399,7 +399,7 @@ impl DiffView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.can_find() {
+        if self.shows_lines() {
             self.look_up(kind, window, cx)
         } else {
             cx.propagate()

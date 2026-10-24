@@ -16,6 +16,7 @@ mod menu;
 mod overview;
 mod preview;
 mod review_fixes;
+mod scroll;
 mod stacked;
 mod stage;
 mod svg;

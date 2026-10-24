@@ -30,18 +30,10 @@ struct Hit {
 }
 
 impl DiffView {
-    /// Lines to look through: a text diff, not an image, a preview or the editor.
-    pub(super) fn can_find(&self) -> bool {
-        self.image.is_none()
-            && self.edit.is_none()
-            && !self.previewing()
-            && self.data.as_ref().is_some_and(|d| d.placeholder.is_none())
-    }
-
     /// ⌘F: the box, focused with its query selected to type over. A diff with no lines to look
     /// through (an image, a preview, the editor) leaves ⌘F to the view around it.
     pub fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.can_find() {
+        if !self.shows_lines() {
             return cx.propagate();
         }
         if self.find.is_none() {

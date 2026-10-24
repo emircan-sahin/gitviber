@@ -115,7 +115,46 @@ impl Scroll {
     pub fn scroll_to(&self, ix: usize, offset: Pixels, place: Place) {
         self.0.borrow_mut().pending = Some((ix, offset, place));
     }
+
+    /// A scroll key's move: `line` is a code line's height, `keep` what of the last screen a
+    /// page leaves in view. False when it's already as far as that goes.
+    pub fn step(&self, step: Step, line: Pixels, keep: Pixels) -> bool {
+        let (top, total, page) = {
+            let s = self.0.borrow();
+            (s.top, s.total, (s.viewport.size.height - keep).max(line))
+        };
+        self.move_by(match step {
+            Step::Lines(n) => point(px(0.), line * n),
+            Step::Pages(n) => point(px(0.), page * n),
+            Step::Start => point(px(0.), -top),
+            Step::End => point(px(0.), total),
+            Step::Side(n) => point(SIDE_STEP * n, px(0.)),
+        })
+    }
+
+    /// Moves by `delta`, kept within the content; false when it didn't move.
+    fn move_by(&self, delta: Point<Pixels>) -> bool {
+        let mut s = self.0.borrow_mut();
+        let before = (s.top, s.left);
+        let max_top = (s.total - s.viewport.size.height).max(px(0.));
+        s.top = (s.top + delta.y).clamp(px(0.), max_top);
+        s.left = (s.left + delta.x).clamp(px(0.), s.max_left);
+        (s.top, s.left) != before
+    }
 }
+
+/// How far a scroll key moves the list: down or right, negative up or left.
+#[derive(Clone, Copy, Debug)]
+pub enum Step {
+    Lines(f32),
+    Pages(f32),
+    Start,
+    End,
+    /// `SIDE_STEP` at a time.
+    Side(f32),
+}
+
+const SIDE_STEP: Pixels = px(40.);
 
 impl ScrollbarHandle for Scroll {
     fn viewport_bounds(&self) -> Bounds<Pixels> {
@@ -313,16 +352,13 @@ impl Element for VList {
                 return;
             }
             let delta = event.delta.pixel_delta(line);
-            let mut s = scroll.0.borrow_mut();
-            let before = (s.top, s.left);
-            let max_top = (s.total - s.viewport.size.height).max(px(0.));
             // One axis at a time, as a trackpad's sideways swipe drifts.
-            if delta.x.abs() > delta.y.abs() {
-                s.left = (s.left - delta.x).clamp(px(0.), s.max_left);
+            let delta = if delta.x.abs() > delta.y.abs() {
+                point(-delta.x, px(0.))
             } else {
-                s.top = (s.top - delta.y).clamp(px(0.), max_top);
-            }
-            if (s.top, s.left) != before {
+                point(px(0.), -delta.y)
+            };
+            if scroll.move_by(delta) {
                 cx.notify(view);
             }
         });
@@ -349,5 +385,41 @@ mod tests {
         );
         assert_eq!((h.top(2), h.height(1)), (px(30.), px(20.)));
         assert_eq!(Heights::uniform(0, px(5.)).index_at(px(3.)), 0);
+    }
+
+    #[test]
+    fn keys_step_within_the_content() {
+        // 1000 lines of 20px in a 200px view, 100px wider than it.
+        let scroll = Scroll::default();
+        {
+            let mut s = scroll.0.borrow_mut();
+            s.total = px(20_000.);
+            s.viewport = Bounds::new(point(px(0.), px(0.)), size(px(300.), px(200.)));
+            s.max_left = px(100.);
+        }
+        let (line, max_top) = (px(20.), px(19_800.));
+        let step = |step| scroll.step(step, line, line);
+        assert!(!step(Step::Lines(-1.)), "already at the top");
+        assert!(step(Step::Lines(1.)));
+        assert_eq!(scroll.top(), line);
+        // A page keeps the last screen's bottom line in view.
+        assert!(step(Step::Pages(1.)));
+        assert_eq!(scroll.top(), px(200.));
+        assert!(step(Step::End));
+        assert_eq!(scroll.top(), max_top);
+        assert!(!step(Step::Pages(1.)) && !step(Step::Lines(1.)));
+        assert!(step(Step::Pages(-1.)));
+        assert_eq!(scroll.top(), max_top - px(180.));
+        assert!(step(Step::Start));
+        assert_eq!(scroll.top(), px(0.));
+        assert!(step(Step::Side(1.)) && step(Step::Side(1.)) && step(Step::Side(1.)));
+        assert_eq!(scroll.left(), px(100.));
+        assert!(!step(Step::Side(1.)));
+        assert!(step(Step::Side(-1.)));
+        assert_eq!(scroll.left(), px(60.));
+        // A view shorter than a line still moves a line a page.
+        scroll.0.borrow_mut().viewport.size.height = px(10.);
+        assert!(step(Step::Pages(1.)));
+        assert_eq!(scroll.top(), line);
     }
 }

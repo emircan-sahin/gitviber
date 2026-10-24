@@ -4,12 +4,14 @@
 //! change holds a few dozen at a time. J/K walk the files, V marks the one on top viewed, C
 //! puts a note on the line under the pointer, else the first changed one in view.
 
-use crate::actions::{AddNote, Command, NextFile, PrevFile, STACKED_CONTEXT, ToggleViewed};
+use crate::actions::{
+    AddNote, Command, NextFile, PrevFile, STACKED_CONTEXT, ToggleViewed, on_scroll_keys,
+};
 use crate::annotate::{self, Annotation};
 use crate::data::DiffData;
 use crate::highlight::{self, Highlighted};
 use crate::language;
-use crate::list::{Heights, Place, Scroll, vlist};
+use crate::list::{Heights, Place, Scroll, Step, vlist};
 use crate::model::display::{self, CONTEXT as CONTEXT_LINES, FOLD_MIN, Item};
 use crate::model::overview::{Mark, counted_marks, item_marks};
 use crate::model::{LinePos, LineRange, REMOVED, Side};
@@ -360,10 +362,23 @@ impl StackedDiff {
         cx.notify();
     }
 
-    /// Scrolls by `dy` (tests, and the app's page keys).
+    /// Scrolls by `dy` (tests, demos).
     pub fn scroll_by(&mut self, dy: Pixels, cx: &mut Context<Self>) {
         self.scroll.set_top(self.scroll.top() + dy);
         cx.notify();
+    }
+
+    /// How far the files are scrolled (tests).
+    #[doc(hidden)]
+    pub fn scroll_top(&self) -> Pixels {
+        self.scroll.top()
+    }
+
+    /// A page leaves its last line in view below the header that stays on top.
+    fn scroll_key(&mut self, step: Step, cx: &mut Context<Self>) {
+        if self.scroll.step(step, self.line, self.line + px(HEADER)) {
+            cx.notify();
+        }
     }
 
     pub fn files(&self) -> impl Iterator<Item = &StackedFile> {
@@ -1444,6 +1459,7 @@ impl Render for StackedDiff {
             .on_action(cx.listener(|this, _: &PrevFile, _, cx| this.step(false, cx)))
             .on_action(cx.listener(|this, _: &ToggleViewed, _, cx| this.toggle_top_viewed(cx)))
             .on_action(cx.listener(|this, _: &AddNote, _, cx| this.add_note(cx)))
+            .map(|el| on_scroll_keys(el, Self::scroll_key, cx))
             .map(|mut el| {
                 for (action, command) in crate::actions::answers(cx).iter() {
                     let (view, command) = (cx.weak_entity(), *command);
