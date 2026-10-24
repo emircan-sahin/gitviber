@@ -80,6 +80,19 @@ gpui::actions!(
     ]
 );
 
+/// What the programs under shells (by pid) listen on, lowest port first, for a pane's menu: the
+/// browser crate reads the kernel's sockets and sets it (`set_ports_reader`).
+pub type PortsReader = std::rc::Rc<dyn Fn(&[u32]) -> Vec<u16>>;
+
+pub(crate) struct Ports(pub PortsReader);
+
+impl gpui::Global for Ports {}
+
+/// A pane's right-click menu opens what its dev server serves, read through `read`.
+pub fn set_ports_reader(cx: &mut App, read: PortsReader) {
+    cx.set_global(Ports(read));
+}
+
 /// The pane's own keys, and the terminal panel in every workspace's bottom slot.
 pub fn init(cx: &mut App) {
     let pane = Some(PANE_CONTEXT);

@@ -1564,6 +1564,18 @@ impl TerminalPane {
         }
     }
 
+    /// The ports the programs under its shell listen on, as the browser crate reads them.
+    fn served_ports(this: &gpui::WeakEntity<Self>, cx: &App) -> Vec<u16> {
+        let Some(read) = cx.try_global::<crate::Ports>().map(|p| p.0.clone()) else {
+            return vec![];
+        };
+        let shell = this.upgrade().and_then(|p| {
+            let p = p.read(cx);
+            p.session.core().ptys.shell(p.pty_id()?)
+        });
+        shell.map(|s| read(&[s])).unwrap_or_default()
+    }
+
     fn context_menu_state(this: &gpui::WeakEntity<Self>, cx: &App) -> (bool, bool, bool) {
         this.upgrade()
             .map(|p| {
@@ -1648,7 +1660,9 @@ impl Render for TerminalPane {
             .children(overlays)
             .context_menu(move |menu, _, cx| {
                 let (selection, paste, output) = Self::context_menu_state(&weak, cx);
-                menu.action_context(focus.clone())
+                let ports = Self::served_ports(&weak, cx);
+                let mut menu = menu
+                    .action_context(focus.clone())
                     .menu_with_disabled("Copy", Box::new(Copy), !selection)
                     .menu_with_disabled("Paste", Box::new(PasteAction), !paste)
                     .separator()
@@ -1661,7 +1675,29 @@ impl Render for TerminalPane {
                         "Select Last Command Output",
                         Box::new(SelectLastOutput),
                         !output,
-                    )
+                    );
+                // What its programs serve (a dev server), read as the menu opens.
+                if !ports.is_empty() {
+                    menu = menu.separator();
+                }
+                for port in ports {
+                    let weak = weak.clone();
+                    menu = menu.item(
+                        gpui_kit::component::menu::PopupMenuItem::new(format!(
+                            "Open localhost:{port}"
+                        ))
+                        .icon(gpui_kit::component::Icon::new(
+                            gpui_kit::assets::IconName::Globe,
+                        ))
+                        .on_click(move |_, _, cx| {
+                            let url = format!("http://localhost:{port}");
+                            let _ = weak.update(cx, |_, cx| {
+                                cx.emit(PaneEvent::OpenLink(crate::links::Target::Url(url)))
+                            });
+                        }),
+                    );
+                }
+                menu
             })
     }
 }

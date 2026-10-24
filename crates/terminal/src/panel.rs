@@ -378,6 +378,8 @@ impl TerminalPanel {
         let mut subscriptions = vec![
             cx.observe_global::<Settings>(|this, cx| this.sync_look(cx)),
             cx.observe_global::<AppTheme>(|this, cx| this.sync_look(cx)),
+            // A worktree's color picked: its tabs take it.
+            cx.observe_global::<gitviber_refs::store::Saved>(|_, cx| cx.notify()),
         ];
         let mut open = false;
         if let Some(ws) = ctx.workspace.upgrade() {
@@ -569,6 +571,31 @@ impl TerminalPanel {
             revision: project.map_or(0, |p| p.read(cx).revision()),
             repos,
         }
+    }
+
+    /// A tab's color: its worktree's, as the picker shows it (picked, else its name's); a tab
+    /// elsewhere only one picked for its folder.
+    fn tab_hue(&self, cwd: &Path, cx: &mut Context<Self>) -> Option<gpui::Hsla> {
+        use gitviber_refs::worktrees::{hue_color, worktree_hue, worktree_hues};
+        let picked = gitviber_refs::store::colors(cx);
+        let list: Vec<(String, bool)> = self
+            .workspace()
+            .and_then(|ws| ws.read(cx).project().cloned())
+            .and_then(|p| gitviber_refs::RepoState::existing(&p, cx))
+            .map(|r| {
+                gitviber_refs::worktrees::list(&r.read(cx).worktrees)
+                    .into_iter()
+                    .map(|w| (w.path, w.main))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let key = cwd.to_string_lossy().into_owned();
+        let hue = match worktree_hues(&list, &picked).get(&key) {
+            Some(h) => *h,
+            None => worktree_hue(&key, true, &picked),
+        };
+        let t = cx.try_global::<AppTheme>()?;
+        hue.map(|h| hue_color(h, t.tint_l, t.tint_c, 1.))
     }
 
     fn update_links(&mut self, cx: &mut Context<Self>) {
@@ -1743,6 +1770,7 @@ impl TerminalPanel {
             .find(|w| w.path == cwd)
             .and_then(|w| w.branch.clone());
         let here = cwd == self.root;
+        let hue = self.tab_hue(&cwd, cx);
         let order = layout::pane_order(&g.layout);
         let look = crate::agent::most_urgent(g.panes.iter().map(|id| self.look_of_pane(*id)));
         let look_tip = look.map(|l| self.look_label(&g.panes, l));
@@ -1815,6 +1843,19 @@ impl TerminalPanel {
                         .bg(t.primary),
                 )
             })
+            // Its worktree's color, as the worktree picker shows it.
+            .when_some(hue, |d, hue| {
+                d.child(
+                    div()
+                        .absolute()
+                        .top(px(8.))
+                        .bottom(px(8.))
+                        .left_0()
+                        .w(px(2.))
+                        .rounded_r_full()
+                        .bg(hue),
+                )
+            })
             .on_click(cx.listener(move |this, e: &gpui::ClickEvent, window, cx| {
                 if e.click_count() >= 2 {
                     this.start_rename(RenameTarget::Tab(gid), window, cx);
@@ -1829,7 +1870,7 @@ impl TerminalPanel {
             .child(
                 Icon::new(IconName::SquareTerminal)
                     .size(px(14.))
-                    .text_color(if here { t.primary } else { t.subtle }),
+                    .text_color(hue.unwrap_or(if here { t.primary } else { t.subtle })),
             )
             .child(match renaming {
                 Some(input) => div()
