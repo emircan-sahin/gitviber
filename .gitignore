@@ -24,3 +24,6 @@ src-tauri/gen/
 .vscode/*
 !.vscode/extensions.json
 *.log
+
+# Native app build output
+/target/
