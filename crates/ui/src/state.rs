@@ -166,9 +166,11 @@ pub fn state_path() -> PathBuf {
     store::config_dir().join("state.json")
 }
 
+/// Writes the keys that changed into the file as it is now: another process's other keys stay.
 fn save(cx: &mut App) {
-    let text = serde_json::to_string_pretty(UiState::get(cx)).unwrap_or_default();
-    store::write_in_background(cx, state_path(), text);
+    if let Ok(serde_json::Value::Object(map)) = serde_json::to_value(UiState::get(cx)) {
+        store::save_object(cx, state_path(), map);
+    }
 }
 
 /// Stores what `update_later` hasn't yet, on this thread: for quitting.
@@ -179,9 +181,20 @@ pub fn flush(cx: &mut App) {
     store::flush(cx);
 }
 
+/// A file that can't be read, or holds what this build can't take, is moved aside
+/// (`state.json.bad-<time>`) rather than overwritten.
 pub(crate) fn init(cx: &mut App) {
-    let text = std::fs::read_to_string(state_path()).unwrap_or_default();
-    cx.set_global(serde_json::from_str::<UiState>(&text).unwrap_or_default());
+    let path = state_path();
+    let state = match store::read_object(&path) {
+        Some(map) => serde_json::from_value::<UiState>(serde_json::Value::Object(map))
+            .unwrap_or_else(|_| {
+                store::quarantine(&path);
+                store::read_object(&path);
+                UiState::default()
+            }),
+        None => UiState::default(),
+    };
+    cx.set_global(state);
 }
 
 #[cfg(test)]

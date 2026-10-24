@@ -108,8 +108,17 @@ fn host(
     })
 }
 
+/// An example keeps its own settings and state (in the temp folder) rather than rewriting the
+/// app's, unless GITVIBER_CONFIG_DIR names a folder.
+fn use_own_config_dir() {
+    crate::store::use_config_dir(std::env::temp_dir().join("gitviber-dev"));
+}
+
 /// Starts the app with one window showing what `build` makes.
 pub fn run(build: impl FnOnce(&mut Window, &mut App) -> AnyView + 'static) {
+    // Before any thread starts: it may start the process again, as the app does.
+    gitviber_core::malloc::return_freed_blocks();
+    use_own_config_dir();
     #[cfg(feature = "snapshot")]
     if let Some(out) = std::env::var_os("GITVIBER_SNAPSHOT") {
         let wait = std::env::var("GITVIBER_SNAPSHOT_WAIT")
@@ -154,6 +163,7 @@ pub fn snapshot(
     wait: f32,
     build: impl FnOnce(&mut Window, &mut App) -> AnyView + 'static,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use_own_config_dir();
     snapshot_with(
         out,
         size,

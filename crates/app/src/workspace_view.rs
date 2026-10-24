@@ -60,6 +60,7 @@ pub struct WorkspaceView {
     drawn: bool,
     /// Repaints the memory readout now and then, while it shows.
     _memory_tick: Option<Task<()>>,
+    _open_recent: Option<Task<()>>,
     _live: Live,
     _subscriptions: Vec<Subscription>,
 }
@@ -126,6 +127,7 @@ impl WorkspaceView {
             sizes: UiState::get(cx).panels.clone(),
             drawn: false,
             _memory_tick: memory_tick,
+            _open_recent: None,
             _live: Live::new("WorkspaceView"),
             _subscriptions: subs,
         }
@@ -172,19 +174,30 @@ impl WorkspaceView {
 
     fn open_recent(&mut self, action: &OpenRecent, window: &mut Window, cx: &mut Context<Self>) {
         let root = PathBuf::from(action.path.as_ref());
-        if root.is_dir() {
-            self.workspace
-                .update(cx, |ws, cx| ws.open_project(root, window, cx));
-        } else {
-            let path = action.path.to_string();
-            UiState::update(cx, |s| s.recent_projects.retain(|p| *p != path));
-            self.workspace.update(cx, |ws, cx| {
-                ws.toast(
-                    Toast::warning(format!("{} is gone; it's off the list.", action.path)),
-                    cx,
-                )
+        let workspace = self.workspace.downgrade();
+        let handle = window.window_handle();
+        // Off the UI thread: a gone network mount can take seconds to say so.
+        self._open_recent = Some(cx.spawn(async move |_, cx| {
+            let check = root.clone();
+            let there = cx.background_spawn(async move { check.is_dir() }).await;
+            let _ = handle.update(cx, |_, window, cx| {
+                let Some(workspace) = workspace.upgrade() else {
+                    return;
+                };
+                if there {
+                    workspace.update(cx, |ws, cx| ws.open_project(root, window, cx));
+                } else {
+                    let path = root.to_string_lossy().into_owned();
+                    UiState::update(cx, |s| s.recent_projects.retain(|p| *p != path));
+                    workspace.update(cx, |ws, cx| {
+                        ws.toast(
+                            Toast::warning(format!("{path} is gone; it's off the list.")),
+                            cx,
+                        )
+                    });
+                }
             });
-        }
+        }));
     }
 
     fn show_left(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {

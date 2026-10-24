@@ -1,7 +1,7 @@
 //! What shows where a feature crate hasn't registered yet: the panels by their ids, and the top
 //! bar's chips. Each gives way to the real one registered under its id.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use gitviber_ui::ActiveAppTheme;
 use gitviber_ui::memory::Live;
@@ -12,8 +12,8 @@ use gitviber_ui::workspace::{
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, Window, div, prelude::*, px, rems,
+    AnyElement, App, AppContext as _, Context, Global, IntoElement, ParentElement as _, Render,
+    SharedString, Styled as _, Task, Window, div, prelude::*, px, rems,
 };
 
 pub struct Placeholder {
@@ -153,8 +153,58 @@ fn project_chip(ctx: &PanelContext, _: &mut Window, cx: &mut App) -> Option<AnyE
     Some(chip("chip-project", Some(tile), name, None, cx))
 }
 
+/// The branch the chip shows, read off the UI thread once per repo change.
+#[derive(Default)]
+struct BranchCache {
+    /// The root and revision it was read at, and what it said.
+    read: Option<(PathBuf, u64, Option<String>)>,
+    reading: Option<(PathBuf, u64)>,
+    _task: Option<Task<()>>,
+}
+
+impl Global for BranchCache {}
+
+fn cached_branch(root: &Path, revision: u64, cx: &mut App) -> Option<String> {
+    let cache = cx.default_global::<BranchCache>();
+    let fresh = cache
+        .read
+        .as_ref()
+        .is_some_and(|(r, rev, _)| r == root && *rev == revision);
+    let asked = cache
+        .reading
+        .as_ref()
+        .is_some_and(|(r, rev)| r == root && *rev == revision);
+    if !fresh && !asked {
+        let path = root.to_path_buf();
+        cache.reading = Some((path.clone(), revision));
+        let task = cx.spawn(async move |cx| {
+            let read_at = path.clone();
+            let branch = cx
+                .background_spawn(async move { head_branch(&read_at) })
+                .await;
+            cx.update(|cx| {
+                let cache = cx.global_mut::<BranchCache>();
+                cache.read = Some((path, revision, branch));
+                cache.reading = None;
+                cx.refresh_windows();
+            });
+        });
+        cx.global_mut::<BranchCache>()._task = Some(task);
+    }
+    // While a newer read runs, the last one of this root stands in.
+    cx.global::<BranchCache>()
+        .read
+        .as_ref()
+        .filter(|(r, _, _)| r == root)
+        .and_then(|(_, _, b)| b.clone())
+}
+
 fn branch_chip(ctx: &PanelContext, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    let branch = head_branch(ctx.project.as_ref()?.read(cx).root())?;
+    let (root, revision) = ctx.project.as_ref().map(|p| {
+        let p = p.read(cx);
+        (p.root().to_path_buf(), p.revision())
+    })?;
+    let branch = cached_branch(&root, revision, cx)?;
     let t = cx.app_theme();
     let icon = Icon::new(IconName::GitBranch)
         .small()

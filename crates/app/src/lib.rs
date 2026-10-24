@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use gitviber_ui::assets::Assets;
 use gitviber_ui::{UiState, windows};
-use gpui_kit::App;
+use gpui_kit::{App, AppContext as _};
 
 pub use palette::{Mode as PaletteMode, Palette};
 pub use settings_window::open as open_settings;
@@ -23,18 +23,23 @@ pub use workspace_view::{WorkspaceView, open_main_window};
 
 /// The project to open: `gitviber <path>`, else the one used last, while it's there.
 pub fn project_to_open(cx: &App) -> Option<PathBuf> {
-    let from_args = std::env::args_os()
-        .skip(1)
-        .map(PathBuf::from)
-        .find(|p| p.is_dir());
-    let last = || {
-        UiState::get(cx)
-            .recent_projects
-            .first()
-            .map(PathBuf::from)
-            .filter(|p| p.is_dir())
-    };
-    from_args.and_then(|p| p.canonicalize().ok()).or_else(last)
+    first_folder(project_candidates(cx))
+}
+
+/// Where a launch could open, in order: the arguments, then the project used last.
+fn project_candidates(cx: &App) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    out.extend(UiState::get(cx).recent_projects.first().map(PathBuf::from));
+    out
+}
+
+/// The first of `candidates` that is a folder, as its real path. Reads the disk: off the UI
+/// thread, as a gone network mount can take seconds to say so.
+fn first_folder(candidates: Vec<PathBuf>) -> Option<PathBuf> {
+    candidates
+        .into_iter()
+        .filter(|p| p.is_dir())
+        .find_map(|p| p.canonicalize().ok())
 }
 
 /// Everything before the first window: the UI layer, core, the app's commands, menus and
@@ -72,8 +77,27 @@ pub fn run(started: impl FnOnce(&mut App) + 'static) {
     }
     gpui_kit::application().with_assets(Assets).run(move |cx| {
         init(cx);
-        let project = project_to_open(cx);
-        open_main_window(project, cx);
+        let candidates = project_candidates(cx);
+        open_main_window(None, cx);
+        cx.spawn(async move |cx| {
+            let Some(root) = cx
+                .background_spawn(async move { first_folder(candidates) })
+                .await
+            else {
+                return;
+            };
+            cx.update(|cx| {
+                let Some(main) = cx.windows().into_iter().next() else {
+                    return;
+                };
+                let _ = main.update(cx, |_, window, cx| {
+                    if let Some(ws) = gitviber_ui::Workspace::for_window(window, cx) {
+                        ws.update(cx, |ws, cx| ws.open_project(root, window, cx));
+                    }
+                });
+            });
+        })
+        .detach();
         if !windows::background_launch() {
             cx.activate(true);
         }

@@ -20,6 +20,7 @@ pub mod tabs;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use gpui_kit::component::{WindowExt as _, notification::Notification};
 use gpui_kit::{
@@ -113,6 +114,19 @@ pub enum WorkspaceEvent {
 struct Windows(HashMap<AnyWindowHandle, WeakEntity<Workspace>>);
 impl Global for Windows {}
 
+/// Asked about tabs with unsaved edits before they close: the keys, and the workspace to call
+/// `force_close_tabs` on once the user chose. Runs after the close call returns.
+pub type CloseGuard = Rc<dyn Fn(Vec<SharedString>, WeakEntity<Workspace>, &mut App)>;
+
+#[derive(Default)]
+struct CloseGuardGlobal(Option<CloseGuard>);
+impl Global for CloseGuardGlobal {}
+
+/// Sets what asks before tabs with unsaved edits close (the editor's save / discard / keep).
+pub fn set_close_guard(cx: &mut App, guard: CloseGuard) {
+    cx.set_global(CloseGuardGlobal(Some(guard)));
+}
+
 struct SideState {
     open: bool,
     active: Option<&'static str>,
@@ -127,6 +141,9 @@ const CLOSED_KEPT: usize = 20;
 
 pub struct Workspace {
     project: Option<Entity<Project>>,
+    /// The worktree the tabs belong to and are saved under: set once its repo is open, so a
+    /// switch still on its way or one that failed never saves them under another root.
+    tabs_root: Option<String>,
     tabs: Tabs<Tab>,
     /// Tab keys, the latest shown first: which views stay built.
     shown: Vec<SharedString>,
@@ -160,6 +177,7 @@ impl Workspace {
         };
         Self {
             project: None,
+            tabs_root: None,
             tabs: Tabs::default(),
             shown: Vec::new(),
             closed: Vec::new(),
@@ -219,17 +237,6 @@ impl Workspace {
         self.project.as_ref()
     }
 
-    fn root_key(&self, cx: &App) -> Option<String> {
-        Some(
-            self.project
-                .as_ref()?
-                .read(cx)
-                .root()
-                .to_string_lossy()
-                .into_owned(),
-        )
-    }
-
     /// Opens `root` in this window: the old project's tabs are saved and closed, its per-project
     /// panels dropped, the new one's saved workspace restored.
     pub fn open_project(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -241,18 +248,39 @@ impl Workspace {
             return;
         }
         self.drop_project(cx);
-        let key = root.to_string_lossy().into_owned();
         let project = cx.new(|cx| Project::new(root, cx));
         self._project_events = Some(cx.subscribe_in(&project, window, Self::on_project_event));
         self.project = Some(project);
-        UiState::update(cx, |s| s.add_recent_project(&key));
-        let snapshot = UiState::get(cx)
-            .workspace(&key)
-            .cloned()
-            .unwrap_or_default();
-        self.restore(snapshot, cx);
+        // Without core (a test) nothing opens it: it's taken as open where it was asked.
+        if !crate::has_core(cx) {
+            self.opened(cx);
+        }
         cx.emit(WorkspaceEvent::ProjectChanged);
         cx.notify();
+    }
+
+    /// The repo is open: it goes first in the recent projects by its main worktree (agent
+    /// worktrees don't pile up there), and its worktree's tabs come back, by git's top level
+    /// rather than the folder asked for (`gitviber .` from a subfolder).
+    fn opened(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = &self.project else { return };
+        let project = project.read(cx);
+        let root = project.root().to_string_lossy().into_owned();
+        let main = project
+            .main_worktree()
+            .map(|m| m.to_string_lossy().into_owned())
+            .unwrap_or_else(|| root.clone());
+        UiState::update(cx, |s| s.add_recent_project(&main));
+        // Tabs opened while it was opening stay; a saved set comes back only into none.
+        if self.tabs.is_empty() {
+            let snapshot = UiState::get(cx)
+                .workspace(&root)
+                .cloned()
+                .unwrap_or_default();
+            self.restore(snapshot, cx);
+        }
+        self.tabs_root = Some(root);
+        self.changed(WorkspaceEvent::TabsChanged, cx);
     }
 
     fn on_project_event(
@@ -265,20 +293,24 @@ impl Workspace {
         match event {
             // Another worktree's workspace: this one's tabs are saved under its root, the other's come back.
             ProjectEvent::Switched { from, to } => {
-                self.save_snapshot_as(&from.to_string_lossy(), cx);
+                let from = self
+                    .tabs_root
+                    .clone()
+                    .unwrap_or_else(|| from.to_string_lossy().into_owned());
+                self.save_snapshot_as(&from, cx);
                 self.clear_tabs();
-                let snapshot = UiState::get(cx)
-                    .workspace(&to.to_string_lossy())
-                    .cloned()
-                    .unwrap_or_default();
+                let to = to.to_string_lossy().into_owned();
+                let snapshot = UiState::get(cx).workspace(&to).cloned().unwrap_or_default();
                 self.restore(snapshot, cx);
+                self.tabs_root = Some(to);
                 self.changed(WorkspaceEvent::TabsChanged, cx);
             }
             ProjectEvent::Failed(err) => self.toast(
                 Toast::error(err.clone()).title("Couldn't open the repository"),
                 cx,
             ),
-            ProjectEvent::Opened | ProjectEvent::RepoChanged(_) => {}
+            ProjectEvent::Opened => self.opened(cx),
+            ProjectEvent::RepoChanged(_) => {}
         }
     }
 
@@ -309,8 +341,12 @@ impl Workspace {
             .collect();
         self.panels.retain(|id, _| !per_project.contains(id));
         self.clear_tabs();
+        self.tabs_root = None;
         self._project_events = None;
-        self.project = None;
+        if self.project.take().is_some() && crate::has_core(cx) {
+            // Its watcher stops; a project opened next overtakes this in core's queue.
+            crate::backend::close_repo(cx);
+        }
     }
 
     fn clear_tabs(&mut self) {
@@ -332,19 +368,23 @@ impl Workspace {
         self.left.active = pick(snapshot.list_tab, Slot::Left, cx);
         self.right.active = pick(snapshot.right_panel, Slot::Right, cx);
         self.bottom.active = pick(None, Slot::Bottom, cx);
+        let mut active = None;
         for tab in snapshot.tabs {
             let Ok(selection) = serde_json::from_value::<Selection>(tab.sel) else {
                 continue;
             };
             // Keys are derived again: their format can change, and a stale one would stop a
-            // list row from finding its tab.
+            // list row from finding its tab. The saved active key follows its tab's new one.
             let key: SharedString = selection_key(&selection).into();
+            if snapshot.active.as_deref() == Some(tab.key.as_str()) {
+                active = Some(key.clone());
+            }
             self.tabs.open(key, tab.preview, || Tab {
                 handle: None,
                 selection: Some(selection),
             });
         }
-        match snapshot.active {
+        match active {
             Some(active) if self.tabs.activate(&active) => {}
             _ => self.tabs.go_to(0),
         }
@@ -381,8 +421,8 @@ impl Workspace {
     }
 
     fn save_snapshot(&self, cx: &mut App) {
-        if let Some(root) = self.root_key(cx) {
-            self.save_snapshot_as(&root, cx);
+        if let Some(root) = &self.tabs_root {
+            self.save_snapshot_as(root, cx);
         }
     }
 
@@ -465,7 +505,7 @@ impl Workspace {
             self.changed(WorkspaceEvent::TabsChanged, cx);
             return true;
         }
-        let Some(open) = opener(selection.kind(), cx) else {
+        let Some(open) = opener(selection.opener_kind(), cx) else {
             return false;
         };
         let Some(handle) = open(&selection, window, cx) else {
@@ -560,6 +600,16 @@ impl Workspace {
     /// shown, and views past LIVE_TABS that can be built again are let go.
     fn shown_now(&mut self, key: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.ensure_built(key, window, cx);
+        self.note_shown(key, cx);
+        self.focus_active_tab(window, cx);
+    }
+
+    /// Puts `key` first among the shown and lets go of views past LIVE_TABS that can be built
+    /// again.
+    fn note_shown(&mut self, key: &SharedString, cx: &mut Context<Self>) {
+        if self.shown.first() == Some(key) {
+            return;
+        }
         self.shown.retain(|k| k != key);
         self.shown.insert(0, key.clone());
         let app: &App = cx;
@@ -579,7 +629,6 @@ impl Workspace {
         }
         self.shown
             .retain(|k| !release.contains(k) && self.tabs.get(k).is_some());
-        self.focus_active_tab(window, cx);
     }
 
     /// Builds the view of the tab under `key` from its selection, when it has none.
@@ -593,7 +642,7 @@ impl Workspace {
         let Some(selection) = tab.item.selection.clone() else {
             return;
         };
-        let Some(open) = opener(selection.kind(), cx) else {
+        let Some(open) = opener(selection.opener_kind(), cx) else {
             return;
         };
         if let Some(handle) = open(&selection, window, cx) {
@@ -605,10 +654,50 @@ impl Workspace {
     pub fn active_view(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyView> {
         let key = self.tabs.active_key()?.clone();
         self.ensure_built(&key, window, cx);
+        // Shown now, however it became active (a close handing over, a restore).
+        self.note_shown(&key, cx);
         self.tabs.get(&key)?.item.view()
     }
 
+    /// Closes `keys`. Tabs with unsaved edits stay open when a close guard is set: it's handed
+    /// them to ask about, and closes them with `force_close_tabs`.
     pub fn close_tabs(&mut self, keys: &[SharedString], cx: &mut Context<Self>) {
+        let guard = cx
+            .try_global::<CloseGuardGlobal>()
+            .and_then(|g| g.0.clone());
+        if let Some(guard) = guard {
+            let app: &App = cx;
+            let dirty: Vec<SharedString> = keys
+                .iter()
+                .filter(|k| self.tabs.get(k).is_some_and(|t| t.item.is_dirty(app)))
+                .cloned()
+                .collect();
+            if !dirty.is_empty() {
+                let clean: Vec<SharedString> = keys
+                    .iter()
+                    .filter(|k| !dirty.contains(k))
+                    .cloned()
+                    .collect();
+                let weak = cx.weak_entity();
+                cx.defer(move |cx| guard(dirty, weak, cx));
+                return self.force_close_tabs(&clean, cx);
+            }
+        }
+        self.force_close_tabs(keys, cx);
+    }
+
+    /// The tabs under `keys` with unsaved edits, for a switch or a close that needs to ask first.
+    pub fn dirty_tabs(&self, cx: &App) -> Vec<SharedString> {
+        self.tabs
+            .tabs()
+            .iter()
+            .filter(|t| t.item.is_dirty(cx))
+            .map(|t| t.key.clone())
+            .collect()
+    }
+
+    /// Closes `keys` whatever they hold: for a close guard once it asked, or after saving.
+    pub fn force_close_tabs(&mut self, keys: &[SharedString], cx: &mut Context<Self>) {
         let app: &App = cx;
         let mut again = Vec::new();
         let mut once = Vec::new();
@@ -666,7 +755,7 @@ impl Workspace {
                 continue;
             };
             let (key, selection) = self.closed.remove(at);
-            let Some(open) = opener(selection.kind(), cx) else {
+            let Some(open) = opener(selection.opener_kind(), cx) else {
                 continue;
             };
             let Some(handle) = open(&selection, window, cx) else {
@@ -1162,5 +1251,133 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(first.upgrade().is_none());
+    }
+
+    #[gpui_kit::test]
+    fn tabs_made_active_by_a_close_count_as_shown(cx: &mut TestAppContext) {
+        setup(cx);
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        register_file_opener(cx, std::rc::Rc::new(std::cell::Cell::new(0)));
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_project(PathBuf::from("/tmp/gitviber-project-handover"), window, cx);
+                for i in 0..(LIVE_TABS + 6) {
+                    ws.open(file_tab(&format!("h{i}")), false, window, cx);
+                }
+                ws.go_to_tab(0, window, cx);
+                // Each close hands over to a neighbour that the view then draws.
+                for _ in 0..(LIVE_TABS + 4) {
+                    ws.close_active_tab(cx);
+                    assert!(ws.active_view(window, cx).is_some());
+                    let built = ws
+                        .tabs()
+                        .tabs()
+                        .iter()
+                        .filter(|t| t.item.handle().is_some())
+                        .count();
+                    assert!(built <= LIVE_TABS, "{built} views built");
+                }
+            })
+        });
+    }
+
+    fn git_repo(name: &str) -> Option<PathBuf> {
+        let dir = std::env::temp_dir().join(format!("gitviber-ws-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok()?;
+        let ok = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(&dir)
+            .status()
+            .ok()?
+            .success();
+        ok.then(|| dir.canonicalize().unwrap_or(dir))
+    }
+
+    #[gpui_kit::test]
+    fn a_failed_switch_keeps_the_worktree_and_its_tabs(cx: &mut TestAppContext) {
+        let (Some(a), Some(b)) = (git_repo("a"), git_repo("b")) else {
+            return;
+        };
+        setup(cx);
+        cx.update(crate::backend::install_quiet_core);
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        register_file_opener(cx, std::rc::Rc::new(std::cell::Cell::new(0)));
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(a.clone(), window, cx)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                assert!(ws.project().unwrap().read(cx).is_open());
+                ws.open(file_tab("kept.rs"), false, window, cx);
+                ws.switch_worktree(PathBuf::from("/nonexistent/gitviber-worktree"), cx);
+            })
+        });
+        cx.run_until_parked();
+        let a_key = a.to_string_lossy().into_owned();
+        cx.update(|_, cx| {
+            let project = ws.read(cx).project().unwrap().read(cx);
+            assert_eq!(project.root(), a.as_path());
+            assert!(project.is_open());
+            assert_eq!(ws.read(cx).tabs().len(), 1);
+        });
+        // A switch that works saves the tabs under the worktree they were in.
+        cx.update(|_, cx| ws.update(cx, |ws, cx| ws.switch_worktree(b.clone(), cx)));
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert_eq!(ws.read(cx).project().unwrap().read(cx).root(), b.as_path());
+            assert!(ws.read(cx).tabs().is_empty());
+            let saved = UiState::get(cx).workspace(&a_key).unwrap();
+            assert_eq!(saved.tabs.len(), 1);
+            assert!(
+                UiState::get(cx)
+                    .workspace("/nonexistent/gitviber-worktree")
+                    .is_none()
+            );
+        });
+    }
+
+    struct Edited;
+    impl Render for Edited {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+    impl TabItem for Edited {
+        fn tab_title(&self, _: &App) -> SharedString {
+            "edited".into()
+        }
+        fn is_dirty(&self, _: &App) -> bool {
+            true
+        }
+    }
+
+    #[gpui_kit::test]
+    fn tabs_with_unsaved_edits_wait_for_the_guard(cx: &mut TestAppContext) {
+        setup(cx);
+        let asked = std::rc::Rc::new(std::cell::RefCell::new(Vec::<SharedString>::new()));
+        let seen = asked.clone();
+        cx.update(|cx| {
+            set_close_guard(
+                cx,
+                Rc::new(move |keys, _, _| seen.borrow_mut().extend(keys)),
+            )
+        });
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_project(PathBuf::from("/tmp/gitviber-project-dirty"), window, cx);
+                ws.open_tab("edited", false, |_, cx| cx.new(|_| Edited), window, cx);
+                ws.open_tab("plain", false, |_, cx| cx.new(|_| Doc), window, cx);
+                ws.close_group(TabGroup::All, cx);
+                assert_eq!(ws.tabs().len(), 1);
+                assert_eq!(ws.dirty_tabs(cx), vec![SharedString::from("edited")]);
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(*asked.borrow(), vec![SharedString::from("edited")]);
+        cx.update(|_, cx| ws.update(cx, |ws, cx| ws.force_close_tabs(&["edited".into()], cx)));
+        assert!(cx.update(|_, cx| ws.read(cx).tabs().is_empty()));
     }
 }

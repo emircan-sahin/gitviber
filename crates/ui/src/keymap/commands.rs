@@ -186,7 +186,13 @@ pub static COMMANDS: &[Command] = &[
     cmd::<tab::Last>("tab.last", "Go to Last Tab", Tabs, &["cmd+9"]),
     // ⌘←/⌘→ skip text fields and the terminal (see runsWhileTyping); ⇧⌘] shows in the menu as it works everywhere.
     // Elsewhere Ctrl+Tab ("cmd" there); Ctrl+← / Ctrl+→ move by word.
-    cmd::<tab::Next>("tab.next", "Next Tab", Tabs, &[]).other(&["cmd+tab"]),
+    cmd::<tab::Next>(
+        "tab.next",
+        "Next Tab",
+        Tabs,
+        &["shift+cmd+]", "cmd+right", "ctrl+tab"],
+    )
+    .other(&["cmd+tab", "shift+cmd+]"]),
     cmd::<tab::Prev>(
         "tab.prev",
         "Previous Tab",
@@ -564,7 +570,7 @@ pub static COMMANDS: &[Command] = &[
     .local("Browser"),
     cmd::<browser::Reload>("browser.reload", "Reload Page", Browser, &["cmd+r"]).local("Browser"),
     cmd::<browser::Back>("browser.back", "Go Back", Browser, &["cmd+["]).local("Browser"),
-    cmd::<browser::Forward>("browser.forward", "Go Forward", Browser, &[]).local("Browser"),
+    cmd::<browser::Forward>("browser.forward", "Go Forward", Browser, &["cmd+]"]).local("Browser"),
     // As Safari's; where WebKit can't open it from here, the page's menu has Inspect Element.
     cmd::<browser::Inspect>(
         "browser.inspect",

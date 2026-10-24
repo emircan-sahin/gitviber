@@ -318,6 +318,84 @@ mod tests {
         assert!(bindings.len() > 100, "{}", bindings.len());
     }
 
+    /// The quoted strings of the list after `field: [` on `line`, brackets in them included.
+    fn ts_list(line: &str, field: &str) -> Option<Vec<String>> {
+        let start = line.find(&format!("{field}: ["))? + field.len() + 3;
+        let mut out = Vec::new();
+        let mut chars = line[start..].chars();
+        loop {
+            match chars.next()? {
+                ']' => return Some(out),
+                '"' => out.push(chars.by_ref().take_while(|c| *c != '"').collect()),
+                _ => {}
+            }
+        }
+    }
+
+    fn ts_field<'a>(line: &'a str, field: &str) -> Option<&'a str> {
+        let start = line.find(&format!("{field}: \""))? + field.len() + 3;
+        Some(&line[start..start + line[start..].find('"')?])
+    }
+
+    #[test]
+    fn every_default_is_the_old_apps() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../src/lib/commands/commands.ts"
+        );
+        // The old app goes once the port is done; until then each default must match it.
+        let Ok(ts) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let body = &ts[ts.find("export const COMMANDS = [").unwrap()
+            ..ts.find("] as const satisfies").unwrap()];
+        let mut seen = 0;
+        for line in body
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("{ id: \""))
+        {
+            let id = ts_field(line, "id").unwrap();
+            let c = command(id).unwrap_or_else(|| panic!("{id} missing"));
+            let keys = ts_list(line, "keys").unwrap();
+            assert_eq!(
+                c.keys,
+                keys.iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                "{id} keys"
+            );
+            let other = ts_list(line, "keysOther");
+            let ours = c
+                .keys_other
+                .map(|k| k.iter().map(|k| k.to_string()).collect::<Vec<_>>());
+            assert_eq!(ours, other, "{id} keysOther");
+            assert_eq!(
+                c.local.is_some(),
+                ts_field(line, "local").is_some(),
+                "{id} local"
+            );
+            assert_eq!(
+                c.outside_text,
+                line.contains("outsideText: true"),
+                "{id} outsideText"
+            );
+            assert_eq!(
+                c.in_editor,
+                line.contains("inEditor: true"),
+                "{id} inEditor"
+            );
+            assert_eq!(
+                c.no_repeat,
+                line.contains("noRepeat: true"),
+                "{id} noRepeat"
+            );
+            seen += 1;
+        }
+        assert_eq!(seen, COMMANDS.len());
+    }
+
     #[test]
     fn overrides_replace_and_unbind() {
         let push = command("git.push").unwrap();

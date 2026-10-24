@@ -568,7 +568,7 @@ fn shortcuts_page() -> SettingPage {
     }
     SettingPage::new("Keyboard Shortcuts")
         .icon(IconName::Keyboard)
-        .description("Rebinding comes with the shortcut editor; bindings in settings.json's keybindings apply now.")
+        .description("Rebinding comes with the shortcut editor; the keybindings in settings.json apply when GitViber starts.")
         .resettable(false)
         .groups(groups)
 }

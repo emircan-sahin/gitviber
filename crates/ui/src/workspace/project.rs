@@ -5,10 +5,10 @@
 
 use std::path::{Path, PathBuf};
 
-use gitviber_core::{Event, api, watch};
-use gpui_kit::{AppContext as _, Context, EventEmitter, SharedString, Subscription, Task};
+use gitviber_core::{Event, watch};
+use gpui_kit::{Context, EventEmitter, SharedString, Subscription, Task};
 
-use crate::backend::{CoreEvents, core, has_core};
+use crate::backend::{self, CoreEvents, has_core};
 use crate::memory::Live;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,18 +83,21 @@ impl Project {
         project
     }
 
-    /// Runs `open_repo` on `root` in the background; `from`: the worktree this switches away from.
+    /// Opens `root` in core (after what core is doing); `from`: the worktree this switches away
+    /// from. The root changes only once it's open: a failed switch stays where it was.
     fn open(&mut self, root: PathBuf, from: Option<PathBuf>, cx: &mut Context<Self>) {
         if !has_core(cx) {
             return;
         }
-        let core = core(cx);
-        self.state = RepoState::Opening;
-        let path = root.to_string_lossy().into_owned();
+        if from.is_none() {
+            self.state = RepoState::Opening;
+        }
+        let answer = backend::open_repo(cx, root);
         self._open = Some(cx.spawn(async move |this, cx| {
-            let opened = cx
-                .background_spawn(async move { api::repo::open_repo(&core, path) })
-                .await;
+            // None: a newer open or a close overtook this one.
+            let Ok(Some(opened)) = answer.await else {
+                return;
+            };
             let _ = this.update(cx, |this, cx| {
                 match opened {
                     Ok(repo) => {
@@ -112,7 +115,10 @@ impl Project {
                         });
                     }
                     Err(err) => {
-                        this.state = RepoState::Failed(err.clone());
+                        // A failed switch leaves core on the worktree it had.
+                        if from.is_none() {
+                            this.state = RepoState::Failed(err.clone());
+                        }
                         cx.emit(ProjectEvent::Failed(err));
                     }
                 }
@@ -122,11 +128,10 @@ impl Project {
         }));
     }
 
-    /// Opens another worktree of the repo in its place; `Switched` follows once it's open.
+    /// Opens another worktree of the repo in its place; `Switched` follows once it's open, and
+    /// until then `root` is the one still open.
     pub fn switch_worktree(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         let from = self.root.clone();
-        self.root = root.clone();
-        self.name = folder_name(&root);
         self.open(root, Some(from), cx);
         cx.notify();
     }

@@ -33,9 +33,47 @@ fn split(chord: &str) -> (Vec<&str>, &str) {
     (parts, key)
 }
 
-/// The chord as GPUI's keymap reads it ("shift-cmd-e"), for this platform.
+/// What a US layout types with Shift on a digit or symbol key.
+fn shifted(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "`" => "~",
+        "1" => "!",
+        "2" => "@",
+        "3" => "#",
+        "4" => "$",
+        "5" => "%",
+        "6" => "^",
+        "7" => "&",
+        "8" => "*",
+        "9" => "(",
+        "0" => ")",
+        "-" => "_",
+        "=" => "+",
+        "[" => "{",
+        "]" => "}",
+        "\\" => "|",
+        ";" => ":",
+        "'" => "\"",
+        "," => "<",
+        "." => ">",
+        "/" => "?",
+        _ => return None,
+    })
+}
+
+/// The chord as GPUI's keymap reads it ("shift-cmd-e"), for this platform. On macOS GPUI reports
+/// Shift with a digit or symbol as the character it types and no Shift (⇧⌘] comes as ⌘}), so
+/// the binding names that character; letters and named keys keep Shift.
 pub fn to_keystroke(chord: &str, mac: bool) -> String {
-    let (mods, key) = split(chord);
+    let (mods, mut key) = split(chord);
+    let mut mods: Vec<&str> = mods;
+    if mac
+        && mods.contains(&"shift")
+        && let Some(typed) = shifted(key)
+    {
+        mods.retain(|m| *m != "shift");
+        key = typed;
+    }
     let mut out: Vec<&str> = mods
         .iter()
         .map(|m| match (*m, mac) {
@@ -202,6 +240,37 @@ mod tests {
         assert_eq!(to_keystroke("ctrl+1", false), "super-1");
         assert_eq!(to_keystroke("alt+cmd+=", true), "alt-cmd-=");
         assert_eq!(to_keystroke("f7", true), "f7");
+    }
+
+    #[test]
+    fn shifted_symbols_bind_as_macos_reports_them() {
+        assert_eq!(to_keystroke("shift+cmd+[", true), "cmd-{");
+        assert_eq!(to_keystroke("shift+cmd+]", true), "cmd-}");
+        assert_eq!(to_keystroke("shift+cmd+=", true), "cmd-+");
+        assert_eq!(to_keystroke("shift+/", true), "?");
+        assert_eq!(to_keystroke("shift+cmd+1", true), "cmd-!");
+        // Letters and named keys keep Shift; elsewhere nothing changes.
+        assert_eq!(to_keystroke("shift+cmd+p", true), "shift-cmd-p");
+        assert_eq!(to_keystroke("ctrl+shift+tab", true), "ctrl-shift-tab");
+        assert_eq!(to_keystroke("shift+cmd+[", false), "shift-ctrl-[");
+        // What GPUI's macOS backend makes of ⇧⌘[ is ⌘{: the binding has to take that.
+        let typed = gpui_kit::Keystroke::parse("cmd-{").unwrap();
+        let bind = |ks: &str| {
+            gpui_kit::KeyBinding::load(
+                ks,
+                Box::new(crate::actions::tab::Prev),
+                None,
+                false,
+                None,
+                &gpui_kit::DummyKeyboardMapper,
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            bind(&to_keystroke("shift+cmd+[", true)).match_keystrokes(std::slice::from_ref(&typed)),
+            Some(false)
+        );
+        assert_eq!(bind("shift-cmd-[").match_keystrokes(&[typed]), None);
     }
 
     #[test]

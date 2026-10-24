@@ -497,6 +497,12 @@ settings! {
 }
 
 /// A typed font name without the characters that could break out of a quoted family name.
+fn strip_font_chars(name: &str) -> String {
+    name.chars()
+        .filter(|c| !matches!(c, '"' | '\'' | '\\' | ';' | '{' | '}'))
+        .collect()
+}
+
 pub fn clean_font_name(name: &str) -> String {
     name.chars()
         .filter(|c| !matches!(c, '"' | '\'' | '\\' | ';' | '{' | '}'))
@@ -552,9 +558,11 @@ impl Settings {
         if !self.line_height.is_finite() || !(1.0..=3.0).contains(&self.line_height) {
             self.line_height = d.line_height;
         }
-        self.custom_code_font = clean_font_name(&self.custom_code_font);
-        self.custom_ui_font = clean_font_name(&self.custom_ui_font);
-        self.custom_terminal_font = clean_font_name(&self.custom_terminal_font);
+        // Not trimmed here: the field saves on every keystroke, and "Fira Code" has a space to
+        // type. Fonts are looked up trimmed (`custom_*_font_name`).
+        self.custom_code_font = strip_font_chars(&self.custom_code_font);
+        self.custom_ui_font = strip_font_chars(&self.custom_ui_font);
+        self.custom_terminal_font = strip_font_chars(&self.custom_terminal_font);
         if !SYNTAX_THEMES.iter().any(|(id, _)| *id == self.syntax_theme) {
             self.syntax_theme = d.syntax_theme.clone();
         }

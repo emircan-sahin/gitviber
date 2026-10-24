@@ -18,12 +18,6 @@ use crate::store;
 
 impl Global for Settings {}
 
-/// What the file held that this build doesn't read.
-#[derive(Default)]
-struct Unknown(Map<String, Value>);
-
-impl Global for Unknown {}
-
 impl Settings {
     pub fn get(cx: &App) -> &Settings {
         cx.global::<Settings>()
@@ -130,17 +124,21 @@ pub fn settings_path() -> PathBuf {
     store::config_dir().join("settings.json")
 }
 
+/// Writes the keys that changed into the file as it is now: a hand edit to another key, or
+/// keys this build doesn't know, stay.
 fn save(cx: &mut App) {
-    let text = Settings::get(cx).to_json(&cx.global::<Unknown>().0);
-    store::write_in_background(cx, settings_path(), text);
+    if let Ok(Value::Object(map)) = serde_json::to_value(Settings::get(cx)) {
+        store::save_object(cx, settings_path(), map);
+    }
 }
 
+/// A file that can't be read is moved aside (`settings.json.bad-<time>`) rather than replaced
+/// by the defaults at the next save.
 pub(crate) fn init(cx: &mut App) {
-    let text = std::fs::read_to_string(settings_path()).unwrap_or_default();
-    let value = serde_json::from_str(&text).unwrap_or(Value::Null);
-    let (settings, unknown) = Settings::from_value(&value);
-    cx.set_global(settings);
-    cx.set_global(Unknown(unknown));
+    let value = store::read_object(&settings_path())
+        .map(Value::Object)
+        .unwrap_or(Value::Null);
+    cx.set_global(Settings::from_value(&value).0);
 }
 
 #[cfg(test)]
@@ -225,7 +223,14 @@ mod tests {
         s.normalize();
         assert_eq!(s.code_font_size, CODE_FONT_MAX);
         assert_eq!(s.terminal_font_size, TERMINAL_FONT_MIN);
-        assert_eq!(s.custom_code_font, "Fira");
+        // Kept as typed but for the quoting characters: a space mid-name gets typed too.
+        assert_eq!(s.custom_code_font, " Fira  ");
+        let mut typing = Settings {
+            custom_code_font: "Fira ".into(),
+            ..Settings::default()
+        };
+        typing.normalize();
+        assert_eq!(typing.custom_code_font, "Fira ");
         assert_eq!(s.ui_font_weight, 500);
         assert_eq!(s.terminal_scrollback, 10_000);
     }

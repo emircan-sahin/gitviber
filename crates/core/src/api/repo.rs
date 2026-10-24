@@ -29,6 +29,14 @@ pub fn open_repo(core: &Core, path: String) -> Res<OpenedRepo> {
     Ok(OpenedRepo { root, main })
 }
 
+/// Closes the open repo: its watcher stops, and commands find no repo open until the next
+/// `open_repo`.
+pub fn close_repo(core: &Core) -> Res<()> {
+    *core.watcher.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *core.repo.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    Ok(())
+}
+
 pub fn git_info(core: &Core, recheck: bool) -> Res<git::GitInfo> {
     if let Some(info) = core
         .git
@@ -183,4 +191,27 @@ pub fn trust_folder(_core: &Core, path: String) -> Res<()> {
 
 pub fn init_repo(_core: &Core, path: String) -> Res<()> {
     git::init(Path::new(&path))
+}
+
+#[cfg(test)]
+mod close_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn closing_leaves_no_repo_open() {
+        let dir = std::env::temp_dir().join(format!("gitviber-close-repo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let init = std::process::Command::new("git").arg("init").arg("-q").arg(&dir).status();
+        let core = Core::new(Arc::new(|_| {}));
+        if init.is_ok_and(|s| s.success()) {
+            open_repo(&core, dir.to_string_lossy().into_owned()).unwrap();
+            assert!(core.repo().is_ok());
+            assert!(core.watcher.lock().unwrap().is_some());
+        }
+        close_repo(&core).unwrap();
+        assert!(core.repo().is_err());
+        assert!(core.watcher.lock().unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

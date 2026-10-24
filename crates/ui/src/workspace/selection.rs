@@ -258,6 +258,21 @@ impl Selection {
         }
     }
 
+    /// The kind its opener is registered under: `kind()`, but for whole lists, which two crates
+    /// open: "changes" (the unstaged, staged and branch lists), "changes-commit" (a commit's
+    /// files), "changes-range" (a comparison's or a PR's).
+    pub fn opener_kind(&self) -> &'static str {
+        match self {
+            Self::Changes {
+                of: ChangesOf::Commit { .. },
+            } => "changes-commit",
+            Self::Changes {
+                of: ChangesOf::Range { .. },
+            } => "changes-range",
+            _ => self.kind(),
+        }
+    }
+
     /// The repo file it shows, for file-like selections.
     pub fn file(&self) -> Option<&FileChange> {
         match self {
@@ -601,8 +616,9 @@ struct Openers(HashMap<&'static str, Opener>);
 
 impl Global for Openers {}
 
-/// Makes `open` the builder of `kind`'s tabs ("unstaged", "file", "pull"…), replacing one
-/// registered before. One feature can register several kinds with the same function.
+/// Makes `open` the builder of `kind`'s tabs, replacing one registered before: a
+/// `Selection::opener_kind()` ("unstaged", "file", "pull", "changes-commit"…). One feature can
+/// register several kinds with the same function.
 pub fn register_opener(
     cx: &mut App,
     kind: &'static str,
@@ -801,5 +817,46 @@ mod tests {
         assert!(
             serde_json::from_value::<Selection>(serde_json::json!({ "kind": "nope" })).is_err()
         );
+    }
+
+    #[test]
+    fn whole_lists_open_by_their_own_kinds() {
+        let commit = Selection::Changes {
+            of: ChangesOf::Commit {
+                commit: commit(&"c".repeat(40)),
+                url: None,
+            },
+        };
+        let range = PullRange {
+            number: None,
+            pull_url: None,
+            label: None,
+            base: "1".into(),
+            head: "2".into(),
+        };
+        assert_eq!(
+            Selection::Changes {
+                of: ChangesOf::Unstaged
+            }
+            .opener_kind(),
+            "changes"
+        );
+        assert_eq!(
+            Selection::Changes {
+                of: ChangesOf::Branch
+            }
+            .opener_kind(),
+            "changes"
+        );
+        assert_eq!(commit.opener_kind(), "changes-commit");
+        assert_eq!(
+            Selection::Changes {
+                of: ChangesOf::Range { range }
+            }
+            .opener_kind(),
+            "changes-range"
+        );
+        assert_eq!(commit.kind(), "changes");
+        assert_eq!(Selection::files("a", "b").opener_kind(), "files");
     }
 }

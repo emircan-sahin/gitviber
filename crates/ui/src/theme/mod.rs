@@ -459,19 +459,20 @@ fn code_family(font: CodeFont, custom: &str, cx: &mut App) -> SharedString {
 fn resolve_fonts(s: &Settings, cx: &mut App) -> Fonts {
     let ui = match s.ui_font {
         UiFont::System => ".SystemUIFont".into(),
-        UiFont::Custom if !s.custom_ui_font.is_empty() => {
-            first_installed(&[s.custom_ui_font.as_str(), ".SystemUIFont"], cx)
+        UiFont::Custom if !s.custom_ui_font.trim().is_empty() => {
+            first_installed(&[s.custom_ui_font.trim(), ".SystemUIFont"], cx)
         }
         UiFont::Custom => ".SystemUIFont".into(),
         preset => first_installed(&[preset.as_str(), ".SystemUIFont"], cx),
     };
-    let code = code_family(s.code_font, &s.custom_code_font, cx);
+    let code = code_family(s.code_font, s.custom_code_font.trim(), cx);
     let terminal = match s.terminal_font {
         TerminalFont::Editor => code.clone(),
         TerminalFont::Custom
-            if !s.custom_terminal_font.is_empty() && installed(&s.custom_terminal_font, cx) =>
+            if !s.custom_terminal_font.trim().is_empty()
+                && installed(s.custom_terminal_font.trim(), cx) =>
         {
-            s.custom_terminal_font.clone().into()
+            s.custom_terminal_font.trim().to_string().into()
         }
         TerminalFont::Custom => code.clone(),
         preset => mono(preset.as_str(), cx),

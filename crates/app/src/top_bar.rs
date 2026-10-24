@@ -15,12 +15,11 @@ use gpui_kit::{
     div, img, prelude::*, px, rems,
 };
 
-/// What the buttons need to know to draw: whether a frame was drawn (GPUI can tell which
-/// commands apply only from one), the window, the app, and where the menus' commands go.
+/// What the buttons need to know to draw: the commands that apply where focus is (None before
+/// a frame is drawn, which GPUI tells them from), the app, and where the menus' commands go.
 struct Bar<'a> {
-    drawn: bool,
+    available: Option<Vec<&'static str>>,
     focus: &'a FocusHandle,
-    window: &'a Window,
     cx: &'a App,
 }
 
@@ -34,8 +33,11 @@ impl Bar<'_> {
         }
     }
 
+    /// Handled along focus's path or by a global listener (a feature's `cx.on_action`).
     fn enabled(&self, action: &dyn Action) -> bool {
-        !self.drawn || self.window.is_action_available(action, self.cx)
+        self.available
+            .as_ref()
+            .is_none_or(|names| names.contains(&action.name()))
     }
 
     fn icon_button(
@@ -131,10 +133,16 @@ pub fn top_bar(
                 .text_size(rems(0.8125))
                 .child("GitViber"),
         );
+    let available = drawn.then(|| {
+        window
+            .available_actions(cx)
+            .iter()
+            .map(|a| a.name())
+            .collect()
+    });
     let bar = Bar {
-        drawn,
+        available,
         focus,
-        window,
         cx,
     };
     let pull = bar.split(
