@@ -22,7 +22,7 @@ use gpui_kit::{
     App, AppContext as _, Bounds, ClickEvent, Context, Entity, FocusHandle, Focusable as _,
     InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, actions,
-    canvas, div, fill, point, px, relative, size,
+    canvas, div, fill, point, prelude::FluentBuilder as _, px, relative, size,
 };
 
 use crate::backend;
@@ -79,8 +79,13 @@ pub struct CodeView {
     edits: u64,
     goto: Option<(Entity<InputState>, Subscription)>,
     places: Option<Places>,
+    /// Who last changed each line, while Settings asks for it (View → Blame).
+    blame: Option<Arc<Blamed>>,
+    blame_on: bool,
     focus: FocusHandle,
     _change: Subscription,
+    _settings: Subscription,
+    _blame: Task<()>,
     _bars: Task<()>,
     _save: Task<()>,
     _lookup: Task<()>,
@@ -88,6 +93,57 @@ pub struct CodeView {
 }
 
 impl gpui_kit::EventEmitter<CodeEvent> for CodeView {}
+
+/// A file's blame with each commit's label made once.
+pub struct Blamed {
+    blame: gitviber_core::git::Blame,
+    labels: Vec<SharedString>,
+}
+
+/// Characters in a label: short SHA, author, age.
+const BLAME_CHARS: f32 = 33.;
+const AUTHOR_CHARS: usize = 16;
+
+impl Blamed {
+    fn new(blame: gitviber_core::git::Blame) -> Self {
+        let now = gitviber_ui::widgets::now_unix();
+        let labels = blame
+            .commits
+            .iter()
+            .map(|c| {
+                if c.sha.bytes().all(|b| b == b'0') {
+                    return SharedString::from("Uncommitted");
+                }
+                let mut author: String = c.author_name.chars().take(AUTHOR_CHARS).collect();
+                if c.author_name.chars().count() > AUTHOR_CHARS {
+                    author.pop();
+                    author.push('…');
+                }
+                let when = gitviber_ui::widgets::relative_time(c.timestamp, now);
+                format!(
+                    "{} {author:<AUTHOR_CHARS$} {when}",
+                    &c.sha[..c.sha.len().min(7)]
+                )
+                .into()
+            })
+            .collect();
+        Blamed { blame, labels }
+    }
+
+    /// The commit of `line` (0-based); lines git has none for (past its end) are new.
+    fn index(&self, line: usize) -> Option<usize> {
+        self.blame.lines.get(line).map(|&i| i as usize)
+    }
+
+    fn commit(&self, line: usize) -> Option<&gitviber_core::git::BlameCommit> {
+        self.blame.commits.get(self.index(line)?)
+    }
+}
+
+/// The width of the blame column at the code font's size.
+fn blame_width(font_size: Pixels) -> Pixels {
+    font_size * (0.6 * (BLAME_CHARS + 2.))
+}
 
 /// ⌘-click and F12 look names up through core.
 struct Definitions {
@@ -287,7 +343,18 @@ impl CodeView {
                 cx.notify();
             }
         });
-        CodeView {
+        // Word wrap and blame follow the settings as they change.
+        let settings = cx.observe_global_in::<gitviber_ui::Settings>(window, |this, window, cx| {
+            let s = gitviber_ui::Settings::get(cx);
+            let (wrap, blame) = (s.word_wrap, s.blame);
+            this.state
+                .update(cx, |st, cx| st.set_soft_wrap(wrap, window, cx));
+            if blame != this.blame_on {
+                this.blame_on = blame;
+                this.load_blame(cx);
+            }
+        });
+        let mut this = CodeView {
             workspace,
             core,
             source,
@@ -300,17 +367,110 @@ impl CodeView {
             edits: 0,
             goto: None,
             places: None,
+            blame: None,
+            blame_on: false,
             focus: cx.focus_handle(),
             _change: change,
+            _settings: settings,
+            _blame: Task::ready(()),
             _bars: Task::ready(()),
             _save: Task::ready(()),
             _lookup: Task::ready(()),
             _live: Live::new("CodeView"),
+        };
+        this.blame_on = gitviber_ui::Settings::get(cx).blame;
+        this.load_blame(cx);
+        this
+    }
+
+    /// Reads who last changed each line in the background, or drops it when blame is off.
+    fn load_blame(&mut self, cx: &mut Context<Self>) {
+        if !self.blame_on || self.source.root.is_none() {
+            self.blame = None;
+            self._blame = Task::ready(());
+            cx.notify();
+            return;
         }
+        let (core, path) = (self.core.clone(), self.source.path.clone());
+        self._blame = cx.spawn(async move |this, cx| {
+            let blame = cx
+                .background_spawn(async move { api::history::blame(&core, path) })
+                .await;
+            _ = this.update(cx, |this, cx| {
+                match blame {
+                    Ok(blame) => this.blame = Some(Arc::new(Blamed::new(blame))),
+                    Err(e) => {
+                        this.blame = None;
+                        _ = this.workspace.update(cx, |ws, cx| {
+                            ws.toast(Toast::error(e).title("Could not blame this file"), cx)
+                        });
+                    }
+                }
+                cx.notify();
+            });
+        });
+    }
+
+    /// Shows the commit that last changed `line` (0-based) in History.
+    fn show_blamed(&self, line: usize, window: &mut Window, cx: &mut App) {
+        let Some(blamed) = &self.blame else { return };
+        let Some(c) = blamed.commit(line) else { return };
+        if c.sha.bytes().all(|b| b == b'0') {
+            return;
+        }
+        let (subject, body) = c
+            .message
+            .split_once('\n')
+            .map_or((c.message.as_str(), ""), |(s, b)| (s, b.trim_start()));
+        let commit = gitviber_core::git::Commit {
+            sha: c.sha.clone(),
+            short_sha: c.sha.chars().take(7).collect(),
+            author_name: c.author_name.clone(),
+            author_email: c.author_email.clone(),
+            timestamp: c.timestamp,
+            committer_name: c.author_name.clone(),
+            committed_at: c.timestamp,
+            parents: vec![],
+            refs: vec![],
+            subject: subject.to_string(),
+            body: body.to_string(),
+            unpushed: false,
+            on_origin: false,
+            not_in_head: false,
+            file: Some(c.path.clone()),
+        };
+        let mut file = crate::files_selection(&c.path, &c.path);
+        if let gitviber_ui::workspace::Selection::Files { file: f } = &mut file {
+            let mut change = (**f).clone();
+            change.old_path = None;
+            *f = Arc::new(change);
+        }
+        let gitviber_ui::workspace::Selection::Files { file } = file else {
+            return;
+        };
+        let selection = gitviber_ui::workspace::Selection::Commit {
+            commit: Arc::new(commit),
+            file,
+            url: None,
+        };
+        _ = self
+            .workspace
+            .update(cx, |ws, cx| ws.open(selection, false, window, cx));
     }
 
     pub fn is_dirty(&self) -> bool {
         self.dirty
+    }
+
+    /// Each line's commit SHA, once blame has come.
+    #[cfg(test)]
+    pub(crate) fn blamed_shas(&self) -> Option<Vec<String>> {
+        let b = self.blame.as_ref()?;
+        Some(
+            (0..b.blame.lines.len())
+                .filter_map(|l| b.commit(l).map(|c| c.sha.clone()))
+                .collect(),
+        )
     }
 
     #[cfg(test)]
@@ -360,6 +520,7 @@ impl CodeView {
             self.state.update(cx, |s, cx| s.set_value(text, window, cx));
             // set_value's own change event isn't typing.
             self.dirty = false;
+            self.load_blame(cx);
         }
         cx.notify();
     }
@@ -601,6 +762,102 @@ impl CodeView {
         s.text().slice(range).to_string()
     }
 
+    /// The visible lines' blame labels, each on the first line of its run of lines.
+    fn paint_blame(
+        state: &Entity<EditorState>,
+        blamed: &Blamed,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        // Where each run starts, read before painting (which needs the app).
+        if blamed.blame.unavailable.is_some() {
+            return;
+        }
+        let (runs, line_height) = {
+            let s = state.read(cx);
+            let (Some(text_bounds), Some(line_height), Some(rows)) =
+                (s.text_bounds(), s.line_height(), s.visible_row_range())
+            else {
+                return;
+            };
+            let map = s.display_map();
+            let mut runs: Vec<(Pixels, Option<usize>, bool)> = Vec::new();
+            let mut last = None;
+            for line in rows {
+                let Some(display) = map.buffer_line_to_display_row_range(line) else {
+                    continue;
+                };
+                let index = blamed.index(line);
+                let top = text_bounds.origin.y + line_height * display.start as f32;
+                if (index != last || runs.is_empty())
+                    && top + line_height >= bounds.top()
+                    && top <= bounds.bottom()
+                {
+                    runs.push((top, index, line > 0 && last.is_some() && index != last));
+                }
+                last = index;
+            }
+            (runs, line_height)
+        };
+        let t = cx.app_theme();
+        let (font, text_size, border, subtle, muted) = (
+            gpui_kit::font(t.fonts.code.clone()),
+            t.fonts.code_size * 0.9,
+            t.border,
+            t.subtle,
+            t.muted_foreground,
+        );
+        for (top, index, separator) in runs {
+            if separator {
+                window.paint_quad(fill(
+                    Bounds::new(point(bounds.left(), top), size(bounds.size.width, px(1.))),
+                    border,
+                ));
+            }
+            let Some(label) = index.and_then(|i| blamed.labels.get(i)) else {
+                continue;
+            };
+            let run = gpui_kit::TextRun {
+                len: label.len(),
+                font: font.clone(),
+                color: if label.as_ref() == "Uncommitted" {
+                    subtle
+                } else {
+                    muted
+                },
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let shaped = window
+                .text_system()
+                .shape_line(label.clone(), text_size, &[run], None);
+            _ = shaped.paint(
+                point(bounds.left() + px(8.), top),
+                line_height,
+                gpui_kit::TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+        }
+    }
+
+    /// The line (0-based) at window height `y`, by the editor's last layout.
+    fn line_at(&self, y: Pixels, cx: &App) -> Option<usize> {
+        let s = self.state.read(cx);
+        let (text_bounds, line_height, rows) =
+            (s.text_bounds()?, s.line_height()?, s.visible_row_range()?);
+        let map = s.display_map();
+        rows.into_iter().find(|&line| {
+            map.buffer_line_to_display_row_range(line).is_some_and(|r| {
+                let top = text_bounds.origin.y + line_height * r.start as f32;
+                y >= top && y < top + line_height * r.len().max(1) as f32
+            })
+        })
+    }
+
     fn paint_bars(
         state: &Entity<EditorState>,
         bars: &[Bar],
@@ -726,6 +983,43 @@ impl Render for CodeView {
                         .children(rows),
                 )
         });
+        // While the file has unsaved edits the labels would name the saved file's lines: none.
+        let blame_column = self.blame_on.then(|| {
+            let blamed = self.blame.clone().filter(|_| !self.dirty);
+            let state = self.state.clone();
+            div()
+                .id("blame")
+                .flex_none()
+                .w(blame_width(t.fonts.code_size))
+                .h_full()
+                .border_r_1()
+                .border_color(t.border)
+                .cursor_pointer()
+                .child(
+                    canvas(
+                        |_, _, _| (),
+                        move |bounds, _, window, cx| {
+                            if let Some(blamed) = &blamed {
+                                window.with_content_mask(
+                                    Some(gpui_kit::ContentMask { bounds }),
+                                    |window| {
+                                        CodeView::paint_blame(&state, blamed, bounds, window, cx)
+                                    },
+                                );
+                            }
+                        },
+                    )
+                    .size_full(),
+                )
+                .on_mouse_down(
+                    gpui_kit::MouseButton::Left,
+                    cx.listener(|this, e: &gpui_kit::MouseDownEvent, window, cx| {
+                        if let Some(line) = this.line_at(e.position.y, cx) {
+                            this.show_blamed(line, window, cx);
+                        }
+                    }),
+                )
+        });
         div()
             .id("code-view")
             .key_context("CodeView")
@@ -757,30 +1051,50 @@ impl Render for CodeView {
                 let seed = this.selected_text(cx);
                 crate::find_in_files(&this.workspace, Some(seed), window, cx);
             }))
+            .on_action(cx.listener(|_, _: &editor::ToggleBlame, _, cx| {
+                gitviber_ui::Settings::update(cx, |s| s.blame = !s.blame);
+            }))
             .on_action(cx.listener(|_, _: &editor::ToggleWrap, _, cx| {
                 gitviber_ui::Settings::update(cx, |s| s.word_wrap = !s.word_wrap);
             }))
             .child(
-                Editor::new(&self.state)
+                div()
                     .size_full()
-                    .bordered(false)
-                    .appearance(false)
-                    .font_family(t.fonts.code.clone())
-                    .text_size(t.fonts.code_size)
-                    .line_height(relative(t.fonts.code_line_height)),
-            )
-            .child(
-                canvas(
-                    |_, _, _| (),
-                    move |bounds, _, window, cx| {
-                        window
-                            .with_content_mask(Some(gpui_kit::ContentMask { bounds }), |window| {
-                                CodeView::paint_bars(&state, &bars, bounds, window, cx)
-                            });
-                    },
-                )
-                .absolute()
-                .inset_0(),
+                    .flex()
+                    .when_some(blame_column, |d, column| d.child(column))
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(
+                                Editor::new(&self.state)
+                                    .size_full()
+                                    .bordered(false)
+                                    .appearance(false)
+                                    .font_family(t.fonts.code.clone())
+                                    .text_size(t.fonts.code_size)
+                                    .line_height(relative(t.fonts.code_line_height)),
+                            )
+                            .child(
+                                canvas(
+                                    |_, _, _| (),
+                                    move |bounds, _, window, cx| {
+                                        window.with_content_mask(
+                                            Some(gpui_kit::ContentMask { bounds }),
+                                            |window| {
+                                                CodeView::paint_bars(
+                                                    &state, &bars, bounds, window, cx,
+                                                )
+                                            },
+                                        );
+                                    },
+                                )
+                                .absolute()
+                                .inset_0(),
+                            ),
+                    ),
             )
             .children(goto.map(|input| {
                 div()

@@ -1,6 +1,6 @@
 //! A file that isn't text: an image fit to the view or zoomed (= − 0), decoded scaled to the
-//! display through a cache the view owns; audio, video and PDFs as a card that opens them in the
-//! default app (no player here yet).
+//! display through a cache the view owns; PDFs, audio and video in macOS's own viewers
+//! (native_media.rs), elsewhere a card that opens them in the default app.
 
 use std::path::{Path, PathBuf};
 
@@ -14,8 +14,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::{
     AppContext as _, Context, Entity, FocusHandle, ImageSource, InteractiveElement as _,
     IntoElement, ObjectFit, ParentElement as _, Render, Resource, StatefulInteractiveElement as _,
-    Styled as _, StyledImage as _, Task, Window, div, image_cache, img,
-    prelude::FluentBuilder as _, px,
+    Styled as _, StyledImage as _, Task, Window, div, image_cache, img, px,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,7 +53,11 @@ pub struct MediaView {
     /// The image's own size, read from its header.
     natural: Option<(u32, u32)>,
     focus: FocusHandle,
+    /// A PDF's, a video's or a song's native viewer (macOS); None draws the open-elsewhere card.
+    #[cfg(target_os = "macos")]
+    native: Option<crate::native_media::NativeMedia>,
     _size: Task<()>,
+    _subs: Vec<gpui_kit::Subscription>,
     _live: Live,
 }
 
@@ -80,7 +83,28 @@ impl MediaView {
         } else {
             Task::ready(())
         };
+        // A tab switch may leave a native viewer out of sight with nothing painted to say so.
+        let mut subs = Vec::new();
+        if kind != MediaKind::Image
+            && let Some(ws) = gitviber_ui::workspace::Workspace::for_window(window, cx)
+        {
+            subs.push(cx.subscribe_in(
+                &ws,
+                window,
+                |_, _, e: &gitviber_ui::workspace::WorkspaceEvent, window, cx| {
+                    use gitviber_ui::workspace::WorkspaceEvent::*;
+                    if matches!(e, TabsChanged | LayoutChanged | ProjectChanged) {
+                        #[cfg(target_os = "macos")]
+                        crate::native_media::check_soon(window, cx);
+                        #[cfg(not(target_os = "macos"))]
+                        let _ = (window, cx);
+                    }
+                },
+            ));
+        }
         MediaView {
+            #[cfg(target_os = "macos")]
+            native: crate::native_media::NativeMedia::open(&path, kind),
             path,
             kind,
             images,
@@ -88,8 +112,37 @@ impl MediaView {
             natural: None,
             focus: cx.focus_handle(),
             _size: size,
+            _subs: subs,
             _live: Live::new("MediaView"),
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn native(&self) -> Option<&crate::native_media::NativeMedia> {
+        self.native.as_ref()
+    }
+
+    /// The area a native viewer lies over, reported to the placer as it paints.
+    #[cfg(target_os = "macos")]
+    fn native_area(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let (id, view) = (cx.entity_id(), cx.weak_entity());
+        gpui_kit::canvas(
+            |bounds, window, _| window.insert_hitbox(bounds, gpui_kit::HitboxBehavior::Normal),
+            move |bounds, hitbox, window, cx| {
+                crate::native_media::painted(
+                    crate::native_media::Painted {
+                        id,
+                        bounds,
+                        hitbox,
+                        view,
+                    },
+                    window,
+                    cx,
+                )
+            },
+        )
+        .size_full()
+        .into_any_element()
     }
 
     pub fn path(&self) -> &Path {
@@ -193,7 +246,7 @@ impl MediaView {
 
 impl Render for MediaView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.app_theme();
+        let t = cx.app_theme().clone();
         let root = div()
             .id("media")
             .key_context("ImageView")
@@ -222,6 +275,45 @@ impl Render for MediaView {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let path = self.path.clone();
+        #[cfg(target_os = "macos")]
+        if self.native.is_some() {
+            let open = path.clone();
+            return root.child(
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .bg(t.code(t.background))
+                            .child(self.native_area(cx)),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_3()
+                            .h(px(28.))
+                            .border_t_1()
+                            .border_color(t.border)
+                            .text_size(px(11.5))
+                            .text_color(t.muted_foreground)
+                            .child(what)
+                            .child(div().flex_1())
+                            .child(
+                                Button::new("open-default")
+                                    .ghost()
+                                    .xsmall()
+                                    .label("Open in Default App")
+                                    .on_click(move |_, _, cx| cx.open_with_system(&open)),
+                            ),
+                    ),
+            );
+        }
         root.child(
             div()
                 .size_full()
@@ -237,15 +329,14 @@ impl Render for MediaView {
                     div()
                         .text_size(px(11.5))
                         .text_color(t.subtle)
-                        .child(format!("{what} plays in its own app for now.")),
+                        .child(format!("{what} opens in its own app here.")),
                 )
                 .child(
                     Button::new("open-default")
                         .small()
                         .label("Open in Default App")
                         .on_click(move |_, _, cx| cx.open_with_system(&path)),
-                )
-                .when(false, |d| d),
+                ),
         )
     }
 }

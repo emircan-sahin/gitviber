@@ -1,6 +1,7 @@
-//! Markdown beyond what gpui-component draws: GitHub's alerts (`> [!NOTE]`), and diagrams and
-//! math, which have no renderer here yet and show as their source in a labeled block. The
-//! parsing is plain functions on the source, so tests run without a window.
+//! Markdown beyond what gpui-component draws: GitHub's alerts and Obsidian's callouts
+//! (`> [!NOTE]`), and which blocks are diagrams or math (drawn in diagrams.rs; their source shows
+//! under a label until then). The parsing is plain functions on the source, so tests run
+//! without a window.
 
 use gpui_kit::component::text::markdown_ast as mdast;
 

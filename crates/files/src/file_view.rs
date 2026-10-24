@@ -458,6 +458,25 @@ impl FileView {
                 )
             })
             .child(div().flex_1())
+            // Who last changed each line (View → Blame), for the file in the repo as code.
+            .when(
+                matches!(self.source, FileSource::Repo(_))
+                    && matches!(self.content, Content::Text { .. })
+                    && self.mode == Mode::Code,
+                |d| {
+                    let on = gitviber_ui::Settings::get(cx).blame;
+                    d.child(
+                        Button::new("blame")
+                            .ghost()
+                            .xsmall()
+                            .label("Blame")
+                            .toggled(on)
+                            .on_click(|_, _, cx| {
+                                gitviber_ui::Settings::update(cx, |s| s.blame = !s.blame)
+                            }),
+                    )
+                },
+            )
             .when(
                 self.previewable() && matches!(self.content, Content::Text { .. }) || svg,
                 |d| {

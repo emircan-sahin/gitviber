@@ -276,3 +276,66 @@ fn explorer_lists_creates_and_renames_and_quick_open_lists_files(cx: &mut TestAp
     assert!(files.contains(&"src/big.rs".to_string()), "{files:?}");
     _ = std::fs::remove_dir_all(&repo);
 }
+
+#[gpui_kit::test]
+fn blame_names_each_lines_commit_and_new_lines(cx: &mut TestAppContext) {
+    setup(cx);
+    let repo = temp_repo("blame");
+    cx.update(|cx| {
+        gitviber_ui::install_core(cx);
+        gitviber_ui::Settings::update(cx, |s| s.blame = true);
+    });
+    let (host, cx) = cx.add_window_view(|_, cx| WsHost(cx.new(Workspace::new)));
+    let ws = host.read_with(cx, |h, _| h.0.clone());
+    cx.update(|window, cx| {
+        Workspace::register_window(&ws, window, cx);
+        ws.update(cx, |ws, cx| ws.open_project(repo.clone(), window, cx));
+    });
+    cx.run_until_parked();
+    let weak = ws.downgrade();
+    cx.update(|window, cx| {
+        crate::open_file(
+            &weak,
+            "src/big.rs",
+            crate::OpenOptions::default(),
+            window,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    let code = cx.update(|_, cx| {
+        let view = ws
+            .read(cx)
+            .tabs()
+            .active()
+            .and_then(|t| t.item.handle())
+            .map(|h| h.view())
+            .unwrap();
+        view.downcast::<crate::FileView>().unwrap().read(cx).code()
+    });
+    let shas = cx
+        .update(|_, cx| code.unwrap().read(cx).blamed_shas())
+        .expect("blame came");
+    // temp_repo committed the file, then put "// changed" on a new first line.
+    assert!(shas[0].bytes().all(|b| b == b'0'), "{}", shas[0]);
+    assert!(shas[1].len() == 40 && !shas[1].bytes().all(|b| b == b'0'));
+    assert_eq!(shas.len(), 60_001);
+    // Off again: dropped.
+    cx.update(|_, cx| gitviber_ui::Settings::update(cx, |s| s.blame = false));
+    cx.run_until_parked();
+    let code = cx.update(|_, cx| {
+        let view = ws
+            .read(cx)
+            .tabs()
+            .active()
+            .and_then(|t| t.item.handle())
+            .map(|h| h.view())
+            .unwrap();
+        view.downcast::<crate::FileView>().unwrap().read(cx).code()
+    });
+    assert!(
+        cx.update(|_, cx| code.unwrap().read(cx).blamed_shas())
+            .is_none()
+    );
+    _ = std::fs::remove_dir_all(&repo);
+}

@@ -14,6 +14,8 @@ pub mod explorer;
 pub mod file_view;
 pub mod language;
 pub mod media;
+#[cfg(target_os = "macos")]
+pub mod native_media;
 mod quick_open;
 pub mod search;
 pub mod text;

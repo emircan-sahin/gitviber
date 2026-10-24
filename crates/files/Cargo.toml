@@ -22,6 +22,15 @@ image = { version = "=0.25.10", default-features = false }
 # Already in the tree through gpui-component's editor: Go to Definition's locations.
 lsp-types = "=0.97.0"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# PDFs, audio and video in PDFKit's and AVKit's own views beside the window's (native_media.rs).
+# All already in the tree through gpui and core; the app-kit and foundation crates with their
+# default (all) features, as gpui-base has them, so they aren't built again.
+objc2 = "=0.6.4"
+objc2-app-kit = "=0.3.2"
+objc2-foundation = "=0.3.2"
+raw-window-handle = "=0.6.2"
+
 [dev-dependencies]
 gitviber-ui = { path = "../ui", features = ["snapshot"] }
 # Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.
@@ -34,3 +43,7 @@ path = "examples/demo.rs"
 [[example]]
 name = "files-mem-probe"
 path = "examples/mem_probe.rs"
+
+[[example]]
+name = "files-native-probe"
+path = "examples/native_probe.rs"
