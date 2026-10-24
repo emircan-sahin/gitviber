@@ -6,6 +6,29 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+### Changed
+
+- **GitViber is a native app.** The window is drawn by Rust and GPUI on the GPU (Metal on macOS, Vulkan on Linux), with no web view under it: worktrees, diffs, the terminal, History, pull requests and issues, guided review, the explorer, markdown, the Obsidian vault and the browser are rebuilt on it. With every panel open, the whole window takes 29–46 MB, and closing a tab, a terminal, a document or a browser tab gives its memory back. The macOS app is 170 MB on disk, a 56.5 MB download.
+- **Your setup comes along.** On its first launch GitViber reads the earlier app's settings, recent projects, commands and files, each worktree's tabs, panel sizes and terminals, commit drafts, guides, risks and review notes, once and without changing them. 0.1.17 updates to this release like to any other, and the new `.deb` and `.rpm` upgrade the old package.
+- **The terminal is drawn by the app,** on alacritty's emulation: it paints only the rows on screen, reuses the ones that didn't change, and draws a synchronized frame the moment it ends.
+- **Mermaid diagrams and math are drawn by the app,** through mermaid-rs-renderer and RaTeX with the KaTeX fonts, off the main thread and in the theme's colors. A diagram or a formula that doesn't parse shows its source under a label.
+- **Syntax colors come from tree-sitter** in the code view and in diffs, with the same 24 syntax themes.
+- **Browser tabs are WebKit views laid over the window,** and agents drive tabs of their own as before. On Linux a tab no longer shows localhost pages; it offers to open the page in your browser.
+- **On Linux, GitViber needs a Vulkan driver instead of WebKitGTK.** The `.deb` and `.rpm` pull in what it links; the AppImage holds only the app.
+- **Updates are GitViber's own,** read from the same releases and checked against the same signing key. A `.deb` or `.rpm` install, or an app in a folder that needs a password to change, gets the Releases page instead of an update in place.
+- **Holding ⌘ shows only the shortcuts that work where focus is,** instead of dimming the rest.
+- **Quit asks only about what it would stop:** commands still running and agents mid-turn, not finished ones.
+- **Reload Window is gone** with the web view. Switch Project opens the top bar's project list.
+
+### Added
+
+- **A running guided review shows the agent's last lines** as its CLI prints them, for a CLI that prints its progress.
+- **A commit that fails for want of a name and email opens the dialog to set them.**
+
+### Fixed
+
+- **Merging or reviewing a pull request goes to the head GitViber showed you,** so commits pushed since aren't merged or approved unseen.
+
 ## [0.1.17] - 2026-10-18
 
 ### Added
@@ -659,7 +682,8 @@ with `.deb`, `.rpm` and AppImage builds for Linux.
   repository from the welcome screen.
 - Help → Show Logs and Copy Diagnostics for bug reports. No telemetry.
 
-[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.16...HEAD
+[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.17...HEAD
+[0.1.17]: https://github.com/emircan-sahin/gitviber/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/emircan-sahin/gitviber/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/emircan-sahin/gitviber/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/emircan-sahin/gitviber/compare/v0.1.13...v0.1.14

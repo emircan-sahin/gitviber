@@ -6,9 +6,10 @@ Report them privately with [GitHub Security Advisories](https://github.com/emirc
 
 The areas that matter most:
 
-- **Path escapes.** File access must stay inside the opened repository.
+- **Path escapes.** File access must stay inside the opened repository (or the Obsidian vault on show).
 - **Token handling.** The GitHub token is borrowed from `gh` or git's credential store and must never be written to disk, logged, or sent anywhere but `api.github.com`.
-- **Rendering remote content.** Text from GitHub (PR titles, descriptions, comments) must never be rendered as raw HTML or run as script. Markdown is rendered through a sanitizing allowlist, links open in the browser (the app window refuses to navigate anywhere but the app), and images hosted outside GitHub load only when clicked.
+- **Rendering remote content.** Text from GitHub (PR titles, descriptions, comments) is drawn by the app itself, not shown as a web page, and nothing in it may run. Links open in the browser, and images hosted outside GitHub load only when clicked.
+- **Browser tabs.** A page in a browser tab must not reach the app or your files, and an agent must reach only its own terminal pane's tabs, through that pane's key on the browser socket.
 
 GitViber runs the real `git` CLI, so repository hooks run just as they would in your terminal. A malicious repo with hooks is the same risk here as with `git` itself.
 

@@ -30,9 +30,9 @@ window too.
 
 |  |  |
 | --- | --- |
-| **Agents get a browser** | Claude Code and Codex open pages, click, type and read the console in tabs of their own, in the background. |
-| **14 MB** | The whole app. No bundled Chromium: a Rust core and the system webview. |
-| **0% CPU** | At idle. It wakes when files change, not on a timer. |
+| **Agents get a browser** | On macOS, Claude Code and Codex open pages, click, type and read the console in tabs of their own, in the background. |
+| **29–46 MB** | The whole window with every panel open: native Rust, no web stack. Close a tab or a terminal and its memory comes back. [Measured](docs/FEATURES.md#memory). |
+| **Waits for changes** | File changes come from the system's file events, not from scanning the disk. |
 | **Plain git, no telemetry** | Your own git, config, hooks and signing. No account, no API keys. [Details](docs/PRIVACY.md). |
 
 <p align="center">
@@ -46,8 +46,8 @@ window too.
 **Every agent gets its own worktree, and you see all of them at once.**
 
 - **Switch from the top bar.** Each worktree shows its change count, pull request and check status.
-- **Start from anything.** A branch, a commit, an issue or a pull request, in the folder you choose.
-  A new worktree can run `claude` right away and gets your `.env` copied in.
+- **Start from anything.** A branch, a commit, an issue or a pull request. A new worktree can run
+  `claude` right away and gets your `.env` copied in.
 - **Know who needs you.** A ring while Claude Code works, a dot when it finishes or asks, a desktop
   notification if you want one. The Agents menu lists every agent, the waiting ones first.
 - **Pick up where you left off.** Quit with agents running and the restored terminal has the
@@ -57,16 +57,16 @@ window too.
 
 ## A browser your agents can use
 
-**Agents in your terminal can drive a real browser, right inside GitViber.**
+**Agents in your terminal can drive a real browser, right inside GitViber** (macOS for now).
 Turn it on in Settings → Browser: Claude Code and Codex learn the `gitviber browser` command by themselves, and any other agent gets a note to paste.
 
 - **Hidden, and out of your way.** Agents work in tabs of their own, opened in the background. They
   never take your window, your pointer, your keyboard or your clipboard.
 - **Keeps working when you don't look.** Their tabs keep drawing while GitViber is hidden or
   minimized, so a long run doesn't stall behind another app.
-- **Light on CPU and RAM.** It's the webview already in the app, with no second browser to launch.
-  A tab nobody touched for a while slows down, one unused for an hour closes, and a Mac low on
-  memory gets it back from sleeping tabs at once.
+- **Light on CPU and RAM.** It's the system's WebKit, with no second browser to launch. A tab
+  nobody touched for a while slows down, one unused for an hour closes, and a Mac low on memory
+  gets it back from sleeping tabs at once.
 - **Logins that are theirs, or shared.** Each tab signs in apart from the others and from you, so
   two tabs can be two accounts of the app you're testing. Save a login once as a session and any tab
   or agent in that repository can load it.
@@ -111,7 +111,7 @@ No extra account: it runs the `claude` or `codex` CLI you're already signed in t
 
 **A real terminal under the diff (`⌘J`), with tabs and splits.**
 
-- **Every command is marked** with how long it took, red when it failed. `⌘↑` / `⌘↓` jump between them.
+- **Every command is marked,** red when it failed, with how long it took. `⌘↑` / `⌘↓` jump between them.
 - **Click what it prints.** Paths open at the line, `#123` opens the pull request, a SHA opens
   History. `⌃⇧Space` puts a letter on every link, even inside vim or Claude Code.
 - **Made for agents.** Paste a screenshot or drop files and Claude Code or Codex gets their paths.
@@ -121,10 +121,11 @@ No extra account: it runs the `claude` or `codex` CLI you're already signed in t
 
 ## A browser for you, too
 
-**Check the agent's work where you read it.** `⇧⌘B` opens a tab beside the code.
+**Check the agent's work where you read it.** `⇧⌘B` opens a tab beside the code (macOS for now;
+on Linux a tab offers to open its page in your browser).
 
-- **Your dev server, one click away.** The address bar lists every port your worktree serves.
-  Device mode draws a phone or tablet around the page.
+- **Your dev server, one click away.** Beside the address, a list of every port your worktree's
+  terminals serve. Device mode draws a phone or tablet around the page.
 - **Point at it.** `⇧⌘C` picks an element and starts an agent session with the selector, React
   components, styles and a picture of it. Console errors and failed requests go to the agent the same way.
 
@@ -152,19 +153,19 @@ Everything you'd open another app for, in the same window:
 
 | | |
 | --- | --- |
-| **History** | A colored lane graph. Reword, squash, drop, reorder or split commits, cherry-pick several at once, compare any two points. |
+| **History** | A colored lane graph. Reword, squash, drop, reorder or split commits, cherry-pick several at once, compare any two points, bisect. |
 | **Branches** | Merge, rebase, pull. Compare any two branches and see what would conflict before you merge. |
-| **Conflicts** | Resolve block by block, hand them to the agent in your terminal, or open your merge tool. |
+| **Conflicts** | Resolve block by block, or take a whole side, then continue, skip or abort. |
 | **Pull requests & issues** | List, filter, read, review, create, merge and check out. (GitHub) |
-| **Patches** | Copy a file, lines, a commit or a stash as a patch. Apply one with a preview, and `⌘Z` takes it back. |
+| **Patches** | Copy a commit, one of its files or a stash as a patch. Apply one with a preview, and `⌘Z` takes it back. |
 
 [More: git →](docs/FEATURES.md#git)
 
 ## Good-looking, and yours
 
-Eleven color themes, 24 syntax themes, your own fonts and scale, a see-through window on macOS. Every
-action has a shortcut, every shortcut can be rebound, and holding `⌘` shows them all
-([the list](docs/SHORTCUTS.md)).
+Eleven color themes, 24 syntax themes, your own fonts and scale, a see-through window on macOS. Most
+actions have a shortcut, every one can be rebound, and holding `⌘` shows the ones that work where
+you are ([the list](docs/SHORTCUTS.md)).
 
 ---
 
@@ -176,62 +177,61 @@ action has a shortcut, every shortcut can be rebound, and holding `⌘` shows th
 brew install --cask emircan-sahin/tap/gitviber
 ```
 
-Or grab `GitViber_<version>_universal.dmg` from [Releases](https://github.com/emircan-sahin/gitviber/releases/latest).
+Or grab `GitViber_<version>_universal.dmg` (56.5 MB) from [Releases](https://github.com/emircan-sahin/gitviber/releases/latest).
+The app takes 170 MB on disk: one binary with the code for both, about half of it each.
 
 **Linux x86_64** from the same page: `.deb` for Debian and Ubuntu, `.rpm` for Fedora, `.AppImage` for the rest.
 
 ```sh
 sudo apt install ./GitViber_*_amd64.deb          # Debian, Ubuntu
 sudo dnf install ./GitViber-*.x86_64.rpm         # Fedora
-chmod +x GitViber_*.AppImage && ./GitViber_*.AppImage
+chmod +x GitViber_*_amd64.AppImage && ./GitViber_*_amd64.AppImage
 ```
 
 Open a repository from a terminal with `gitviber .`, or a file at a line with `gitviber src/app.ts:42`.
-On macOS, GitViber's own terminal has the command with nothing to install; elsewhere use
-**Install 'gitviber' Command** in the app menu. GitViber tells you when a new version is out, and
-the macOS app and the AppImage update in place. Every release lists SHA-256 checksums in `SHA256SUMS`.
+On macOS, GitViber's own terminal has the command with nothing to install and the Homebrew cask
+links it; for another terminal, **Install 'gitviber' Command** in the GitViber menu links it into
+Homebrew's bin folder. On Linux the `.deb` and `.rpm` put it on your PATH, and for the AppImage the
+same item (under File) writes a launcher to `~/.local/bin`. GitViber tells you when a new version is out; the macOS app and the AppImage
+update in place, and a `.deb` or `.rpm` sends you to the Releases page. Every release lists
+SHA-256 checksums in `SHA256SUMS`.
 
 GitViber is used daily on macOS. The Linux builds are tested in CI, but the app itself is only
-starting to get used there ([#35](https://github.com/emircan-sahin/gitviber/issues/35)). Windows
-is untested and has no build yet.
+starting to get used there ([#35](https://github.com/emircan-sahin/gitviber/issues/35)), and its
+browser tabs are macOS only for now. Windows is untested and has no build yet.
 
 ### Requirements
 
-- **git 2.36 or newer.** GitViber runs your own git, and says so on first launch if it's missing or
-  older. On macOS, `xcode-select --install` or Homebrew's `git` will do.
+- **macOS 13 or later**, or a Linux as new as Ubuntu 22.04 (the release is built there, against
+  its glibc).
+- **git 2.36 or newer.** GitViber runs your own git, and says so if it can't find one. On macOS,
+  `xcode-select --install` or Homebrew's `git` will do.
+- **On Linux:** GTK 3, xkbcommon, X11 or Wayland, fontconfig, FreeType and a Vulkan driver for your
+  GPU, which draws the window. The `.deb` and `.rpm` pull these in; the AppImage holds only the app
+  and uses your system's.
 - **Optional:** the [GitHub CLI](https://cli.github.com) (`gh auth login`) for pull requests and
   issues; git's stored github.com credential works too. `claude` or `codex` for commit messages
-  written for you.
+  and guided reviews written for you.
 
 ### Build from source
 
-You need Rust (stable), Node 22+, pnpm and git.
+You need [rustup](https://rustup.rs) (it installs the Rust version `rust-toolchain.toml` pins) and
+git; on Linux, the libraries [CONTRIBUTING.md](CONTRIBUTING.md) lists.
 
 ```sh
 git clone https://github.com/emircan-sahin/gitviber && cd gitviber
-pnpm install
-pnpm install:mac    # macOS: builds a release and copies it into /Applications
-pnpm tauri build    # Linux: makes a .deb, an .rpm and an AppImage
+cargo build -p gitviber --release     # target/release/gitviber
+scripts/macos.sh build --host && scripts/macos.sh app && scripts/macos.sh sign
+                                      # macOS: target/dist/macos/GitViber.app, ad hoc signed
 ```
-
-On Linux, Tauri's webview also needs WebKitGTK 4.1 and a C toolchain:
-
-```sh
-sudo apt install libwebkit2gtk-4.1-dev build-essential        # Debian, Ubuntu
-sudo dnf install webkit2gtk4.1-devel gcc                       # Fedora
-sudo pacman -S --needed webkit2gtk-4.1 base-devel              # Arch
-```
-
-If the AppImage step fails in `linuxdeploy` (its bundled `strip` is too old for current
-toolchains, e.g. on Arch), run it with `NO_STRIP=true`.
 
 ## Privacy
 
 No telemetry, no API keys, no account. The app talks to your git remotes and, for pull requests and
 issues, GitHub, borrowing a login you already have (the GitHub CLI first, then git's stored
 credential) and keeping the token in memory. Errors go to a local log file and nowhere else.
-Browser tabs keep their own cookies, apart from the app's and from your other browsers. Agent
-control of the browser is off until you turn it on. [Everything, in detail →](docs/PRIVACY.md)
+Browser tabs keep their own cookies, apart from your other browsers. Agent control of the browser
+is off until you turn it on. [Everything, in detail →](docs/PRIVACY.md)
 
 ## FAQ
 
@@ -252,27 +252,30 @@ in `gh`, pick the one a repository uses in Settings → Git. See [Privacy](#priv
 macOS and `~/.local/share/app.gitviber.desktop/logs/` on Linux. Help → Copy Diagnostics copies
 the versions a bug report needs.
 
-**Where are my settings?** In the app's own storage, never in your repositories:
-`~/Library/WebKit/app.gitviber.desktop` on macOS, `~/.local/share/app.gitviber.desktop` on Linux.
+**Where are my settings?** In the app's own folder, never in your repositories:
+`~/Library/Application Support/app.gitviber.desktop` on macOS, `~/.config/app.gitviber.desktop` on
+Linux. On its first launch the native app brings over the settings, recent projects and terminals
+of an earlier GitViber.
 
 **How do I uninstall it?** On macOS, drag GitViber to the Trash (or
-`brew uninstall --cask --zap gitviber`, which also removes its settings, caches and logs). On
-Linux, `sudo apt remove git-viber` or `sudo dnf remove git-viber`, or delete the AppImage. To
-remove the settings by hand, delete the folders above and `~/Library/Caches/app.gitviber.desktop`.
+`brew uninstall --cask --zap gitviber`, which also removes its settings, caches, logs and browser
+data). On Linux, `sudo apt remove git-viber` or `sudo dnf remove git-viber`, or delete the
+AppImage. To remove the settings by hand, delete the folder above, the logs folder, and
+`~/Library/Caches/app.gitviber.desktop` and `~/Library/WebKit/app.gitviber.desktop` on macOS or
+`~/.cache/app.gitviber.desktop` on Linux.
 
 ## Hacking on it
 
-Tauri 2 and Rust on the backend, React 19 with Radix and Tailwind v4 on the front. Diffs are
-computed in Rust with `similar`, highlighting is Shiki in a web worker, and the UI runs in the
-system webview.
+All Rust: the window is drawn with GPUI on the GPU (Metal on macOS, Vulkan on Linux). Diffs are
+computed with `similar`, syntax colors come from tree-sitter, the terminal is `alacritty_terminal`,
+and browser tabs are WebKit views laid over the window.
 
 ```sh
-pnpm tauri dev      # run the app (takes the next free port if 1420 is in use)
-pnpm check          # what CI runs: build, tests, rustfmt, clippy
+cargo run -p gitviber -- .     # run the app on this repository
 ```
 
-Bug reports and small, focused PRs are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup
-and the few rules the app depends on. Report security issues privately, see [SECURITY.md](SECURITY.md).
+Bug reports and small, focused PRs are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup,
+the checks CI runs and the few rules the app depends on. Report security issues privately, see [SECURITY.md](SECURITY.md).
 
 ## License
 

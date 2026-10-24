@@ -14,6 +14,7 @@ README leaves out. Keys are for macOS; [the shortcut list](SHORTCUTS.md) has the
 - [Commit messages from your agent](#commit-messages-from-your-agent)
 - [Git](#git)
 - [Looks and settings](#looks-and-settings)
+- [Memory](#memory)
 
 ---
 
@@ -26,15 +27,17 @@ Give every agent its own worktree and switch between them from the top bar.
 - **Switcher.** Each worktree shows its change count, its pull request and how its checks are doing.
   The top bar names a worktree by its branch and its folder, so a folder that no longer says what it
   holds shows.
-- **Start from anywhere.** From any branch, commit or issue, in the folder you choose. Or check a
-  pull request out into its own worktree without touching yours.
+- **Start from anywhere.** From any branch or commit, in the folder you choose, or from an issue. Or
+  check a pull request out into its own worktree without touching yours. Settings can put new
+  worktrees under a folder of your own.
 - **Setup.** A new worktree can run a command such as `claude` in its terminal right away, and gets
   copies of the ignored files `.worktreeinclude` lists, like your `.env`.
-- **Organize.** Rename one along with its folder, give it a color its chip and terminal tabs wear,
+- **Organize.** Rename one along with its folder, give it a color its chip and picker row wear,
   lock it, and remove or prune it when the work is merged.
 - **Clean up.** One action removes every merged worktree with nothing uncommitted, branches too,
-  after showing the ignored files that go with them, like `node_modules`. Merging a pull request in
-  the app offers to remove its worktree.
+  after showing the ignored files that go with them, like `node_modules`. A locked one, or one with
+  a terminal running, stays, and the toast after it offers Undo. Merging a pull request in the app
+  offers to remove its worktree.
 - **One branch, one worktree.** Git keeps a branch in one worktree, so picking one that another holds
   says where it is: Enter opens that worktree (with a way back), and the row's menu checks the commit
   out here detached, or starts a new branch from it. When a linked worktree holds the default branch
@@ -47,8 +50,9 @@ can open in another project or any folder too.
 
 ### Knowing when an agent needs you
 
-- A tab and its worktree show a **ring while Claude Code works** there, and a **dot once it finishes
-  or asks for you**. Clicking it brings you to that terminal.
+- A terminal tab shows a **ring while Claude Code works** there, and a **dot once it finishes or
+  asks for you**; the worktree's row in the picker gets the dot too. A notification or the Agents
+  menu brings you to that terminal.
 - Other agents get the dot when they ring the terminal bell or send a notification.
 - Desktop notifications are off until you turn them on (Settings → Notifications, one switch per kind).
 - The **Agents menu** in the top bar lists every agent in your terminals, the ones waiting for you
@@ -56,31 +60,39 @@ can open in another project or any folder too.
 
 ### Resuming
 
-Quit with Claude Code, Gemini CLI or opencode still running, and the restored terminal has the
-command that resumes the conversation typed at the prompt. **Resume a conversation** picks up any
-older Claude Code conversation in a worktree.
+Each worktree's terminals come back at launch with their splits, names and last 1,000 lines. Quit
+with Claude Code, Codex, Gemini CLI or opencode still running, and the restored terminal has the
+command that resumes the conversation typed at the prompt (Settings → Terminal can run it instead,
+or leave it out). Quit asks first while a command runs or an agent is mid-turn. **Resume a
+conversation** picks up any older Claude Code conversation in a worktree.
 
 ---
 
 ## Guided review
 
-Your own agent CLI (`claude` or `codex`, already signed in) reads a change first and writes a guide
-to it. Pick the agent, model, effort and language in Settings → Guided Review.
+Your own agent CLI (Claude Code, Codex, opencode, pi, llm or a command of your own, already signed
+in) reads a change first and writes a guide to it. Pick the agent, model, effort and language in
+Settings → Guided Review.
 
-- **What it covers.** A pull request (from its menu, whatever is checked out), a commit (right-click
-  it in History, or Explain Commit), a branch, or what isn't committed yet (the ✦ in the Changes
-  summary or the palette, without touching the index). A push to a pull request marks its review outdated.
+- **What it covers.** A pull request (from its menu, whatever is checked out), a commit (Explain
+  Commit in its right-click menu in History), or what isn't committed yet (the ✦ in the Changes
+  summary or the palette, without touching the index). A pull request's review says when it was
+  pushed to since.
 - **The guide.** An overview, a diagram of the data and flow the change touches when there is one,
   then sections in reading order, each with its category (UI, API, security, tests…), its importance
-  and a one-line check, beside its diffs. Mark sections and files reviewed as you go. Big changes
-  work too: every changed file reaches the agent.
+  and a one-line check, beside its diffs. Filter them by category or importance, and mark sections
+  and files reviewed as you go. Big changes work too: every changed file reaches the agent. While
+  the agent runs, the guide shows the last lines it printed, for a CLI that prints its progress.
 - **Find Risks.** Lists a change's concrete problems beside the guide, most severe first: wrong
-  logic, edge cases, races, security and data loss.
-- **Ask Agent.** Each section, each risk and the whole change start a new Claude Code session in the
-  worktree's terminal with that part in its prompt box. Write your question and it's sent with it, or
-  Skip to ask it there. The session opens in the worktree where the change is checked out, so the
-  agent can fix the files; the button's menu pastes into the agent already running instead, or
-  copies it. Notes from the agent sit on the files and lines they're about.
+  logic, edge cases, races, security and data loss. A risk that names a line shows on that line of
+  the diff too.
+- **Ask Agent.** Each section and the whole change start a new Claude Code session in the
+  worktree's terminal with that part in its prompt box. Write your question and it's sent with it,
+  or Skip to ask it there; a risk goes at once, asking the agent to look into it. The session opens
+  in the worktree where the change is checked out, so the agent can fix the files; the button's
+  menu pastes into the agent already running instead, or copies it. With another agent CLI picked,
+  the part is copied for you to paste, and one that keeps sessions starts in a terminal. Notes from
+  the agent sit on the lines they're about.
 
 ---
 
@@ -100,18 +112,25 @@ to it. Pick the agent, model, effort and language in Settings → Guided Review.
   clears so you know to look again.
 - Changes lists files flat or as a folder tree, by name or newest first, which helps when an agent
   touches many at once.
-- A folder stages, discards or stashes everything under it.
+- A folder stages or discards everything under it.
 
 ### Editing in the diff
 
-- In an unstaged diff, edit the new side right there and save with `⌘S`.
+- In an unstaged diff, edit the new side right there and save with `⌘S`. If the file changed on
+  disk since, it asks before overwriting what the agent wrote.
 - Stage, unstage or discard single lines, or stash just the lines you pick.
+
+### Review notes
+
+`C`, or a line's +, writes a note under the selected lines in Changes' and History's diffs. Notes
+follow their lines through edits on disk, or say they're outdated, and the Changes panel lists them
+with Copy as Prompt and Send to Terminal.
 
 ### Reviewing pull requests
 
 Pull requests open in the same diff viewer. Read one commit by commit: pick a commit, or a run of
-them, to see only what they changed. See why a check failed and copy it for the agent (GitHub). Add
-review notes on selected lines with `C`.
+them, to see only what they changed. See why a check failed and copy it for the agent (GitHub).
+`C` on selected lines writes a line comment.
 
 ---
 
@@ -122,12 +141,13 @@ server or talk to the agent without leaving the change you're reading.
 
 ### Splits and panes
 
-- Each pane of a split has a numbered title bar with what runs there. `⇧⌘←` / `⇧⌘→` page through
-  them, and `⌘R` names one.
-- Zoomed to one pane (`⇧⌘↵`), the toolbar shows which one it is and a dot per pane, so an agent at
-  work in another stays in sight.
-- The terminal has its own font, size, cursor and scrollback in Settings. `⌘=` / `⌘−` in the
-  terminal or a pinch over it size its text.
+- Each pane of a split has a numbered title bar with its name, or the title its program sets.
+  `⇧⌘←` / `⇧⌘→` page through them, and `⌘R` names one.
+- A split's tab shows a dot per pane in its agent's state, so an agent at work in another pane
+  stays in sight. Zoomed to one pane (`⇧⌘↵`), the toolbar shows which one it is.
+- The terminal has its own font, size, line height, cursor and scrollback in Settings. `⌘=` / `⌘−`
+  in the terminal, a pinch or Ctrl+scroll over it size its text.
+- `⌘F` finds in the terminal and its scrollback, with match case, whole word and regex.
 
 ### Links
 
@@ -138,44 +158,45 @@ server or talk to the agent without leaving the change you're reading.
   its folder (`- p4.png` after `…/onb-c/ içinde:`) opens from that folder, and a path with spaces
   (a macOS screenshot, `~/Desktop/Ekran Resmi 2026-10-15 18.34.46.png`) is one link.
 - A link to a page on this machine (`localhost:3000`) opens in a browser tab, any other in your browser.
-- A commit's SHA opens it in History. `#123` or a link to one of the repo's pull requests or issues
-  opens it in its own tab.
-- `⌃⇧Space` puts a letter on every one of those links on screen, in vim or Claude Code too: type it
+- A commit's SHA opens it in a tab and selects it in History. `#123` or a link to one of the repo's
+  pull requests or issues opens it in its own tab.
+- `⌃⇧Space` puts a label on every one of those links on screen, in vim or Claude Code too: type it
   to open the link, or with Shift to copy it.
 
 ### Commands
 
-In zsh and bash 4.4+ each command gets a mark, red when it failed, that tells how long it took.
-`⌘↑` / `⌘↓` jump between them, and the last one's output copies from the right-click menu. Your
-dotfiles stay as they are.
+In zsh and bash 4.4+ each command gets a mark, red when it failed; hover it to see how long it
+took. fish 4 marks its own. `⌘↑` / `⌘↓` jump between them, and the last one's output copies from
+the right-click menu. Your dotfiles stay as they are.
 
 Turn on "A long command finishes" in Settings → Notifications and a command that runs past 10
-seconds and ends while you're looking elsewhere puts a dot on its tab, with a desktop notification
-naming the program (never its arguments) if you turned those on.
+seconds (or the time you pick) and ends while you're looking elsewhere puts a dot on its tab, with
+a desktop notification naming the program and its subcommand (`cargo build`), never the rest of its
+arguments, if you turned those on.
 
 ### Made for agents
 
 - Paste a screenshot or drop files and Claude Code or Codex gets their paths.
-- Shift+Enter reaches them as its own key.
+- Shift+Enter reaches a program that asks for it as its own key, as Claude Code and Codex do.
 - On a Mac a trackpad swipe scrolls Claude Code's fullscreen view row by row, as it does vim and htop.
+- Pasting several lines into a program that would run each one as it arrives asks first.
 
 ---
 
 ## The browser
 
-Open a browser tab beside the code with `⇧⌘B` or the globe in the top bar, and check the agent's
-work where you read it.
+Open a browser tab beside the code with `⇧⌘B` or View → Open Browser, and check the agent's work
+where you read it. Browser tabs are macOS only for now: on Linux a tab says it can't open the page
+there, and one opened from a link offers Open in your browser.
 
 ### Tabs
 
-- A terminal pane's right-click menu opens the ports its dev server listens on, and the address bar
-  lists every port your worktree's terminals serve.
+- The ports button beside the address lists every port your worktree's terminals serve.
 - Each tab is a page of its own, with `⌘F` to find in it, `⌘=` / `⌘−` to zoom it, a switch to show
   it light or dark whatever the app is, and the Web Inspector on `⌥⌘I`.
-- On Linux a tab shows the pages on your own machine (localhost) only, without these tools.
-- A page out of sight closes after a while to give its memory back, and comes back where it was
-  when you look again. Settings → Browser sets how many stay open and for how long, and can reload a
-  worktree's pages when its agent finishes.
+- A page out of sight closes after a while to give its memory back, and loads again when you look,
+  its picture standing in until it does. Settings → Browser sets how many stay open and for how
+  long, and can reload a worktree's pages when its agent finishes.
 
 ### Device mode
 
@@ -183,23 +204,24 @@ work where you read it.
 device's width, pixel ratio and user agent, upright or turned. A phone or tablet also has touch: the
 page finds touch events, `maxTouchPoints`, `(pointer: coarse)` and `(hover: none)` (in `matchMedia`
 and in its own stylesheets, not another origin's), and your mouse reaches it as a finger, a click as
-a tap. Responsive takes any size you drag it to and keeps the mouse. It's still your Mac's browser
-engine: `:hover` follows the real pointer, and `<meta name=viewport>` is ignored.
+a tap. Responsive keeps the mouse, at a size an agent can set with `device`. It's still your Mac's
+browser engine: `:hover` follows the real pointer, and `<meta name=viewport>` is ignored.
 
 ### Ask the agent about the page
 
 - **Pick elements.** `⇧⌘C` picks an element (⇧-click to gather a few, then click the last). Ask what
-  you want, pick the model, and a new agent session starts in your worktree's terminal with the
-  page's address, each element's selector, React components, styles and a picture of it, and your
-  question, as Ask Agent does with a review.
+  you want, and a new agent session starts in your worktree's terminal with the page's address,
+  each element's selector, React components, styles and a picture of it, and your question, as Ask
+  Agent does with a review.
 - **Send errors.** The console counts the page's errors and warnings, failed requests too. Send
   Errors to Agent asks about them the same way, and a question about an element can take the page's
   errors along.
 
 ### Agents drive the browser
 
-Off until you turn it on in Settings → Browser. Then the agents in a terminal pane get tabs of their
-own, opened in the background without taking yours. `gitviber browser help` lists every command.
+Off until you turn it on in Settings → Browser, on macOS. Then the agents in a terminal pane get
+tabs of their own, opened in the background without taking yours. `gitviber browser help` lists
+every command.
 
 **Out of your way**
 
@@ -233,8 +255,7 @@ own, opened in the background without taking yours. `gitviber browser help` list
 - **A tab nobody touched slows down** after ten minutes (`--idle` sets it), and one unused for an
   hour closes, unless it's on show. When the Mac runs low on memory, sleeping tabs give theirs back
   at once.
-- **No second browser.** The tabs are the system webview the app already runs in, so there is
-  nothing extra to launch.
+- **No second browser.** The tabs are the system's WebKit, so there is nothing extra to launch.
 
 **Logins**
 
@@ -243,7 +264,7 @@ own, opened in the background without taking yours. `gitviber browser help` list
 - `session save` keeps a tab's login (cookies, localStorage and sessionStorage) for the repository
   and its worktrees, and `tab new --session` or `session load` puts it into another tab or another
   agent's. `--indexeddb` adds the page's IndexedDB, for apps that keep their login there; a database
-  that holds a file or is too big is named and left out. Saved sessions are readable by you alone.
+  that holds a Blob or is too big is named and left out. Saved sessions are readable by you alone.
 
 **Acting on a page**
 
@@ -255,15 +276,16 @@ own, opened in the background without taking yours. `gitviber browser help` list
   text, HTML, value, attribute, styles or box, and frames of the page's origin (a CSS selector
   reaches into one as `frame=<ref|css> >> <css>`, and `wait --frame` looks there).
 - **Screenshots** at the page's own size, of the viewport, one element, a clip or (`--full`) the
-  whole page in pictures of 2000 px, with `--refs` to draw each control's ref on the picture.
+  whole page in up to five pictures of 2000 px, with `--refs` to draw each control's ref on the
+  picture.
 - **Popups and downloads.** `window.open` and `target=_blank` open as tabs of the same pane, keeping
   `window.opener`, so sign-in and payment windows that talk back work. A download lands in a folder
   of the tab's own, its path in the agent's reply. `upload` answers a file chooser.
 - **DevTools for the agent.** `console` shows the page's lines, and `network` lists fetches, XHRs
   and WebSockets, each in full with headers, bodies and WebSocket frames. The log stays in memory.
 - **Safe by default.** Page text comes back between marks naming its origin so an agent can tell it
-  from your instructions, and tokens, keys and passwords in addresses and headers are hidden unless
-  `--reveal`.
+  from your instructions, and tokens, keys and passwords in addresses, headers and bodies are
+  hidden unless `--reveal`.
 
 ### Teaching agents the command
 
@@ -273,9 +295,9 @@ writes a skill for them while agent control is on:
 - `~/.claude/skills/gitviber-browser/SKILL.md` for Claude Code, and
   `~/.agents/skills/gitviber-browser/SKILL.md` for Codex, each only if that agent is installed
   (`~/.claude` or `~/.codex` is there).
-- It holds `gitviber browser help` as this version prints it, is rewritten when an update changes
-  that (never by an older version), and is deleted when you turn agent control or Settings →
-  Browser → Teach Claude Code and Codex off, or uninstall that agent.
+- It holds `gitviber browser help` as this version prints it, is rewritten by each new version
+  (never by an older one), and is deleted when you turn agent control or Settings → Browser →
+  Teach Claude Code and Codex off, or uninstall that agent.
 - A `gitviber-browser` skill of your own there is never touched.
 - For other agents, Settings has the same text to paste into your `CLAUDE.md` or `AGENTS.md`.
 
@@ -286,31 +308,35 @@ writes a skill for them while agent control is on:
 ### The file explorer
 
 - Change bars in the gutter, quick open (`⌘P`), and rename, create and delete from the right-click menu.
-- Pick two files with `⌘`-click to compare them side by side.
-- Fix a line right in the file view and save it with `⌘S`.
+- Pick two files with `⌘`-click and Compare Selected from the right-click menu to see them as a diff.
+- Fix a line right in the file view and save it with `⌘S`. Go to Definition, references and `⌃G`
+  for a line work there too.
 
 ### Markdown
 
 Markdown renders the way GitHub shows it, in files, pull requests and issues alike: Mermaid
-diagrams, math, `> [!NOTE]` alerts, and a file's frontmatter as a table.
+diagrams and math, drawn by the app itself, `> [!NOTE]` alerts, and a file's frontmatter as a table.
 
 ### Obsidian vault
 
-If you use Obsidian, your vault shows in a section under the explorer's files, found on its own.
+If you use Obsidian, your vault shows in a panel of its own beside the explorer, found on its own.
 Settings → Obsidian picks which vaults show.
 
 - Notes open in a tab the way Obsidian's reading view shows them: wikilinks that open the note they
-  name, embedded notes, images and PDFs, callouts, highlights, tags and properties.
-- Canvases open as their board, to pan and zoom. Images, audio, video and PDFs open in the media viewer.
+  name, embedded notes and images, callouts, highlights, tags and properties. An embedded PDF,
+  audio or video file is a card that opens it in its app.
+- Canvases open as their board, to pan and zoom. Images open in the media viewer, and audio, video
+  and PDFs in their default app.
 - Switch a note to Code to edit it and save it with `⌘S`.
 
 ---
 
 ## Commit messages from your agent
 
-Turn it on in Settings, hit the sparkle next to the commit box, and your own `claude -p` or
-`codex exec` writes the message from the diff. New pull request has the same button for the title
-and description. No API key, no extra account: it uses the CLI you're already signed in to.
+Hit the sparkle next to the commit box and your own `claude -p` or `codex exec` writes the message
+from the diff; Settings → Commit Messages picks another agent CLI, or turns it off. New pull
+request has the same button for the title and description. No API key, no extra account: it uses
+the CLI you're already signed in to.
 
 ---
 
@@ -320,6 +346,8 @@ and description. No API key, no extra account: it uses the CLI you're already si
 
 - Branches and merges as a colored lane graph. Undo, revert, reset, check out or tag from the
   right-click menu.
+- **Search** by message, or narrow it with `author:`, `path:` and `code:` (text a commit added or
+  removed).
 - **Rewrite.** Reword, squash, drop or reorder commits: pick several with ⌘- or ⇧-click, drag them
   between commits to move them or onto one to squash them. Split a commit into pieces to commit with
   line staging, or fix staged changes up into an older one. Cherry-pick several commits at once.
@@ -329,47 +357,74 @@ and description. No API key, no extra account: it uses the CLI you're already si
   one scroll of diffs.
 - **Take back.** Put a file back as a commit had it, or take back just that commit's change to it,
   or a few of its lines. `⌘Z` undoes it.
+- **Find the commit that broke it.** Bisect from a commit you know was good: mark each one it
+  checks out good, bad or skip until git names the first bad one.
+- **Reflog.** Find a commit you lost, then look at it, branch from it or reset to it.
 
 ### Branches
 
-- Merge, rebase, and pull with fast-forward, merge or rebase.
+- Merge (fast-forward, no fast-forward or squash), rebase, and pull with fast-forward, merge or
+  rebase.
 - Pin branches to the top of the picker, with the ones you checked out last under them.
 - Clean up the merged ones in one go, squash- and rebase-merged included.
 - **Compare** any two branches, remote branches, tags or commits on a screen of their own: the
   commits each has that the other lacks, the files changed since they parted (as a pull request shows
-  them) or every difference as they stand, all in one scroll with Open All.
-- A merge into the current branch says what would conflict before you make it.
+  them) or every difference as they stand, all in one scroll with Open All. Its merge section says
+  what would conflict before you merge.
+
+### Stashes
+
+Apply, pop, drop or rename a stash, or take one file from it.
 
 ### Patches
 
-Copy a file, a few lines, a commit or a stash as a patch. Apply one from the clipboard: it shows what
+Copy a commit, one of its files or a stash as a patch. Apply one from the clipboard: it shows what
 it changes first, merges with your edits where it must, and `⌘Z` takes it back.
 
 ### Conflicts
 
-Resolve block by block (current, incoming, both, or by hand) with each block's merge base a click
-away, then continue, skip or abort. Or hand them to the agent in your terminal, or open them in the
-merge tool your git config names.
+Resolve block by block (current, incoming or both), or take a whole side or mark a file resolved
+from the Changes list, then continue, skip or abort.
 
 ### Pull requests (GitHub)
 
 List them, narrow it to the ones you created, are assigned, are asked to review or are mentioned in,
-or to drafts and labels (it remembers per repository). Read, review in the same diff viewer, create,
-merge and check out. See [Reviewing pull requests](#reviewing-pull-requests).
+or to drafts and labels (the scope and drafts are remembered per repository). Read, review in the
+same diff viewer, create, merge and check out. A merge or a review goes to the head you were
+shown, so commits pushed since aren't merged or approved unseen. See
+[Reviewing pull requests](#reviewing-pull-requests).
 
 ### Issues (GitHub)
 
 List them, narrow it to the ones you created, are assigned or are mentioned in, or by label. Read,
-open, edit, comment, close and reopen, or start one in its own worktree.
+open, edit, comment, close (as completed or not planned) and reopen, or start one in its own
+worktree.
 
 ---
 
 ## Looks and settings
 
-- **Themes.** Eleven color themes for the whole app, from Nord and Catppuccin to Solarized, and 24
-  syntax themes.
-- **Type and scale.** Your own code font, terminal font and interface scale.
-- **Transparency.** On macOS a see-through window, with its opacity and the desktop's blur behind it
-  yours to set.
-- **Shortcuts.** Every action has one, every one can be rebound in Settings (`⌘,`), and holding `⌘`
-  shows them all. See [Shortcuts](SHORTCUTS.md).
+- **Themes.** Eleven color themes for the whole app, from Nord and Catppuccin to Solarized, a dark
+  and a light one to follow the system, and 24 syntax themes.
+- **Type and scale.** Your own interface font, code font, terminal font and interface scale.
+- **Transparency.** On macOS a see-through window, with its opacity yours to set and the desktop
+  blurred behind it if you like; Terminal too lets it show through the terminal.
+- **Shortcuts.** Most actions have one, every one can be rebound in Settings (`⌘,`), and holding `⌘`
+  shows the ones that work where you are. See [Shortcuts](SHORTCUTS.md).
+
+---
+
+## Memory
+
+Close a tab, a terminal or a panel and its memory comes back. Measured on macOS with debug builds
+started with `MallocLargeCache=0` (as the app starts itself), on GitViber's own repository:
+
+| | |
+| --- | --- |
+| The whole window, every panel open | 29–46 MB |
+| A terminal, idle | 33 MB |
+| The same terminal after 100,000 lines of output | 78 MB |
+| Closed again | 38 MB, and 39 MB after 10 rounds of open, flood and close |
+| 10 browser tabs opened and closed, twice | 65 MB before, 82 MB after the first round, 81 MB after the second |
+| Open All on an 857-file commit | 56 MB, given back on close |
+| A 7 MB file opened and closed 12 times | Stays at 28 MB |
