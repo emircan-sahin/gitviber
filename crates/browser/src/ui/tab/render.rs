@@ -7,6 +7,25 @@ use gpui::{MouseButton, ObjectFit, StyledImage as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::Textarea;
 
+/// Which edge of the page area an Ask box is placed from, and how far.
+#[derive(Debug, PartialEq)]
+enum Edge {
+    Top(f32),
+    Bottom(f32),
+}
+
+/// Below its anchor while the box fits; else on the area's bottom edge, so a question that grows
+/// grows up; at the top when the area is shorter than the box.
+fn ask_edge(at: f32, height: f32, area: f32) -> Edge {
+    if at + height <= area {
+        Edge::Top(at)
+    } else if height + 8. <= area {
+        Edge::Bottom(4.)
+    } else {
+        Edge::Top(4.)
+    }
+}
+
 /// The page's px from its viewport's top left, in the tab's px: where a pick's mark goes.
 struct Mark {
     left: f32,
@@ -882,13 +901,10 @@ impl BrowserTab {
     fn ask_box(&self, t: &AppTheme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let ask = self.ask.as_ref()?;
         let area = self.area.get();
-        let (w, h) = (320., 230.);
+        let w = 320.;
         let left = ask.at.0.clamp(4., (area.0 - w - 4.).max(4.));
-        let top = if ask.at.1 + h > area.1 {
-            (area.1 - h - 4.).max(4.)
-        } else {
-            ask.at.1
-        };
+        let edge = ask_edge(ask.at.1, ask.height.get(), area.1);
+        let height = ask.height.clone();
         let errors = self.page_info(cx).map_or(0, |p| p.errors);
         let picks = self.picks.is_some();
         let include = ask.include_errors;
@@ -900,7 +916,10 @@ impl BrowserTab {
                 .id("ask")
                 .absolute()
                 .left(px(left))
-                .top(px(top))
+                .map(|b| match edge {
+                    Edge::Top(y) => b.top(px(y)),
+                    Edge::Bottom(y) => b.bottom(px(y)),
+                })
                 .w(px(w))
                 .gap(px(6.))
                 .p(px(8.))
@@ -914,6 +933,22 @@ impl BrowserTab {
                     this.close_ask(cx);
                     cx.stop_propagation();
                 }))
+                .child(
+                    canvas(
+                        move |bounds, window, _| {
+                            // It fills the padding box: the border adds 1px above and below.
+                            let h = f32::from(bounds.size.height) + 2.;
+                            if height.replace(h) != h {
+                                window.request_animation_frame();
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                )
                 .child(
                     div()
                         .truncate()
@@ -1338,8 +1373,17 @@ impl Render for BrowserTab {
 
 #[cfg(test)]
 mod tests {
-    use super::option_key;
+    use super::{ask_edge, option_key, Edge};
     use gpui::Keystroke;
+
+    #[test]
+    fn an_ask_box_that_grows_near_the_bottom_stays_in_the_page() {
+        assert_eq!(ask_edge(100., 230., 600.), Edge::Top(100.));
+        // Grown to sixteen lines under the same anchor: on the bottom edge, growing up.
+        assert_eq!(ask_edge(100., 520., 600.), Edge::Bottom(4.));
+        assert_eq!(ask_edge(500., 230., 600.), Edge::Bottom(4.));
+        assert_eq!(ask_edge(100., 598., 600.), Edge::Top(4.));
+    }
 
     #[test]
     fn a_find_boxs_option_keys_are_its_own_and_nothing_else() {

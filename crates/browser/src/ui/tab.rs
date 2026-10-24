@@ -136,8 +136,13 @@ struct Ask {
     model: Option<(Vec<String>, String)>,
     /// Where it's anchored in the page area, its px.
     at: (f32, f32),
+    /// Its height as last laid out: it grows with the question, and where it fits follows.
+    height: Rc<Cell<f32>>,
     _events: Subscription,
 }
+
+/// The Ask box's height with its three lines, until it's laid out.
+const ASK_HEIGHT: f32 = 230.;
 
 /// Room around a device's body: Responsive's drag handles sit in it.
 const PAD: f32 = 16.;
@@ -1134,6 +1139,7 @@ impl BrowserTab {
             include_errors: false,
             model,
             at,
+            height: Rc::new(Cell::new(ASK_HEIGHT)),
             _events: events,
         });
         cx.notify();
