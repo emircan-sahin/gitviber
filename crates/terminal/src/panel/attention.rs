@@ -115,8 +115,9 @@ pub(super) fn agents_changed(cx: &mut App) {
             news.waiting = waiting;
             set_badge(waiting);
         }
-        // Its observers hear of every change, the count's or not.
+        // Its observers hear of every change, the count's or not; so do the worktree chip's.
         gpui::BorrowAppContext::update_global::<AgentNews, _>(cx, |_, _| {});
+        gitviber_refs::hooks::agents_changed(cx);
     });
 }
 

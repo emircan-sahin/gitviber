@@ -121,6 +121,22 @@ pub fn init(cx: &mut App) {
             }
         })
     });
+    // A commit's link (a terminal's SHA): History shows it, selected.
+    gitviber_refs::hooks::set_show_commit(
+        cx,
+        Rc::new(|sha, window, cx| {
+            let Some(ws) = Workspace::for_window(window, cx) else {
+                return;
+            };
+            let panel = ws.update(cx, |ws, cx| {
+                ws.show_panel(PANEL, cx);
+                ws.panel(PANEL, window, cx)
+            });
+            if let Some(p) = panel.and_then(|p| p.view().downcast::<HistoryPanel>().ok()) {
+                p.update(cx, |p, cx| p.jump_to(sha, window, cx));
+            }
+        }),
+    );
     gitviber_refs::hooks::set_open_compare(
         cx,
         Rc::new(|base, head, window, cx| {
@@ -286,5 +302,59 @@ mod tests {
             };
             l.key_down(&down, window, cx);
         });
+    }
+
+    #[gpui_kit::test]
+    fn a_commits_link_selects_it_in_history_reading_pages_until_its_there(cx: &mut TestAppContext) {
+        let dir =
+            std::env::temp_dir().join(format!("gitviber-history-test-{}", std::process::id()));
+        // SAFETY: the tests that read the config dir all point it at a temporary folder.
+        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            let core = gitviber_ui::install_core(cx);
+            gitviber_diff::init(cx);
+            gitviber_diff::set_core(core, cx);
+            gitviber_refs::init(cx);
+            super::init(cx);
+            super::set_all_branches(false, cx);
+        });
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        cx.update(|window, cx| {
+            Workspace::register_window(&ws, window, cx);
+            ws.update(cx, |ws, cx| ws.open_project(repo(), window, cx));
+        });
+        cx.run_until_parked();
+        // Past the first page, by a short id as a terminal prints it.
+        let far = cx.update(|_, cx| {
+            let core = gitviber_ui::core(cx);
+            gitviber_core::api::history::log(&core, None, 450, 1, None, None)
+                .unwrap()
+                .remove(0)
+                .sha
+        });
+        let shown = cx.update(|window, cx| {
+            gitviber_refs::hooks::show_commit(far[..9].to_string(), window, cx)
+        });
+        assert!(shown);
+        cx.run_until_parked();
+        let panel = cx
+            .update(|_, cx| ws.read(cx).built_panel(super::PANEL).cloned())
+            .and_then(|p| p.view().downcast::<HistoryPanel>().ok())
+            .expect("History shows");
+        let list = panel.read_with(cx, |p, _| p.list().clone());
+        let (len, open) = list.read_with(cx, |l, _| (l.len(), l.open_sha().map(str::to_string)));
+        assert!(len > 450, "{len}");
+        assert_eq!(open.as_deref(), Some(far.as_str()));
+        // One nowhere in it: History reads on, then says so and stops.
+        cx.update(|window, cx| gitviber_refs::hooks::show_commit("0".repeat(40), window, cx));
+        cx.run_until_parked();
+        let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+        assert!(toasts.iter().any(|t| {
+            t.title
+                .as_ref()
+                .is_some_and(|t| t.contains("isn't in the history"))
+        }));
     }
 }

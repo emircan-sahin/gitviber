@@ -244,6 +244,21 @@ impl HistoryPanel {
         &self.list
     }
 
+    /// Selects commit `sha` and scrolls to it, reading pages until it's listed (up to
+    /// `list::JUMP_PAGES`). A search or a comparison shown gives way to the history first.
+    pub fn jump_to(&mut self, sha: String, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.query.is_empty() || self.scope.is_some() {
+            self.scope = None;
+            self.set_query(String::new(), window, cx);
+        }
+        self.mode = Mode::List;
+        self.list.update(cx, |l, cx| {
+            l.jump_to(sha, cx);
+        });
+        self.list.focus_handle(cx).focus(window, cx);
+        cx.notify();
+    }
+
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search.update(cx, |s, cx| {
             s.focus(window, cx);

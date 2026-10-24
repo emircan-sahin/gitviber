@@ -34,6 +34,8 @@ use crate::query::Filter;
 
 /// Commits a page.
 pub const PAGE: u32 = 200;
+/// Going to a commit reads pages until it's listed, but not the whole history of a huge repo.
+pub const JUMP_PAGES: usize = 20;
 /// The key context the list's keys (`/` to search) listen in.
 pub const CONTEXT: &str = "HistoryList";
 
@@ -458,6 +460,8 @@ impl CommitList {
                     }
                 }
                 this.loaded = true;
+                // A jump asked before the first page came in looks now.
+                this.try_jump(cx);
                 cx.emit(ListEvent::Loaded);
                 cx.notify();
                 if std::mem::take(&mut this.again) {
@@ -639,21 +643,45 @@ impl CommitList {
 
     fn try_jump(&mut self, cx: &mut Context<Self>) {
         let Some(sha) = self.jump.clone() else { return };
-        if let Some(i) = self.commits.iter().position(|c| c.sha == sha) {
+        // A link's id may be short: its commit is the one it begins.
+        let found = self
+            .commits
+            .iter()
+            .position(|c| c.sha == sha || (sha.len() >= 7 && c.sha.starts_with(&sha)));
+        if let Some(i) = found {
             self.jump = None;
             let commit = self.commits[i].clone();
-            if self.open.as_ref().is_none_or(|o| o.sha != sha) {
+            self.picked.clear();
+            self.cursor = Some(i);
+            self.anchor = Some(commit.sha.clone());
+            if self.open.as_ref().is_none_or(|o| o.sha != commit.sha) {
                 self.toggle_open(&commit, None, cx);
             }
             if let Some(ix) = self.items.iter().position(|it| *it == Item::Commit(i)) {
                 self.state.scroll_to_reveal_item(ix);
             }
             cx.notify();
-        } else if self.has_more && self.commits.len() < 20 * PAGE as usize {
-            self.load_more(cx);
-        } else {
-            self.jump = None;
+            return;
         }
+        // Still reading: the page that comes in looks again.
+        if !self.loaded || self.reading.is_some() || self.paging.is_some() {
+            return;
+        }
+        if self.has_more && self.commits.len() < JUMP_PAGES * PAGE as usize {
+            self.load_more(cx);
+            return;
+        }
+        self.jump = None;
+        let short = sha[..sha.len().min(7)].to_string();
+        let _ = self.workspace.update(cx, |ws, cx| {
+            ws.toast(
+                gitviber_ui::workspace::Toast::info(
+                    "It's further back than History reads, or not on the branches it shows.",
+                )
+                .title(format!("{short} isn't in the history")),
+                cx,
+            )
+        });
     }
 
     // MARK: Open, pick

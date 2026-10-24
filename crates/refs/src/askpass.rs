@@ -204,7 +204,11 @@ pub fn install(cx: &mut App) {
         Event::AskpassDone(id) => done(*id, cx),
         _ => {}
     });
-    cx.set_global(Asking { showing: vec![], waiting: vec![], _events: Some(sub) });
+    cx.set_global(Asking {
+        showing: vec![],
+        waiting: vec![],
+        _events: Some(sub),
+    });
     let core = gitviber_ui::core(cx);
     cx.background_spawn(async move { api::sync::askpass_ready(&core) })
         .detach();
@@ -220,7 +224,9 @@ fn answer(id: u64, value: Option<String>, cx: &mut App) {
 /// meanwhile (a background fetch's) is the top dialog: the form waits for it to go.
 pub fn close_form(window: &mut Window, cx: &mut App) {
     let handle = window.window_handle();
-    let covered = cx.try_global::<Asking>().is_some_and(|a| a.showing.iter().any(|s| s.window == handle));
+    let covered = cx
+        .try_global::<Asking>()
+        .is_some_and(|a| a.showing.iter().any(|s| s.window == handle));
     if covered {
         cx.default_global::<Asking>().waiting.push(handle);
     } else {
@@ -260,7 +266,9 @@ fn settle(window: &mut Window, cx: &mut App) {
 
 fn done(id: u64, cx: &mut App) {
     let a = cx.default_global::<Asking>();
-    let Some(i) = a.showing.iter().position(|s| s.id == id) else { return };
+    let Some(i) = a.showing.iter().position(|s| s.id == id) else {
+        return;
+    };
     a.showing[i].done = true;
     let (handle, view) = (a.showing[i].window, a.showing[i].view.clone());
     let top = a.showing.iter().rposition(|s| s.window == handle) == Some(i);
@@ -349,7 +357,12 @@ fn show(p: Prompt, cx: &mut App) {
         weak
     });
     match opened {
-        Ok(view) => cx.default_global::<Asking>().showing.push(Showing { id, window: handle, done: false, view }),
+        Ok(view) => cx.default_global::<Asking>().showing.push(Showing {
+            id,
+            window: handle,
+            done: false,
+            view,
+        }),
         Err(_) => answer(id, None, cx),
     }
 }

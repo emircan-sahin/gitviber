@@ -8,13 +8,14 @@ use std::collections::HashMap;
 use gitviber_core::api;
 use gitviber_ui::keymap::worktree as wt_actions;
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::{now_unix, relative_time};
+use gitviber_ui::widgets::{StatusDot, now_unix, relative_time};
 use gitviber_ui::workspace::PanelContext;
 use gitviber_ui::{ActiveAppTheme, Project};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::popover::Popover;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     Anchor, AnyElement, AnyWindowHandle, App, AppContext as _, ClipboardItem, Context, Entity,
@@ -61,6 +62,7 @@ impl WorktreeChip {
         let subs = vec![
             cx.observe(&state, |_, _, cx| cx.notify()),
             cx.observe_global::<crate::store::Saved>(|_, cx| cx.notify()),
+            cx.observe_global::<hooks::AgentLooks>(|_, cx| cx.notify()),
         ];
         WorktreeChip {
             state,
@@ -162,6 +164,13 @@ impl Render for WorktreeChip {
                 plural(extra, "worktree")
             ),
         };
+        // Another worktree's agent asked or finished unseen: the chip says so, as the Dock does.
+        let away = hooks::most_urgent(
+            all.iter()
+                .filter(|w| !w.current)
+                .map(|w| hooks::agents_in(&w.path, cx)),
+        );
+        let away = hooks::is_news(away).then_some(away).flatten();
         let open = self.picker.is_some();
         let picker = self.picker.clone();
         let focus = picker.as_ref().map(|p| p.read(cx).focus.clone());
@@ -184,7 +193,8 @@ impl Render for WorktreeChip {
                             Icon::new(IconName::ChevronsUpDown)
                                 .xsmall()
                                 .text_color(t.subtle),
-                        ),
+                        )
+                        .children(away.map(StatusDot)),
                 );
         if let Some(bg) = tint(0.16).or(linked.then(|| t.primary.opacity(0.1))) {
             trigger = trigger.bg(bg);
@@ -333,12 +343,15 @@ impl WorktreePicker {
                 }
             }
         });
-        let subs = vec![cx.subscribe(&state, |this, state, e: &RepoEvent, cx| {
-            if *e == RepoEvent::Changed {
-                this.list = wt_list(&state.read(cx).worktrees);
-                cx.notify();
-            }
-        })];
+        let subs = vec![
+            cx.subscribe(&state, |this, state, e: &RepoEvent, cx| {
+                if *e == RepoEvent::Changed {
+                    this.list = wt_list(&state.read(cx).worktrees);
+                    cx.notify();
+                }
+            }),
+            cx.observe_global::<hooks::AgentLooks>(|_, cx| cx.notify()),
+        ];
         WorktreePicker {
             state,
             chip,
@@ -465,6 +478,7 @@ impl WorktreePicker {
             .filter(|_| !hot)
             .map(|h| hue_color(h, t.tint_l, t.tint_c, 1.));
         let (branch, _) = worktree_name(w);
+        let look = hooks::agents_in(&w.path, cx);
         let state = self.states.get(&w.path).copied();
         let pull = w
             .branch
@@ -584,7 +598,16 @@ impl WorktreePicker {
                             .when(w.locked && !w.in_use, |d| {
                                 d.child(Icon::new(IconName::Lock).xsmall().text_color(dim))
                             })
-                            .children(pull.map(|p| pull_chip(&p, hot, cx))),
+                            .children(pull.map(|p| pull_chip(&p, hot, cx)))
+                            .children(look.map(|l| {
+                                let tip: SharedString =
+                                    format!("A terminal here: {}", hooks::look_label(l)).into();
+                                div()
+                                    .id(("worktree-look", i))
+                                    .when(hot, |d| d.text_color(t.primary_foreground))
+                                    .child(StatusDot(l))
+                                    .tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
+                            })),
                     )
                     .child(
                         div()

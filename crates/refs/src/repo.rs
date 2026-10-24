@@ -96,7 +96,10 @@ impl RepoState {
 
     /// The project's state if some view made it; none is made.
     pub fn existing(project: &Entity<Project>, cx: &App) -> Option<Entity<RepoState>> {
-        cx.try_global::<States>()?.0.get(&project.entity_id())?.upgrade()
+        cx.try_global::<States>()?
+            .0
+            .get(&project.entity_id())?
+            .upgrade()
     }
 
     fn new(project: &Entity<Project>, cx: &mut Context<Self>) -> Self {
@@ -188,10 +191,14 @@ impl RepoState {
             let now = state.as_ref().map(|s| s.read(cx));
             match now {
                 Some(s) if *s.root() == root => match s.busy() {
-                    Some(b) => Note::info(format!("{label} not run")).detail(format!("Wait for {b} to finish.")).show(window, cx),
+                    Some(b) => Note::info(format!("{label} not run"))
+                        .detail(format!("Wait for {b} to finish."))
+                        .show(window, cx),
                     None => (action.run)(window, cx),
                 },
-                _ => Note::info(format!("{label} not run")).detail("It was for the worktree open before this one.").show(window, cx),
+                _ => Note::info(format!("{label} not run"))
+                    .detail("It was for the worktree open before this one.")
+                    .show(window, cx),
             }
         })
     }
@@ -365,9 +372,16 @@ impl RepoState {
             if let (Ok(Some(e)), Some(on_error)) = (deferred, on_error) {
                 let fixes = action.fixes.clone();
                 let title = format!("{} failed", action.label);
-                let handled = cx.update(|cx| handle.update(cx, |_, window, cx| on_error(&e, window, cx)).unwrap_or(false));
+                let handled = cx.update(|cx| {
+                    handle
+                        .update(cx, |_, window, cx| on_error(&e, window, cx))
+                        .unwrap_or(false)
+                });
                 if !handled {
-                    let _ = this.update(cx, |this, cx| this.guarded(git_failed(title, &e, &fixes), cx).show_in(handle, cx));
+                    let _ = this.update(cx, |this, cx| {
+                        this.guarded(git_failed(title, &e, &fixes), cx)
+                            .show_in(handle, cx)
+                    });
                 }
             }
         }));
@@ -386,10 +400,19 @@ impl RepoState {
         // ⌘Z held, or a toast's Undo while an action runs: one at a time.
         if let Some(b) = self.busy().cloned() {
             let verb = if forward { "Redo" } else { "Undo" };
-            Note::info(format!("{verb} not run")).detail(format!("Wait for {b} to finish.")).show_in(handle, cx);
+            Note::info(format!("{verb} not run"))
+                .detail(format!("Wait for {b} to finish."))
+                .show_in(handle, cx);
             return;
         }
-        let run = self.started(if forward { "Redo".into() } else { "Undo".into() }, cx);
+        let run = self.started(
+            if forward {
+                "Redo".into()
+            } else {
+                "Undo".into()
+            },
+            cx,
+        );
         let core = gitviber_ui::core(cx);
         let op = NetOp::quiet().pinned(self.root.clone());
         let task = cx.background_spawn(async move {
@@ -431,7 +454,8 @@ impl RepoState {
                     } else {
                         format!("{what} past {label}")
                     };
-                    this.guarded(git_failed(title, &e, &Fixes::new()), cx).show_in(handle, cx);
+                    this.guarded(git_failed(title, &e, &Fixes::new()), cx)
+                        .show_in(handle, cx);
                 } else if done.len() == asked {
                     let verb = if forward { "Redone" } else { "Undone" };
                     // Where HEAD ends up, when a step switched branches: ⌘Z must not switch unsaid.
@@ -468,7 +492,9 @@ impl RepoState {
                     } else {
                         Note::info(title)
                     };
-                    let note = note.maybe_detail((!detail.is_empty()).then_some(detail)).action(Some(again));
+                    let note = note
+                        .maybe_detail((!detail.is_empty()).then_some(detail))
+                        .action(Some(again));
                     this.guarded(note, cx).show_in(handle, cx);
                 }
                 this.refresh(cx);
@@ -571,7 +597,9 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use gitviber_ui::Workspace;
-    use gpui_kit::{Context, Entity, IntoElement, Render, TestAppContext, VisualTestContext, Window, div};
+    use gpui_kit::{
+        Context, Entity, IntoElement, Render, TestAppContext, VisualTestContext, Window, div,
+    };
 
     use super::*;
 
@@ -584,7 +612,10 @@ mod tests {
 
     /// This repository, which the tests only read.
     fn here() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap()
     }
 
     /// A scratch repository to point core at instead.
@@ -592,13 +623,21 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gitviber-refs-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let ok = std::process::Command::new("git").args(["init", "-q"]).current_dir(&dir).status().unwrap().success();
+        let ok = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .unwrap()
+            .success();
         assert!(ok);
         dir.canonicalize().unwrap()
     }
 
-    fn setup(cx: &mut TestAppContext) -> (Entity<Workspace>, Entity<RepoState>, &mut VisualTestContext) {
-        let dir = std::env::temp_dir().join(format!("gitviber-refs-repo-test-{}", std::process::id()));
+    fn setup(
+        cx: &mut TestAppContext,
+    ) -> (Entity<Workspace>, Entity<RepoState>, &mut VisualTestContext) {
+        let dir =
+            std::env::temp_dir().join(format!("gitviber-refs-repo-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // SAFETY: the tests that read the config dir all point it at a temporary folder.
         unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
@@ -629,7 +668,13 @@ mod tests {
     #[gpui_kit::test]
     fn the_worktree_stays_while_an_action_runs(cx: &mut TestAppContext) {
         let (ws, state, cx) = setup(cx);
-        let root = |cx: &mut VisualTestContext| cx.update(|_, cx| ws.read(cx).project().map(|p| p.read(cx).root().to_path_buf()));
+        let root = |cx: &mut VisualTestContext| {
+            cx.update(|_, cx| {
+                ws.read(cx)
+                    .project()
+                    .map(|p| p.read(cx).root().to_path_buf())
+            })
+        };
         let run = state.update(cx, |s, cx| s.started("Push".into(), cx));
         let other = scratch("switch");
         cx.update(|window, cx| {
@@ -685,7 +730,14 @@ mod tests {
         let (_ws, state, cx) = setup(cx);
         let ran = Rc::new(Cell::new(0));
         let count = ran.clone();
-        let button = state.update(cx, |s, cx| s.guard(Action::new("Retry with autostash", move |_, _| count.set(count.get() + 1)), cx));
+        let button = state.update(cx, |s, cx| {
+            s.guard(
+                Action::new("Retry with autostash", move |_, _| {
+                    count.set(count.get() + 1)
+                }),
+                cx,
+            )
+        });
         cx.update(|window, cx| (button.run)(window, cx));
         assert_eq!(ran.get(), 1);
         // Something running: it waits for that.
@@ -702,9 +754,17 @@ mod tests {
     #[gpui_kit::test]
     fn one_action_ending_leaves_the_others_running(cx: &mut TestAppContext) {
         let (_ws, state, cx) = setup(cx);
-        let (a, b) = state.update(cx, |s, cx| (s.started("Fetch".into(), cx), s.started("Rewrite".into(), cx)));
+        let (a, b) = state.update(cx, |s, cx| {
+            (
+                s.started("Fetch".into(), cx),
+                s.started("Rewrite".into(), cx),
+            )
+        });
         state.update(cx, |s, _| s.ended(a));
-        assert_eq!(state.read_with(cx, |s, _| s.busy().cloned()), Some("Rewrite".into()));
+        assert_eq!(
+            state.read_with(cx, |s, _| s.busy().cloned()),
+            Some("Rewrite".into())
+        );
         state.update(cx, |s, _| s.ended(b));
         assert!(state.read_with(cx, |s, _| s.busy().is_none()));
     }

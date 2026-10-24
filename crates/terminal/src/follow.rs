@@ -100,16 +100,18 @@ pub(crate) fn follow(
                     .await;
                 let _ = cx.update(|window, cx| match found {
                     Ok(Some(commit)) => {
+                        let sha = commit.sha.clone();
                         let sel = Selection::Changes {
                             of: ChangesOf::Commit {
                                 commit: Arc::new(commit),
                                 url: None,
                             },
                         };
-                        let _ = ws.update(cx, |ws, cx| {
-                            ws.show_panel("history", cx);
-                            ws.open(sel, false, window, cx);
-                        });
+                        let _ = ws.update(cx, |ws, cx| ws.open(sel, false, window, cx));
+                        // Selected in History too, its pages read until it's listed.
+                        if !gitviber_refs::hooks::show_commit(sha, window, cx) {
+                            let _ = ws.update(cx, |ws, cx| ws.show_panel("history", cx));
+                        }
                     }
                     _ => Toast::error("Could not open the commit").show(window, cx),
                 });

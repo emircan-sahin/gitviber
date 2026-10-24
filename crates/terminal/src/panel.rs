@@ -218,6 +218,10 @@ pub(crate) fn register(cx: &mut App) {
                 .sum()
         }),
     );
+    gitviber_refs::hooks::set_agents_in(
+        cx,
+        Rc::new(|dir: &str, cx: &App| agents_in(Path::new(dir), cx)),
+    );
     agents_menu::register(cx);
     // From anywhere in a window: the open worktree's conversations.
     cx.on_action(|_: &terminal::ResumeConversation, cx| {
