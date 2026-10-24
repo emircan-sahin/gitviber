@@ -32,6 +32,10 @@ pub struct Ci {
     failed_at: HashMap<Target, Instant>,
     asking: HashSet<Key>,
     tasks: HashMap<u64, Task<()>>,
+    /// Asked for this frame by `want`.
+    queued: Vec<Key>,
+    /// Some asker draws without following `Ci`: answers redraw the windows.
+    redraw: bool,
     next: u64,
     version: u64,
 }
@@ -108,6 +112,7 @@ pub fn ask(cx: &mut App, target: &Target, shas: &[String]) {
             if !ci.tasks.contains_key(&id) {
                 return;
             }
+            let mut redraw = false;
             let ci = cx.global_mut::<Ci>();
             ci.tasks.remove(&id);
             for s in &wanted {
@@ -122,10 +127,14 @@ pub fn ask(cx: &mut App, target: &Target, shas: &[String]) {
                     }
                     trim(ci);
                     ci.version += 1;
+                    redraw = ci.redraw;
                 }
                 Err(_) => {
                     ci.failed_at.insert(target, Instant::now());
                 }
+            }
+            if redraw {
+                cx.refresh_windows();
             }
         });
     });
@@ -190,10 +199,13 @@ pub struct CiWatch {
 }
 
 impl CiWatch {
+    /// `shown`: whether its owner is on screen now (the active tab, the panel showing); a
+    /// hidden one asks nothing until it shows again.
     pub fn new<V: 'static>(
         target: Target,
         shas: Vec<String>,
         live: bool,
+        shown: impl Fn(&V, &App) -> bool + 'static,
         cx: &mut Context<V>,
     ) -> Self {
         if shas.is_empty() {
@@ -202,18 +214,62 @@ impl CiWatch {
             };
         }
         ask(cx, &target, &shas);
-        let task = cx.spawn(async move |_, cx| {
+        let task = cx.spawn(async move |this, cx| {
             let mut wakes = cx.update(|cx| crate::cache::Cache::wakes(cx));
             loop {
                 cx.background_executor().timer(RUNNING).await;
+                let Ok(on) = this.read_with(cx, |v, cx| shown(v, cx)) else {
+                    break;
+                };
                 let now = cx.update(|cx| crate::cache::Cache::wakes(cx));
-                if live || now != wakes {
+                if on && (live || now != wakes) {
                     wakes = now;
                     cx.update(|cx| ask(cx, &target, &shas));
                 }
             }
         });
         CiWatch { _task: task }
+    }
+}
+
+/// Asks for `sha`'s verdict with the others asked this frame, in one request, and redraws the
+/// windows when it lands: for a badge drawn by a view that doesn't follow `Ci` (History's rows).
+pub fn want(cx: &mut App, target: &Target, sha: &str) {
+    // Drawn every frame: only a sha with nothing fresh, asked or queued changes anything, so
+    // what follows `Ci` isn't woken by every frame.
+    let key = (target.clone(), sha.to_string());
+    let Some(ci) = cx.try_global::<Ci>() else {
+        return;
+    };
+    let failed = ci
+        .failed_at
+        .get(target)
+        .is_some_and(|at| at.elapsed() < FAILED);
+    if failed
+        || !stale(ci, &key, Instant::now())
+        || ci.asking.contains(&key)
+        || ci.queued.contains(&key)
+    {
+        return;
+    }
+    let ci = cx.global_mut::<Ci>();
+    ci.redraw = true;
+    let first = ci.queued.is_empty();
+    ci.queued.push(key);
+    if first {
+        cx.defer(|cx| {
+            let queued = std::mem::take(&mut cx.global_mut::<Ci>().queued);
+            let mut by: HashMap<Target, Vec<String>> = HashMap::new();
+            for (t, s) in queued {
+                let list = by.entry(t).or_default();
+                if !list.contains(&s) {
+                    list.push(s);
+                }
+            }
+            for (t, shas) in by {
+                ask(cx, &t, &shas);
+            }
+        });
     }
 }
 
@@ -240,7 +296,7 @@ impl CommitChecksModel {
             Some(web) if url.starts_with(&format!("{web}/commit/")) => None,
             _ => Some(crate::model::repo_of(url)),
         };
-        let watch = CiWatch::new(target.clone(), vec![sha.clone()], false, cx);
+        let watch = CiWatch::new(target.clone(), vec![sha.clone()], false, |_, _| true, cx);
         let ci = cx.observe_global::<Ci>(|this: &mut Self, cx| this.maybe_read(cx));
         let tick = cx.spawn(async move |this, cx| {
             loop {
@@ -329,5 +385,37 @@ impl CommitChecksModel {
             })
             .ok();
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::TestAppContext;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    #[gpui_kit::test]
+    fn a_badge_drawn_every_frame_asks_once_and_then_wakes_no_one(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gitviber_ui::install_core(cx);
+            crate::cache::init(cx);
+            init(cx);
+        });
+        let woke = Rc::new(Cell::new(0));
+        let w = woke.clone();
+        let _sub = cx.update(|cx| cx.observe_global::<Ci>(move |_| w.set(w.get() + 1)));
+        for _ in 0..3 {
+            cx.update(|cx| want(cx, &None, "0123456789abcdef0123456789abcdef01234567"));
+        }
+        cx.run_until_parked();
+        // No repository is open: the ask fails, and failing holds it back for a while.
+        let after_ask = woke.get();
+        assert!(after_ask > 0);
+        for _ in 0..50 {
+            cx.update(|cx| want(cx, &None, "0123456789abcdef0123456789abcdef01234567"));
+        }
+        cx.run_until_parked();
+        assert_eq!(woke.get(), after_ask);
     }
 }

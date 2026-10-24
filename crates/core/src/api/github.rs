@@ -236,8 +236,17 @@ pub fn pr_create(
     })
 }
 
-pub fn pr_merge(core: &Core, target: Option<String>, number: u64, method: String) -> Res<()> {
-    core.with_github(move |gh, r| github::merge(gh, r, target.as_deref(), number, &method))
+/// `sha`: the head the user saw; a push since makes GitHub refuse the merge.
+pub fn pr_merge(
+    core: &Core,
+    target: Option<String>,
+    number: u64,
+    method: String,
+    sha: Option<String>,
+) -> Res<()> {
+    core.with_github(move |gh, r| {
+        github::merge(gh, r, target.as_deref(), number, &method, sha.as_deref())
+    })
 }
 
 pub fn pr_set_open(
@@ -249,14 +258,26 @@ pub fn pr_set_open(
     core.with_github(move |gh, r| github::set_open(gh, r, target.as_deref(), number, open))
 }
 
+/// `commit`: the head reviewed, which the review stays on.
 pub fn pr_review(
     core: &Core,
     target: Option<String>,
     number: u64,
     event: String,
     body: String,
+    commit: Option<String>,
 ) -> Res<()> {
-    core.with_github(move |gh, r| github::review(gh, r, target.as_deref(), number, &event, &body))
+    core.with_github(move |gh, r| {
+        github::review(
+            gh,
+            r,
+            target.as_deref(),
+            number,
+            &event,
+            &body,
+            commit.as_deref(),
+        )
+    })
 }
 
 pub fn issue_list(

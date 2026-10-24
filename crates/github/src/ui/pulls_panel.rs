@@ -9,7 +9,7 @@ use std::time::Duration;
 use gitviber_core::api;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::CountBadge;
-use gitviber_ui::workspace::{Panel, PanelContext, ProjectEvent};
+use gitviber_ui::workspace::{Panel, PanelContext, ProjectEvent, Slot};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::Sizable as _;
@@ -51,6 +51,30 @@ pub(crate) struct BranchStatus {
     pub push_elsewhere: Option<String>,
     /// Pushed already and nothing new since: GitHub has the branch as it is.
     pub pushed: bool,
+}
+
+impl BranchStatus {
+    /// From core's status: `git push`'s target says where the branch goes and whether GitHub
+    /// has it as it is.
+    pub(crate) fn read(
+        branch: Option<String>,
+        follows: Option<String>,
+        push: Option<&gitviber_core::git::PushTarget>,
+    ) -> Self {
+        BranchStatus {
+            branch,
+            follows,
+            push_elsewhere: push
+                .filter(|p| p.remote != "origin")
+                .map(|p| p.remote.clone()),
+            pushed: push.is_some_and(|p| p.branch.is_some() && p.ahead == 0),
+        }
+    }
+
+    /// A PR needs the branch on GitHub as it is: unpublished, or with commits since.
+    pub(crate) fn needs_push(&self) -> bool {
+        !self.pushed
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -102,6 +126,16 @@ impl Panel for PullsPanel {
 /// The repository's main worktree, which every worktree of it shares its chips with.
 pub(crate) fn main_of(root: &std::path::Path) -> String {
     gitviber_core::git::main_worktree(root).unwrap_or_else(|| root.to_string_lossy().into_owned())
+}
+
+/// Origin's open PRs, read as a project opens: the branch and worktree pickers' badges read
+/// them, whether or not the PRs panel ever shows.
+pub(crate) fn preload(cx: &mut App) {
+    let key = PullsPanel::list_key("origin", Filter::Open, &Narrow::default(), 1);
+    Cache::load(cx, &key, MIN_AGE, |core| {
+        api::github::pr_list(core, None, "open".into(), 1, Narrow::default().to_core())
+            .map(|ps| ps.iter().map(PullItem::from).collect::<Vec<_>>())
+    });
 }
 
 /// As a project's GitHub views first show: its account, and the cache for its repository.
@@ -188,23 +222,20 @@ impl PullsPanel {
                 if let Some(origin) = s.origin.clone() {
                     Cache::set_origin(cx, origin);
                 }
-                this.status = BranchStatus {
-                    branch: s.branch.clone(),
-                    follows: s.follows.clone(),
-                    push_elsewhere: s
-                        .push
-                        .as_ref()
-                        .filter(|p| p.remote != "origin")
-                        .map(|p| p.remote.clone()),
-                    pushed: s
-                        .push
-                        .as_ref()
-                        .is_some_and(|p| p.branch.is_some() && p.ahead == 0),
-                };
+                this.status =
+                    BranchStatus::read(s.branch.clone(), s.follows.clone(), s.push.as_ref());
                 cx.notify();
             })
             .ok();
         });
+    }
+
+    /// The left panel shows PRs: what their CI is kept current for.
+    fn shown(&self, cx: &App) -> bool {
+        self.ctx.workspace.upgrade().is_some_and(|ws| {
+            let ws = ws.read(cx);
+            ws.is_open(Slot::Left) && ws.active_panel(Slot::Left, cx) == Some("pulls")
+        })
     }
 
     fn account(&self, cx: &App) -> Option<Arc<Account>> {
@@ -354,7 +385,7 @@ impl PullsPanel {
         self.ci_shas = shas;
         self._ci = lists
             .into_iter()
-            .map(|(t, s)| CiWatch::new(t, s, true, cx))
+            .map(|(t, s)| CiWatch::new(t, s, true, |this: &Self, cx| this.shown(cx), cx))
             .collect();
     }
 
@@ -988,5 +1019,36 @@ impl Render for PullsPanel {
             .child(body)
             .children(account.map(|a| signed_in_as(&a.login, &a.source, &t)))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BranchStatus;
+    use gitviber_core::git::PushTarget;
+
+    fn push(remote: &str, branch: Option<&str>, ahead: u32) -> PushTarget {
+        PushTarget {
+            remote: remote.into(),
+            branch: branch.map(str::to_string),
+            ahead,
+        }
+    }
+
+    #[test]
+    fn a_pr_pushes_first_unless_github_has_the_branch_as_it_is() {
+        let s = |p: Option<&PushTarget>| BranchStatus::read(Some("fix".into()), None, p);
+        assert!(!s(Some(&push("origin", Some("origin/fix"), 0))).needs_push());
+        // An agent committed while the dialog was open.
+        assert!(s(Some(&push("origin", Some("origin/fix"), 2))).needs_push());
+        // Never published.
+        assert!(s(Some(&push("origin", None, 0))).needs_push());
+        assert!(s(None).needs_push());
+        assert_eq!(
+            s(Some(&push("upstream", Some("upstream/fix"), 0)))
+                .push_elsewhere
+                .as_deref(),
+            Some("upstream")
+        );
     }
 }

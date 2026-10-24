@@ -15,6 +15,10 @@ gpui-kit.workspace = true
 gitviber-core = { path = "../core" }
 gitviber-ui = { path = "../ui" }
 gitviber-diff = { path = "../diff" }
+gitviber-markdown = { path = "../markdown" }
+# Bridges: the branch pickers' pull request, History's commit checks, worktrees for a PR or an issue.
+gitviber-refs = { path = "../refs" }
+gitviber-history = { path = "../history" }
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true

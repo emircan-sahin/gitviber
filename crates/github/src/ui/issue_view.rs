@@ -17,9 +17,9 @@ use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, Textar
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, RetainAllImageCache,
-    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
-    WeakEntity, Window, div, prelude::FluentBuilder as _, px, rems,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
+    prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::cache::{Cache, MIN_AGE, Wakes};
@@ -28,7 +28,7 @@ use crate::logic::issue_work::issue_branch_name;
 use crate::model::{Account, IssueItem, LabelItem, Target, repo_of};
 use crate::requests::{GithubRequest, request};
 use crate::ui::common::{
-    Markdown, ago, copy, issue_icon, issue_pill, label_chip, open_url, section, theme,
+    Attachments, Blocks, ago, copy, issue_icon, issue_pill, label_chip, open_url, section, theme,
 };
 use crate::ui::dialogs::confirm;
 use crate::ui::labels::LabelPicker;
@@ -55,6 +55,22 @@ impl CloseReason {
     }
 }
 
+/// A write's end, and whether the comment in the box went out on the way: a close that failed
+/// after its comment posted mustn't post it again on the retry.
+struct Wrote {
+    result: Result<(), String>,
+    commented: bool,
+}
+
+impl From<Result<(), String>> for Wrote {
+    fn from(result: Result<(), String>) -> Self {
+        Wrote {
+            result,
+            commented: false,
+        }
+    }
+}
+
 pub struct IssueView {
     url: String,
     number: u64,
@@ -66,8 +82,10 @@ pub struct IssueView {
     detail_error: Option<String>,
     detail_at: Option<Instant>,
     loading: bool,
-    body: Option<Markdown>,
-    thread: Vec<Markdown>,
+    /// The body (block 0) and each comment, synced at the next frame after a read.
+    blocks: Blocks,
+    text_stale: bool,
+    attachments: Attachments,
     editing: Option<(Entity<InputState>, Entity<TextareaState>)>,
     comment: Entity<TextareaState>,
     comment_clear: bool,
@@ -75,11 +93,12 @@ pub struct IssueView {
     picking: Option<Vec<LabelItem>>,
     busy: Option<SharedString>,
     wakes: Wakes,
-    images: Entity<RetainAllImageCache>,
+    generation: u64,
     focus: FocusHandle,
     scroll: ScrollHandle,
     _detail: Task<()>,
     _action: Task<()>,
+    _signed: Task<()>,
     _subs: Vec<Subscription>,
     _live: Live,
 }
@@ -92,6 +111,7 @@ impl IssueView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        crate::ui::use_workspace_project(&ws, cx);
         let number = url
             .rsplit('/')
             .next()
@@ -104,9 +124,15 @@ impl IssueView {
                 .placeholder("Leave a comment (markdown)")
         });
         let subs = vec![
-            cx.subscribe(&comment, |_, _, _: &InputEvent, cx| cx.notify()),
+            // Text in the box keeps the tab: a preview would be replaced, a hidden tab released.
+            cx.subscribe(&comment, |this: &mut Self, c, ev: &InputEvent, cx| {
+                if matches!(ev, InputEvent::Change) && !c.read(cx).value().trim().is_empty() {
+                    this.pin(cx);
+                }
+                cx.notify();
+            }),
             cx.observe_global::<Cache>(|this: &mut Self, cx| {
-                if Cache::wakes(cx) != this.wakes {
+                if Cache::wakes(cx) != this.wakes || Cache::generation(cx) != this.generation {
                     cx.notify();
                 }
             }),
@@ -127,25 +153,36 @@ impl IssueView {
             detail_error: None,
             detail_at: None,
             loading: false,
-            body: None,
-            thread: vec![],
+            blocks: Blocks::default(),
+            text_stale: false,
+            attachments: Attachments::default(),
             editing: None,
             comment,
             comment_clear: false,
             picking: None,
             busy: None,
             wakes: Cache::wakes(cx),
-            images: RetainAllImageCache::new(cx),
+            generation: Cache::generation(cx),
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             _detail: Task::ready(()),
             _action: Task::ready(()),
+            _signed: Task::ready(()),
             _subs: subs,
             _live: Live::new("IssueView"),
         };
         crate::account::load(cx, false);
         view.load(cx);
         view
+    }
+
+    fn key(&self) -> String {
+        format!("issue:{}", self.url)
+    }
+
+    fn pin(&self, cx: &mut App) {
+        let key = self.key();
+        self.ws.update(cx, |ws, cx| ws.pin_tab(&key, cx)).ok();
     }
 
     fn item(&self) -> Option<IssueItem> {
@@ -181,16 +218,10 @@ impl IssueView {
                         ) {
                             Cache::issues_changed(cx);
                         }
-                        let none = |_: &str| None;
-                        this.body = (!d.body.trim().is_empty())
-                            .then(|| Markdown::new(&d.body, &this.web, &this.url, &none, cx));
-                        this.thread = d
-                            .thread
-                            .iter()
-                            .map(|c| Markdown::new(&c.body, &this.web, &this.url, &none, cx))
-                            .collect();
                         this.detail = Some(Arc::new(d));
                         this.detail_error = None;
+                        this.text_stale = true;
+                        this.wants_signed(cx);
                     }
                     Err(e) => this.detail_error = Some(e),
                 }
@@ -201,17 +232,48 @@ impl IssueView {
         cx.notify();
     }
 
+    fn texts(d: &IssueDetail) -> Vec<&str> {
+        std::iter::once(d.body.as_str())
+            .chain(d.thread.iter().map(|c| c.body.as_str()))
+            .collect()
+    }
+
+    /// A private repo's attachments: signed links, asked once per new one.
+    fn wants_signed(&mut self, cx: &mut Context<Self>) {
+        let Some(d) = self.detail.clone() else { return };
+        if !self.attachments.wants(&Self::texts(&d)) {
+            return;
+        }
+        let (core, target, number) = (crate::core(cx), self.target.clone(), self.number);
+        self._signed = cx.spawn(async move |this, cx| {
+            let Ok(map) = cx
+                .background_spawn(async move { api::github::pr_attachments(&core, target, number) })
+                .await
+            else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                if this.attachments.add(map) {
+                    this.text_stale = true;
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
+    }
+
     fn account(&self, cx: &App) -> Option<Arc<Account>> {
         crate::account::account(cx)
     }
 
-    /// Runs a write under `busy`; on success says `done`, reads again, and runs `after`.
+    /// Runs a write under `busy`; says `done` and reads again when it went through. `after`
+    /// runs either way, told whether it did.
     fn act(
         &mut self,
         busy: &'static str,
         done: String,
-        run: impl FnOnce(&gitviber_core::Core) -> Result<(), String> + Send + 'static,
-        after: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
+        run: impl FnOnce(&gitviber_core::Core) -> Wrote + Send + 'static,
+        after: impl FnOnce(&mut Self, bool, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) {
         if self.busy.is_some() {
@@ -220,18 +282,33 @@ impl IssueView {
         self.busy = Some(busy.into());
         let core = crate::core(cx);
         self._action = cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { run(&core) }).await;
+            let wrote = cx.background_spawn(async move { run(&core) }).await;
             this.update(cx, |this, cx| {
                 this.busy = None;
-                match result {
+                if wrote.commented {
+                    this.comment_clear = true;
+                }
+                let ok = wrote.result.is_ok();
+                match wrote.result {
                     Ok(()) => {
                         this.toast(Toast::success(done), cx);
                         Cache::issues_changed(cx);
-                        after(this, cx);
                         this.load(cx);
                     }
-                    Err(e) => this.toast(Toast::error(e).title(format!("{busy} failed")), cx),
+                    Err(e) => {
+                        let e = if wrote.commented {
+                            format!("{e} (the comment was posted)")
+                        } else {
+                            e
+                        };
+                        this.toast(Toast::error(e).title(format!("{busy} failed")), cx);
+                        // What the comment said is on GitHub now; read it back.
+                        if wrote.commented {
+                            this.load(cx);
+                        }
+                    }
                 }
+                after(this, ok, cx);
                 cx.notify();
             })
             .ok();
@@ -243,25 +320,18 @@ impl IssueView {
         self.comment.read(cx).value().trim().to_string()
     }
 
-    /// The comment box empties at the next frame, which has the window it takes.
-    fn clear_comment(&mut self, cx: &mut Context<Self>) {
-        self.comment_clear = true;
-        cx.notify();
-    }
-
     fn post(&mut self, cx: &mut Context<Self>) {
         let text = self.text(cx);
         if text.is_empty() {
             return;
         }
         let (target, number) = (self.target.clone(), self.number);
-        self.act(
-            "Comment",
-            "Comment added".into(),
-            move |core| api::github::issue_comment(core, target, number, text),
-            |this, cx| this.clear_comment(cx),
-            cx,
-        );
+        let run = move |core: &gitviber_core::Core| {
+            let result = api::github::issue_comment(core, target, number, text);
+            let commented = result.is_ok();
+            Wrote { result, commented }
+        };
+        self.act("Comment", "Comment added".into(), run, |_, _, _| {}, cx);
     }
 
     /// Like GitHub's "Close with comment": the comment goes first so it reads before the close.
@@ -269,17 +339,26 @@ impl IssueView {
         let (target, number, text) = (self.target.clone(), self.number, self.text(cx));
         let done = format!("{} #{number}", if open { "Reopened" } else { "Closed" });
         let run = move |core: &gitviber_core::Core| {
+            let mut commented = false;
             if !text.is_empty() {
-                api::github::issue_comment(core, target.clone(), number, text)?;
+                if let Err(e) = api::github::issue_comment(core, target.clone(), number, text) {
+                    return Wrote {
+                        result: Err(e),
+                        commented,
+                    };
+                }
+                commented = true;
             }
-            api::github::issue_set_open(core, target, number, open, reason.as_str().into())
-                .map(|_| ())
+            let result =
+                api::github::issue_set_open(core, target, number, open, reason.as_str().into())
+                    .map(|_| ());
+            Wrote { result, commented }
         };
         self.act(
             if open { "Reopen" } else { "Close" },
             done,
             run,
-            |this, cx| this.clear_comment(cx),
+            |_, _, _| {},
             cx,
         );
     }
@@ -300,6 +379,8 @@ impl IssueView {
         });
         title.update(cx, |t, cx| t.focus(window, cx));
         self.editing = Some((title, body));
+        // An edit in progress keeps the tab.
+        self.pin(cx);
         cx.notify();
     }
 
@@ -315,11 +396,20 @@ impl IssueView {
             return;
         }
         let (target, number) = (self.target.clone(), self.number);
+        let run = move |core: &gitviber_core::Core| {
+            api::github::issue_edit(core, target, number, title, body)
+                .map(|_| ())
+                .into()
+        };
         self.act(
             "Edit",
             format!("Updated #{number}"),
-            move |core| api::github::issue_edit(core, target, number, title, body).map(|_| ()),
-            |this, _| this.editing = None,
+            run,
+            |this, ok, _| {
+                if ok {
+                    this.editing = None;
+                }
+            },
             cx,
         );
     }
@@ -365,11 +455,17 @@ impl IssueView {
         }
         let (target, number) = (self.target.clone(), self.number);
         let names: Vec<String> = picked.iter().map(|l| l.name.clone()).collect();
+        let run = move |core: &gitviber_core::Core| {
+            api::github::issue_set_labels(core, target, number, names)
+                .map(|_| ())
+                .into()
+        };
+        // Saved or not, the issue's own labels show again: a refused save isn't on it.
         self.act(
             "Labels",
             "Labels updated".into(),
-            move |core| api::github::issue_set_labels(core, target, number, names).map(|_| ()),
-            |this, _| this.picking = None,
+            run,
+            |this, _, _| this.picking = None,
             cx,
         );
     }
@@ -389,19 +485,20 @@ impl IssueView {
             cx,
             move |_, cx| {
                 weak.update(cx, |this, cx| {
-                    let (target, number, key) = (
-                        this.target.clone(),
-                        this.number,
-                        format!("issue:{}", this.url),
-                    );
+                    let (target, number, key) = (this.target.clone(), this.number, this.key());
                     let ws = this.ws.clone();
+                    let run = move |core: &gitviber_core::Core| {
+                        api::github::issue_delete(core, target, number).into()
+                    };
                     // A deleted issue's tab closes: nothing to read again.
                     this.act(
                         "Delete",
                         format!("Deleted #{number}"),
-                        move |core| api::github::issue_delete(core, target, number),
-                        move |_, cx| {
-                            ws.update(cx, |ws, cx| ws.close_tab(&key, cx)).ok();
+                        run,
+                        move |_, ok, cx| {
+                            if ok {
+                                ws.update(cx, |ws, cx| ws.close_tab(&key, cx)).ok();
+                            }
                         },
                         cx,
                     );
@@ -453,20 +550,40 @@ impl TabItem for IssueView {
     fn tab_focus(&self, _: &App) -> Option<FocusHandle> {
         Some(self.focus.clone())
     }
+
+    /// A comment being written or an edit open: closing asks, and the tab isn't released.
+    fn is_dirty(&self, cx: &App) -> bool {
+        self.editing.is_some() || !self.text(cx).is_empty()
+    }
 }
 
 impl Render for IssueView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx);
-        let wakes = Cache::wakes(cx);
-        if wakes != self.wakes {
+        let (wakes, generation) = (Cache::wakes(cx), Cache::generation(cx));
+        // Another repo or account (a restored tab reads before its project opened): read again now.
+        let reset = generation != self.generation;
+        if wakes != self.wakes || reset {
             self.wakes = wakes;
-            if self.detail_at.is_none_or(|at| at.elapsed() > MIN_AGE) && !self.loading {
+            self.generation = generation;
+            let old = self.detail_at.is_none_or(|at| at.elapsed() > MIN_AGE);
+            if (reset || old || self.detail.is_none()) && !self.loading {
                 self.load(cx);
             }
         }
         if std::mem::take(&mut self.comment_clear) {
             self.comment.update(cx, |c, cx| c.set_value("", window, cx));
+        }
+        if std::mem::take(&mut self.text_stale)
+            && let Some(d) = self.detail.clone()
+        {
+            let (web, url, signed) = (
+                self.web.clone(),
+                self.url.clone(),
+                self.attachments.signed.clone(),
+            );
+            self.blocks
+                .sync(&Self::texts(&d), &web, &url, &signed, window, cx);
         }
         let Some(i) = self.item() else {
             let text = self
@@ -756,12 +873,12 @@ impl Render for IssueView {
             .child(header)
             .child(actions);
         if self.editing.is_none() {
-            let desc = match (&self.body, &d) {
-                (Some(md), _) => div()
-                    .px(px(12.))
-                    .py(px(10.))
-                    .child(md.element())
-                    .into_any_element(),
+            let body = d
+                .as_ref()
+                .filter(|d| !d.body.trim().is_empty())
+                .and_then(|_| self.blocks.get(0));
+            let desc = match (body, &d) {
+                (Some(md), _) => div().px(px(12.)).py(px(10.)).child(md).into_any_element(),
                 (None, Some(_)) => div()
                     .px(px(12.))
                     .py(px(10.))
@@ -776,7 +893,8 @@ impl Render for IssueView {
         }
         if let Some(d) = d.as_ref().filter(|d| !d.thread.is_empty()) {
             let mut s = section("Conversation", Some(d.thread.len().to_string().into()), &t);
-            for (c, md) in d.thread.iter().zip(&self.thread) {
+            for (n, c) in d.thread.iter().enumerate() {
+                let md = self.blocks.get(n + 1).filter(|_| !c.body.trim().is_empty());
                 s = s.child(
                     div()
                         .px(px(12.))
@@ -795,9 +913,7 @@ impl Render for IssueView {
                                 )
                                 .child(div().text_color(t.subtle).child(ago(&c.created_at))),
                         )
-                        .when(!c.body.trim().is_empty(), |d| {
-                            d.child(div().mt(px(6.)).child(md.element()))
-                        }),
+                        .children(md.map(|md| div().mt(px(6.)).child(md))),
                 );
             }
             page = page.child(s);
@@ -827,7 +943,6 @@ impl Render for IssueView {
             ),
         );
         div()
-            .image_cache(self.images.clone())
             .id("issue")
             .track_focus(&self.focus)
             .size_full()

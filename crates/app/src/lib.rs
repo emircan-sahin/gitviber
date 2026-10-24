@@ -57,6 +57,8 @@ pub fn init(cx: &mut App) {
     gitviber_refs::init(cx);
     gitviber_history::init(cx);
     gitviber_github::init(cx);
+    // Bridges last: they hand one feature's data to another's hooks.
+    gitviber_github::install_bridges(cx);
     settings_window::install(cx);
     menus::install(cx);
 }

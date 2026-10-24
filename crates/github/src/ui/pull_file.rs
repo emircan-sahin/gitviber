@@ -11,28 +11,32 @@ use gitviber_core::git::FileChange;
 use gitviber_core::github::ReviewComment;
 use gitviber_diff::{Compare, DiffEvent, DiffSource, DiffView, LinePos, LineRange, Side};
 use gitviber_ui::memory::Live;
-use gitviber_ui::workspace::{PullRange, TabIcon, TabItem, Toast, Workspace};
+use gitviber_ui::workspace::{
+    PullRange, Selection, TabIcon, TabItem, Toast, Workspace, selection_key,
+};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Textarea, TextareaState};
+use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, RetainAllImageCache,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity,
-    Window, div, prelude::FluentBuilder as _, px, rems,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
+    prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::cache::{Cache, Wakes};
 use crate::model::{Target, repo_of};
-use crate::ui::common::{Markdown, ago, text_button, theme};
+use crate::ui::common::{Attachments, Blocks, ago, text_button, theme};
 
 /// Comments are kept fresh a minute at a time while the file shows.
 const AGE: Duration = Duration::from_secs(60);
+/// Drafts kept aside for other threads and lines, the latest.
+const DRAFTS: usize = 16;
 
 /// Where a comment box is: a new comment on lines, or a reply in a thread.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Draft {
     New(LineRange),
     Reply(u64),
@@ -53,18 +57,24 @@ pub struct PullFileView {
     comments: Arc<Vec<ReviewComment>>,
     /// Indexes into `comments`: this file's threads, outdated ones (no line) left out.
     threads: Vec<Thread>,
-    bodies: Vec<Markdown>,
+    blocks: Blocks,
+    text_stale: bool,
+    attachments: Attachments,
     comments_at: Option<Instant>,
     comments_error: Option<String>,
     draft: Option<Draft>,
     composer: Entity<TextareaState>,
+    /// What was written for another thread or line, back when the box goes there again.
+    drafts: Vec<(Draft, String)>,
     folded: bool,
     busy: bool,
+    /// The box empties at the next frame, which has the window it takes.
+    clear: bool,
     wakes: Wakes,
-    images: Entity<RetainAllImageCache>,
     focus: FocusHandle,
     _load: Task<()>,
     _post: Task<()>,
+    _signed: Task<()>,
     _subs: Vec<Subscription>,
     _live: Live,
 }
@@ -76,6 +86,16 @@ fn side_name(side: Side) -> &'static str {
     }
 }
 
+/// `drafts` with `text` kept for `draft` (an empty one forgotten), the latest last, bounded.
+fn keep_draft(drafts: &mut Vec<(Draft, String)>, draft: Draft, text: String) {
+    drafts.retain(|(d, _)| *d != draft);
+    if !text.trim().is_empty() {
+        drafts.push((draft, text));
+    }
+    let over = drafts.len().saturating_sub(DRAFTS);
+    drafts.drain(..over);
+}
+
 impl PullFileView {
     pub fn new(
         ws: WeakEntity<Workspace>,
@@ -84,6 +104,7 @@ impl PullFileView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        crate::ui::use_workspace_project(&ws, cx);
         let compare = Compare::Range {
             base: range.base.clone(),
             head: range.head.clone(),
@@ -100,6 +121,11 @@ impl PullFileView {
             .as_ref()
             .map(|t| format!("https://github.com/{t}"))
             .unwrap_or_default();
+        let composer = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .rows(3)
+                .placeholder("Leave a comment (markdown)")
+        });
         let subs = vec![
             cx.subscribe_in(
                 &diff,
@@ -110,6 +136,16 @@ impl PullFileView {
                     }
                 },
             ),
+            // Text in the box keeps the tab: a preview would be replaced, a hidden tab released.
+            cx.subscribe(&composer, |this: &mut Self, c, ev: &InputEvent, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    if !c.read(cx).value().trim().is_empty() {
+                        let key = this.key();
+                        this.ws.update(cx, |ws, cx| ws.pin_tab(&key, cx)).ok();
+                    }
+                    cx.notify();
+                }
+            }),
             cx.observe_global::<Cache>(|this: &mut Self, cx| {
                 if Cache::wakes(cx) != this.wakes {
                     cx.notify();
@@ -125,22 +161,22 @@ impl PullFileView {
             diff,
             comments: Arc::new(vec![]),
             threads: vec![],
-            bodies: vec![],
+            blocks: Blocks::default(),
+            text_stale: false,
+            attachments: Attachments::default(),
             comments_at: None,
             comments_error: None,
             draft: None,
-            composer: cx.new(|cx| {
-                TextareaState::new(window, cx)
-                    .rows(3)
-                    .placeholder("Leave a comment (markdown)")
-            }),
+            composer,
+            drafts: vec![],
             folded: false,
             busy: false,
+            clear: false,
             wakes: Cache::wakes(cx),
-            images: RetainAllImageCache::new(cx),
             focus: cx.focus_handle(),
             _load: Task::ready(()),
             _post: Task::ready(()),
+            _signed: Task::ready(()),
             _subs: subs,
             _live: Live::new("PullFileView"),
         };
@@ -150,6 +186,13 @@ impl PullFileView {
 
     pub fn range(&self) -> &PullRange {
         &self.range
+    }
+
+    fn key(&self) -> String {
+        selection_key(&Selection::PrFile {
+            range: self.range.clone(),
+            file: self.file.clone(),
+        })
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
@@ -198,27 +241,64 @@ impl PullFileView {
             }
         }
         threads.sort_by_key(|t| mine[t.root].line);
-        let none = |_: &str| None;
-        let pull_url = self.range.pull_url.clone().unwrap_or_default();
-        self.bodies = mine
-            .iter()
-            .map(|c| Markdown::new(&c.body, &self.web, &pull_url, &none, cx))
-            .collect();
         self.comments = Arc::new(mine);
         self.threads = threads;
         self.comments_error = None;
+        self.text_stale = true;
+        self.wants_signed(cx);
     }
 
+    fn wants_signed(&mut self, cx: &mut Context<Self>) {
+        let texts: Vec<&str> = self.comments.iter().map(|c| c.body.as_str()).collect();
+        let Some(number) = self.range.number.filter(|_| self.attachments.wants(&texts)) else {
+            return;
+        };
+        let (core, target) = (crate::core(cx), self.target.clone());
+        self._signed = cx.spawn(async move |this, cx| {
+            let Ok(map) = cx
+                .background_spawn(async move { api::github::pr_attachments(&core, target, number) })
+                .await
+            else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                if this.attachments.add(map) {
+                    this.text_stale = true;
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
+    }
+
+    /// Moves the box to `draft`: what was written where it was is kept for when it comes back.
     fn start(&mut self, draft: Draft, window: &mut Window, cx: &mut Context<Self>) {
-        if self.range.pull_url.is_none() {
+        if self.range.pull_url.is_none() || self.draft == Some(draft) {
             return;
         }
+        let text = self.composer.read(cx).value().to_string();
+        if let Some(was) = self.draft {
+            keep_draft(&mut self.drafts, was, text);
+        }
+        let back = self
+            .drafts
+            .iter()
+            .position(|(d, _)| *d == draft)
+            .map(|i| self.drafts.remove(i).1)
+            .unwrap_or_default();
         self.draft = Some(draft);
         self.folded = false;
         self.composer.update(cx, |c, cx| {
-            c.set_value("", window, cx);
+            c.set_value(back, window, cx);
             c.focus(window, cx);
         });
+        cx.notify();
+    }
+
+    fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft = None;
+        self.composer
+            .update(cx, |c, cx| c.set_value("", window, cx));
         cx.notify();
     }
 
@@ -260,6 +340,7 @@ impl PullFileView {
                 match done {
                     Ok(_) => {
                         this.draft = None;
+                        this.clear = true;
                         this.load(cx);
                     }
                     Err(e) => {
@@ -302,10 +383,7 @@ impl PullFileView {
                             .ghost()
                             .xsmall()
                             .label("Cancel")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.draft = None;
-                                cx.notify();
-                            })),
+                            .on_click(cx.listener(|this, _, window, cx| this.cancel(window, cx))),
                     )
                     .child(
                         Button::new("post-comment")
@@ -442,10 +520,11 @@ impl PullFileView {
                                     )
                                     .child(div().text_color(t.subtle).child(ago(&c.created_at))),
                             )
-                            .child(div().pt(px(4.)).child(self.bodies[ci].element())),
+                            .children(self.blocks.get(ci).map(|md| div().pt(px(4.)).child(md))),
                     );
                 }
                 let id = root.id;
+                let waiting = self.drafts.iter().any(|(d, _)| *d == Draft::Reply(id));
                 thread = if self.draft == Some(Draft::Reply(id)) {
                     thread.child(self.composer("Reply".into(), cx))
                 } else {
@@ -454,7 +533,11 @@ impl PullFileView {
                             Button::new(("reply", ti))
                                 .ghost()
                                 .xsmall()
-                                .label("Reply…")
+                                .label(if waiting {
+                                    "Reply… (draft)"
+                                } else {
+                                    "Reply…"
+                                })
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.start(Draft::Reply(id), window, cx)
                                 })),
@@ -506,10 +589,16 @@ impl TabItem for PullFileView {
     fn tab_focus(&self, cx: &App) -> Option<FocusHandle> {
         Some(gpui_kit::Focusable::focus_handle(self.diff.read(cx), cx))
     }
+
+    /// A comment being written, here or set aside for another thread.
+    fn is_dirty(&self, cx: &App) -> bool {
+        (self.draft.is_some() && !self.composer.read(cx).value().trim().is_empty())
+            || !self.drafts.is_empty()
+    }
 }
 
 impl Render for PullFileView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let wakes = Cache::wakes(cx);
         if wakes != self.wakes {
             self.wakes = wakes;
@@ -517,8 +606,19 @@ impl Render for PullFileView {
                 self.load(cx);
             }
         }
+        if std::mem::take(&mut self.clear) {
+            self.composer
+                .update(cx, |c, cx| c.set_value("", window, cx));
+        }
+        if std::mem::take(&mut self.text_stale) {
+            let comments = self.comments.clone();
+            let texts: Vec<&str> = comments.iter().map(|c| c.body.as_str()).collect();
+            let pull_url = self.range.pull_url.clone().unwrap_or_default();
+            let (web, signed) = (self.web.clone(), self.attachments.signed.clone());
+            self.blocks
+                .sync(&texts, &web, &pull_url, &signed, window, cx);
+        }
         div()
-            .image_cache(self.images.clone())
             .id("pull-file")
             .track_focus(&self.focus)
             .size_full()
@@ -526,5 +626,28 @@ impl Render for PullFileView {
             .flex_col()
             .children(self.threads_view(cx))
             .child(div().flex_1().min_h_0().child(self.diff.clone()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_draft_set_aside_comes_back_and_an_empty_one_is_forgotten() {
+        let mut drafts = vec![];
+        keep_draft(&mut drafts, Draft::Reply(1), "half a reply".into());
+        keep_draft(&mut drafts, Draft::Reply(2), "  ".into());
+        assert_eq!(drafts, vec![(Draft::Reply(1), "half a reply".to_string())]);
+        keep_draft(&mut drafts, Draft::Reply(1), "the whole reply".into());
+        assert_eq!(
+            drafts,
+            vec![(Draft::Reply(1), "the whole reply".to_string())]
+        );
+        for i in 0..40 {
+            keep_draft(&mut drafts, Draft::Reply(100 + i), "x".into());
+        }
+        assert_eq!(drafts.len(), DRAFTS);
+        assert_eq!(drafts.last().map(|d| d.0), Some(Draft::Reply(139)));
     }
 }

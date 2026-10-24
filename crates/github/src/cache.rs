@@ -43,6 +43,8 @@ struct Entry {
     pending: Option<Task<()>>,
     /// A forced read asked for while one was on its way, which may predate what it must see.
     again: Option<(Fetch, Same)>,
+    /// Read for a view that doesn't follow the cache: an answer redraws the windows.
+    redraw: bool,
     /// Changes with what a view would show: data, error, loading.
     rev: u64,
     used: u64,
@@ -57,6 +59,7 @@ impl Entry {
             failed_at: None,
             pending: None,
             again: None,
+            redraw: false,
             rev: 0,
             used: 0,
         }
@@ -167,10 +170,27 @@ impl Cache {
         F: Fn(&Core) -> Result<T, String> + Send + Sync + 'static,
     {
         let fetch: Fetch = Arc::new(move |core| fetch(core).map(|t| Arc::new(t) as Data));
-        Cache::start(cx, key, max_age, fetch, same::<T>);
+        Cache::start(cx, key, max_age, fetch, same::<T>, false);
     }
 
-    fn start(cx: &mut App, key: &str, max_age: Duration, fetch: Fetch, same: Same) {
+    /// `load` for a view that doesn't follow the cache (another feature's, drawing what this
+    /// crate hands it): a failure holds like an answer for `max_age` too, so drawing it again
+    /// doesn't ask again, and an answer redraws the windows.
+    pub fn load_held<T, F>(cx: &mut App, key: &str, max_age: Duration, fetch: F)
+    where
+        T: PartialEq + Send + Sync + 'static,
+        F: Fn(&Core) -> Result<T, String> + Send + Sync + 'static,
+    {
+        let fetch: Fetch = Arc::new(move |core| fetch(core).map(|t| Arc::new(t) as Data));
+        Cache::start(cx, key, max_age, fetch, same::<T>, true);
+    }
+
+    /// Bumped when every answer is dropped (another repo, account or origin).
+    pub fn generation(cx: &App) -> u64 {
+        cx.try_global::<Cache>().map_or(0, |c| c.generation)
+    }
+
+    fn start(cx: &mut App, key: &str, max_age: Duration, fetch: Fetch, same: Same, held: bool) {
         let now = Instant::now();
         let fresh = |at: Option<Instant>| at.is_some_and(|at| now.duration_since(at) < max_age);
         if let Some(e) = cx.try_global::<Cache>().and_then(|c| c.entries.get(key)) {
@@ -183,7 +203,9 @@ impl Cache {
             // No sign-in is no answer to retry on every look: finding a token runs `gh` and git's
             // credential helper each time. It holds like data does; the Connect screen forces.
             if e.pending.is_none()
-                && e.error.as_deref().is_some_and(is_not_connected)
+                && e.error
+                    .as_deref()
+                    .is_some_and(|err| held || is_not_connected(err))
                 && fresh(e.failed_at)
             {
                 return;
@@ -199,6 +221,7 @@ impl Cache {
             .entry(key.to_string())
             .or_insert_with(Entry::new);
         entry.used = used;
+        entry.redraw |= held;
         if entry.pending.is_some() {
             entry.again = Some((fetch, same));
             return;
@@ -241,8 +264,12 @@ impl Cache {
                 e.failed_at = Some(Instant::now());
             }
         }
+        let redraw = e.redraw;
         if let Some((fetch, same)) = e.again.take() {
-            Cache::start(cx, key, Duration::ZERO, fetch, same);
+            Cache::start(cx, key, Duration::ZERO, fetch, same, false);
+        }
+        if redraw {
+            cx.refresh_windows();
         }
     }
 

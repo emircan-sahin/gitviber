@@ -147,10 +147,34 @@ fn image_link(alt: &str, src: &str) -> String {
     format!("[🖼 {alt}Load image from {}]({src})", host_of(src))
 }
 
-/// Markdown text the way GitHub shows it: refs linked outside code and links, images from
-/// elsewhere turned into links, and attachments swapped for `signed` links (a private repo's,
-/// which need a github.com login the app doesn't have).
-pub fn github_markdown(text: &str, repo: &str, signed: &dyn Fn(&str) -> Option<String>) -> String {
+/// A link in PR or issue text as GitHub resolves it: relative to its page (`base`). None for
+/// what isn't a page: an anchor, another scheme.
+pub fn absolute(base: &str, href: &str) -> Option<String> {
+    let lower = href.to_ascii_lowercase();
+    if lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:")
+    {
+        return Some(href.to_string());
+    }
+    if href.starts_with('#') || href.is_empty() || href.contains(':') {
+        return None;
+    }
+    if let Some(path) = href.strip_prefix('/') {
+        return Some(format!("https://github.com/{path}"));
+    }
+    let dir = base.rsplit_once('/').map_or(base, |(d, _)| d);
+    Some(format!("{dir}/{href}"))
+}
+
+/// Markdown text the way GitHub shows it: refs linked outside code and links, relative links
+/// made absolute against `base` (the PR's or issue's page), images from elsewhere turned into
+/// links, and attachments swapped for `signed` links (a private repo's, which need a
+/// github.com login the app doesn't have).
+pub fn github_markdown(
+    text: &str,
+    repo: &str,
+    base: &str,
+    signed: &dyn Fn(&str) -> Option<String>,
+) -> String {
     let mut out = String::with_capacity(text.len() + 64);
     let mut fence: Option<String> = None;
     for line in text.split_inclusive('\n') {
@@ -185,13 +209,19 @@ pub fn github_markdown(text: &str, repo: &str, signed: &dyn Fn(&str) -> Option<S
             out.push_str(line);
             continue;
         }
-        inline(line, repo, signed, &mut out);
+        inline(line, repo, base, signed, &mut out);
     }
     out
 }
 
 /// One line outside code blocks: code spans, links and HTML tags kept as they are.
-fn inline(line: &str, repo: &str, signed: &dyn Fn(&str) -> Option<String>, out: &mut String) {
+fn inline(
+    line: &str,
+    repo: &str,
+    base: &str,
+    signed: &dyn Fn(&str) -> Option<String>,
+    out: &mut String,
+) {
     let chars: Vec<char> = line.chars().collect();
     let mut i = 0;
     let mut text = String::new();
@@ -230,7 +260,14 @@ fn inline(line: &str, repo: &str, signed: &dyn Fn(&str) -> Option<String>, out: 
                     out.push_str(&image(&label, &target, signed));
                 } else {
                     // Links keep their text: a ref inside one is already a link.
-                    out.extend(&chars[i..=url_end]);
+                    let (href, title) = target
+                        .split_once(' ')
+                        .map_or((target.as_str(), ""), |(h, t)| (h, t));
+                    match absolute(base, href).filter(|a| a != href) {
+                        Some(url) if title.is_empty() => out.push_str(&format!("[{label}]({url})")),
+                        Some(url) => out.push_str(&format!("[{label}]({url} {title})")),
+                        None => out.extend(&chars[i..=url_end]),
+                    }
                 }
                 i = url_end + 1;
                 continue;
@@ -317,6 +354,30 @@ mod tests {
     use super::*;
 
     const REPO: &str = "https://github.com/o/r";
+    const PAGE: &str = "https://github.com/o/r/pull/7";
+
+    #[test]
+    fn links_in_pr_text_resolve_against_its_page() {
+        assert_eq!(
+            absolute(PAGE, "https://x.y/z").as_deref(),
+            Some("https://x.y/z")
+        );
+        assert_eq!(
+            absolute(PAGE, "/o/r/issues/3").as_deref(),
+            Some("https://github.com/o/r/issues/3")
+        );
+        assert_eq!(
+            absolute(PAGE, "files").as_deref(),
+            Some("https://github.com/o/r/pull/files")
+        );
+        assert_eq!(absolute(PAGE, "#fn-1"), None);
+        assert_eq!(absolute(PAGE, "javascript:alert(1)"), None);
+        let none = |_: &str| None;
+        assert_eq!(
+            github_markdown("[the files](files) and [top](#top)", REPO, PAGE, &none),
+            "[the files](https://github.com/o/r/pull/files) and [top](#top)"
+        );
+    }
 
     fn piece(text: &str, href: Option<&str>) -> Piece {
         Piece {
@@ -349,6 +410,7 @@ mod tests {
         let md = github_markdown(
             "Thanks @octo-cat, fixes #12; not `@a #4` or [see @c #6](https://example.com).\n```\n@b #5\n```\n",
             REPO,
+            PAGE,
             &none,
         );
         assert!(md.contains("[@octo-cat](https://github.com/octo-cat)"));
@@ -374,6 +436,7 @@ mod tests {
         let md = github_markdown(
             "![badge](https://img.shields.io/b.svg) <img src=\"https://t.example/p.png\" alt=\"x\">",
             REPO,
+            PAGE,
             &none,
         );
         assert_eq!(
@@ -401,6 +464,7 @@ mod tests {
         let md = github_markdown(
             &format!("![shot](https://github.com/user-attachments/assets/{id})"),
             REPO,
+            PAGE,
             &signed,
         );
         assert_eq!(md, "![shot](https://signed.example/a)");

@@ -340,24 +340,35 @@ pub fn create(
     Ok(pull_from(&v))
 }
 
-/// `method`: "merge" | "squash" | "rebase"
+/// The merge's body. With `sha`, the head the user looked at: GitHub refuses (409) a merge
+/// once commits were pushed since, rather than merging what nobody saw.
+fn merge_body(method: &str, sha: Option<&str>) -> Value {
+    let method = if matches!(method, "merge" | "squash" | "rebase") {
+        method
+    } else {
+        "merge"
+    };
+    let mut body = json!({ "merge_method": method });
+    if let Some(sha) = sha.filter(|s| is_sha(s)) {
+        body["sha"] = json!(sha);
+    }
+    body
+}
+
+/// `method`: "merge" | "squash" | "rebase"; `sha`: the head it must still be at.
 pub fn merge(
     session: &Session,
     repo: &Path,
     to: Option<&str>,
     number: u64,
     method: &str,
+    sha: Option<&str>,
 ) -> Result<(), String> {
     let r = target(session, repo, to)?;
-    let method = if matches!(method, "merge" | "squash" | "rebase") {
-        method
-    } else {
-        "merge"
-    };
     call(
         session,
         repo,
-        Method::Put(json!({ "merge_method": method })),
+        Method::Put(merge_body(method, sha)),
         &r.api(&format!("/pulls/{number}/merge")),
     )
     .map(|_| ())
@@ -382,8 +393,19 @@ pub fn set_open(
     Ok(pull_from(&v))
 }
 
+/// The review's body. With `commit`, the head the user reviewed: an approval then stays on
+/// that commit rather than on one pushed while they read.
+fn review_body(event: &str, body: &str, commit: Option<&str>) -> Value {
+    let mut v = json!({ "event": event, "body": body });
+    if let Some(commit) = commit.filter(|s| is_sha(s)) {
+        v["commit_id"] = json!(commit);
+    }
+    v
+}
+
 /// `event`: "APPROVE" | "REQUEST_CHANGES" | "COMMENT". GitHub requires a body for the
-/// last two, and refuses the first two on your own PR; its message says so.
+/// last two, and refuses the first two on your own PR; its message says so. `commit`: the
+/// head reviewed.
 pub fn review(
     session: &Session,
     repo: &Path,
@@ -391,6 +413,7 @@ pub fn review(
     number: u64,
     event: &str,
     body: &str,
+    commit: Option<&str>,
 ) -> Result<(), String> {
     let r = target(session, repo, to)?;
     if !matches!(event, "APPROVE" | "REQUEST_CHANGES" | "COMMENT") {
@@ -399,7 +422,7 @@ pub fn review(
     call(
         session,
         repo,
-        Method::Post(json!({ "event": event, "body": body })),
+        Method::Post(review_body(event, body, commit)),
         &r.api(&format!("/pulls/{number}/reviews")),
     )
     .map(|_| ())
@@ -492,4 +515,40 @@ pub fn comment_line(
         }
     };
     Ok(review_comment(&v))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn a_merge_is_pinned_to_the_head_seen() {
+        assert_eq!(
+            merge_body("squash", Some(SHA)),
+            json!({ "merge_method": "squash", "sha": SHA })
+        );
+        assert_eq!(
+            merge_body("rebase", None),
+            json!({ "merge_method": "rebase" })
+        );
+        // Anything else is a plain merge, and what isn't a commit id isn't sent.
+        assert_eq!(
+            merge_body("octopus", Some("main")),
+            json!({ "merge_method": "merge" })
+        );
+    }
+
+    #[test]
+    fn a_review_stays_on_the_commit_reviewed() {
+        assert_eq!(
+            review_body("APPROVE", "", Some(SHA)),
+            json!({ "event": "APPROVE", "body": "", "commit_id": SHA })
+        );
+        assert_eq!(
+            review_body("COMMENT", "x", None),
+            json!({ "event": "COMMENT", "body": "x" })
+        );
+    }
 }

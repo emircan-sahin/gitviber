@@ -1,11 +1,13 @@
 //! Pieces the GitHub views share: state icons and pills, CI and label chips, sections, notes, a
-//! markdown block, and opening or copying a link.
+//! page's markdown blocks and their attachments, and opening or copying a link.
 
+use std::collections::{HashMap, HashSet};
+
+use gitviber_markdown::{Callouts, MarkdownBase, MarkdownView};
 use gitviber_ui::widgets::{now_unix, relative_time};
 use gitviber_ui::workspace::Toast;
 use gitviber_ui::{ActiveAppTheme as _, AppTheme};
 use gpui_kit::assets::IconName;
-use gpui_kit::base::text::{TextView, TextViewState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
@@ -15,7 +17,7 @@ use gpui_kit::{
     rems,
 };
 
-use crate::logic::text::github_markdown;
+use crate::logic::text::{attachment_id, github_markdown};
 use crate::model::{CiState, IssueItem, LabelItem, PullState, unix};
 
 pub fn theme(cx: &App) -> AppTheme {
@@ -223,57 +225,90 @@ pub fn copy(text: &str, said: &str, window: &mut Window, cx: &mut App) {
     crate::requests::toast(Toast::success(said.to_string()), window, cx);
 }
 
-/// A PR's or issue's markdown, rendered in place (not scrolled on its own): GitHub's refs linked,
-/// images from elsewhere as links. Its text lives in its state, which its view owns.
-pub struct Markdown {
-    state: Entity<TextViewState>,
-    /// The page relative links resolve against.
-    base: SharedString,
+/// A page's markdown (a PR's or issue's body, each comment) as inline markdown views, in the
+/// page's scroll. A block whose text didn't change keeps its view, and the images it decoded.
+#[derive(Default)]
+pub struct Blocks {
+    items: Vec<(String, Entity<MarkdownView>)>,
 }
 
-impl Markdown {
-    /// `repo`: https://github.com/owner/name; `base`: the PR's or issue's page.
-    pub fn new<V>(
-        text: &str,
+impl Blocks {
+    /// `repo`: https://github.com/owner/name; `page`: the PR's or issue's, which relative links
+    /// resolve against.
+    pub fn sync<V: 'static>(
+        &mut self,
+        texts: &[&str],
         repo: &str,
-        base: &str,
-        signed: &dyn Fn(&str) -> Option<String>,
+        page: &str,
+        signed: &HashMap<String, String>,
+        window: &mut Window,
         cx: &mut Context<V>,
-    ) -> Self {
-        let source = github_markdown(text, repo, signed);
-        Markdown {
-            state: cx.new(|cx| TextViewState::markdown(&source, cx)),
-            base: base.to_string().into(),
+    ) {
+        let sign = |id: &str| signed.get(id).cloned();
+        for (i, text) in texts.iter().enumerate() {
+            let source = github_markdown(text, repo, page, &sign);
+            match self.items.get_mut(i) {
+                Some((old, _)) if *old == source => {}
+                Some((old, view)) => {
+                    view.update(cx, |v, cx| v.set_source(&source, cx));
+                    *old = source;
+                }
+                None => {
+                    let base = MarkdownBase {
+                        root: None,
+                        file: None,
+                        callouts: Callouts::GitHub,
+                    };
+                    let view = cx.new(|cx| MarkdownView::inline(&source, base, window, cx));
+                    self.items.push((source, view));
+                }
+            }
         }
+        self.items.truncate(texts.len());
     }
 
-    pub fn element(&self) -> impl IntoElement {
-        let base = self.base.clone();
-        TextView::new(&self.state)
-            .selectable(true)
-            .on_link_click(move |href, _, _, cx| {
-                if let Some(url) = absolute(&base, href) {
-                    open_url(&url, cx);
-                }
-            })
+    /// Block `i`'s view, once synced.
+    pub fn get(&self, i: usize) -> Option<Entity<MarkdownView>> {
+        self.items.get(i).map(|(_, v)| v.clone())
     }
 }
 
-/// A link in PR text as GitHub resolves it: relative to its page.
-pub fn absolute(base: &str, href: &str) -> Option<String> {
-    let lower = href.to_ascii_lowercase();
-    if lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:")
-    {
-        return Some(href.to_string());
+/// Signed links for a private repo's attachments (`github.com/user-attachments/...` needs a
+/// github.com login the app doesn't have), asked once per id a page shows: the first link of
+/// each is kept for the page's life, so a reload asks nothing and redraws nothing.
+#[derive(Default)]
+pub struct Attachments {
+    pub signed: HashMap<String, String>,
+    asked: HashSet<String>,
+}
+
+impl Attachments {
+    /// Whether `texts` hold attachments not asked for yet; marks them asked.
+    pub fn wants(&mut self, texts: &[&str]) -> bool {
+        let mut new = false;
+        for text in texts {
+            for word in text.split(['(', ')', '"', '\'', ' ', '\n', '<', '>']) {
+                if let Some(id) = attachment_id(word)
+                    && self.asked.insert(id.to_string())
+                {
+                    new = true;
+                }
+            }
+        }
+        new
     }
-    if href.starts_with('#') || href.is_empty() || href.contains(':') {
-        return None;
+
+    /// Whether any link was new.
+    pub fn add(&mut self, map: HashMap<String, String>) -> bool {
+        let mut changed = false;
+        for (id, url) in map {
+            if let std::collections::hash_map::Entry::Vacant(e) = self.signed.entry(id) {
+                e.insert(url);
+                changed = true;
+            }
+        }
+        changed
     }
-    if let Some(path) = href.strip_prefix('/') {
-        return Some(format!("https://github.com/{path}"));
-    }
-    let dir = base.rsplit_once('/').map_or(base, |(d, _)| d);
-    Some(format!("{dir}/{href}"))
 }
 
 /// A button-like text link in a row ("Show failure", "Details").
@@ -315,24 +350,24 @@ pub fn signed_in_as(login: &str, source: &str, t: &AppTheme) -> Div {
 
 #[cfg(test)]
 mod tests {
-    use super::absolute;
+    use super::*;
 
     #[test]
-    fn links_in_pr_text_resolve_against_its_page() {
-        let base = "https://github.com/o/r/pull/7";
-        assert_eq!(
-            absolute(base, "https://x.y/z").as_deref(),
-            Some("https://x.y/z")
-        );
-        assert_eq!(
-            absolute(base, "/o/r/issues/3").as_deref(),
-            Some("https://github.com/o/r/issues/3")
-        );
-        assert_eq!(
-            absolute(base, "files").as_deref(),
-            Some("https://github.com/o/r/pull/files")
-        );
-        assert_eq!(absolute(base, "#fn-1"), None);
-        assert_eq!(absolute(base, "javascript:alert(1)"), None);
+    fn attachments_are_asked_once_and_their_first_link_kept() {
+        let id = "012a2451-fa01-4fe5-8736-33f4a4d179f1";
+        let text = format!("![shot](https://github.com/user-attachments/assets/{id})");
+        let mut a = Attachments::default();
+        assert!(a.wants(&[&text]));
+        assert!(!a.wants(&[&text, "no images"]));
+        assert!(a.add(HashMap::from([(
+            id.to_string(),
+            "https://signed/1".to_string()
+        )])));
+        // A reload's new signature for the same image changes nothing.
+        assert!(!a.add(HashMap::from([(
+            id.to_string(),
+            "https://signed/2".to_string()
+        )])));
+        assert_eq!(a.signed[id], "https://signed/1");
     }
 }

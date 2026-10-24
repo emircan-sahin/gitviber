@@ -29,6 +29,7 @@ use crate::logic::suggest::{PULL_PROMPT, command_line, parse_suggestion, program
 use crate::model::{Access, IssueItem, PullItem, Target};
 use crate::store::Store;
 use crate::ui::common::theme;
+use crate::ui::pull_view::PullView;
 use crate::ui::pulls_panel::BranchStatus;
 
 /// Asks before a write; `on_ok` runs on OK.
@@ -63,43 +64,63 @@ fn field_label(text: &'static str) -> impl IntoElement {
         .child(text)
 }
 
-type OnReview = Rc<dyn Fn(ReviewEvent, String, &mut App)>;
+fn toast_in(ws: &WeakEntity<Workspace>, toast: Toast, cx: &mut App) {
+    ws.update(cx, |ws, cx| ws.toast(toast, cx)).ok();
+}
 
-/// GitHub's "Review changes": a verdict and a note, which GitHub requires unless approving.
+/// GitHub's "Review changes": a verdict and a note, which GitHub requires unless approving. The
+/// text is the PR tab's: Esc or a click outside keeps it, and the dialog closes once the review
+/// lands; a refused one keeps it for another try.
 pub struct ReviewDialog {
+    pull: WeakEntity<PullView>,
     body: Entity<TextareaState>,
     pick: ReviewEvent,
     /// Your own PR: GitHub refuses approving it or requesting changes.
     own: bool,
     /// Write access: anyone may review, but only a writer's verdict counts toward merging.
     counts: bool,
-    on_submit: OnReview,
+    _subs: Vec<Subscription>,
     _live: Live,
 }
 
 impl ReviewDialog {
     pub fn open(
+        pull: Entity<PullView>,
+        body: Entity<TextareaState>,
+        pick: Option<ReviewEvent>,
         own: bool,
         counts: bool,
         window: &mut Window,
         cx: &mut App,
-        on_submit: impl Fn(ReviewEvent, String, &mut App) + 'static,
     ) {
-        let view = cx.new(|cx| ReviewDialog {
-            body: cx.new(|cx| {
-                TextareaState::new(window, cx)
-                    .rows(4)
-                    .placeholder("Leave a comment (markdown)")
-            }),
-            pick: if own {
-                ReviewEvent::Comment
-            } else {
-                ReviewEvent::Approve
-            },
-            own,
-            counts,
-            on_submit: Rc::new(on_submit),
-            _live: Live::new("ReviewDialog"),
+        let view = cx.new(|cx| {
+            let done = pull.read(cx).reviews_done();
+            let subs = vec![
+                cx.observe_in(&pull, window, move |_, pull, window, cx| {
+                    if pull.read(cx).reviews_done() != done {
+                        window.close_dialog(cx);
+                    } else {
+                        cx.notify();
+                    }
+                }),
+                cx.subscribe(&body, |_, _, _: &InputEvent, cx| cx.notify()),
+            ];
+            let pick = pick
+                .filter(|p| !own || *p == ReviewEvent::Comment)
+                .unwrap_or(if own {
+                    ReviewEvent::Comment
+                } else {
+                    ReviewEvent::Approve
+                });
+            ReviewDialog {
+                pull: pull.downgrade(),
+                body: body.clone(),
+                pick,
+                own,
+                counts,
+                _subs: subs,
+                _live: Live::new("ReviewDialog"),
+            }
         });
         let first = std::cell::Cell::new(true);
         window.open_dialog(cx, move |dialog, window, cx| {
@@ -119,7 +140,8 @@ impl Render for ReviewDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx);
         let body = self.body.read(cx).value().trim().to_string();
-        let ready = !self.pick.needs_body() || !body.is_empty();
+        let busy = self.pull.upgrade().is_some_and(|p| p.read(cx).is_busy());
+        let ready = !busy && (!self.pick.needs_body() || !body.is_empty());
         let choices: Vec<AnyElement> = ReviewEvent::ALL
             .into_iter()
             .map(|e| {
@@ -187,22 +209,32 @@ impl Render for ReviewDialog {
                     Button::new("submit-review")
                         .primary()
                         .small()
-                        .label("Submit review")
+                        .label(if busy {
+                            "Submitting…"
+                        } else {
+                            "Submit review"
+                        })
                         .disabled(!ready)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            let body = this.body.read(cx).value().trim().to_string();
+                        .on_click(cx.listener(|this, _, _, cx| {
                             let event = this.pick;
-                            window.close_dialog(cx);
-                            (this.on_submit)(event, body, cx);
+                            this.pull
+                                .update(cx, |p, cx| p.submit_review(event, cx))
+                                .ok();
                         })),
                 ),
             )
     }
 }
 
-/// A PR's item from what create returned, for its tab.
-fn item(p: &Pull) -> PullItem {
-    PullItem::from(p)
+/// Where the branch stands now, read again: what Create and "Push to origin" decide on, since
+/// an agent may have committed while the dialog was open.
+fn read_status(core: &gitviber_core::Core) -> Result<BranchStatus, String> {
+    let s = api::changes::status(core)?;
+    Ok(BranchStatus::read(
+        s.branch.clone(),
+        s.follows.clone(),
+        s.push.as_ref(),
+    ))
 }
 
 /// "New pull request": into origin or a fork's original, from the current branch, which is
@@ -229,7 +261,7 @@ pub struct CreatePullDialog {
     suggesting: bool,
     _draft: Task<()>,
     _branches: Task<()>,
-    _submit: Task<()>,
+    _status: Task<()>,
     _suggest: Task<()>,
     _subs: Vec<Subscription>,
     _live: Live,
@@ -332,7 +364,7 @@ impl CreatePullDialog {
             suggesting: false,
             _draft: Task::ready(()),
             _branches: Task::ready(()),
-            _submit: Task::ready(()),
+            _status: Task::ready(()),
             _suggest: Task::ready(()),
             _subs: subs,
             _live: Live::new("CreatePullDialog"),
@@ -485,15 +517,18 @@ impl CreatePullDialog {
                             this.body.update(cx, |b, cx| b.set_value(body, window, cx));
                         }
                     }
-                    Ok(None) => this.toast(
+                    Ok(None) => toast_in(
+                        &this.ws,
                         Toast::error(format!("{program} printed nothing."))
                             .title("No description suggested"),
                         cx,
                     ),
                     Err(e) if e == gitviber_core::suggest::CANCELLED => {}
-                    Err(e) => {
-                        this.toast(Toast::error(e).title("Couldn't suggest a description"), cx)
-                    }
+                    Err(e) => toast_in(
+                        &this.ws,
+                        Toast::error(e).title("Couldn't suggest a description"),
+                        cx,
+                    ),
                 }
                 cx.notify();
             })
@@ -502,22 +537,21 @@ impl CreatePullDialog {
         cx.notify();
     }
 
-    fn toast(&self, toast: Toast, cx: &mut App) {
-        self.ws.update(cx, |ws, cx| ws.toast(toast, cx)).ok();
-    }
-
+    /// Pushes go to origin from now on; what the branch stands at is read again after.
     fn push_to_origin(&mut self, cx: &mut Context<Self>) {
         let core = crate::core(cx);
-        self._submit = cx.spawn(async move |this, cx| {
-            let done = cx
-                .background_spawn(
-                    async move { api::branches::set_push_default(&core, "origin".into()) },
-                )
+        self._status = cx.spawn(async move |this, cx| {
+            let read = cx
+                .background_spawn(async move {
+                    api::branches::set_push_default(&core, "origin".into())?;
+                    read_status(&core)
+                })
                 .await;
             this.update(cx, |this, cx| {
-                match done {
-                    Ok(()) => this.status.push_elsewhere = None,
-                    Err(e) => this.toast(
+                match read {
+                    Ok(status) => this.status = status,
+                    Err(e) => toast_in(
+                        &this.ws,
                         Toast::error(e).title("Could not change where branches push"),
                         cx,
                     ),
@@ -528,6 +562,8 @@ impl CreatePullDialog {
         });
     }
 
+    /// Creates it. The push is decided on the branch as it is now, not as the dialog opened; the
+    /// request is the window's, so a dialog closed meanwhile still gets its PR opened.
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let title = self.title.read(cx).value().trim().to_string();
         if title.is_empty() || self.busy || self.status.push_elsewhere.is_some() {
@@ -536,41 +572,71 @@ impl CreatePullDialog {
         self.busy = true;
         let body = self.body.read(cx).value().to_string();
         let target: Target = self.upstream().then(|| self.target.full_name());
-        let (core, head, base, draft, edits, push) = (
+        let (core, head, base, draft, edits) = (
             crate::core(cx),
             self.head.clone(),
             self.base.clone(),
             self.draft,
             self.maintainer_edits,
-            !self.status.pushed,
         );
-        self._submit = cx.spawn_in(window, async move |this, cx| {
-            let made = cx
-                .background_spawn(async move {
-                    // GitHub can only open a PR from a branch it has: publish or push the latest first.
-                    if push {
-                        api::sync::push(&core, None, None, None, "pr-create-push".into(), |_| {})?;
+        let (ws, me) = (self.ws.clone(), cx.weak_entity());
+        window
+            .spawn(cx, async move |cx| {
+                let made = cx
+                    .background_spawn(async move {
+                        let now = read_status(&core)?;
+                        if now.branch.as_deref() != Some(head.as_str()) {
+                            return Err(format!("{head} isn't checked out any more."));
+                        }
+                        if let Some(remote) = now.push_elsewhere {
+                            return Err(format!(
+                                "{head} pushes to {remote}, but a pull request needs it on origin."
+                            ));
+                        }
+                        // GitHub can only open a PR from a branch it has: publish or push the latest first.
+                        if now.needs_push() {
+                            api::sync::push(
+                                &core,
+                                None,
+                                None,
+                                None,
+                                "pr-create-push".into(),
+                                |_| {},
+                            )?;
+                        }
+                        api::github::pr_create(&core, target, title, body, head, base, draft, edits)
+                    })
+                    .await;
+                cx.update(|window, cx| {
+                    let open = me.update(cx, |this, cx| {
+                        this.busy = false;
+                        cx.notify();
+                    });
+                    match made {
+                        Ok(p) => {
+                            toast_in(&ws, Toast::success("Pull request created"), cx);
+                            Cache::pulls_changed(cx);
+                            if open.is_ok() {
+                                window.close_dialog(cx);
+                            }
+                            crate::ui::open_pull(
+                                &ws,
+                                PullItem::from(&p as &Pull),
+                                false,
+                                window,
+                                cx,
+                            );
+                        }
+                        Err(e) => toast_in(
+                            &ws,
+                            Toast::error(e).title("Could not create pull request"),
+                            cx,
+                        ),
                     }
-                    api::github::pr_create(&core, target, title, body, head, base, draft, edits)
                 })
-                .await;
-            this.update_in(cx, |this, window, cx| {
-                this.busy = false;
-                match made {
-                    Ok(p) => {
-                        this.toast(Toast::success("Pull request created"), cx);
-                        Cache::pulls_changed(cx);
-                        window.close_dialog(cx);
-                        crate::ui::open_pull(&this.ws, item(&p), false, window, cx);
-                    }
-                    Err(e) => {
-                        this.toast(Toast::error(e).title("Could not create pull request"), cx)
-                    }
-                }
-                cx.notify();
+                .ok();
             })
-            .ok();
-        });
+            .detach();
         cx.notify();
     }
 }
@@ -589,14 +655,13 @@ impl Render for CreatePullDialog {
         } else {
             self.base.clone()
         };
-        let pushes = if self.status.push_elsewhere.is_none() && !self.status.pushed {
+        let pushes = if self.status.push_elsewhere.is_none() && self.status.needs_push() {
             " · the branch will be pushed to origin first"
         } else {
             ""
         };
         let title_empty = self.title.read(cx).value().trim().is_empty();
-        let s = Settings::get(cx);
-        let can_suggest = s.suggest_enabled;
+        let can_suggest = Settings::get(cx).suggest_enabled;
         let mine_both = self.typed.0 && self.typed.1;
         let bases = self.bases.clone();
         let weak = cx.weak_entity();
@@ -669,10 +734,16 @@ impl Render for CreatePullDialog {
                     }))
                     .child(div().flex_1())
                     .when(upstream, |d| {
-                        d.child(Checkbox::new("maintainer-edits").label("Maintainer edits").tooltip("Lets the original's maintainers push to your branch, as GitHub offers").checked(self.maintainer_edits).on_click(cx.listener(|this, on: &bool, _, cx| {
-                            this.maintainer_edits = *on;
-                            cx.notify();
-                        })))
+                        d.child(
+                            Checkbox::new("maintainer-edits")
+                                .label("Maintainer edits")
+                                .tooltip("Lets the original's maintainers push to your branch, as GitHub offers")
+                                .checked(self.maintainer_edits)
+                                .on_click(cx.listener(|this, on: &bool, _, cx| {
+                                    this.maintainer_edits = *on;
+                                    cx.notify();
+                                })),
+                        )
                     })
                     .child(Checkbox::new("draft").label("Draft").checked(self.draft).on_click(cx.listener(|this, on: &bool, _, cx| {
                         this.draft = *on;
@@ -698,7 +769,6 @@ pub struct CreateIssueDialog {
     title: Entity<InputState>,
     body: Entity<TextareaState>,
     busy: bool,
-    _submit: Task<()>,
     _sub: Subscription,
     _live: Live,
 }
@@ -725,7 +795,6 @@ impl CreateIssueDialog {
                         .placeholder("Description (markdown)")
                 }),
                 busy: false,
-                _submit: Task::ready(()),
                 _sub: sub,
                 _live: Live::new("CreateIssueDialog"),
             }
@@ -740,6 +809,8 @@ impl CreateIssueDialog {
         });
     }
 
+    /// The request is the window's: a dialog closed meanwhile still gets its issue opened, so
+    /// nobody makes it twice.
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let title = self.title.read(cx).value().trim().to_string();
         if title.is_empty() || self.busy {
@@ -751,35 +822,36 @@ impl CreateIssueDialog {
             self.target.clone(),
             self.body.read(cx).value().to_string(),
         );
-        self._submit = cx.spawn_in(window, async move |this, cx| {
-            let made = cx
-                .background_spawn(
-                    async move { api::github::issue_create(&core, target, title, body) },
-                )
-                .await;
-            this.update_in(cx, |this, window, cx| {
-                this.busy = false;
-                match made {
-                    Ok(i) => {
-                        this.ws
-                            .update(cx, |ws, cx| ws.toast(Toast::success("Issue created"), cx))
-                            .ok();
-                        Cache::issues_changed(cx);
-                        window.close_dialog(cx);
-                        crate::ui::open_issue(&this.ws, IssueItem::from(&i), false, window, cx);
+        let (ws, me) = (self.ws.clone(), cx.weak_entity());
+        window
+            .spawn(cx, async move |cx| {
+                let made = cx
+                    .background_spawn(async move {
+                        api::github::issue_create(&core, target, title, body)
+                    })
+                    .await;
+                cx.update(|window, cx| {
+                    let open = me.update(cx, |this, cx| {
+                        this.busy = false;
+                        cx.notify();
+                    });
+                    match made {
+                        Ok(i) => {
+                            toast_in(&ws, Toast::success("Issue created"), cx);
+                            Cache::issues_changed(cx);
+                            if open.is_ok() {
+                                window.close_dialog(cx);
+                            }
+                            crate::ui::open_issue(&ws, IssueItem::from(&i), false, window, cx);
+                        }
+                        Err(e) => {
+                            toast_in(&ws, Toast::error(e).title("Could not create issue"), cx)
+                        }
                     }
-                    Err(e) => {
-                        this.ws
-                            .update(cx, |ws, cx| {
-                                ws.toast(Toast::error(e).title("Could not create issue"), cx)
-                            })
-                            .ok();
-                    }
-                }
-                cx.notify();
+                })
+                .ok();
             })
-            .ok();
-        });
+            .detach();
         cx.notify();
     }
 }

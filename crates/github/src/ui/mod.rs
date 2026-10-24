@@ -1,6 +1,6 @@
 //! The views: the PRs and Issues panels, a PR's, a PR file's and an issue's tab, their dialogs.
 
-mod common;
+pub(crate) mod common;
 mod connect;
 mod dialogs;
 mod issue_view;
@@ -11,12 +11,15 @@ mod pull_file;
 pub(crate) mod pull_view;
 mod pulls_panel;
 
+pub(crate) use dialogs::confirm;
+
 use std::sync::Arc;
 
 use gitviber_core::git::FileChange;
 use gitviber_core::github::{Issue, Label, Pull};
 use gitviber_ui::workspace::{
-    PanelSpec, PullRange, Selection, Slot, TabHandle, Workspace, register_opener, register_panel,
+    PanelSpec, Project, ProjectEvent, PullRange, Selection, Slot, TabHandle, Workspace,
+    register_opener, register_panel,
 };
 use gpui_kit::{App, AppContext as _, WeakEntity, Window};
 
@@ -29,6 +32,7 @@ pub use pulls_panel::PullsPanel;
 use crate::model::{IssueItem, PullItem, PullState};
 
 pub(crate) fn init(cx: &mut App) {
+    follow_projects(cx);
     register_panel(
         cx,
         PanelSpec::new("pulls", Slot::Left, "PRs", |ctx, window, cx| {
@@ -196,4 +200,37 @@ pub fn open_pull_file(
         window,
         cx,
     );
+}
+
+/// Each project, as core opens it or switches it to another worktree: core goes back to gh's
+/// active account then, so the project's own goes back on before anything reads, whichever
+/// views (a panel, a restored tab) exist; another repository starts the cache over.
+fn follow_projects(cx: &mut App) {
+    cx.observe_new::<Project>(|_, _, cx| {
+        cx.subscribe_self(|project: &mut Project, ev: &ProjectEvent, cx| {
+            if !matches!(ev, ProjectEvent::Opened | ProjectEvent::Switched { .. }) {
+                return;
+            }
+            let root = project.root().to_path_buf();
+            let main = project
+                .main_worktree()
+                .unwrap_or(&root)
+                .to_string_lossy()
+                .into_owned();
+            let _ = crate::account::apply_project_account(&main, cx);
+            crate::cache::Cache::use_repo(cx, &root);
+            crate::account::load(cx, false);
+            pulls_panel::preload(cx);
+        })
+        .detach();
+    })
+    .detach();
+}
+
+/// The repository core has open, as a tab built before any panel (a restored one) asks. Not
+/// the tab's workspace: an opener builds the tab while the workspace is being updated.
+pub(crate) fn use_workspace_project(_: &WeakEntity<Workspace>, cx: &mut App) {
+    if let Ok(root) = crate::core(cx).repo() {
+        pulls_panel::use_project(&root, cx);
+    }
 }

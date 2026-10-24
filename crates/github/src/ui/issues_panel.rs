@@ -367,6 +367,7 @@ fn issue_row(
     div()
         .id(("issue", pane * 100_000 + ix))
         .relative()
+        .w_full()
         .h(px(ROW))
         .flex()
         .gap(px(10.))

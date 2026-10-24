@@ -3,7 +3,7 @@
 //! Files changed), its files, and the description and conversation. The detail, files and
 //! threads live here only: closing the tab frees them.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -17,36 +17,38 @@ use gitviber_ui::workspace::{PullRange, TabIcon, TabItem, Toast, Workspace};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{InputEvent, TextareaState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
-    RetainAllImageCache, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px, rems,
-    uniform_list,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, ScrollHandle,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity,
+    Window, div, prelude::FluentBuilder as _, px, rems, uniform_list,
 };
 
 use crate::cache::{Cache, MIN_AGE, Wakes};
 use crate::ci::{self, CiWatch};
-use crate::logic::actions::{MergeMethod, allowed_methods, pull_rights, pull_source, review_badge};
+use crate::logic::actions::{
+    MergeMethod, ReviewEvent, allowed_methods, pull_rights, pull_source, review_badge,
+};
 use crate::logic::checks::{check_note, checks_summary, failure_report, is_failing, sort_checks};
 use crate::logic::pull_commits::{
     CommitRun, by_day, is_whole_pr, pick_label, picked_commits, run_to,
 };
-use crate::logic::text::attachment_id;
 use crate::model::{Account, Check, PullItem, PullState, Target, repo_of};
 use crate::requests::{GithubRequest, PullSource, request};
 use crate::store::Store;
 use crate::ui::common::{
-    Markdown, ago, ci_badge, copy, open_url, pull_icon, pull_pill, section, text_button, theme,
+    Attachments, Blocks, ago, ci_badge, copy, open_url, pull_icon, pull_pill, section, text_button,
+    theme,
 };
 use crate::ui::dialogs::{ReviewDialog, confirm};
 
 /// The files only change with the two commits: rarely worth reading again.
 const FILES_AGE: Duration = Duration::from_secs(600);
-/// Signed attachment links expire after 5 minutes; a lookup is used for 4.
-const SIGNED_AGE: Duration = Duration::from_secs(240);
+/// What a merge or cherry-pick that stopped on conflicts says.
+const CONFLICTS: &str = "Stopped on conflicts: resolve them in Changes, then push.";
 
 /// The files Files changed lists, and the picked commits' range (base, head, label) they're from.
 type Shown = (Arc<Vec<FileChange>>, Option<(String, String, String)>);
@@ -55,6 +57,13 @@ struct Failure {
     data: Option<Arc<CheckFailure>>,
     error: Option<String>,
     _task: Task<()>,
+}
+
+/// A write's end: done, or (merges, cherry-picks) stopped on conflicts left in the working tree.
+pub(crate) type Wrote = Result<bool, String>;
+
+fn done(r: Result<impl Sized, String>) -> Wrote {
+    r.map(|_| false)
 }
 
 pub struct PullView {
@@ -80,16 +89,22 @@ pub struct PullView {
     picked_error: Option<String>,
     seen: Option<HashSet<String>>,
     open_bodies: HashSet<String>,
-    body: Option<Markdown>,
-    comments: Vec<Markdown>,
-    signed: Option<(Instant, Arc<HashMap<String, String>>)>,
-    failures: HashMap<u64, Failure>,
+    /// The description (block 0) and each comment, synced at the next frame after a read.
+    blocks: Blocks,
+    text_stale: bool,
+    attachments: Attachments,
+    failures: std::collections::HashMap<u64, Failure>,
     busy: Option<SharedString>,
     /// What a finished write asks of another feature, sent at the next frame.
     pending_request: Option<GithubRequest>,
+    /// The review being written: kept here, so a refused review or a closed dialog keeps it.
+    review: Option<Entity<TextareaState>>,
+    review_pick: Option<ReviewEvent>,
+    /// Goes up when a review lands; the dialog closes on it.
+    reviews_done: u64,
     polls: u32,
     wakes: Wakes,
-    images: Entity<RetainAllImageCache>,
+    generation: u64,
     focus: FocusHandle,
     scroll: ScrollHandle,
     _ci: Option<CiWatch>,
@@ -118,10 +133,11 @@ impl PullView {
             .and_then(|n| n.parse().ok())
             .unwrap_or_default();
         let repo = repo_of(&url);
+        crate::ui::use_workspace_project(&ws, cx);
         let subs = vec![
             cx.observe_global::<ci::Ci>(|_, cx| cx.notify()),
             cx.observe_global::<Cache>(|this: &mut Self, cx| {
-                if Cache::wakes(cx) != this.wakes {
+                if Cache::wakes(cx) != this.wakes || Cache::generation(cx) != this.generation {
                     cx.notify();
                 }
             }),
@@ -152,15 +168,18 @@ impl PullView {
             picked_error: None,
             seen: None,
             open_bodies: HashSet::new(),
-            body: None,
-            comments: vec![],
-            signed: None,
-            failures: HashMap::new(),
+            blocks: Blocks::default(),
+            text_stale: false,
+            attachments: Attachments::default(),
+            failures: Default::default(),
             busy: None,
             pending_request: None,
+            review: None,
+            review_pick: None,
+            reviews_done: 0,
             polls: 0,
             wakes: Cache::wakes(cx),
-            images: RetainAllImageCache::new(cx),
+            generation: Cache::generation(cx),
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             _ci: None,
@@ -180,6 +199,20 @@ impl PullView {
 
     pub fn url(&self) -> &str {
         &self.url
+    }
+
+    fn key(&self) -> String {
+        crate::ui::pull_key(&self.url)
+    }
+
+    /// The active tab of its workspace: what CI is kept current for.
+    fn shown(&self, cx: &App) -> bool {
+        self.ws.upgrade().is_some_and(|ws| {
+            ws.read(cx)
+                .tabs()
+                .active_key()
+                .is_some_and(|k| k.as_ref() == self.key())
+        })
     }
 
     fn item(&self) -> Option<PullItem> {
@@ -220,16 +253,14 @@ impl PullView {
         };
         self.detail_error = None;
         // Merged or closed on GitHub: the lists still show it as it was.
-        let behind =
-            Cache::list_is_behind::<PullItem>(cx, "pulls:", &d.pull.url, &d.pull.updated_at, |r| {
-                (r.url.as_str(), r.updated_at.as_str())
-            });
-        if behind {
+        if Cache::list_is_behind::<PullItem>(cx, "pulls:", &d.pull.url, &d.pull.updated_at, |r| {
+            (r.url.as_str(), r.updated_at.as_str())
+        }) {
             Cache::pulls_changed(cx);
         }
         let mergeable_unknown = d.pull.state == "open" && d.mergeable.is_none();
         self.detail = Some(d.clone());
-        self.render_text(cx);
+        self.text_stale = true;
         self.wants_signed(cx);
         // GitHub computes mergeability in the background and answers null until it's done; ask
         // again soon, backing off, then leave it to ⟳.
@@ -243,13 +274,7 @@ impl PullView {
         } else if !mergeable_unknown {
             self.polls = 0;
         }
-        let head = d.pull.head_sha.clone();
-        self._ci = Some(CiWatch::new(
-            self.target.clone(),
-            vec![head],
-            d.pull.state == "open",
-            cx,
-        ));
+        self.watch_ci(cx);
         let shas = (d.pull.base_sha.clone(), d.pull.head_sha.clone());
         if self.files_for.as_ref() != Some(&shas)
             || self.files_at.is_some_and(|at| at.elapsed() > FILES_AGE)
@@ -259,39 +284,44 @@ impl PullView {
         cx.notify();
     }
 
-    fn render_text(&mut self, cx: &mut Context<Self>) {
-        let Some(d) = self.detail.clone() else { return };
-        let signed: HashMap<String, String> = self
-            .signed
-            .as_ref()
-            .map(|(_, m)| (**m).clone())
-            .unwrap_or_default();
-        let sign = |id: &str| signed.get(id).cloned();
-        self.body = (!d.body.trim().is_empty())
-            .then(|| Markdown::new(&d.body, &self.web, &self.url, &sign, cx));
-        self.comments = d
-            .comments
-            .iter()
-            .map(|c| Markdown::new(&c.body, &self.web, &self.url, &sign, cx))
-            .collect();
+    /// CI for the head, and for each commit, newest first (asked 100 at a time), while shown.
+    fn watch_ci(&mut self, cx: &mut Context<Self>) {
+        let Some(d) = &self.detail else { return };
+        let mut shas = vec![d.pull.head_sha.clone()];
+        for c in self.commits().iter().rev() {
+            if !shas.contains(&c.sha) {
+                shas.push(c.sha.clone());
+            }
+        }
+        let live = d.pull.state == "open";
+        self._ci = Some(CiWatch::new(
+            self.target.clone(),
+            shas,
+            live,
+            |this: &Self, cx| this.shown(cx),
+            cx,
+        ));
     }
 
-    /// A private repo's attachments need a github.com login the app doesn't have: their signed
-    /// links come from the API, asked only when the text has some.
+    /// The description and comments, as markdown views; at a frame, which has the window.
+    fn sync_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.text_stale = false;
+        let Some(d) = self.detail.clone() else { return };
+        let texts: Vec<&str> = std::iter::once(d.body.as_str())
+            .chain(d.comments.iter().map(|c| c.body.as_str()))
+            .collect();
+        let (web, url) = (self.web.clone(), self.url.clone());
+        let signed = self.attachments.signed.clone();
+        self.blocks.sync(&texts, &web, &url, &signed, window, cx);
+    }
+
+    /// Signed links for the attachments the text holds, asked once per new one.
     fn wants_signed(&mut self, cx: &mut Context<Self>) {
-        let Some(d) = &self.detail else { return };
-        let mut texts =
-            std::iter::once(d.body.as_str()).chain(d.comments.iter().map(|c| c.body.as_str()));
-        let has = texts.any(|t| {
-            t.split(['(', '"', '\'', ' ', '\n'])
-                .any(|w| attachment_id(w.trim_end_matches(')')).is_some())
-        });
-        if !has
-            || self
-                .signed
-                .as_ref()
-                .is_some_and(|(at, _)| at.elapsed() < SIGNED_AGE)
-        {
+        let Some(d) = self.detail.clone() else { return };
+        let texts: Vec<&str> = std::iter::once(d.body.as_str())
+            .chain(d.comments.iter().map(|c| c.body.as_str()))
+            .collect();
+        if !self.attachments.wants(&texts) {
             return;
         }
         let (core, target, number) = (crate::core(cx), self.target.clone(), self.number);
@@ -303,9 +333,10 @@ impl PullView {
                 return;
             };
             this.update(cx, |this, cx| {
-                this.signed = Some((Instant::now(), Arc::new(map)));
-                this.render_text(cx);
-                cx.notify();
+                if this.attachments.add(map) {
+                    this.text_stale = true;
+                    cx.notify();
+                }
             })
             .ok();
         });
@@ -345,6 +376,7 @@ impl PullView {
                         this.files = Some(Arc::new(f));
                         this.files_error = None;
                         this.note_seen(cx);
+                        this.watch_ci(cx);
                     }
                     Err(e) => this.files_error = Some(e),
                 }
@@ -470,13 +502,14 @@ impl PullView {
         }
     }
 
-    /// Runs a write in the background under `busy`; on success says `done` and reads again.
+    /// Runs a write in the background under `busy`; when it's through, says `done` (or that it
+    /// stopped on conflicts), reads the PR again and runs `after`.
     fn act(
         &mut self,
         busy: &'static str,
         done: String,
-        run: impl FnOnce(&gitviber_core::Core) -> Result<(), String> + Send + 'static,
-        then: Option<GithubRequest>,
+        run: impl FnOnce(&gitviber_core::Core) -> Wrote + Send + 'static,
+        after: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) {
         if self.busy.is_some() {
@@ -489,13 +522,16 @@ impl PullView {
             this.update(cx, |this, cx| {
                 this.busy = None;
                 match result {
-                    Ok(()) => {
-                        this.toast(Toast::success(done), cx);
+                    Ok(stopped) => {
+                        let toast = if stopped {
+                            Toast::warning(CONFLICTS)
+                        } else {
+                            Toast::success(done)
+                        };
+                        this.toast(toast, cx);
                         Cache::pulls_changed(cx);
                         this.load(cx);
-                        if let Some(req) = then {
-                            this.pending_request = Some(req);
-                        }
+                        after(this, cx);
                     }
                     Err(e) => this.toast(Toast::error(e).title(format!("{busy} failed")), cx),
                 }
@@ -522,13 +558,13 @@ impl PullView {
             p.head_ref.clone(),
             source.same_repo,
         );
-        let done = format!("Switched to {}", source.branch);
+        let message = format!("Switched to {}", source.branch);
         // A checkout moves HEAD; the repo watcher refreshes the rest of the window.
         self.act(
             "Checkout",
-            done,
+            message,
             move |core| {
-                api::github::pr_checkout(
+                done(api::github::pr_checkout(
                     core,
                     target,
                     number,
@@ -536,9 +572,9 @@ impl PullView {
                     same,
                     format!("pr-checkout-{number}"),
                     |_| {},
-                )
+                ))
             },
-            None,
+            |_, _| {},
             cx,
         );
     }
@@ -562,15 +598,23 @@ impl PullView {
                     let then = GithubRequest::OfferWorktreeRemoval {
                         branch,
                         number,
-                        head_sha,
+                        head_sha: head_sha.clone(),
                     };
+                    // The head shown: a push since makes GitHub refuse rather than merge what nobody saw.
+                    let sha = Some(head_sha);
                     this.act(
                         "Merge",
                         format!("Merged #{number}"),
                         move |core| {
-                            api::github::pr_merge(core, target, number, method.as_str().into())
+                            done(api::github::pr_merge(
+                                core,
+                                target,
+                                number,
+                                method.as_str().into(),
+                                sha,
+                            ))
                         },
-                        Some(then),
+                        move |this, _| this.pending_request = Some(then),
                         cx,
                     );
                 })
@@ -587,8 +631,8 @@ impl PullView {
             this.act(
                 if open { "Reopen" } else { "Close" },
                 format!("{verb} #{number}"),
-                move |core| api::github::pr_set_open(core, target, number, open).map(|_| ()),
-                None,
+                move |core| done(api::github::pr_set_open(core, target, number, open)),
+                |_, _| {},
                 cx,
             );
         };
@@ -638,11 +682,11 @@ impl PullView {
             move |_, cx| {
                 let (p, target) = (p.clone(), target.clone());
                 weak.update(cx, |this, cx| {
-                    let done =
+                    let message =
                         format!("Merged {} into {}; review and push", p.base_ref, p.head_ref);
                     this.act(
                         "Merge",
-                        done,
+                        message,
                         move |core| {
                             let number = p.number;
                             api::github::pr_checkout(
@@ -674,9 +718,10 @@ impl PullView {
                                 };
                                 format!("{remote}/{}", p.base_ref)
                             };
-                            api::sync::merge(core, base, None, None).map(|_| ())
+                            // True: it stopped on conflicts, which is what this was for.
+                            api::sync::merge(core, base, None, None)
                         },
-                        None,
+                        |_, _| {},
                         cx,
                     );
                 })
@@ -693,22 +738,76 @@ impl PullView {
             .as_ref()
             .and_then(|a| a.access_for(&p.url))
             .is_some_and(|a| a.push);
-        let weak = cx.weak_entity();
-        ReviewDialog::open(rights.own, counts, window, cx, move |event, body, cx| {
-            weak.update(cx, |this, cx| {
-                let (target, number) = (this.target.clone(), this.number);
-                this.act(
-                    "Review",
-                    event.done().into(),
-                    move |core| {
-                        api::github::pr_review(core, target, number, event.as_str().into(), body)
-                    },
-                    None,
-                    cx,
-                );
-            })
-            .ok();
-        });
+        let body = match &self.review {
+            Some(b) => b.clone(),
+            None => {
+                let b = cx.new(|cx| {
+                    TextareaState::new(window, cx)
+                        .rows(4)
+                        .placeholder("Leave a comment (markdown)")
+                });
+                // Text in it keeps the tab: a preview tab would be replaced, a hidden one released.
+                let sub = cx.subscribe(&b, |this: &mut Self, b, ev: &InputEvent, cx| {
+                    if matches!(ev, InputEvent::Change) && !b.read(cx).value().trim().is_empty() {
+                        let key = this.key();
+                        this.ws.update(cx, |ws, cx| ws.pin_tab(&key, cx)).ok();
+                    }
+                });
+                self._subs.push(sub);
+                self.review = Some(b.clone());
+                b
+            }
+        };
+        ReviewDialog::open(
+            cx.entity(),
+            body,
+            self.review_pick,
+            rights.own,
+            counts,
+            window,
+            cx,
+        );
+    }
+
+    /// From the review dialog. The dialog stays until it lands; a refused one keeps its text.
+    pub(crate) fn submit_review(&mut self, event: ReviewEvent, cx: &mut Context<Self>) {
+        let Some(body) = self.review.clone() else {
+            return;
+        };
+        self.review_pick = Some(event);
+        let text = body.read(cx).value().trim().to_string();
+        let (target, number) = (self.target.clone(), self.number);
+        // The head reviewed: an approval stays on what was read.
+        let commit = self.detail.as_ref().map(|d| d.pull.head_sha.clone());
+        self.act(
+            "Review",
+            event.done().into(),
+            move |core| {
+                done(api::github::pr_review(
+                    core,
+                    target,
+                    number,
+                    event.as_str().into(),
+                    text,
+                    commit,
+                ))
+            },
+            |this, cx| {
+                this.reviews_done += 1;
+                this.review = None;
+                this.review_pick = None;
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
+    pub(crate) fn reviews_done(&self) -> u64 {
+        self.reviews_done
+    }
+
+    pub(crate) fn is_busy(&self) -> bool {
+        self.busy.is_some()
     }
 
     fn show_failure(&mut self, id: u64, cx: &mut Context<Self>) {
@@ -782,8 +881,14 @@ impl PullView {
     }
 }
 
-/// "Check out in new worktree…" without the worktree dialog: core makes it beside the main one.
-pub(crate) fn checkout_worktree(source: PullSource, window: &mut Window, cx: &mut App) {
+/// "Check out in new worktree…" without the worktree dialog: core makes it in `dir` (None:
+/// beside the main one), and the window switches to it.
+pub(crate) fn checkout_worktree(
+    source: PullSource,
+    dir: Option<String>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let core = crate::core(cx);
     let ws = Workspace::for_window(window, cx).map(|w| w.downgrade());
     let PullSource {
@@ -802,20 +907,26 @@ pub(crate) fn checkout_worktree(source: PullSource, window: &mut Window, cx: &mu
                     number,
                     head_ref,
                     same_repo,
-                    None,
+                    dir,
                     format!("pr-worktree-{number}"),
                     |_| {},
                 )
             })
             .await;
-        let toast = match made {
-            Ok(path) => Toast::success(format!("Checked out #{number} in {path}")),
-            Err(e) => Toast::error(e).title("Could not make the worktree"),
-        };
         cx.update(|cx| {
-            if let Some(ws) = ws.and_then(|w| w.upgrade()) {
-                ws.update(cx, |ws, cx| ws.toast(toast, cx));
-            }
+            let Some(ws) = ws.and_then(|w| w.upgrade()) else {
+                return;
+            };
+            ws.update(cx, |ws, cx| match made {
+                Ok(path) => {
+                    ws.toast(
+                        Toast::success(format!("Checked out #{number} in {path}")),
+                        cx,
+                    );
+                    ws.switch_worktree(path.into(), cx);
+                }
+                Err(e) => ws.toast(Toast::error(e).title("Could not make the worktree"), cx),
+            });
         });
     })
     .detach();
@@ -839,6 +950,13 @@ impl TabItem for PullView {
 
     fn tab_focus(&self, _: &App) -> Option<FocusHandle> {
         Some(self.focus.clone())
+    }
+
+    /// A review being written: closing asks, and the tab isn't released.
+    fn is_dirty(&self, cx: &App) -> bool {
+        self.review
+            .as_ref()
+            .is_some_and(|b| !b.read(cx).value().trim().is_empty())
     }
 }
 
@@ -1477,9 +1595,9 @@ impl PullView {
                                                 "Checkout",
                                                 format!("Checked out {}", &sha[..sha.len().min(7)]),
                                                 move |core| {
-                                                    api::history::checkout_commit(core, sha)
+                                                    done(api::history::checkout_commit(core, sha))
                                                 },
-                                                None,
+                                                |_, _| {},
                                                 cx,
                                             )
                                         })
@@ -1503,9 +1621,8 @@ impl PullView {
                                                     ),
                                                     move |core| {
                                                         api::history::cherry_pick(core, sha)
-                                                            .map(|_| ())
                                                     },
-                                                    None,
+                                                    |_, _| {},
                                                     cx,
                                                 )
                                             })
@@ -1756,7 +1873,8 @@ impl PullView {
             Some(d.comments.len().to_string().into()),
             &t,
         );
-        for (c, md) in d.comments.iter().zip(&self.comments) {
+        for (i, c) in d.comments.iter().enumerate() {
+            let md = self.blocks.get(i + 1).filter(|_| !c.body.trim().is_empty());
             let verdict = c.review.as_deref().map(|r| {
                 let color = match r {
                     "APPROVED" => t.added,
@@ -1790,7 +1908,7 @@ impl PullView {
                             .child(div().text_color(t.subtle).child(ago(&c.created_at))),
                     )
                     .when(!c.body.trim().is_empty(), |d| {
-                        d.child(div().mt(px(6.)).child(md.element()))
+                        d.children(md.map(|md| div().mt(px(6.)).child(md)))
                     }),
             );
         }
@@ -1802,12 +1920,19 @@ impl Render for PullView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx);
         // Shown again after a wake: read again if the last read is old.
-        let wakes = Cache::wakes(cx);
-        if wakes != self.wakes {
+        let (wakes, generation) = (Cache::wakes(cx), Cache::generation(cx));
+        // Another repo or account (a restored tab reads before its project opened): read again now.
+        let reset = generation != self.generation;
+        if wakes != self.wakes || reset {
             self.wakes = wakes;
-            if self.detail_at.is_none_or(|at| at.elapsed() > MIN_AGE) && !self.loading {
+            self.generation = generation;
+            let old = self.detail_at.is_none_or(|at| at.elapsed() > MIN_AGE);
+            if (reset || old || self.detail.is_none()) && !self.loading {
                 self.load(cx);
             }
+        }
+        if self.text_stale {
+            self.sync_text(window, cx);
         }
         if let Some(req) = self.pending_request.take() {
             window.defer(cx, move |window, cx| request(req, window, cx));
@@ -2045,12 +2170,12 @@ impl Render for PullView {
         let total = d.as_ref().map_or(0, |d| d.commits);
         page = page.children(self.commits_section(total.max(self.commits().len() as u64), cx));
         page = page.child(self.files_section(d.as_deref(), cx));
-        let desc = match (&self.body, &d) {
-            (Some(md), _) => div()
-                .px(px(12.))
-                .py(px(10.))
-                .child(md.element())
-                .into_any_element(),
+        let body = d
+            .as_ref()
+            .filter(|d| !d.body.trim().is_empty())
+            .and_then(|_| self.blocks.get(0));
+        let desc = match (body, &d) {
+            (Some(md), _) => div().px(px(12.)).py(px(10.)).child(md).into_any_element(),
             (None, Some(_)) => div()
                 .px(px(12.))
                 .py(px(10.))
@@ -2066,7 +2191,6 @@ impl Render for PullView {
             page = page.children(self.conversation(d, cx));
         }
         div()
-            .image_cache(self.images.clone())
             .id("pull")
             .key_context("PullView")
             .track_focus(&self.focus)
