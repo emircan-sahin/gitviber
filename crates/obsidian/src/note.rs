@@ -11,16 +11,14 @@ use std::sync::Arc;
 use gitviber_core::api;
 use gitviber_files::MediaView;
 use gitviber_files::media::{MediaKind, media_kind};
-use gitviber_markdown::find::{FindQuery, find_matches};
-use gitviber_markdown::{BoundedImageCache, Callouts, MarkdownBase, MarkdownEvent, MarkdownView};
+use gitviber_markdown::find::{FindQuery, MAX_MATCHES, find_matches};
+use gitviber_markdown::{
+    BoundedImageCache, Callouts, FindBar, FindBarEvent, MarkdownBase, MarkdownEvent, MarkdownView,
+};
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::keymap::editor;
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{Selection, Toast, Workspace};
-use gpui_kit::assets::IconName;
-use gpui_kit::component::Sizable as _;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Enter, Escape, Input, InputEvent, InputState};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
     IntoElement, ListAlignment, ListOffset, ListState, ObjectFit, ParentElement as _, Render,
@@ -39,8 +37,6 @@ const MAX_DEPTH: usize = 4;
 const MAX_BUILT: usize = 48;
 /// An embedded note bigger than this shows a line saying so.
 const MAX_EMBED_BYTES: usize = 512 * 1024;
-/// Find counts this many matches at most, as the old find box did.
-const MAX_MATCHES: usize = 1000;
 /// A PDF embedded in a note is this tall, as the old app's; a video without a size, this.
 const PDF_HEIGHT: f32 = 640.;
 const VIDEO_HEIGHT: f32 = 360.;
@@ -404,23 +400,24 @@ impl Doc {
 
     /// Where `query` is found as the note reads: (part, which match in it), at most MAX_MATCHES.
     /// Counted in every part's text, built or not, so scrolling doesn't change the count.
-    pub fn search(&self, query: &FindQuery) -> Vec<(usize, usize)> {
+    /// Err: why the regex doesn't parse.
+    pub fn search(&self, query: &FindQuery) -> Result<Vec<(usize, usize)>, String> {
         let mut hits = Vec::new();
         if query.text.is_empty() {
-            return hits;
+            return Ok(hits);
         }
         for (ix, part) in self.parts.iter().enumerate() {
             let Part::Text { source, .. } = part else {
                 continue;
             };
             let left = MAX_MATCHES - hits.len();
-            let n = find_matches(&markup::plain(source), query, left).map_or(0, |m| m.len());
+            let n = find_matches(&markup::plain(source), query, left)?.len();
             hits.extend((0..n).map(|k| (ix, k)));
             if hits.len() >= MAX_MATCHES {
                 break;
             }
         }
-        hits
+        Ok(hits)
     }
 
     /// Marks a find in the parts built (None clears them); `reveal` scrolls to its current
@@ -524,28 +521,19 @@ pub struct NoteView {
     /// A #heading or #^block to show once the vault's files are read.
     pending: Option<String>,
     find: Option<Find>,
-    /// The query and match the find box closed on: ⌘F opens on them again.
-    last_find: (String, usize),
     focus: FocusHandle,
     _subs: Vec<Subscription>,
     _live: Live,
 }
 
-/// ⌘F's box: its query, its matches as (part, which in it), the one shown.
+/// ⌘F's box, kept while closed so ⌘F opens on its query and match again; its matches as
+/// (part, which in it), the one shown.
 struct Find {
-    input: Entity<InputState>,
+    bar: Entity<FindBar>,
+    open: bool,
     hits: Vec<(usize, usize)>,
     current: usize,
     _sub: Subscription,
-}
-
-impl Find {
-    fn query(&self, cx: &App) -> FindQuery {
-        FindQuery {
-            text: self.input.read(cx).value().to_string(),
-            ..FindQuery::default()
-        }
-    }
 }
 
 impl NoteView {
@@ -592,7 +580,6 @@ impl NoteView {
             images: BoundedImageCache::new(BoundedImageCache::display_side(window), cx),
             pending: None,
             find: None,
-            last_find: Default::default(),
             focus: cx.focus_handle(),
             _subs: vec![sub],
             _live: Live::new("NoteView"),
@@ -614,78 +601,108 @@ impl NoteView {
             self.list.splice(start..start + old, new);
         }
         self.search(false, cx);
+        self.mark(false, cx);
         cx.notify();
     }
 
     /// ⌘F: the find box, focused with its query selected.
     pub fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.find.is_none() {
-            let (query, current) = std::mem::take(&mut self.last_find);
-            let input = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder("Find")
-                    .default_value(query)
-            });
-            let sub = cx.subscribe(&input, |this, _, e: &InputEvent, cx| {
-                if matches!(e, InputEvent::Change) {
-                    this.search(true, cx);
-                }
-            });
-            self.find = Some(Find {
-                input,
+        let f = self.find.get_or_insert_with(|| {
+            let bar = cx.new(|cx| FindBar::new(window, cx));
+            let sub = cx.subscribe_in(
+                &bar,
+                window,
+                |this, _, e: &FindBarEvent, window, cx| match e {
+                    FindBarEvent::Changed => {
+                        this.search(true, cx);
+                        this.mark(true, cx);
+                    }
+                    FindBarEvent::Step(dir) => this.step(*dir, cx),
+                    FindBarEvent::Close => this.close_find(window, cx),
+                },
+            );
+            Find {
+                bar,
+                open: false,
                 hits: vec![],
-                current,
+                current: 0,
                 _sub: sub,
-            });
+            }
+        });
+        let bar = f.bar.clone();
+        if !std::mem::replace(&mut f.open, true) {
             self.search(false, cx);
             self.mark(true, cx);
         }
-        if let Some(f) = &self.find {
-            f.input.update(cx, |i, cx| {
-                i.focus(window, cx);
-                i.select_all(window, cx);
-            });
-        }
+        bar.update(cx, |b, cx| b.focus(window, cx));
         cx.notify();
     }
 
     fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(f) = self.find.take() {
-            self.last_find = (f.input.read(cx).value().to_string(), f.current);
-        }
+        let Some(f) = self.find.as_mut().filter(|f| f.open) else {
+            return;
+        };
+        f.open = false;
+        f.hits = vec![];
         self.doc.set_find(None, false, cx);
         self.focus.focus(window, cx);
         cx.notify();
     }
 
-    /// Looks for the query again (it changed, or the note did); `show` goes to the first.
-    fn search(&mut self, show: bool, cx: &mut Context<Self>) {
-        let Some(f) = &mut self.find else { return };
-        f.hits = self.doc.search(&f.query(cx));
-        f.current = f.current.min(f.hits.len().saturating_sub(1));
-        if show {
-            f.current = 0;
-        }
-        self.mark(show, cx);
+    /// The find box, while it's open.
+    fn open_box(&mut self) -> Option<&mut Find> {
+        self.find.as_mut().filter(|f| f.open)
+    }
+
+    /// Looks for the query again (it changed, or the note did); `first` goes to the first match,
+    /// else the current one stays where it can.
+    fn search(&mut self, first: bool, cx: &mut Context<Self>) {
+        let doc = &self.doc;
+        let Some(f) = self.find.as_mut().filter(|f| f.open) else {
+            return;
+        };
+        let error = match doc.search(f.bar.read(cx).query()) {
+            Ok(hits) => {
+                f.hits = hits;
+                None
+            }
+            Err(e) => {
+                f.hits = vec![];
+                Some(e)
+            }
+        };
+        let n = f.hits.len();
+        f.current = if first {
+            0
+        } else {
+            f.current.min(n.saturating_sub(1))
+        };
+        let found = error.map_or(Ok(((n > 0).then_some(f.current), n)), Err);
+        f.bar.update(cx, |b, cx| b.set_found(found, cx));
         cx.notify();
     }
 
     /// The next (1) or the one before (-1), round.
     fn step(&mut self, dir: isize, cx: &mut Context<Self>) {
-        let Some(f) = &mut self.find else { return };
+        let Some(f) = self.open_box() else { return };
         if f.hits.is_empty() {
             return;
         }
-        let n = f.hits.len() as isize;
-        f.current = (f.current as isize + dir).rem_euclid(n) as usize;
+        let n = f.hits.len();
+        f.current = (f.current as isize + dir).rem_euclid(n as isize) as usize;
+        let found = Ok((Some(f.current), n));
+        f.bar.update(cx, |b, cx| b.set_found(found, cx));
         self.mark(true, cx);
         cx.notify();
     }
 
     /// The matches marked in the note; `reveal` scrolls the current one into view.
     fn mark(&mut self, reveal: bool, cx: &mut Context<Self>) {
-        let Some(f) = &self.find else { return };
-        let (query, current) = (f.query(cx), f.hits.get(f.current).copied());
+        let Some(f) = self.open_box() else { return };
+        let (query, current) = (
+            f.bar.read(cx).query().clone(),
+            f.hits.get(f.current).copied(),
+        );
         if reveal && let Some((part, _)) = current {
             // The part first; its view then scrolls the list to the match once it's laid out.
             self.list.scroll_to_reveal_item(part);
@@ -693,79 +710,10 @@ impl NoteView {
         self.doc.set_find(Some((query, current)), reveal, cx);
     }
 
-    fn find_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let f = self.find.as_ref()?;
-        let t = cx.app_theme();
-        let query = !f.input.read(cx).value().is_empty();
-        let count: SharedString = match (query, f.hits.len()) {
-            (false, _) => "".into(),
-            (true, 0) => "No results".into(),
-            (true, n) if n >= MAX_MATCHES => format!("{} of {n}+", f.current + 1).into(),
-            (true, n) => format!("{} of {n}", f.current + 1).into(),
-        };
-        Some(
-            div()
-                .absolute()
-                .top_2()
-                .right_4()
-                .w(px(340.))
-                .flex()
-                .items_center()
-                .gap_1()
-                .p_1()
-                .rounded(px(6.))
-                .bg(t.elevated)
-                .border_1()
-                .border_color(t.border_strong)
-                .key_context("NoteFind")
-                .on_action(cx.listener(|this, _: &Escape, window, cx| this.close_find(window, cx)))
-                // A one-line Input lets Enter go on, and the keystroke would then be typed into
-                // it: nothing lands, but its Change starts the search over at the first match.
-                .on_action(
-                    cx.listener(|this, e: &Enter, _, cx| {
-                        this.step(if e.shift { -1 } else { 1 }, cx)
-                    }),
-                )
-                .child(div().flex_1().child(Input::new(&f.input).small()))
-                .child(
-                    div()
-                        .w(px(72.))
-                        .text_right()
-                        .text_size(px(11.))
-                        .text_color(t.subtle)
-                        .child(count),
-                )
-                .child(
-                    Button::new("find-prev")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::ChevronUp)
-                        .tooltip("Previous (⇧↵)")
-                        .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
-                )
-                .child(
-                    Button::new("find-next")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::ChevronDown)
-                        .tooltip("Next (↵)")
-                        .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
-                )
-                .child(
-                    Button::new("find-close")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Close)
-                        .tooltip("Close (esc)")
-                        .on_click(cx.listener(|this, _, window, cx| this.close_find(window, cx))),
-                )
-                .into_any_element(),
-        )
-    }
-
     #[cfg(test)]
     pub(crate) fn find_hits(&self) -> Option<(usize, usize)> {
-        self.find.as_ref().map(|f| (f.current, f.hits.len()))
+        let f = self.find.as_ref().filter(|f| f.open)?;
+        Some((f.current, f.hits.len()))
     }
 
     /// Scrolls to the part a #heading or #^block names.
@@ -826,7 +774,7 @@ impl Render for NoteView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.doc.begin_frame();
         let empty = self.doc.len() == 0;
-        let find = self.find_bar(cx);
+        let find = self.find.as_ref().filter(|f| f.open).map(|f| f.bar.clone());
         let t = cx.app_theme();
         div()
             .id("vault-note")
@@ -857,7 +805,7 @@ impl Render for NoteView {
                     ),
                 )
             })
-            .children(find)
+            .children(find.map(|bar| div().absolute().top_2().right_4().child(bar)))
     }
 }
 

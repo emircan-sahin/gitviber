@@ -492,6 +492,16 @@ fn find_in_a_rendered_note(cx: &mut TestAppContext) {
     // As it reads: "[[Plan#Goals]]" shows "Plan > Goals", "## Later" shows "Later".
     cx.simulate_input("goals");
     assert_eq!(hits(cx), Some((0, 1)));
+    // The box's toggles on their keys: Match Case finds no "goals" in "Goals".
+    let case = if cfg!(target_os = "macos") {
+        "alt-cmd-c"
+    } else {
+        "alt-c"
+    };
+    cx.simulate_keystrokes(case);
+    assert_eq!(hits(cx), Some((0, 0)));
+    cx.simulate_keystrokes(case);
+    assert_eq!(hits(cx), Some((0, 1)));
     // Washed where it reads, as the current match.
     assert!(
         marks(cx).iter().any(|(_, m)| *m == (Some(0), 1)),
