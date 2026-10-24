@@ -19,6 +19,8 @@ pub struct Saved {
     pub graph_refs: BTreeMap<String, GraphRefs>,
     /// A fork's panes closed: "origin" (your branch), "parent" (the original).
     pub closed_panes: Vec<String>,
+    /// Your branch's share of the height the two open fork panes split; left out while even.
+    pub fork_split: Option<f32>,
 }
 
 impl Global for Saved {}
@@ -68,10 +70,20 @@ fn from_legacy(value: impl Fn(&str) -> Option<Value>) -> Saved {
             .collect(),
         _ => vec![],
     };
+    // The resizable panes kept each one's percentage, under their group's id and theirs.
+    let fork_split = value("react-resizable-panels:gitviber-history-panes-v2:origin:parent")
+        .and_then(|sizes| {
+            let (ours, theirs) = (
+                sizes.get("origin")?.as_f64()?,
+                sizes.get("parent")?.as_f64()?,
+            );
+            (ours > 0. && theirs > 0.).then(|| (ours / (ours + theirs)) as f32)
+        });
     Saved {
         all_branches: value("gitviber.history.allBranches") == Some(Value::Bool(true)),
         graph_refs,
         closed_panes,
+        fork_split,
     }
 }
 
@@ -107,6 +119,7 @@ mod tests {
         let old = serde_json::json!({
             "gitviber.history.allBranches": true,
             "gitviber.history-panes.collapsed": ["parent", 3],
+            "react-resizable-panels:gitviber-history-panes-v2:origin:parent": {"origin": 75, "parent": 25},
             "gitviber.history.graphRefs": {
                 "/p/a": {"local": true, "remote": false, "tags": true, "hidden": ["refs/heads/x"], "only": null},
                 "/p/b": {"tags": false},
@@ -117,6 +130,7 @@ mod tests {
         let saved = from_legacy(|key| old.get(key).cloned());
         assert!(saved.all_branches);
         assert_eq!(saved.closed_panes, ["parent"]);
+        assert_eq!(saved.fork_split, Some(0.75));
         assert!(!saved.graph_refs["/p/a"].remote);
         assert_eq!(saved.graph_refs["/p/a"].hidden, ["refs/heads/x"]);
         assert!(!saved.graph_refs["/p/b"].tags && saved.graph_refs["/p/b"].local);

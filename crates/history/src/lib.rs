@@ -24,6 +24,7 @@ pub mod query;
 mod reflog;
 mod store;
 
+pub use bisect::BisectBar;
 pub use commit_view::CommitView;
 pub use compare::CompareView;
 pub use fork::{Fork, ForkOf, fork_news, set_fork_of};
@@ -79,6 +80,29 @@ pub(crate) fn commit_checks(
 ) -> Option<AnyElement> {
     let checks = cx.try_global::<Checks>()?.0.clone()?;
     checks(sha, header, window, cx)
+}
+
+/// A row's badge for a commit's checks in a repository other than origin, by owner/name first:
+/// a fork's original. Asked with the other rows drawn, as origin's are.
+pub type RepoChecks = std::rc::Rc<dyn Fn(&str, &str, &mut Window, &mut App) -> Option<AnyElement>>;
+
+#[derive(Default)]
+struct OtherChecks(Option<RepoChecks>);
+impl Global for OtherChecks {}
+
+/// For the GitHub crate: where another repository's checks come from.
+pub fn set_repo_checks(cx: &mut App, checks: RepoChecks) {
+    cx.set_global(OtherChecks(Some(checks)));
+}
+
+pub(crate) fn repo_checks(
+    repo: &str,
+    sha: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<AnyElement> {
+    let checks = cx.try_global::<OtherChecks>()?.0.clone()?;
+    checks(repo, sha, window, cx)
 }
 
 /// Whether History lists every branch: one choice, for every repo.
@@ -358,6 +382,7 @@ mod tests {
             can_sync: true,
         };
         let forked = std::rc::Rc::new(std::cell::Cell::new(true));
+        let checked = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(String, String)>::new()));
         cx.update(|cx| {
             gitviber_ui::init(cx);
             let core = gitviber_ui::install_core(cx);
@@ -370,6 +395,14 @@ mod tests {
             super::set_fork_of(
                 cx,
                 std::rc::Rc::new(move |_| on.get().then(|| fork.clone())),
+            );
+            let seen = checked.clone();
+            super::set_repo_checks(
+                cx,
+                std::rc::Rc::new(move |repo, sha, _, _| {
+                    seen.borrow_mut().push((repo.into(), sha.into()));
+                    None
+                }),
             );
             // Fetched a moment ago: no network round trip in a test.
             cx.default_global::<super::fork::Fetched>()
@@ -417,6 +450,24 @@ mod tests {
         let marks: Vec<bool> =
             list.read_with(cx, |l, _| l.commits.iter().map(|c| c.not_in_head).collect());
         assert_eq!(marks, [true, false], "two is the original's only");
+        // Its rows show the original's checks.
+        draw(cx);
+        assert!(
+            checked
+                .borrow()
+                .contains(&("someone/original".into(), two.clone()))
+        );
+        // The divider's place is kept, saved once it rests.
+        panel.update(cx, |p, cx| p.set_split(Some(0.7), cx));
+        draw(cx);
+        assert_eq!(cx.update(|_, cx| super::store::get(cx).fork_split), None);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(|_, cx| super::store::get(cx).fork_split),
+            Some(0.7)
+        );
         // No longer a fork: the pane goes, its entities with it.
         let weak = pane.downgrade();
         drop((pane, list));

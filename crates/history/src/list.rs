@@ -182,9 +182,9 @@ pub struct ListOptions {
     pub ref_menu: bool,
     /// Only these refs' badges show.
     pub show_refs: Option<GraphRefs>,
-    /// Where these commits live on GitHub when that's not origin: a fork's original has them
-    /// all, so every one links there.
-    pub web: Option<String>,
+    /// The repository on GitHub (owner/name) these commits live in when it's not origin: a
+    /// fork's original has them all, so every one links there and shows its checks.
+    pub github: Option<String>,
 }
 
 pub struct CommitList {
@@ -1407,14 +1407,20 @@ impl CommitList {
                             .child("·")
                             .child(time)
                             .child(
-                                div().ml_auto().flex_none().children(
-                                    commit
-                                        .on_origin
-                                        .then(|| {
-                                            crate::commit_checks(&commit.sha, false, window, cx)
-                                        })
-                                        .flatten(),
-                                ),
+                                div()
+                                    .ml_auto()
+                                    .flex_none()
+                                    .children(match &self.options.github {
+                                        Some(repo) => {
+                                            crate::repo_checks(repo, &commit.sha, window, cx)
+                                        }
+                                        None => commit
+                                            .on_origin
+                                            .then(|| {
+                                                crate::commit_checks(&commit.sha, false, window, cx)
+                                            })
+                                            .flatten(),
+                                    }),
                             )
                             .child(
                                 div()

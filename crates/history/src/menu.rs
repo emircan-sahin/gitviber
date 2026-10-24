@@ -1,19 +1,14 @@
 //! Right-click menus: on a commit, on several picked together, and on a file of a commit.
 
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
-use futures::FutureExt as _;
-use futures::future::Shared;
-use gitviber_core::{api, git};
+use gitviber_core::git;
 use gitviber_refs::names::folder_name;
-use gitviber_refs::net::NetOp;
+use gitviber_refs::remote_tags::{self, There};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
-use gpui_kit::{
-    App, AppContext as _, ClickEvent, Context, Entity, Global, SharedString, Task, Window,
-};
+use gpui_kit::{App, ClickEvent, Context, Entity, SharedString, Window};
 
 use crate::act::{Act, ActMany, act, act_many, commit_url, mark, web_url};
 use crate::commit::{Commit, RefKind, group_refs};
@@ -66,55 +61,6 @@ fn sub(
     } else {
         menu.submenu_with_icon(Some(Icon::new(icon)), label.to_string(), window, cx, f)
     }
-}
-
-/// The remote tags are pushed to and the ones it has, asked as a tagged commit's menu opens
-/// and reused for a few seconds.
-#[derive(Default)]
-struct RemoteTags(Option<(Instant, String, Vec<String>)>);
-impl Global for RemoteTags {}
-
-const FRESH: Duration = Duration::from_secs(10);
-/// A menu gives up on a remote that doesn't answer; git would wait minutes.
-const GIVE_UP: Duration = Duration::from_secs(6);
-
-type There = Result<(String, Vec<String>), String>;
-
-/// Pushing or deleting a tag changes the answer, the top bar's push menu's too.
-pub(crate) fn forget_remote_tags(cx: &mut App) {
-    cx.set_global(RemoteTags(None));
-    gitviber_refs::topbar::forget_remote_tags(cx);
-}
-
-/// One question for all of a commit's tags.
-fn remote_tags(cx: &mut App) -> Shared<Task<There>> {
-    let cached = cx.try_global::<RemoteTags>().and_then(|c| c.0.clone());
-    if let Some((at, remote, names)) = cached
-        && at.elapsed() < FRESH
-    {
-        return Task::ready(Ok((remote, names))).shared();
-    }
-    let core = gitviber_ui::core(cx);
-    let op = NetOp::quiet();
-    let (c2, id) = (core.clone(), op.id.clone());
-    let timer = cx.background_executor().timer(GIVE_UP);
-    cx.background_spawn(async move {
-        timer.await;
-        api::sync::cancel_network(&c2, id);
-    })
-    .detach();
-    cx.background_spawn(async move {
-        api::branches::remote_tags(&core, op.id.clone(), op.progress())
-            .map(|r| (r.remote, r.names))
-            .map_err(|e| {
-                if e == gitviber_core::network::CANCELLED {
-                    "The remote didn't answer in time.".to_string()
-                } else {
-                    e
-                }
-            })
-    })
-    .shared()
 }
 
 /// A tag's submenu; `there` None while the remote is asked.
@@ -201,7 +147,7 @@ pub fn commit_menu(
         .filter_map(|w| Some((w.path.clone(), w.branch.clone()?)))
         .collect();
     let url = commit_url(l, c, cx);
-    let web = l.options.web.is_some() || web_url(l, cx).is_some();
+    let web = l.options.github.is_some() || web_url(l, cx).is_some();
     let marked = mark(&root, cx);
     let ref_menu = l.options.ref_menu;
     let filter_author = l.options.filter_author && !c.author.is_empty();
@@ -462,7 +408,10 @@ pub fn commit_menu(
             )),
         );
     // Submenus are built with the menu: the remote is asked as it opens.
-    let there = (!tags.is_empty()).then(|| remote_tags(cx));
+    let there = (!tags.is_empty()).then(|| {
+        let root = list.read(cx).repo.read(cx).root().clone();
+        remote_tags::lookup(&root, cx)
+    });
     for tag in tags {
         let (list, c, there) = (list.clone(), c.clone(), there.clone());
         menu = menu.submenu_with_icon(
@@ -476,13 +425,6 @@ pub fn commit_menu(
                     cx.spawn_in(window, async move |menu, cx| {
                         let answer = there.await;
                         let _ = menu.update_in(cx, |menu, window, cx| {
-                            if let Ok((remote, names)) = &answer {
-                                cx.set_global(RemoteTags(Some((
-                                    Instant::now(),
-                                    remote.clone(),
-                                    names.clone(),
-                                ))));
-                            }
                             menu.rebuild(window, cx, |m, _, _| {
                                 tag_items(m, &list, &c, &tag, locked, Some(&answer))
                             });

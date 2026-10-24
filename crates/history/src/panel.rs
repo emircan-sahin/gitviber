@@ -17,13 +17,17 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::resizable::HandleEdge;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{Disableable as _, Icon, Selectable as _, Sizable as _};
+use gpui_kit::component::{
+    Disableable as _, Icon, InteractiveElementExt as _, Selectable as _, Sizable as _,
+    resize_handle,
+};
 use gpui_kit::{
-    Anchor, App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, KeyDownEvent, ParentElement as _, Render, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
-    rems,
+    Anchor, App, AppContext as _, Axis, Context, DragMoveEvent, Empty, Entity, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
+    prelude::FluentBuilder as _, px, relative, rems,
 };
 
 use crate::bisect::BisectBar;
@@ -35,6 +39,10 @@ use crate::query::{parse_log_query, with_author};
 use crate::{open, store};
 
 const DEBOUNCE: Duration = Duration::from_millis(250);
+/// A fork pane is never dragged smaller than this.
+const MIN_PANE: f32 = 84.;
+/// The divider's place is saved once a drag rests, not on every move.
+const SAVE_SPLIT: Duration = Duration::from_millis(500);
 const SYNTAX: &str = "Words match the message (all of them, any case).\nauthor:name  path:src/app  code:text a commit added or removed\nA SHA or prefix finds that commit. Quotes keep spaces.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -86,6 +94,9 @@ pub struct HistoryPanel {
     /// What GitHub knows of origin as a fork, and the original's pane once shown.
     fork: Option<Fork>,
     original: Option<(Entity<OriginalPane>, Subscription)>,
+    /// Your branch's share of the fork panes' height; None splits them evenly.
+    split: Option<f32>,
+    save_split: Option<Task<()>>,
     debounce: Option<Task<()>>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
@@ -143,6 +154,8 @@ impl HistoryPanel {
             compared_range: None,
             fork: fork::fork_of(cx),
             original: None,
+            split: store::get(cx).fork_split,
+            save_split: None,
             debounce: None,
             focus: cx.focus_handle(),
             _subs: subs,
@@ -220,7 +233,7 @@ impl HistoryPanel {
                 filter_author: true,
                 ref_menu: true,
                 show_refs: Some(refs.clone()),
-                web: None,
+                github: None,
             };
             return (Source::All(refs.clone()), options);
         }
@@ -1262,7 +1275,43 @@ impl HistoryPanel {
         };
         let ours_header = self.pane_header("origin", "Your branch", branch, ours, vec![], cx);
         let theirs_header = self.pane_header("parent", "Original", detail, theirs, actions, cx);
-        // Closed panes keep their place: an open one below a closed one takes the height.
+        if ours && theirs {
+            let pane = |header: AnyEl, body: AnyEl| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_h(px(MIN_PANE))
+                    .child(header)
+                    .child(div().flex_1().min_h_0().child(body))
+            };
+            // A double click splits them evenly again.
+            let handle = resize_handle::<ForkSplit, ForkSplit>("fork-split", Axis::Vertical)
+                .inside(HandleEdge::Leading)
+                .on_double_click(cx.listener(|this, _, _, cx| this.set_split(None, cx)))
+                .on_drag(ForkSplit, |d, _, _, cx| cx.new(|_| d.clone()));
+            return div()
+                .id("fork-panes")
+                .size_full()
+                .flex()
+                .flex_col()
+                .on_drag_move(cx.listener(|this, e: &DragMoveEvent<ForkSplit>, _, cx| {
+                    let y = f32::from(e.event.position.y - e.bounds.top());
+                    let share = fork_share(y, f32::from(e.bounds.size.height));
+                    this.set_split(Some(share), cx);
+                }))
+                .child(
+                    pane(ours_header, self.list.clone().into_any_element())
+                        .h(relative(self.split.unwrap_or(0.5))),
+                )
+                .child(
+                    pane(theirs_header, original.into_any_element())
+                        .relative()
+                        .flex_1()
+                        .child(handle),
+                )
+                .into_any_element();
+        }
+        // A closed pane keeps its place: the open one takes the height.
         div()
             .size_full()
             .flex()
@@ -1357,6 +1406,19 @@ impl HistoryPanel {
             .into_any_element()
     }
 
+    pub(crate) fn set_split(&mut self, split: Option<f32>, cx: &mut Context<Self>) {
+        if self.split == split {
+            return;
+        }
+        self.split = split;
+        cx.notify();
+        let timer = cx.background_executor().timer(SAVE_SPLIT);
+        self.save_split = Some(cx.spawn(async move |_, cx| {
+            timer.await;
+            cx.update(|cx| store::update(cx, |s| s.fork_split = split));
+        }));
+    }
+
     #[cfg(test)]
     pub(crate) fn original(&self) -> Option<&Entity<OriginalPane>> {
         self.original.as_ref().map(|(p, _)| p)
@@ -1364,6 +1426,24 @@ impl HistoryPanel {
 }
 
 type AnyEl = gpui_kit::AnyElement;
+
+/// The divider between a fork's panes, as it's dragged.
+#[derive(Clone)]
+struct ForkSplit;
+
+impl Render for ForkSplit {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
+/// Your branch's share with the divider `y` down a height `h`: each pane keeps MIN_PANE.
+fn fork_share(y: f32, h: f32) -> f32 {
+    if h <= 2. * MIN_PANE {
+        return 0.5;
+    }
+    y.clamp(MIN_PANE, h - MIN_PANE) / h
+}
 
 impl Panel for HistoryPanel {
     fn panel_focus(&self, cx: &App) -> Option<FocusHandle> {
@@ -1420,5 +1500,19 @@ impl Render for HistoryPanel {
             .children(self.render_scope(cx))
             .child(div().flex_1().min_h_0().child(self.render_body(cx)))
             .when(window.is_window_active(), |d| d)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_dragged_divider_leaves_each_fork_pane_its_least() {
+        assert_eq!(fork_share(400., 1000.), 0.4);
+        assert_eq!(fork_share(10., 1000.), 0.084);
+        assert_eq!(fork_share(995., 1000.), 0.916);
+        // Too short for both: even.
+        assert_eq!(fork_share(20., 150.), 0.5);
     }
 }

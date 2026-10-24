@@ -224,7 +224,7 @@ impl OriginalPane {
         };
         let options = ListOptions {
             empty: "No commits yet.".into(),
-            web: Some(format!("https://github.com/{}", self.fork.original)),
+            github: Some(self.fork.original.clone()),
             ..Default::default()
         };
         match &self.list {

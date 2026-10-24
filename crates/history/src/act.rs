@@ -109,8 +109,8 @@ pub fn web_url(list: &CommitList, cx: &App) -> Option<String> {
 
 /// GitHub only has commits that reached one of origin's branches.
 pub fn commit_url(list: &CommitList, c: &Commit, cx: &App) -> Option<String> {
-    if let Some(web) = &list.options.web {
-        return Some(format!("{web}/commit/{}", c.sha));
+    if let Some(repo) = &list.options.github {
+        return Some(format!("https://github.com/{repo}/commit/{}", c.sha));
     }
     let web = web_url(list, cx)?;
     c.on_origin.then(|| format!("{web}/commit/{}", c.sha))
@@ -137,16 +137,6 @@ pub fn run(
 ) -> oneshot::Receiver<bool> {
     list.repo
         .update(cx, |r, cx| r.run(action, work, window, cx))
-}
-
-/// A tag pushed or deleted there: what the menus know of the remote's tags is out of date.
-fn forget_tags_after(done: oneshot::Receiver<bool>, cx: &mut Context<CommitList>) {
-    cx.spawn(async move |_, cx| {
-        if done.await.unwrap_or(false) {
-            cx.update(crate::menu::forget_remote_tags);
-        }
-    })
-    .detach();
 }
 
 pub fn act(
@@ -347,7 +337,7 @@ pub fn act(
                 window,
                 cx,
             );
-            forget_tags_after(done, cx);
+            gitviber_refs::remote_tags::forget_after(done, cx);
         }
         Act::DeleteTag(tag) => {
             let a = GitAction::new("Delete tag").done(format!("Deleted tag {tag}"));
@@ -389,7 +379,7 @@ pub fn act(
                             window,
                             cx,
                         );
-                        forget_tags_after(done, cx);
+                        gitviber_refs::remote_tags::forget_after(done, cx);
                     });
                 }
             }));
