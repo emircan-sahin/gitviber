@@ -202,7 +202,11 @@ mod close_tests {
     fn closing_leaves_no_repo_open() {
         let dir = std::env::temp_dir().join(format!("gitviber-close-repo-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let init = std::process::Command::new("git").arg("init").arg("-q").arg(&dir).status();
+        let init = std::process::Command::new("git")
+            .arg("init")
+            .arg("-q")
+            .arg(&dir)
+            .status();
         let core = Core::new(Arc::new(|_| {}));
         if init.is_ok_and(|s| s.success()) {
             open_repo(&core, dir.to_string_lossy().into_owned()).unwrap();

@@ -24,8 +24,8 @@ pub mod journal;
 pub mod launch;
 pub mod lfs;
 pub mod lines;
-pub mod malloc;
 pub mod local_socket;
+pub mod malloc;
 pub mod network;
 pub mod notifications;
 #[cfg(target_os = "macos")]
