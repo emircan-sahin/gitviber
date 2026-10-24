@@ -8,6 +8,11 @@ use objc2::msg_send;
 use objc2::runtime::{AnyClass, AnyObject};
 use std::ffi::{c_char, CStr, CString};
 
+// NSWorkspace and NSPasteboard are AppKit's. The app links it through gpui and the Tauri build did
+// through wry; core's own test binaries link nothing else, and AnyClass::get found no class.
+#[link(name = "AppKit", kind = "framework")]
+extern "C" {}
+
 /// An autoreleased NSString; null if Foundation is somehow missing.
 pub unsafe fn ns_string(s: &CStr) -> *mut AnyObject {
     let Some(cls) = AnyClass::get(c"NSString") else {
@@ -30,8 +35,9 @@ pub unsafe fn bytes(data: *mut AnyObject) -> Option<Vec<u8>> {
         return None;
     }
     let len: usize = msg_send![data, length];
-    let ptr: *const u8 = msg_send![data, bytes];
-    (!ptr.is_null() && len > 0).then(|| std::slice::from_raw_parts(ptr, len).to_vec())
+    // `const void *`: objc2 checks the declared type in debug builds, and `*const u8` is a char*.
+    let ptr: *const std::ffi::c_void = msg_send![data, bytes];
+    (!ptr.is_null() && len > 0).then(|| std::slice::from_raw_parts(ptr.cast::<u8>(), len).to_vec())
 }
 
 /// Text from outside (a terminal's notification) can hold a NUL, which a C string can't.
