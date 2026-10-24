@@ -26,8 +26,9 @@ use gpui_kit::component::{Disableable as _, Icon, Sizable as _, h_flex, v_flex};
 use crate::config::{CursorStyle, OptionAsMeta, TerminalConfig, TerminalTheme, ansi_colors};
 use crate::find::FindOptions;
 use crate::layout::{self, Dir, Direction, Layout, PaneId, Rect};
+use crate::linkhost::LinkSite;
 use crate::marks::CommandEnd;
-use crate::pane::{FindResult, PaneEvent, TerminalPane, new_pane};
+use crate::pane::{FindResult, LinkCtx, PaneEvent, TerminalPane, new_pane};
 use crate::{CloseFind, FindNext, FindPrev, PANEL_CONTEXT};
 use gitviber_ui::actions::{editor, tab, terminal};
 use gitviber_ui::settings::{OptionKey, TerminalCursor};
@@ -35,6 +36,14 @@ use gitviber_ui::workspace::{
     PanelContext, PanelSpec, Project, ProjectEvent, Slot, Workspace, WorkspaceEvent,
 };
 use gitviber_ui::{ActiveAppTheme as _, AppTheme, Settings};
+
+mod agents_menu;
+mod attention;
+mod resume;
+mod saved;
+
+pub use attention::{agents_in, paste_to_agent, worktree_agent};
+pub(crate) use saved::import_legacy;
 
 /// A worktree the panel can open a terminal in, as the app lists them.
 #[derive(Clone, Debug, PartialEq)]
@@ -60,11 +69,6 @@ pub enum PanelEvent {
     Bell {
         pane: PaneId,
     },
-    /// A terminal opened for the worktree picker's Resume: where the resume command goes.
-    ResumeAsked {
-        pane: PaneId,
-        path: PathBuf,
-    },
 }
 
 /// A tab: one or more panes, split right and down.
@@ -88,8 +92,20 @@ struct PaneSlot {
     view: Entity<TerminalPane>,
     /// The user's name for it, over the program's title in its header.
     name: Option<String>,
-    /// It rang while not looked at.
+    /// It needs the user: it rang, sent a notification, or its agent finished or asked, while
+    /// not looked at.
     rang: bool,
+    /// That was told to the OS: once until it's looked at.
+    told: bool,
+    /// The coding agent running in it, until the shell prompts again.
+    agent: Option<crate::agent::PaneAgent>,
+    /// When its agent was first seen or last changed state (Unix seconds).
+    since: f64,
+    /// Its history's file in the session save, and whether it's been written.
+    history_file: Option<String>,
+    history_saved: bool,
+    /// When its history was last serialized (ms since `epoch`).
+    serialized_at: u64,
     _events: Subscription,
 }
 
@@ -147,6 +163,17 @@ pub struct TerminalPanel {
     find: Option<FindBar>,
     rename: Option<Rename>,
     flash: Option<(PaneId, Task<()>)>,
+    /// A link being followed that asked git or GitHub first.
+    follow: Option<Task<()>>,
+    link_cache: crate::linkhost::SharedCache,
+    link_ctx: Option<Rc<LinkCtx>>,
+    /// Agent lookups in flight.
+    agent_tasks: Vec<Task<()>>,
+    /// The session save's next round.
+    round: Option<Task<()>>,
+    epoch: std::time::Instant,
+    /// The worktrees whose saved terminals this panel took up, and so saves.
+    restored_here: std::collections::HashSet<PathBuf>,
     divider: Option<DividerDrag>,
     split_bounds: SplitBounds,
     killing: bool,
@@ -191,6 +218,24 @@ pub(crate) fn register(cx: &mut App) {
                 .sum()
         }),
     );
+    agents_menu::register(cx);
+    // From anywhere in a window: the open worktree's conversations.
+    cx.on_action(|_: &terminal::ResumeConversation, cx| {
+        let Some(handle) = cx.active_window() else {
+            return;
+        };
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, cx| {
+                let Some(ws) = Workspace::for_window(window, cx) else {
+                    return;
+                };
+                let panel = ws.update(cx, |ws, cx| ws.panel("terminal", window, cx));
+                if let Some(p) = panel.and_then(|p| p.view().downcast::<TerminalPanel>().ok()) {
+                    p.update(cx, |p, cx| p.ask_conversation(p.root.clone(), window, cx));
+                }
+            });
+        });
+    });
     gitviber_ui::workspace::register_panel(
         cx,
         PanelSpec::new("terminal", Slot::Bottom, "Terminal", |ctx, window, cx| {
@@ -286,6 +331,13 @@ impl TerminalPanel {
             find: None,
             rename: None,
             flash: None,
+            follow: None,
+            link_cache: Default::default(),
+            link_ctx: None,
+            agent_tasks: Vec::new(),
+            round: None,
+            epoch: std::time::Instant::now(),
+            restored_here: Default::default(),
             divider: None,
             split_bounds: Rc::default(),
             killing: false,
@@ -338,12 +390,24 @@ impl TerminalPanel {
         let live = cx.default_global::<LivePanels>();
         live.0.retain(|p| p.upgrade().is_some());
         live.0.push(me);
+        if gitviber_ui::has_core(cx) {
+            let events = gitviber_ui::CoreEvents::global(cx);
+            subscriptions.push(cx.subscribe_in(&events, window, |this, _, e, window, cx| {
+                this.on_core_event(e, window, cx)
+            }));
+        }
+        subscriptions.push(cx.on_app_quit(|this, cx| {
+            this.save_at_quit(cx);
+            async {}
+        }));
         let project = ctx.project.as_ref().map(|p| this.watch(p, window, cx));
         this.bound = Some(Bound {
             workspace: ctx.workspace.clone(),
             _project: project,
             _subscriptions: subscriptions,
         });
+        let root = this.root.clone();
+        this.restore(&root, window, cx);
         // Shown for the first time: with a terminal in it, as ⌘J opens one.
         if open {
             cx.defer_in(window, |this, window, cx| {
@@ -370,6 +434,7 @@ impl TerminalPanel {
                     let root = project.read(cx).root().to_path_buf();
                     this.set_worktree(root, window, cx);
                 }
+                ProjectEvent::RepoChanged(_) => this.update_links(cx),
                 _ => {}
             },
         )
@@ -422,8 +487,9 @@ impl TerminalPanel {
                 path,
                 command: Some(c),
             } => (path, Some(format!("{c}\r"))),
-            WorktreeEvent::OpenTerminal { path } | WorktreeEvent::ResumeConversation { path } => {
-                (path, None)
+            WorktreeEvent::OpenTerminal { path } => (path, None),
+            WorktreeEvent::ResumeConversation { path } => {
+                return self.ask_conversation(PathBuf::from(path), window, cx);
             }
         };
         let path = PathBuf::from(path);
@@ -432,11 +498,6 @@ impl TerminalPanel {
             ws.update(cx, |ws, cx| ws.set_open(Slot::Bottom, true, cx));
         }
         self.focus_active(window, cx);
-        if let (WorktreeEvent::ResumeConversation { .. }, Some(pane)) = (event, self.active_pane())
-        {
-            let pane = pane.read(cx).id();
-            cx.emit(PanelEvent::ResumeAsked { pane, path });
-        }
     }
 
     /// Terminals whose shell runs in `dir` or below it, which removing it would end.
@@ -463,12 +524,62 @@ impl TerminalPanel {
         self.bound.as_ref()?.workspace.upgrade()
     }
 
+    /// What links resolve against: the open worktree, the repo's others, its state on disk, and
+    /// origin's GitHub page.
+    fn link_site(&self, cx: &App) -> LinkSite {
+        let project = self
+            .workspace()
+            .and_then(|ws| ws.read(cx).project().cloned());
+        let repo = project
+            .as_ref()
+            .and_then(|p| gitviber_refs::RepoState::existing(p, cx));
+        let mut worktrees: Vec<String> = self
+            .worktrees
+            .iter()
+            .map(|w| w.path.to_string_lossy().into_owned())
+            .collect();
+        let mut repos = vec![];
+        if let Some(repo) = &repo {
+            let repo = repo.read(cx);
+            worktrees.extend(repo.worktrees.iter().map(|w| w.path.clone()));
+            repos.extend(
+                repo.status
+                    .as_ref()
+                    .and_then(|s| s.web_url.clone().flatten()),
+            );
+        }
+        LinkSite {
+            root: self.root.to_string_lossy().into_owned(),
+            worktrees: Arc::new(worktrees),
+            revision: project.map_or(0, |p| p.read(cx).revision()),
+            repos,
+        }
+    }
+
+    fn update_links(&mut self, cx: &mut Context<Self>) {
+        let site = self.link_site(cx);
+        if self.link_ctx.as_ref().is_some_and(|c| c.site == site) {
+            return;
+        }
+        let ctx = Rc::new(LinkCtx {
+            site,
+            cache: self.link_cache.clone(),
+        });
+        self.link_ctx = Some(ctx.clone());
+        for slot in self.panes.values() {
+            slot.view
+                .update(cx, |p, cx| p.set_links(Some(ctx.clone()), cx));
+        }
+    }
+
     /// Shows `root`'s tabs; the other worktrees' keep running behind.
-    pub fn set_worktree(&mut self, root: PathBuf, _: &mut Window, cx: &mut Context<Self>) {
+    pub fn set_worktree(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         if root == self.root {
             return;
         }
+        self.restore(&root, window, cx);
         self.root = root;
+        self.update_links(cx);
         self.zoomed = false;
         self.close_find_bar(cx);
         // Another worktree starts with its code in view.
@@ -579,15 +690,25 @@ impl TerminalPanel {
             window,
             move |this, _, event: &PaneEvent, window, cx| this.on_pane_event(id, event, window, cx),
         );
+        self.update_links(cx);
+        let links = self.link_ctx.clone();
+        view.update(cx, |p, cx| p.set_links(links, cx));
         self.panes.insert(
             id,
             PaneSlot {
                 view,
                 name: None,
                 rang: false,
+                told: false,
+                agent: None,
+                since: 0.,
+                history_file: None,
+                history_saved: false,
+                serialized_at: 0,
                 _events: events,
             },
         );
+        self.save_soon(cx);
         id
     }
 
@@ -737,6 +858,8 @@ impl TerminalPanel {
         }
         self.sets.retain(|_, s| !s.groups.is_empty());
         self.apply_dims(cx);
+        attention::agents_changed(cx);
+        self.save_soon(cx);
         if emptied.contains(&self.root) {
             self.set_maximized(false, cx);
             if let Some(ws) = self.workspace() {
@@ -872,23 +995,38 @@ impl TerminalPanel {
     ) {
         match event {
             PaneEvent::Exited { quick: false } => self.close_pane(id, window, cx),
-            PaneEvent::Focused => self.focus_pane(id, cx),
+            PaneEvent::Focused => {
+                self.update_links(cx);
+                self.looked_at(id, cx);
+                self.focus_pane(id, cx);
+            }
             PaneEvent::Bell => {
-                let looked_at = self.active_group().is_some_and(|g| g.focused == id)
-                    && window.is_window_active();
-                if let Some(slot) = self.panes.get_mut(&id)
-                    && !looked_at
-                {
-                    slot.rang = true;
-                }
+                self.needs_you(id, None, None, cx);
                 cx.emit(PanelEvent::Bell { pane: id });
+            }
+            PaneEvent::Attention(note) => self.needs_you(id, Some(note.clone()), None, cx),
+            PaneEvent::CommandEnded(end) => {
+                self.command_ended(id, end, window, cx);
+                cx.emit(PanelEvent::CommandEnded {
+                    pane: id,
+                    end: end.clone(),
+                });
+            }
+            PaneEvent::Output => self.save_soon(cx),
+            PaneEvent::Prompt => {
+                self.agent_prompted(id, cx);
                 cx.notify();
             }
-            PaneEvent::CommandEnded(end) => cx.emit(PanelEvent::CommandEnded {
-                pane: id,
-                end: end.clone(),
-            }),
             PaneEvent::FontStep(dir) => self.step_font(*dir, cx),
+            PaneEvent::OpenLink(target) => {
+                if let Some(ws) = self.workspace() {
+                    self.follow =
+                        crate::follow::follow(target.clone(), &ws.downgrade(), window, cx);
+                }
+            }
+            PaneEvent::Copied(text) => gitviber_ui::workspace::Toast::success(text.clone())
+                .title("Copied")
+                .show(window, cx),
             PaneEvent::FindChanged => {
                 if let Some(f) = self.find.as_mut().filter(|f| f.pane == Some(id)) {
                     if let Some(slot) = self.panes.get(&id) {
@@ -897,9 +1035,7 @@ impl TerminalPanel {
                     cx.notify();
                 }
             }
-            PaneEvent::TitleChanged | PaneEvent::Prompt | PaneEvent::Exited { quick: true } => {
-                cx.notify()
-            }
+            PaneEvent::TitleChanged | PaneEvent::Exited { quick: true } => cx.notify(),
         }
     }
 
@@ -1593,22 +1729,42 @@ impl TerminalPanel {
             .and_then(|w| w.branch.clone());
         let here = cwd == self.root;
         let order = layout::pane_order(&g.layout);
-        let rang = g
-            .panes
-            .iter()
-            .any(|id| self.panes.get(id).is_some_and(|s| s.rang));
+        let look = crate::agent::most_urgent(g.panes.iter().map(|id| self.look_of_pane(*id)));
+        let look_tip = look.map(|l| self.look_label(&g.panes, l));
         let focused = g.focused;
-        let dots = (order.len() > 1).then(|| {
-            h_flex()
-                .gap_1()
+        // A split's panes by number, each in its agent's look; else the tab's one dot.
+        let dots = if order.len() > 1 {
+            Some(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .children(order.iter().map(|&id| {
+                        let big = id == focused;
+                        match self.look_of_pane(id) {
+                            Some(l) => attention::look_dot(l, cx),
+                            None => div()
+                                .rounded_full()
+                                .bg(if big { t.muted_foreground } else { t.subtle })
+                                .size(px(if big { 6. } else { 4. }))
+                                .into_any_element(),
+                        }
+                    }))
+                    .into_any_element(),
+            )
+        } else {
+            look.map(|l| attention::look_dot(l, cx))
+        };
+        let dots = dots.map(|d| {
+            div()
+                .id(("tab-look", gid))
+                .flex()
                 .items_center()
-                .children(order.iter().map(|&id| {
-                    let big = id == focused;
-                    div()
-                        .rounded_full()
-                        .bg(if big { t.muted_foreground } else { t.subtle })
-                        .size(px(if big { 6. } else { 4. }))
-                }))
+                .child(d)
+                .when_some(look_tip, |d, tip| {
+                    d.tooltip(move |window, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                    })
+                })
         });
         let weak = cx.entity().downgrade();
         let _ = window;
@@ -1678,9 +1834,6 @@ impl TerminalPanel {
                 )
             })
             .children(dots)
-            .when(rang, |d| {
-                d.child(div().size(px(6.)).rounded_full().bg(t.primary))
-            })
             .child(
                 div()
                     .id(("close-tab", gid))
@@ -1960,6 +2113,7 @@ impl TerminalPanel {
                     .child(title)
                     .into_any_element(),
             })
+            .children(self.look_of_pane(id).map(|l| attention::look_dot(l, cx)))
             .child(
                 h_flex()
                     .ml_auto()
@@ -2269,6 +2423,20 @@ mod tests {
                 }
                 panel.update_in(cx, |p, window, cx| p.split(Dir::Row, None, window, cx));
                 cx.update(|window, cx| window.draw(cx).clear(cx));
+                cx.run_until_parked();
+                // Links looked up under a held ⌘, and labels asked for: their tasks go with the panes.
+                panel.update_in(cx, |p, window, cx| {
+                    for v in p.panes().cloned().collect::<Vec<_>>() {
+                        v.update(cx, |v, cx| {
+                            v.session
+                                .emu
+                                .lock()
+                                .feed(b"see src/lib.rs:3 and https://example.com\r\n");
+                            v.hover_links(Some(gpui::point(px(40.), px(12.))), true, cx);
+                            v.toggle_hints(window, cx);
+                        });
+                    }
+                });
                 cx.run_until_parked();
                 // What refs asks before removing a worktree: the folder's terminals, none above it.
                 assert_eq!(panel.read_with(cx, |p, cx| p.running_in(&dir, cx)), 4);

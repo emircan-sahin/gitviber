@@ -92,6 +92,9 @@ pub(crate) struct Frame {
     preedit: Option<(Bounds<Pixels>, ShapedLine)>,
     scrollbar: Option<(Bounds<Pixels>, Hsla)>,
     takes_mouse: bool,
+    /// The hovered link's underline, a row at a time; it takes the pointer.
+    link: Vec<Bounds<Pixels>>,
+    link_color: Hsla,
     font_size: f32,
 }
 
@@ -625,6 +628,41 @@ impl Element for TerminalElement {
             }
         }
 
+        let on_screen = |l: i32| (0..screen as i32).contains(&(l + offset));
+        // Each hinted link's box, under its label.
+        if let Some(h) = pane.hints.as_ref() {
+            for (_, link) in h
+                .links
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| h.hints.shown(*i))
+            {
+                for (l, from, to) in link.spans(cols).filter(|s| on_screen(s.0)) {
+                    if to > from {
+                        highlights.push((
+                            row_bounds((l + offset) as usize, from, to - 1),
+                            theme.primary.opacity(0.18),
+                        ));
+                    }
+                }
+            }
+        }
+        let link: Vec<Bounds<Pixels>> = pane
+            .hovered_link()
+            .map(|link| {
+                link.spans(cols)
+                    .filter(|s| on_screen(s.0) && s.2 > s.1)
+                    .map(|(l, from, to)| {
+                        let y = origin.y + cell_h * (l + offset) as f32 + cell_h - px(2.);
+                        Bounds::new(
+                            point(origin.x + cell_w * from as f32, y),
+                            size(cell_w * (to - from) as f32, px(1.)),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let style = term.cursor_style();
         let cursor_point = grid.cursor.point;
         let cursor_row = cursor_point.line.0 + offset;
@@ -741,6 +779,8 @@ impl Element for TerminalElement {
             preedit,
             scrollbar,
             takes_mouse,
+            link,
+            link_color: theme.foreground,
             font_size: config.font_size,
         }
     }
@@ -759,7 +799,9 @@ impl Element for TerminalElement {
         let (cw, ch) = (m.cell.width, m.cell.height);
         window.paint_quad(fill(bounds, frame.background));
         window.set_cursor_style(
-            if frame.takes_mouse {
+            if !frame.link.is_empty() {
+                MouseCursor::PointingHand
+            } else if frame.takes_mouse {
                 MouseCursor::Arrow
             } else {
                 MouseCursor::IBeam
@@ -839,6 +881,9 @@ impl Element for TerminalElement {
                 window.paint_quad(fill(*b, frame.background));
                 let _ = line.paint(b.origin, ch, TextAlign::Left, None, window, cx);
             }
+            for b in &frame.link {
+                window.paint_quad(fill(*b, frame.link_color));
+            }
         });
         for (b, color) in &frame.marks {
             window.paint_quad(gpui::quad(
@@ -894,11 +939,25 @@ impl Element for TerminalElement {
             let pane = pane.clone();
             let hitbox = hitbox.clone();
             move |e: &MouseMoveEvent, phase, window, cx| {
-                if phase == DispatchPhase::Bubble
-                    && (e.pressed_button.is_some() || hitbox.is_hovered(window))
-                {
-                    pane.update(cx, |p, cx| p.mouse_move(e, window, cx));
+                if phase != DispatchPhase::Bubble {
+                    return;
                 }
+                if e.pressed_button.is_some() || hitbox.is_hovered(window) {
+                    pane.update(cx, |p, cx| p.mouse_move(e, window, cx));
+                } else if pane.read(cx).hover.is_some() {
+                    pane.update(cx, |p, cx| p.hover_links(None, false, cx));
+                }
+            }
+        });
+        // ⌘ pressed or let go over a still pointer.
+        window.on_modifiers_changed({
+            let pane = pane.clone();
+            let hitbox = hitbox.clone();
+            move |e: &gpui::ModifiersChangedEvent, window, cx| {
+                let over = hitbox.is_hovered(window).then(|| window.mouse_position());
+                pane.update(cx, |p, cx| {
+                    p.hover_links(over, crate::pane::primary(&e.modifiers), cx)
+                });
             }
         });
         window.on_mouse_event({

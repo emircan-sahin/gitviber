@@ -36,7 +36,12 @@ use crate::{
     Copy, CopyLastOutput, Paste as PasteAction, ScrollPageDown, ScrollPageUp, ScrollToBottom,
     ScrollToTop, SelectAll, SelectLastOutput,
 };
-use gitviber_ui::actions::terminal::{Clear as ClearTerminal, NextCommand, PrevCommand};
+use gitviber_ui::actions::terminal::{
+    Clear as ClearTerminal, Hints as ShowHints, NextCommand, PrevCommand,
+};
+
+mod linking;
+pub(crate) use linking::{LinkCtx, primary};
 
 /// How long a pane's size holds still before its program hears of it: a divider drag changes the
 /// rows each frame, and Claude Code redrew on each SIGWINCH, leaving copies of its screen in the
@@ -76,8 +81,16 @@ pub enum PaneEvent {
     CommandEnded(CommandEnd),
     /// The shell prompted: a `cd` has settled, and an agent that ran there is gone.
     Prompt,
+    /// A program's notification escape (OSC 9, 777, 99): Claude Code's, Codex's.
+    Attention(crate::agent::Note),
     /// A pinch over it asked the font a step bigger (1) or smaller (-1).
     FontStep(i32),
+    /// ⌘-click on a link, or its hint typed.
+    OpenLink(crate::links::Target),
+    /// The first output since the session save last took the pane's history (`take_dirty`).
+    Output,
+    /// A link's text went to the clipboard (Shift on its hint).
+    Copied(String),
     FindChanged,
 }
 
@@ -173,6 +186,17 @@ pub struct TerminalPane {
     pub(crate) cache: Rc<RefCell<RowCache>>,
     pub(crate) hovered_mark: Option<(u32, Bounds<Pixels>)>,
     pub(crate) dim: f32,
+    links: Option<Rc<LinkCtx>>,
+    pub(crate) hover: Option<linking::Hover>,
+    hover_ask: Option<u64>,
+    link_task: Option<Task<()>>,
+    link_pos: Option<Point<Pixels>>,
+    link_primary: bool,
+    pub(crate) hints: Option<linking::HintsShown>,
+    hint_task: Option<Task<()>>,
+    /// Output (or a resize) since the session save last took its history, and when it last came.
+    dirty: bool,
+    pub(crate) last_output: Instant,
     _wake: Task<()>,
     sync_task: Option<Task<()>>,
     run_task: Option<Task<()>>,
@@ -243,6 +267,10 @@ impl TerminalPane {
                 this.window_active = window.is_window_active();
                 this.report_focus(cx);
                 this.restart_blink(cx);
+                // Back in the window, the pane with the keys is looked at again.
+                if this.looked_at() {
+                    cx.emit(PaneEvent::Focused);
+                }
             }),
         ];
         let pane = TerminalPane {
@@ -279,6 +307,16 @@ impl TerminalPane {
             cache: Rc::default(),
             hovered_mark: None,
             dim: 0.,
+            links: None,
+            hover: None,
+            hover_ask: None,
+            link_task: None,
+            link_pos: None,
+            link_primary: false,
+            hints: None,
+            hint_task: None,
+            dirty: false,
+            last_output: Instant::now(),
             _wake: wake,
             sync_task: None,
             run_task: None,
@@ -312,6 +350,28 @@ impl TerminalPane {
 
     pub fn has_exited(&self) -> bool {
         self.exited
+    }
+
+    /// The user is on it: it has the keys in the window in front.
+    pub fn looked_at(&self) -> bool {
+        self.focused && self.window_active
+    }
+
+    fn mark_dirty(&mut self, cx: &mut Context<Self>) {
+        self.last_output = Instant::now();
+        if !self.dirty {
+            self.dirty = true;
+            cx.emit(PaneEvent::Output);
+        }
+    }
+
+    pub(crate) fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// The session save took its history: the next output says so again.
+    pub(crate) fn take_dirty(&mut self) {
+        self.dirty = false;
     }
 
     /// The session's pty id once the shell is up (GITVIBER_PTY in it).
@@ -402,6 +462,7 @@ impl TerminalPane {
             cx.emit(PaneEvent::Focused);
         } else {
             self.ime = None;
+            self.end_hints(cx);
         }
         self.report_focus(cx);
         self.restart_blink(cx);
@@ -501,6 +562,7 @@ impl TerminalPane {
                     cx.emit(PaneEvent::Prompt);
                 }
                 Note::Ended(end) => cx.emit(PaneEvent::CommandEnded(end)),
+                Note::Attention(note) => cx.emit(PaneEvent::Attention(note)),
                 Note::Cwd(dir) => self.dir = dir.into(),
                 Note::Exited { exit, lived } => {
                     self.exited = true;
@@ -546,8 +608,12 @@ impl TerminalPane {
                 });
             }));
         }
-        if self.session.outbox.take_output() && self.find.is_some() {
-            self.refresh_find_soon(cx);
+        if self.session.outbox.take_output() {
+            if self.find.is_some() {
+                self.refresh_find_soon(cx);
+            }
+            self.links_after_output(cx);
+            self.mark_dirty(cx);
         }
         cx.notify();
     }
@@ -666,6 +732,12 @@ impl TerminalPane {
                 ));
             self.size = size;
             self.cache.borrow_mut().clear();
+            // The rows reflowed: labels and the hovered link were for the old ones.
+            self.end_hints(cx);
+            self.hover = None;
+            if self.started {
+                self.mark_dirty(cx);
+            }
         }
         if self.started && (size != self.pty_size.unwrap_or(size) || was_holding != cols_later) {
             self.resize_task = Some(cx.spawn(async move |this, cx| {
@@ -697,7 +769,7 @@ impl TerminalPane {
     }
 
     fn key_down(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.ime.is_some() || self.exited {
+        if self.ime.is_some() || self.exited || self.hint_key(e, cx) {
             return;
         }
         let k = &e.keystroke;
@@ -928,6 +1000,7 @@ impl TerminalPane {
     }
 
     fn scroll_history(&mut self, scroll: Scroll, cx: &mut Context<Self>) {
+        self.end_hints(cx);
         let mut emu = self.session.emu.lock();
         if emu.term.mode().contains(TermMode::ALT_SCREEN) {
             cx.propagate();
@@ -1033,7 +1106,16 @@ impl TerminalPane {
         let Some((col, row, side, _)) = self.cell_at(e.position) else {
             return;
         };
+        self.end_hints(cx);
         self.focus(window, cx);
+        if e.button == MouseButton::Left
+            && primary(&e.modifiers)
+            && let Some(link) = self.hovered_link()
+        {
+            cx.emit(PaneEvent::OpenLink(link.target.clone()));
+            cx.stop_propagation();
+            return;
+        }
         let mode = self.mode();
         let button = match e.button {
             MouseButton::Left => Button::Left,
@@ -1139,6 +1221,7 @@ impl TerminalPane {
                 }
                 self.last_hover_cell = inside.then_some((col, row));
                 self.update_hovered_mark(e.position, cx);
+                self.hover_links(Some(e.position), primary(&e.modifiers), cx);
             }
         }
     }
@@ -1213,6 +1296,7 @@ impl TerminalPane {
         cx: &mut Context<Self>,
     ) {
         let Some(m) = self.metrics else { return };
+        self.end_hints(cx);
         // Ctrl+wheel sizes the font, as a pinch does.
         if e.modifiers.control {
             let dy = match e.delta {
@@ -1487,6 +1571,7 @@ impl Render for TerminalPane {
         let elevated = self.theme.elevated;
         let border = self.theme.border_strong;
         let fg = self.theme.foreground;
+        let overlays = self.link_overlays();
         div()
             .id(("terminal-pane", self.id))
             .track_focus(&self.focus)
@@ -1499,6 +1584,7 @@ impl Render for TerminalPane {
             .on_action(cx.listener(Self::on_paste))
             .on_action(cx.listener(Self::on_select_all))
             .on_action(cx.listener(Self::on_clear))
+            .on_action(cx.listener(|this, _: &ShowHints, window, cx| this.toggle_hints(window, cx)))
             .on_action(cx.listener(|this, _: &PrevCommand, _, cx| this.jump(-1, cx)))
             .on_action(cx.listener(|this, _: &NextCommand, _, cx| this.jump(1, cx)))
             .on_action(
@@ -1545,6 +1631,7 @@ impl Render for TerminalPane {
                         .child(title),
                 )
             })
+            .children(overlays)
             .context_menu(move |menu, _, cx| {
                 let (selection, paste, output) = Self::context_menu_state(&weak, cx);
                 menu.action_context(focus.clone())
@@ -1562,6 +1649,89 @@ impl Render for TerminalPane {
                         !output,
                     )
             })
+    }
+}
+
+impl TerminalPane {
+    /// The hints' labels, each at its link's first cell (the part typed dimmed), and what ⌘-click
+    /// on the hovered link does.
+    fn link_overlays(&self) -> Vec<gpui::AnyElement> {
+        let Some(m) = self.metrics else { return vec![] };
+        let offset = self.session.emu.lock().term.grid().display_offset() as i32;
+        let (cw, ch) = (m.cell.width, m.cell.height);
+        let at = |line: i32, col: usize| {
+            let r = line + offset;
+            ((0..m.rows as i32).contains(&r))
+                .then(|| (px(PAD_LEFT) + cw * col as f32, px(PAD_TOP) + ch * r as f32))
+        };
+        let t = &self.theme;
+        let mut out = vec![];
+        if let Some(h) = &self.hints {
+            for (i, link) in h.links.iter().enumerate() {
+                let Some((x, y)) = h
+                    .hints
+                    .shown(i)
+                    .then(|| at(link.start.0, link.start.1))
+                    .flatten()
+                else {
+                    continue;
+                };
+                let label = &h.hints.labels[i];
+                out.push(
+                    div()
+                        .absolute()
+                        .left(x)
+                        .top(y)
+                        .h(ch)
+                        .px(px(3.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(3.))
+                        .bg(t.primary)
+                        .text_color(t.primary_foreground)
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_size((ch * 0.6).round())
+                        .shadow_sm()
+                        .child(div().opacity(0.45).child(h.hints.typed.clone()))
+                        .child(label[h.hints.typed.len().min(label.len())..].to_string())
+                        .into_any_element(),
+                );
+            }
+        }
+        if let Some(link) = self.hovered_link()
+            && let Some((x, y)) = at(link.start.0, link.start.1)
+        {
+            let tip = div()
+                .absolute()
+                .left(x)
+                .px_2()
+                .py_0p5()
+                .rounded_sm()
+                .border_1()
+                .border_color(t.border_strong)
+                .bg(t.elevated)
+                .text_color(t.foreground)
+                .text_size(px(11.5))
+                .whitespace_nowrap()
+                .children(
+                    link.hint()
+                        .lines()
+                        .map(|l| div().child(l.to_string()))
+                        .collect::<Vec<_>>(),
+                );
+            // Above the link, or under it on the top rows.
+            let lines = if link.uri.is_some() { 2. } else { 1. };
+            let room = px(22.) * lines;
+            out.push(
+                if y > room {
+                    tip.top(y - room)
+                } else {
+                    tip.top(y + ch * (link.end.0 - link.start.0 + 1) as f32 + px(2.))
+                }
+                .into_any_element(),
+            );
+        }
+        out
     }
 }
 

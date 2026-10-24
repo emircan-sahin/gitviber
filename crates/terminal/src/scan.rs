@@ -13,6 +13,8 @@ pub enum Found {
     Mark(String),
     /// What follows `7;`: a file URL.
     Cwd(String),
+    /// A notification escape: OSC 9, 777 or 99, and what follows its number.
+    Notify(u32, String),
     XtVersion,
     /// An OSC past MAX_OSC: cancel it in the parser and skip what's left of it.
     CutOsc,
@@ -184,7 +186,7 @@ impl Scanner {
         let number_done = self.buf.last() == Some(&b';') || self.buf.len() > 4;
         if number_done {
             let number = self.buf.split(|&b| b == b';').next().unwrap_or(&[]);
-            if number != b"133" && number != b"7" {
+            if !matches!(number, b"133" | b"7" | b"9" | b"777" | b"99") {
                 self.keep = false;
             }
         }
@@ -203,6 +205,12 @@ impl Scanner {
             out.push((end, Found::Mark(mark.to_string())));
         } else if let Some(url) = text.strip_prefix("7;") {
             out.push((end, Found::Cwd(url.to_string())));
+        } else {
+            for code in [9, 777, 99] {
+                if let Some(data) = text.strip_prefix(&format!("{code};")) {
+                    out.push((end, Found::Notify(code, data.to_string())));
+                }
+            }
         }
         self.buf = Vec::new();
     }
@@ -322,6 +330,13 @@ mod tests {
             vec![(0, 11, Found::XtVersion)]
         );
         assert!(scan(&[b"\x1b]1337;SetMark\x07"]).is_empty());
+        assert_eq!(
+            scan(&[b"\x1b]9;Claude needs you\x07\x1b]777;notify;T;B\x1b\\"]),
+            vec![
+                (0, 21, Found::Notify(9, "Claude needs you".into())),
+                (0, 39, Found::Notify(777, "notify;T;B".into())),
+            ]
+        );
     }
 
     #[test]

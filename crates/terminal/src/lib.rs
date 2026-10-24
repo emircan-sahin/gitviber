@@ -21,13 +21,19 @@
 // The GPUI derive macros name `gpui::…`; the Kit answers to that name.
 extern crate gpui_kit as gpui;
 
+pub mod agent;
 mod boxdraw;
 mod config;
 mod element;
 mod find;
+mod follow;
+mod hints;
+mod history;
 mod input;
 mod keys;
 pub mod layout;
+pub mod linkhost;
+pub mod links;
 mod marks;
 mod mouse;
 mod pane;
@@ -42,7 +48,10 @@ pub use config::{
 pub use find::FindOptions;
 pub use marks::{CommandEnd, end_text, end_title, format_duration, short_command};
 pub use pane::{FindResult, PaneEvent, TerminalPane};
-pub use panel::{PanelEvent, TerminalPanel, WorktreeInfo, config_from, theme_from};
+pub use panel::{
+    PanelEvent, TerminalPanel, WorktreeInfo, agents_in, config_from, paste_to_agent, theme_from,
+    worktree_agent,
+};
 
 use gpui::{App, KeyBinding, NoAction};
 
@@ -103,5 +112,6 @@ pub fn init(cx: &mut App) {
         ]);
     }
     cx.bind_keys(keys);
+    panel::import_legacy(cx);
     panel::register(cx);
 }

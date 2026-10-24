@@ -102,6 +102,8 @@ pub(crate) enum Note {
     Prompt,
     Ended(marks::CommandEnd),
     Cwd(String),
+    /// A program's notification escape.
+    Attention(crate::agent::Note),
     Exited {
         exit: Option<Exit>,
         lived: Duration,
@@ -268,6 +270,7 @@ pub(crate) struct Emu {
     /// Inside an OSC that was cut: its bytes don't reach the parser.
     skipping: bool,
     counter: marks::ScrollCounter,
+    kitty_notes: crate::agent::KittyNotes,
     /// Rows scrolled into the history since the start: what a point found earlier moved up by.
     pub scrolled: u64,
     outbox: Arc<Outbox>,
@@ -286,6 +289,7 @@ impl Emu {
             found: Vec::new(),
             skipping: false,
             counter: marks::ScrollCounter::default(),
+            kitty_notes: Default::default(),
             scrolled: 0,
             outbox,
             _live: gitviber_ui::memory::Live::new("Terminal"),
@@ -345,6 +349,16 @@ impl Emu {
                 }
             }
             Found::BigOscEnded => self.renew_parser(),
+            Found::Notify(code, data) => {
+                let note = match code {
+                    9 => crate::agent::osc9_note(data),
+                    777 => crate::agent::osc777_note(data),
+                    _ => self.kitty_notes.read(data),
+                };
+                if let Some(note) = note {
+                    self.outbox.note(Note::Attention(note));
+                }
+            }
             // XTVERSION names this app: answered as xterm.js, Claude Code took the pane for VS Code's
             // terminal and its wheel and glyph atlas workarounds.
             Found::XtVersion => self.outbox.write("\x1bP>|GitViber\x1b\\".into(), false),

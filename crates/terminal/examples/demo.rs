@@ -4,7 +4,8 @@
 //! `--run <command>` types a command at the first prompt; `--split <command>` splits right and
 //! types one there; `--find <text>` searches for it; `--memtest` prints the process's memory
 //! with one idle shell, after `seq 1 100000` in a second, after closing it, and after ten more
-//! open/flood/close cycles.
+//! open/flood/close cycles. `--hints` labels the links on screen after a few seconds. The last
+//! run's terminals are restored with `--restore`; without it each run starts with none saved.
 //! `GITVIBER_BACKGROUND=1` opens it without taking focus; with `GITVIBER_SNAPSHOT=out.png` (snap.sh)
 //! it draws off screen into a picture instead (GITVIBER_APPEARANCE=light for the light theme).
 
@@ -21,6 +22,8 @@ struct Args {
     split: Option<String>,
     memtest: bool,
     find: Option<String>,
+    hints: bool,
+    restore: bool,
 }
 
 fn args() -> Args {
@@ -30,6 +33,8 @@ fn args() -> Args {
         split: None,
         memtest: false,
         find: None,
+        hints: false,
+        restore: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -38,6 +43,8 @@ fn args() -> Args {
             "--split" => out.split = it.next(),
             "--memtest" => out.memtest = true,
             "--find" => out.find = it.next(),
+            "--hints" => out.hints = true,
+            "--restore" => out.restore = true,
             dir if std::path::Path::new(dir).is_dir() => out.root = PathBuf::from(dir),
             _ => {}
         }
@@ -75,6 +82,11 @@ fn main() {
     let background = std::env::var("GITVIBER_BACKGROUND").is_ok_and(|v| v == "1");
     let snapshot = std::env::var_os("GITVIBER_SNAPSHOT").is_some();
     gitviber_ui::dev::run(move |window, cx| {
+        if !a.restore {
+            let dir = gitviber_ui::store::config_dir();
+            let _ = std::fs::remove_file(dir.join("terminals.json"));
+            let _ = std::fs::remove_dir_all(dir.join("terminal-history"));
+        }
         gitviber_terminal::init(cx);
         let ws = Workspace::for_window(window, cx).expect("the dev host's workspace");
         let ctx = ws.update(cx, |ws, cx| ws.context(cx));
@@ -82,7 +94,10 @@ fn main() {
         let root = a.root.clone();
         let run = |cmd: &Option<String>| cmd.as_ref().map(|c| format!("{c}\r"));
         let first = if a.memtest { None } else { run(&a.run) };
-        panel.update(cx, |p, cx| p.open_terminal(root.clone(), first, window, cx));
+        // A restore shows what came back.
+        if !panel.read(cx).has_terminals() {
+            panel.update(cx, |p, cx| p.open_terminal(root.clone(), first, window, cx));
+        }
         if let Some(cmd) = &a.split {
             split_later(&panel, cmd.clone(), window, cx);
         }
@@ -97,6 +112,21 @@ fn main() {
                         .timer(Duration::from_millis(4000))
                         .await;
                     let _ = panel.update_in(cx, |p, window, cx| p.find_text(&query, window, cx));
+                })
+                .detach();
+        }
+        if a.hints {
+            let panel = panel.downgrade();
+            window
+                .spawn(cx, async move |cx| {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(4500))
+                        .await;
+                    let _ = panel.update_in(cx, |p, window, cx| {
+                        if let Some(pane) = p.active_pane() {
+                            pane.update(cx, |pane, cx| pane.toggle_hints(window, cx));
+                        }
+                    });
                 })
                 .detach();
         }
