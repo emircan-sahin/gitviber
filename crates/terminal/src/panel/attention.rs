@@ -39,7 +39,7 @@ pub(super) fn now_secs() -> f64 {
 }
 
 /// Tells the OS, if the user asked to be told of `event` and isn't looking at the app. True when
-/// it was sent. A build outside an app bundle can't post one (core's UNPOSTED): quietly nothing.
+/// it was sent.
 fn notify_if_away(
     event: NotifyEvent,
     title: String,
@@ -47,22 +47,13 @@ fn notify_if_away(
     target: String,
     cx: &mut App,
 ) -> bool {
-    let s = Settings::get(cx);
-    let on = match event {
-        NotifyEvent::AgentDone => s.notify_agent_done,
-        NotifyEvent::AgentWaiting => s.notify_agent_waiting,
-        NotifyEvent::Terminal => s.notify_terminal,
-        NotifyEvent::LongCommand => s.notify_long_command,
+    let wanted: fn(&Settings) -> bool = match event {
+        NotifyEvent::AgentDone => |s| s.notify_agent_done,
+        NotifyEvent::AgentWaiting => |s| s.notify_agent_waiting,
+        NotifyEvent::Terminal => |s| s.notify_terminal,
+        NotifyEvent::LongCommand => |s| s.notify_long_command,
     };
-    if !s.notify || !on || cx.active_window().is_some() {
-        return false;
-    }
-    let core = gitviber_ui::core(cx);
-    cx.background_spawn(async move {
-        let _ = pty_api::notification_send(&core, title, body, Some(target));
-    })
-    .detach();
-    true
+    gitviber_ui::notify_if_away(wanted, title, body, Some(target), cx)
 }
 
 /// What shows the agents (the top bar's button) observes; the Dock badge's count.

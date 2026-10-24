@@ -13,6 +13,7 @@ pub mod fuzzy;
 pub mod keymap;
 pub mod legacy;
 pub mod memory;
+mod notify;
 pub mod open_in;
 pub mod settings;
 pub mod state;
@@ -24,6 +25,7 @@ pub mod workspace;
 
 pub use backend::{CoreEvents, core, has_core, install_core, start_core};
 pub use keymap as actions;
+pub use notify::notify_if_away;
 pub use settings::Settings;
 pub use state::UiState;
 pub use theme::{ActiveAppTheme, AppTheme};

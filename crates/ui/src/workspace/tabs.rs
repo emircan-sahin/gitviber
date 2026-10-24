@@ -194,6 +194,39 @@ impl<T> Tabs<T> {
         removed
     }
 
+    /// The tab under `key` goes under `new_key` in its place, its item from `make`, active if it
+    /// was and as kept as it was; nothing is remembered for reopening. A tab open under `new_key`
+    /// already takes it in instead (a preview only if both were). Returns the old item.
+    pub fn replace(
+        &mut self,
+        key: &str,
+        new_key: SharedString,
+        make: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let at = self.position(key)?;
+        let was_active = self.active_index() == Some(at);
+        let old = match self.position(&new_key) {
+            Some(twin) => {
+                let preview = self.tabs[at].preview;
+                self.tabs[twin].preview &= preview;
+                self.tabs.remove(at).item
+            }
+            None => {
+                let preview = self.tabs[at].preview;
+                let entry = TabEntry {
+                    key: new_key.clone(),
+                    preview,
+                    item: make(),
+                };
+                std::mem::replace(&mut self.tabs[at], entry).item
+            }
+        };
+        if was_active {
+            self.active = Some(new_key);
+        }
+        Some(old)
+    }
+
     /// The last closed tab, taken off the list; None when there's none.
     pub fn take_reopen(&mut self) -> Option<ClosedTab> {
         self.closed.pop()
@@ -348,6 +381,24 @@ mod tests {
         tabs.insert(second.index, second.key, 3);
         assert_eq!(keys(&tabs), ["a", "b", "c", "d"]);
         assert_eq!(tabs.active_key().unwrap(), "d");
+        assert!(!tabs.can_reopen());
+    }
+
+    #[test]
+    fn replace_keeps_the_place_and_a_twin_takes_it_in() {
+        let mut tabs: Tabs<u32> = Tabs::default();
+        tabs.open(k("a"), false, || 1);
+        tabs.open(k("b"), true, || 2);
+        tabs.open(k("c"), false, || 3);
+        tabs.activate("b");
+        assert_eq!(tabs.replace("b", k("b2"), || 20), Some(2));
+        assert_eq!(keys(&tabs), ["a", "b2*", "c"]);
+        assert_eq!(tabs.active_key().unwrap(), "b2");
+        // Onto an open tab: one tab, kept, active.
+        assert_eq!(tabs.replace("b2", k("c"), || unreachable!()), Some(20));
+        assert_eq!(keys(&tabs), ["a", "c"]);
+        assert_eq!(tabs.active_key().unwrap(), "c");
+        assert_eq!(tabs.replace("zz", k("y"), || 0), None);
         assert!(!tabs.can_reopen());
     }
 

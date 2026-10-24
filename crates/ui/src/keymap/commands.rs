@@ -339,20 +339,21 @@ pub static COMMANDS: &[Command] = &[
         &["shift+cmd+f"],
     ),
     // Where the name, import or path under the cursor is defined; ⌘-click does the same (lib/editor/definitions).
+    // In a file's code and in a diff's.
     cmd::<editor::GoToDefinition>(
         "editor.goToDefinition",
         "Go to Definition",
         Editor,
         &["f12", "cmd+enter"],
     )
-    .local("CodeView"),
+    .local("CodeView || DiffView"),
     cmd::<editor::PeekDefinition>(
         "editor.peekDefinition",
         "Peek Definition",
         Editor,
         &["alt+f12"],
     )
-    .local("CodeView"),
+    .local("CodeView || DiffView"),
     // Where it's used; ⌘-click on a definition itself does the same.
     cmd::<editor::GoToReferences>(
         "editor.goToReferences",
@@ -360,7 +361,7 @@ pub static COMMANDS: &[Command] = &[
         Editor,
         &["shift+f12"],
     )
-    .local("CodeView"),
+    .local("CodeView || DiffView"),
     cmd::<media::ZoomIn>("media.zoomIn", "Zoom In Image", Editor, &["=", "shift+="])
         .local("ImageView"),
     cmd::<media::ZoomOut>("media.zoomOut", "Zoom Out Image", Editor, &["-"]).local("ImageView"),

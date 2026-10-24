@@ -17,12 +17,12 @@ mod project;
 mod registry;
 mod selection;
 pub mod tabs;
+mod toast;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use gpui_kit::component::{WindowExt as _, notification::Notification};
 use gpui_kit::{
     AnyView, AnyWindowHandle, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
     Global, SharedString, Subscription, WeakEntity, Window,
@@ -40,111 +40,10 @@ pub use selection::{
     register_opener, selection_key, selection_path,
 };
 pub use tabs::{ClosedTab, Opened, TabEntry, TabGroup, Tabs};
+pub use toast::{Toast, ToastAction, ToastKind, ToastRun};
 
 use crate::memory::Live;
 use crate::state::{TabSnapshot, UiState, WorkspaceSnapshot};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ToastKind {
-    Info,
-    Success,
-    Warning,
-    Error,
-}
-
-/// A short message in the window's corner.
-#[derive(Clone, Debug)]
-pub struct Toast {
-    pub kind: ToastKind,
-    pub title: Option<SharedString>,
-    pub message: SharedString,
-    pub action: Option<ToastAction>,
-}
-
-/// What a toast's button does.
-pub type ToastRun = Rc<dyn Fn(&mut Window, &mut App)>;
-
-/// A toast's button: its label, and what a click does (the toast then goes).
-#[derive(Clone)]
-pub struct ToastAction {
-    pub label: SharedString,
-    pub run: ToastRun,
-}
-
-impl std::fmt::Debug for ToastAction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ToastAction")
-            .field("label", &self.label)
-            .finish()
-    }
-}
-
-impl Toast {
-    pub fn new(kind: ToastKind, message: impl Into<SharedString>) -> Self {
-        Self {
-            kind,
-            title: None,
-            message: message.into(),
-            action: None,
-        }
-    }
-    pub fn info(message: impl Into<SharedString>) -> Self {
-        Self::new(ToastKind::Info, message)
-    }
-    pub fn success(message: impl Into<SharedString>) -> Self {
-        Self::new(ToastKind::Success, message)
-    }
-    pub fn warning(message: impl Into<SharedString>) -> Self {
-        Self::new(ToastKind::Warning, message)
-    }
-    pub fn error(message: impl Into<SharedString>) -> Self {
-        Self::new(ToastKind::Error, message)
-    }
-    pub fn title(mut self, title: impl Into<SharedString>) -> Self {
-        self.title = Some(title.into());
-        self
-    }
-
-    /// A button on it; a toast with one stays until it's clicked or closed.
-    pub fn action(
-        mut self,
-        label: impl Into<SharedString>,
-        run: impl Fn(&mut Window, &mut App) + 'static,
-    ) -> Self {
-        self.action = Some(ToastAction {
-            label: label.into(),
-            run: Rc::new(run),
-        });
-        self
-    }
-
-    /// Shows it in `window` now.
-    pub fn show(self, window: &mut Window, cx: &mut App) {
-        let note = match self.kind {
-            ToastKind::Info => Notification::info(self.message),
-            ToastKind::Success => Notification::success(self.message),
-            ToastKind::Warning => Notification::warning(self.message),
-            ToastKind::Error => Notification::error(self.message),
-        };
-        let note = match self.title {
-            Some(title) => note.title(title),
-            None => note,
-        };
-        let note = match self.action {
-            Some(a) => note.action(move |_, _, cx| {
-                let (run, toast) = (a.run.clone(), cx.entity().downgrade());
-                gpui_kit::component::button::Button::new("toast-action")
-                    .label(a.label.clone())
-                    .on_click(move |_, window, cx| {
-                        run(window, cx);
-                        toast.update(cx, |t, cx| t.dismiss(window, cx)).ok();
-                    })
-            }),
-            None => note,
-        };
-        window.push_notification(note, cx);
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceEvent {
@@ -776,6 +675,60 @@ impl Workspace {
             self.shown_now(&key, window, cx);
             self.changed(WorkspaceEvent::TabsChanged, cx);
         }
+    }
+
+    /// Shows the tab under `key`, focus staying where it is: the tab strip's arrow keys.
+    pub fn show_tab(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.activate(key) {
+            let key = SharedString::from(key.to_string());
+            self.ensure_built(&key, window, cx);
+            self.note_shown(&key, cx);
+            self.changed(WorkspaceEvent::TabsChanged, cx);
+        }
+    }
+
+    /// The tab under `key` shows `selection` now, where it stands (a staged file's diff tab moves
+    /// to the staged list): nothing goes to Reopen Closed Tab, a tab already open on `selection`
+    /// takes this one in, and the view is built again when it's shown. False when `key` isn't
+    /// open or has unsaved edits, which a new view would lose.
+    pub fn retarget_tab(
+        &mut self,
+        key: &str,
+        selection: Selection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(tab) = self.tabs.get(key) else {
+            return false;
+        };
+        if tab.item.is_dirty(cx) {
+            return false;
+        }
+        let new_key: SharedString = selection_key(&selection).into();
+        if new_key.as_ref() == key {
+            self.tabs.set(key, |tab| tab.selection = Some(selection));
+            self.changed(WorkspaceEvent::TabsChanged, cx);
+            return true;
+        }
+        let had_focus = tab
+            .item
+            .focus_handle(cx)
+            .is_some_and(|f| f.contains_focused(window, cx));
+        // Dropped once the new view is focused, so focus has somewhere to go.
+        let _old = self.tabs.replace(key, new_key.clone(), || Tab {
+            handle: None,
+            selection: Some(selection),
+        });
+        self.shown.retain(|k| k.as_ref() != key);
+        if self.tabs.active_key() == Some(&new_key) {
+            self.ensure_built(&new_key, window, cx);
+            self.note_shown(&new_key, cx);
+            if had_focus && let Some(f) = self.tabs.active().and_then(|t| t.item.focus_handle(cx)) {
+                f.focus(window, cx);
+            }
+        }
+        self.changed(WorkspaceEvent::TabsChanged, cx);
+        true
     }
 
     /// Keeps a preview tab (it was typed into, or double-clicked).
@@ -1449,6 +1402,37 @@ mod tests {
                     "b.rs"
                 );
                 assert!(ws.active_view(window, cx).is_some());
+            })
+        });
+        assert_eq!(built.get(), 4);
+    }
+
+    #[gpui_kit::test]
+    fn a_retargeted_tab_moves_in_place_and_leaves_nothing_to_reopen(cx: &mut TestAppContext) {
+        setup(cx);
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        let built = std::rc::Rc::new(std::cell::Cell::new(0));
+        register_file_opener(cx, built.clone());
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_project(PathBuf::from("/tmp/gitviber-project-move"), window, cx);
+                for path in ["a", "b", "c"] {
+                    ws.open(file_tab(path), false, window, cx);
+                }
+                // The inactive one waits to be shown; the active one is built now.
+                assert!(ws.retarget_tab("file::a", file_tab("a2"), window, cx));
+                assert!(ws.retarget_tab("file::c", file_tab("c2"), window, cx));
+                let keys: Vec<_> = ws.tabs().tabs().iter().map(|t| t.key.to_string()).collect();
+                assert_eq!(keys, ["file::a2", "file::b", "file::c2"]);
+                assert_eq!(ws.tabs().active_key().unwrap(), "file::c2");
+                assert!(ws.tabs().get("file::a2").unwrap().item.handle().is_none());
+                // Onto an open one: they're one tab.
+                assert!(ws.retarget_tab("file::c2", file_tab("b"), window, cx));
+                assert_eq!(ws.tabs().len(), 2);
+                assert_eq!(ws.tabs().active_key().unwrap(), "file::b");
+                assert!(!ws.can_reopen_tab());
+                assert!(!ws.retarget_tab("file::gone", file_tab("x"), window, cx));
             })
         });
         assert_eq!(built.get(), 4);

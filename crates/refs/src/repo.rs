@@ -332,7 +332,7 @@ impl RepoState {
                 if action.net
                     && let Some((title, body)) = net_note(&action.label, &result)
                 {
-                    notify_if_away(title, body, cx);
+                    gitviber_ui::notify_if_away(|s| s.notify_git, title, body, None, cx);
                 }
                 let ok = result.is_ok();
                 let mut deferred = None;
@@ -517,20 +517,6 @@ pub fn net_note(label: &str, result: &Res<bool>) -> Option<(String, String)> {
         Err(e) => Some((format!("{label} failed"), e.clone())),
         Ok(_) => Some((format!("{label} finished"), String::new())),
     }
-}
-
-/// Tells the OS, when the user asked (Settings → Notifications: on, and "A git command ends")
-/// and isn't looking at the app. A build outside an app bundle can't post one: quietly nothing.
-fn notify_if_away(title: String, body: String, cx: &mut App) {
-    let s = gitviber_ui::Settings::get(cx);
-    if !s.notify || !s.notify_git || cx.active_window().is_some() {
-        return;
-    }
-    let core = gitviber_ui::core(cx);
-    cx.background_spawn(async move {
-        let _ = api::app::notification_send(&core, title, body, None);
-    })
-    .detach();
 }
 
 /// The Undo button of a success toast, for the entry the action recorded.

@@ -326,6 +326,18 @@ mod tests {
         assert!(bindings.len() > 100, "{}", bindings.len());
     }
 
+    #[test]
+    fn local_contexts_parse_so_their_keys_bind() {
+        for command in all_commands().filter(|c| c.local.is_some()) {
+            let context = command.local.unwrap();
+            assert!(
+                KeyBindingContextPredicate::parse(context).is_ok(),
+                "{} {context}",
+                command.id
+            );
+        }
+    }
+
     /// The quoted strings of the list after `field: [` on `line`, brackets in them included.
     fn ts_list(line: &str, field: &str) -> Option<Vec<String>> {
         let start = line.find(&format!("{field}: ["))? + field.len() + 3;
