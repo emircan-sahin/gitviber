@@ -18,7 +18,7 @@ use gpui_kit::{
 
 use crate::names::{Branch, FOLD_CASE, local_names, ref_name_check, short_ref};
 use crate::repo::{GitAction, RepoState, plain};
-use crate::ui::{hint, note, open_form, ref_menu};
+use crate::ui::{cancel, hint, note, open_form, ref_menu};
 
 fn state_of(window: &Window, cx: &mut App) -> Option<Entity<RepoState>> {
     let ws = Workspace::for_window(window, cx)?;
@@ -224,7 +224,7 @@ impl Render for RenameBranch {
                         .child(note(format!("Pushes {n} and tracks it, then deletes {u} from {r}. Pull requests from the old name get closed, and other clones keep tracking it."), cx).pl_6()),
                 )
             })
-            .child(div().mt_4().flex().justify_end().child(
+            .child(div().mt_4().flex().justify_end().gap_2().child(cancel()).child(
                 Button::new("br-rename").primary().label("Rename").disabled(!ready).on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
             ))
     }
@@ -403,6 +403,7 @@ impl Render for NewBranch {
                             })),
                     )
                     .child(div().flex_1())
+                    .child(cancel())
                     .child(
                         Button::new("br-create")
                             .primary()
@@ -555,7 +556,9 @@ impl Render for SetUpstream {
                     .mt_4()
                     .flex()
                     .justify_end()
+                    .gap_2()
                     .text_color(t.foreground)
+                    .child(cancel())
                     .child(
                         Button::new("br-set-upstream")
                             .primary()

@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use gitviber_ui::ActiveAppTheme;
 use gpui_kit::component::WindowExt as _;
+use gpui_kit::component::button::Button;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::{
     AnyElement, App, Bounds, Entity, FocusHandle, IntoElement as _, Modifiers, MouseButton,
@@ -35,6 +36,22 @@ pub fn open_form<V: Render>(
         }
         dialog.title(title.clone()).w(px(width)).child(view.clone())
     });
+}
+
+/// A form's Cancel, left of its action as in the app's other dialogs: closes it as Escape does.
+pub fn cancel() -> Button {
+    Button::new("form-cancel")
+        .label("Cancel")
+        .on_click(|_, window, cx| window.close_dialog(cx))
+}
+
+/// A picker's key hints: a narrow row moves whole hints to the next line, never cuts a word.
+pub fn key_hints(hints: impl IntoIterator<Item = String>) -> gpui_kit::Div {
+    div().flex().flex_wrap().gap_x_3().children(
+        hints
+            .into_iter()
+            .map(|h| div().flex_none().whitespace_nowrap().child(h)),
+    )
 }
 
 /// ⇧F10: a row's right-click menu, asked for from the keyboard. The menus open on a right

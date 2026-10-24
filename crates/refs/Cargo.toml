@@ -19,6 +19,8 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+# The example's off-screen picture (dev::run with GITVIBER_SNAPSHOT).
+gitviber-ui = { path = "../ui", features = ["snapshot"] }
 # Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.
 gpui-test.workspace = true
 

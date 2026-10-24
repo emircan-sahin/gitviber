@@ -30,7 +30,7 @@ use crate::names::{
 use crate::ops::{main_of, open_worktree};
 use crate::repo::{GitAction, RepoState, undo_action};
 use crate::toast::{Kind, Note};
-use crate::ui::{hint, note, open_form, ref_menu};
+use crate::ui::{cancel, hint, note, open_form, ref_menu};
 
 /// The window's repo state, when a project is open.
 fn state_of(window: &Window, cx: &mut App) -> Option<Entity<RepoState>> {
@@ -695,12 +695,13 @@ impl Render for NewWorktree {
                     .mt_4()
                     .flex()
                     .items_center()
-                    .gap_3()
+                    .gap_2()
                     .child(Checkbox::new("wt-switch").label("Switch to it").checked(self.switch_to).on_click(cx.listener(|this, c: &bool, _, cx| {
                         this.switch_to = *c;
                         cx.notify();
                     })))
                     .child(div().flex_1())
+                    .child(cancel())
                     .child(Button::new("wt-create").primary().label(if pull.is_some() { "Check out" } else { "Create" }).disabled(!ready).on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))),
             )
     }
@@ -929,7 +930,7 @@ impl Render for RenameWorktree {
                     "{who} in this folder. The shell moves with it, but whatever holds on to the old path, like an agent or a dev server, may lose track of its files."
                 )))
             })
-            .child(div().mt_4().flex().justify_end().child(
+            .child(div().mt_4().flex().justify_end().gap_2().child(cancel()).child(
                 Button::new("wt-rename").primary().label(if terminals > 0 { "Rename and move" } else { "Rename" }).disabled(!ready).on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
             ))
     }
@@ -1019,7 +1020,7 @@ impl Render for LockWorktree {
                 cx,
             ))
             .child(div().mt_3().child(Input::new(&self.reason)))
-            .child(div().mt_4().flex().justify_end().child(
+            .child(div().mt_4().flex().justify_end().gap_2().child(cancel()).child(
                 Button::new("wt-lock").primary().label("Lock").disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
             ))
     }
@@ -1409,7 +1410,7 @@ impl Render for CleanUp {
             .text_size(rems(0.75))
             .child(note("Removes each folder, and its branch where everything on it is merged. Ignored files in them go too, for good.", cx))
             .child(div().id("cleanup-list").mt_3().max_h(px(320.)).overflow_y_scroll().children(rows))
-            .child(div().mt_4().flex().justify_end().child(
+            .child(div().mt_4().flex().justify_end().gap_2().child(cancel()).child(
                 Button::new("wt-cleanup").danger().label(label).disabled(chosen == 0 || self.pending).on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
             ))
     }

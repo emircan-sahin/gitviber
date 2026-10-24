@@ -34,7 +34,7 @@ use crate::names::{folder_name, plural};
 use crate::ops;
 use crate::repo::{RepoEvent, RepoState};
 use crate::requests::{self, Picker};
-use crate::ui::chip_on;
+use crate::ui::{chip_on, key_hints};
 
 /// The top bar's worktree chip, kept in the bar's element state per project.
 pub fn worktree_chip(ctx: &PanelContext, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
@@ -146,7 +146,7 @@ impl Render for WorktreeChip {
                     d.child(
                         div()
                             .text_color(t.muted_foreground)
-                            .child(format!(" ({extra})")),
+                            .child(format!(" ({})", all.len())),
                     )
                 })
                 .into_any_element(),
@@ -159,10 +159,7 @@ impl Render for WorktreeChip {
                 w.path
             ),
             None if extra == 0 => "Worktrees".to_string(),
-            None => format!(
-                "{} besides the main one · switch worktree",
-                plural(extra, "worktree")
-            ),
+            None => format!("{} · switch worktree", plural(all.len(), "worktree")),
         };
         // Another worktree's agent asked or finished unseen: the chip says so, as the Dock does.
         let away = hooks::most_urgent(
@@ -960,25 +957,27 @@ impl Render for WorktreePicker {
             .map(|(i, w)| self.row(i, w, &main, &hues, cx))
             .collect();
         let hot = self.hot();
-        let mut keys = "↑↓ navigate · ↵ open here".to_string();
+        // ↑↓ goes without saying: left out, the hints of the open row fit on one line.
+        let mut keys = vec!["↵ open here".to_string()];
         if let Some(h) = &hot {
             if !h.prunable && !h.bare {
-                keys.push_str(" · T terminal");
+                keys.push("T terminal".into());
             }
             if self.can_merge(h) {
-                keys.push_str(" · M merge");
+                keys.push("M merge".into());
             }
             if h.branch.is_some() && !h.prunable {
-                keys.push_str(" · F2 rename");
+                keys.push("F2 rename".into());
             }
             if !h.main && !h.current {
-                keys.push_str(if h.prunable {
-                    " · ⌫ prune"
+                let key = if h.prunable {
+                    "⌫ prune"
                 } else {
-                    " · ⌫ remove"
-                });
+                    "⌫ remove"
+                };
+                keys.push(key.into());
             }
-            keys.push_str(" · right-click for more");
+            keys.push("right-click for more".into());
         }
         let lock_note = hot.as_ref().filter(|h| h.locked).map(|h| {
             format!(
@@ -1081,37 +1080,45 @@ impl Render for WorktreePicker {
             .child(
                 div()
                     .flex()
-                    .items_start()
-                    .gap_2()
+                    .flex_col()
+                    .gap_1()
                     .border_t_1()
                     .border_color(t.border)
                     .px_2p5()
                     .py_1p5()
                     .text_size(rems(0.65625))
                     .text_color(t.subtle)
-                    .child(div().flex_1().min_w_0().child(keys).children(lock_note.map(|n| div().child(n))))
-                    .when(!merged.is_empty(), |d| {
-                        let list = merged.clone();
-                        d.child(
-                            div()
-                                .id("wt-cleanup")
-                                .flex_none()
-                                .px_1p5()
-                                .py_0p5()
-                                .rounded(px(3.))
-                                .cursor_pointer()
-                                .hover(|s| s.bg(t.hover).text_color(t.foreground))
-                                .child("Clean up…")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.close(cx);
-                                    super::open_clean_up(list.clone(), window, cx);
-                                })),
-                        )
-                    })
-                    .child(footer_button("wt-new", "New worktree…", cx, |this, window, cx| {
-                        this.close(cx);
-                        super::open_new_worktree(None, window, cx);
-                    })),
+                    // The buttons get a line of their own: beside them the key hints wrapped.
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap_1()
+                            .when(!merged.is_empty(), |d| {
+                                let list = merged.clone();
+                                d.child(
+                                    div()
+                                        .id("wt-cleanup")
+                                        .flex_none()
+                                        .px_1p5()
+                                        .py_0p5()
+                                        .rounded(px(3.))
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(t.hover).text_color(t.foreground))
+                                        .child("Clean up…")
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.close(cx);
+                                            super::open_clean_up(list.clone(), window, cx);
+                                        })),
+                                )
+                            })
+                            .child(footer_button("wt-new", "New worktree…", cx, |this, window, cx| {
+                                this.close(cx);
+                                super::open_new_worktree(None, window, cx);
+                            })),
+                    )
+                    .child(key_hints(keys))
+                    .children(lock_note.map(|n| div().child(n))),
             )
     }
 }

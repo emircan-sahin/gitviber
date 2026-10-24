@@ -23,12 +23,13 @@ use gpui_kit::{
     WeakEntity, Window, div, prelude::FluentBuilder as _, px, rems,
 };
 
-use super::{create_name, deletable, groups, held_in};
+use super::{LOCAL, PINNED, RECENT, create_name, deletable, groups, held_in};
 use crate::names::{Branch, branch_tracking, folder_name};
 use crate::ops;
 use crate::points::branch_point;
 use crate::repo::RepoState;
 use crate::requests::{self, Picker};
+use crate::ui::key_hints;
 use crate::worktrees::{Worktree, list as wt_list, main_back_offer};
 
 /// The top bar's branch chip, kept in the bar's element state per project.
@@ -573,7 +574,9 @@ impl BranchPicker {
             IconName::GitBranch
         };
         // Text, not colour: ↑2 ↓1, "local only", "upstream gone". Merged upstream says so in its hint.
-        let tracking = (!upstream)
+        // With no remote at all every branch is local only: the top bar's "Not published" says it.
+        let remote = b.upstream.is_some() || branches.iter().any(|b| b.remote);
+        let tracking = (!upstream && remote)
             .then(|| {
                 branch_tracking(
                     b.remote,
@@ -915,8 +918,20 @@ impl Render for BranchPicker {
         let mut child_of: Vec<usize> = vec![];
         let mut n = 0;
         let searching = !self.typed(cx).trim().is_empty();
+        // Local branches pinned or recent are listed above, not again under Local: its count says so.
+        let above = groups
+            .iter()
+            .filter(|(g, _)| g == PINNED || g == RECENT)
+            .flat_map(|(_, l)| l)
+            .filter(|b| !b.remote)
+            .count();
         for (g, list) in &groups {
             let open = self.is_open(g, cx);
+            let count = if g == LOCAL && above > 0 {
+                format!("{} · {above} above", list.len() + above)
+            } else {
+                list.len().to_string()
+            };
             let name = g.clone();
             rows.push(
                 div()
@@ -948,11 +963,7 @@ impl Render for BranchPicker {
                         .xsmall(),
                     )
                     .child(g.to_uppercase())
-                    .child(
-                        div()
-                            .font_weight(FontWeight::NORMAL)
-                            .child(list.len().to_string()),
-                    )
+                    .child(div().font_weight(FontWeight::NORMAL).child(count))
                     .into_any_element(),
             );
             if open {
@@ -1053,35 +1064,45 @@ impl Render for BranchPicker {
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .gap_2()
+                    .flex_col()
+                    .gap_1()
                     .border_t_1()
                     .border_color(t.border)
                     .px_2p5()
                     .py_1p5()
                     .text_size(rems(0.65625))
                     .text_color(t.subtle)
-                    .child(div().flex_1().min_w_0().truncate().child(format!(
-                        "↑↓ navigate · ↵ {enter} · F2 rename · right-click for more"
-                    )))
-                    .child(link("br-new").child("New branch…").on_click(cx.listener(
-                        move |this, _, window, cx| {
-                            this.close(cx);
-                            super::open_new_branch(base.clone(), window, cx);
-                        },
-                    )))
-                    .when(self.landed.is_some() && cleanable > 0, |d| {
-                        d.child(
-                            link("br-cleanup")
-                                .child(format!("Clean up {cleanable} merged"))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    let (stale, squashed) = (stale.clone(), squashed.clone());
-                                    this.then(window, cx, |s, w, cx| {
-                                        ops::clean_up_branches(s, stale, squashed, w, cx)
-                                    });
-                                })),
-                        )
-                    }),
+                    // The hints get a line of their own: beside the actions they were cut short.
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap_1()
+                            .child(link("br-new").child("New branch…").on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.close(cx);
+                                    super::open_new_branch(base.clone(), window, cx);
+                                },
+                            )))
+                            .when(self.landed.is_some() && cleanable > 0, |d| {
+                                d.child(
+                                    link("br-cleanup")
+                                        .child(format!("Clean up {cleanable} merged"))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            let (stale, squashed) =
+                                                (stale.clone(), squashed.clone());
+                                            this.then(window, cx, |s, w, cx| {
+                                                ops::clean_up_branches(s, stale, squashed, w, cx)
+                                            });
+                                        })),
+                                )
+                            }),
+                    )
+                    .child(key_hints([
+                        format!("↵ {enter}"),
+                        "F2 rename".into(),
+                        "right-click for more".into(),
+                    ])),
             )
     }
 }
