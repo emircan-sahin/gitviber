@@ -271,6 +271,9 @@ impl TerminalPane {
                 if this.looked_at() {
                     cx.emit(PaneEvent::Focused);
                 }
+                if !this.window_active {
+                    this.links_window_left(cx);
+                }
             }),
         ];
         let pane = TerminalPane {
@@ -734,7 +737,7 @@ impl TerminalPane {
             self.cache.borrow_mut().clear();
             // The rows reflowed: labels and the hovered link were for the old ones.
             self.end_hints(cx);
-            self.hover = None;
+            self.clear_hover(cx);
             if self.started {
                 self.mark_dirty(cx);
             }
@@ -801,6 +804,7 @@ impl TerminalPane {
                 self.session.emu.lock().term.scroll_display(s);
                 cx.stop_propagation();
                 cx.notify();
+                self.rehover(cx);
                 return;
             }
         }
@@ -989,14 +993,17 @@ impl TerminalPane {
     /// ⌘↑ / ⌘↓ between the marked prompts; a full-screen program's, or a shell's with no marks,
     /// keep the keys.
     fn jump(&mut self, dir: i32, cx: &mut Context<Self>) {
-        let mut emu = self.session.emu.lock();
-        let emu = &mut *emu;
-        if emu.term.mode().contains(TermMode::ALT_SCREEN) || !emu.marks.has_commands() {
-            cx.propagate();
-            return;
+        {
+            let mut guard = self.session.emu.lock();
+            let emu = &mut *guard;
+            if emu.term.mode().contains(TermMode::ALT_SCREEN) || !emu.marks.has_commands() {
+                cx.propagate();
+                return;
+            }
+            emu.marks.jump(&mut emu.term, dir);
         }
-        emu.marks.jump(&mut emu.term, dir);
         cx.notify();
+        self.rehover(cx);
     }
 
     fn scroll_history(&mut self, scroll: Scroll, cx: &mut Context<Self>) {
@@ -1007,7 +1014,9 @@ impl TerminalPane {
             return;
         }
         emu.term.scroll_display(scroll);
+        drop(emu);
         cx.notify();
+        self.rehover(cx);
     }
 
     /// The last command's output, from the integration's marks; None without one.
@@ -1108,9 +1117,13 @@ impl TerminalPane {
         };
         self.end_hints(cx);
         self.focus(window, cx);
+        let offset = self.session.emu.lock().term.grid().display_offset() as i32;
+        // The link under the click, which the underline may lag behind.
         if e.button == MouseButton::Left
             && primary(&e.modifiers)
-            && let Some(link) = self.hovered_link()
+            && let Some(link) = self
+                .hovered_link()
+                .filter(|l| l.covers(row as i32 - offset, col))
         {
             cx.emit(PaneEvent::OpenLink(link.target.clone()));
             cx.stop_propagation();
@@ -1362,6 +1375,7 @@ impl TerminalPane {
                 .term
                 .scroll_display(Scroll::Delta(rows));
             cx.notify();
+            self.rehover(cx);
         }
         cx.stop_propagation();
     }

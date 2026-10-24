@@ -202,6 +202,17 @@ struct LivePanels(Vec<WeakEntity<TerminalPanel>>);
 
 impl gpui::Global for LivePanels {}
 
+/// Every window's terminals saved for the next run, their agents as last known: the app calls it
+/// as it quits, before ending the shells (which would leave no agent to save).
+pub fn save_before_quit(cx: &mut App) {
+    let Some(live) = cx.try_global::<LivePanels>() else {
+        return;
+    };
+    for panel in live.0.clone().iter().filter_map(|p| p.upgrade()) {
+        panel.update(cx, |p, cx| p.save_at_quit(cx));
+    }
+}
+
 /// The terminal in every workspace's bottom slot, kept across project switches.
 pub(crate) fn register(cx: &mut App) {
     gitviber_refs::hooks::set_terminals_in(

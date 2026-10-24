@@ -898,7 +898,8 @@ pub fn hyperlink_target(uri: &str, root: &str) -> Option<Target> {
     }
     let slash = rest.find('/')?;
     let host = &rest[..slash];
-    if !host.is_empty() && host != "localhost" {
+    // ls --hyperlink, eza, fd and rg name this machine.
+    if !host.is_empty() && host != "localhost" && !crate::scan::host_is_this_machine(host) {
         return None;
     }
     let (path_part, hash) = match rest[slash..].find('#') {
@@ -969,17 +970,20 @@ fn percent_decode(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// A page on this machine (a dev server), which opens in a browser tab.
+/// A page on this machine (a dev server), which opens in a browser tab. The host as a browser
+/// reads it: `http://evil.example\@localhost/` is evil.example's.
 pub fn is_local_url(url: &str) -> bool {
-    let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
-    let name = if host.starts_with('[') {
-        host.split(']').next().map(|h| &h[1..]).unwrap_or("")
-    } else {
-        host.split(':').next().unwrap_or("")
+    let Some(host) = url::Url::parse(url)
+        .ok()
+        .filter(|u| matches!(u.scheme(), "http" | "https"))
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+    else {
+        return false;
     };
-    matches!(name, "localhost" | "127.0.0.1" | "0.0.0.0" | "::1") || name.ends_with(".localhost")
+    matches!(
+        host.as_str(),
+        "localhost" | "127.0.0.1" | "0.0.0.0" | "[::1]"
+    ) || host.ends_with(".localhost")
 }
 
 /// The folders a line names (a path ending in `/`, or a file path's folder), nearest first: a
@@ -1097,7 +1101,29 @@ pub fn logical_line(rows: &mut dyn RowSource, y: i32) -> LogicalLine {
 }
 
 /// How far up the output a bare name looks for its folder.
-const CONTEXT_LINES: usize = 40;
+pub const CONTEXT_LINES: usize = 40;
+
+/// The folders a line names, as `named_dirs` puts them.
+pub fn line_dirs(text: &[char]) -> Vec<String> {
+    let mut out = vec![];
+    named_dirs(&find_terminal_links(text, None), &mut out);
+    out
+}
+
+/// What `context_dirs` says from the lines above's own folders (`line_dirs`), oldest first:
+/// one pass down a screen keeps the last CONTEXT_LINES instead of reading them again per line.
+pub fn dirs_above(lines: &std::collections::VecDeque<Vec<String>>) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for d in lines.iter().rev().take(CONTEXT_LINES).flatten() {
+        if out.len() >= 4 {
+            break;
+        }
+        if !out.contains(d) {
+            out.push(d.clone());
+        }
+    }
+    out
+}
 
 /// The folders the output above line `y`'s names, nearest first (`named_dirs`).
 pub fn context_dirs(rows: &mut dyn RowSource, y: i32) -> Vec<String> {
@@ -1731,6 +1757,13 @@ mod tests {
         assert_eq!(t("file:///Users/me/repo/a%2F..%2F..%2Fsecret"), None);
         assert_eq!(t("file:///Users/me/repo/a%E0.ts"), None);
         assert_eq!(t("file://otherhost/Users/me/repo/a.ts"), None);
+        // This machine by name, as ls --hyperlink and eza write it.
+        let host = std::process::Command::new("hostname").output().unwrap();
+        let host = String::from_utf8_lossy(&host.stdout).trim().to_string();
+        assert_eq!(
+            t(&format!("file://{host}/Users/me/repo/a.ts")),
+            path("a.ts", None, None)
+        );
         assert_eq!(
             t("file://localhost/Users/me/repo/a.ts"),
             path("a.ts", None, None)
@@ -1807,6 +1840,10 @@ mod tests {
         assert!(is_local_url("http://[::1]:8080"));
         assert!(is_local_url("http://app.localhost:5173"));
         assert!(!is_local_url("https://example.com"));
+        // A browser reads the backslash as a slash: the host is the one before it.
+        assert!(!is_local_url("http://evil.example\\@localhost/"));
+        assert!(!is_local_url("http://localhost.evil.example/"));
+        assert!(!is_local_url("localhost:3000"));
         let mut dirs = vec![];
         named_dirs(
             &find_terminal_links(&chars("Files in /tmp/onb-c/ and src/lib/api.ts"), None),
@@ -1865,5 +1902,14 @@ mod tests {
             context_dirs(&mut src, 6),
             vec!["/repo/abcdef".to_string(), "src/aa".into(), "crates".into()]
         );
+        // One pass down, each line's own folders kept: the same answer.
+        let mut seen = std::collections::VecDeque::new();
+        let mut y = 0;
+        while y < 6 {
+            let line = logical_line(&mut src, y);
+            seen.push_back(line_dirs(&line.text));
+            y = line.last + 1;
+        }
+        assert_eq!(dirs_above(&seen), context_dirs(&mut src, 6));
     }
 }

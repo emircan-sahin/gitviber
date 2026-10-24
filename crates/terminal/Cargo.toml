@@ -23,6 +23,8 @@ serde.workspace = true
 serde_json.workspace = true
 # VT parsing, grid, scrollback, modes, selection and search; core owns the PTY.
 alacritty_terminal = "=0.26.0"
+# A link's host as a browser reads it; core's own version.
+url = "=2.5.8"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The Dock badge (NSApp.dockTile), as core's own raw messages.

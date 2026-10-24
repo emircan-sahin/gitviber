@@ -244,7 +244,7 @@ pub fn cwd_from_url(url: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-fn host_is_this_machine(host: &str) -> bool {
+pub(crate) fn host_is_this_machine(host: &str) -> bool {
     #[cfg(unix)]
     {
         let mut buf = [0u8; 256];

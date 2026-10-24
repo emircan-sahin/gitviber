@@ -172,6 +172,19 @@ pub fn next_agent(prev: Option<&PaneAgent>, read: Option<PaneAgent>, live: bool)
     }
 }
 
+/// A pane's agent as the quit's save keeps it: as read now while its shell lives (one that exited
+/// isn't resumed); its last known once the shell is gone, as the app ends the shells first.
+pub fn at_quit(
+    prev: Option<&PaneAgent>,
+    alive: bool,
+    read: Option<PaneAgent>,
+) -> Option<PaneAgent> {
+    if !alive {
+        return prev.cloned();
+    }
+    next_agent(prev, read, false).agent
+}
+
 /// What the session save keeps of a pane's agent: one that can be resumed, and where it ran.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SavedAgent {
@@ -481,6 +494,22 @@ fn base64(s: &str) -> Option<Vec<u8>> {
         out.extend_from_slice(&n.to_be_bytes()[1..1 + take]);
     }
     Some(out)
+}
+
+/// Whether a pane that opened in `cwd` is `dir`'s: the deepest worktree holding it is, so main's
+/// don't take in a worktree nested inside it (`.claude/worktrees/x`).
+pub fn in_worktree(
+    cwd: &std::path::Path,
+    dir: &std::path::Path,
+    worktrees: &[std::path::PathBuf],
+) -> bool {
+    let owner = worktrees
+        .iter()
+        .map(|w| w.as_path())
+        .chain(std::iter::once(dir))
+        .filter(|w| cwd.starts_with(w))
+        .max_by_key(|w| w.components().count());
+    owner == Some(dir)
 }
 
 /// How often the session save runs while something changed.
@@ -955,5 +984,48 @@ mod tests {
             t += SAVE_MS;
         }
         assert_eq!(serialized, 6);
+    }
+
+    #[test]
+    fn a_pane_is_the_deepest_worktrees_it_opened_in() {
+        use std::path::{Path, PathBuf};
+        let wts = [PathBuf::from("/r"), PathBuf::from("/r/.claude/worktrees/x")];
+        let (main, x) = (Path::new("/r"), Path::new("/r/.claude/worktrees/x"));
+        assert!(in_worktree(Path::new("/r/src"), main, &wts));
+        assert!(!in_worktree(
+            Path::new("/r/.claude/worktrees/x/src"),
+            main,
+            &wts
+        ));
+        assert!(in_worktree(
+            Path::new("/r/.claude/worktrees/x/src"),
+            x,
+            &wts
+        ));
+        assert!(!in_worktree(Path::new("/elsewhere"), main, &wts));
+        // A worktree the list doesn't have yet still holds what's in it.
+        assert!(in_worktree(Path::new("/s/a"), Path::new("/s"), &[]));
+        assert!(!in_worktree(Path::new("/rx"), main, &wts));
+    }
+
+    #[test]
+    fn the_quit_keeps_an_agent_whose_shell_the_app_ended_first() {
+        let busy = claude(Some(AgentState::Working));
+        // Its shell killed before the save: what was known stands.
+        assert_eq!(at_quit(Some(&busy), false, None), Some(busy.clone()));
+        // Alive, and the agent gone back to the prompt: nothing to resume.
+        assert_eq!(at_quit(Some(&busy), true, None), None);
+        // Alive and still there: its state as last heard, the read's command.
+        let read = claude_in(
+            Some(AgentState::Idle),
+            Some("claude --resume b-2"),
+            Some("b-2"),
+        );
+        let kept = at_quit(Some(&busy), true, Some(read)).unwrap();
+        assert_eq!(
+            (kept.state, kept.command.as_deref()),
+            (Some(AgentState::Working), Some("claude --resume b-2"))
+        );
+        assert_eq!(at_quit(None, false, None), None);
     }
 }

@@ -159,9 +159,10 @@ pub fn agents_in(dir: &Path, cx: &App) -> Option<gitviber_ui::widgets::Look> {
     let live = cx.try_global::<LivePanels>()?;
     let look = agent::most_urgent(live.0.iter().filter_map(|p| p.upgrade()).flat_map(|p| {
         let p = p.read(cx);
+        let worktrees = p.known_worktrees(cx);
         p.panes
             .values()
-            .filter(|s| s.view.read(cx).cwd().starts_with(dir))
+            .filter(|s| agent::in_worktree(s.view.read(cx).cwd(), dir, &worktrees))
             .map(|s| pane_look(s.agent.as_ref(), s.rang))
             .collect::<Vec<_>>()
     }));
@@ -284,18 +285,47 @@ impl TerminalPanel {
     /// The pane an agent runs in, in `worktree`'s set: the open tab's first, each tab's focused one
     /// first.
     fn agent_pane(&self, worktree: &Path, cx: &App) -> Option<PaneId> {
-        let set = self.sets.get(worktree)?;
-        let mut groups: Vec<&Group> = set.groups.iter().collect();
-        groups.sort_by_key(|g| Some(g.id) != set.active);
-        groups.into_iter().find_map(|g| {
+        let worktrees = self.known_worktrees(cx);
+        // Every tab set: an agent's pane may have opened from another worktree's view.
+        let mut groups: Vec<(&Group, bool)> = self
+            .sets
+            .iter()
+            .flat_map(|(root, set)| {
+                set.groups
+                    .iter()
+                    .map(move |g| (g, root == worktree && Some(g.id) == set.active))
+            })
+            .collect();
+        groups.sort_by_key(|(_, open)| !open);
+        groups.into_iter().find_map(|(g, _)| {
             std::iter::once(g.focused)
                 .chain(g.panes.iter().copied())
                 .find(|id| {
-                    self.panes
-                        .get(id)
-                        .is_some_and(|s| s.agent.is_some() && s.view.read(cx).cwd() == worktree)
+                    self.panes.get(id).is_some_and(|s| {
+                        s.agent.is_some()
+                            && agent::in_worktree(s.view.read(cx).cwd(), worktree, &worktrees)
+                    })
                 })
         })
+    }
+
+    /// The worktrees this panel knows of: the repo's, and the ones whose tabs it holds.
+    pub(super) fn known_worktrees(&self, cx: &App) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = self.worktrees.iter().map(|w| w.path.clone()).collect();
+        out.extend(self.sets.keys().cloned());
+        if let Some(repo) = self
+            .workspace()
+            .and_then(|ws| ws.read(cx).project().cloned())
+            .and_then(|p| gitviber_refs::RepoState::existing(&p, cx))
+        {
+            out.extend(
+                repo.read(cx)
+                    .worktrees
+                    .iter()
+                    .map(|w| PathBuf::from(&w.path)),
+            );
+        }
+        out
     }
 
     /// A pane's look, for its header's dot and its tab's.

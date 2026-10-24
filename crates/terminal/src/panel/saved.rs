@@ -73,22 +73,30 @@ pub(super) struct SavedPane {
 struct Store {
     sets: BTreeMap<String, SavedSet>,
     hint_shown: bool,
+    /// Sets were dropped as read: the file is written again, and their histories go.
+    stale: bool,
 }
 
 impl gpui::Global for Store {}
 
 impl Store {
     fn read() -> Store {
-        let Some(map) = std::fs::read_to_string(path())
-            .ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Map<String, Value>>(&t).ok())
-        else {
+        let text = std::fs::read_to_string(path()).unwrap_or_default();
+        Store::parse(&text, |root| Path::new(root).is_dir())
+    }
+
+    /// The sets of worktrees still there (`exists`): a removed one's would come back, and resume
+    /// its old conversation, should a new worktree take its path.
+    fn parse(text: &str, exists: impl Fn(&str) -> bool) -> Store {
+        let Ok(map) = serde_json::from_str::<serde_json::Map<String, Value>>(text) else {
             return Store::default();
         };
         let mut store = Store::default();
         for (k, v) in map {
             if k == HINT_KEY {
                 store.hint_shown = v.as_bool().unwrap_or(false);
+            } else if !exists(&k) {
+                store.stale = true;
             } else if let Ok(set) = serde_json::from_value::<SavedSet>(v) {
                 store.sets.insert(k, set);
             }
@@ -469,7 +477,18 @@ impl TerminalPanel {
             }
         };
         let s = store(cx);
-        let mut changed = false;
+        let mut changed = std::mem::take(&mut s.stale);
+        // Worktrees removed since (Clean up, `git worktree remove`): their tabs and histories go.
+        let gone: Vec<String> = s
+            .sets
+            .keys()
+            .filter(|k| !Path::new(k).is_dir())
+            .cloned()
+            .collect();
+        for root in gone {
+            s.sets.remove(&root);
+            changed = true;
+        }
         for (root, saved) in sets {
             match saved {
                 Some(saved) if s.sets.get(&root).is_none_or(|old| !same(old, &saved)) => {
@@ -511,23 +530,31 @@ impl TerminalPanel {
     }
 
     /// The app quits: agents looked up as they are now (one that exited since the last round
-    /// isn't resumed), every changed pane saved, all of it written before the process goes.
+    /// isn't resumed; one whose shell the app already ended keeps what was known), every changed
+    /// pane saved, all of it written before the process goes.
     pub(super) fn save_at_quit(&mut self, cx: &mut Context<Self>) {
         let ids: Vec<(PaneId, u32)> = self
             .panes
             .iter()
             .filter_map(|(id, s)| Some((*id, s.view.read(cx).pty_id()?)))
             .collect();
-        if let Ok(running) =
-            gitviber_core::api::app::pty_agents(&self.core, ids.iter().map(|(_, p)| *p).collect())
-        {
-            for (id, pty) in ids {
-                self.apply_agent(
-                    id,
-                    running.get(&pty).map(agent::PaneAgent::from_core),
-                    false,
-                    cx,
-                );
+        let alive: Vec<bool> = ids
+            .iter()
+            .map(|(_, p)| self.core.ptys.shell(*p).is_some())
+            .collect();
+        let running = gitviber_core::api::app::pty_agents(
+            &self.core,
+            ids.iter()
+                .zip(&alive)
+                .filter(|(_, a)| **a)
+                .map(|((_, p), _)| *p)
+                .collect(),
+        )
+        .unwrap_or_default();
+        for ((id, pty), alive) in ids.into_iter().zip(alive) {
+            if let Some(slot) = self.panes.get_mut(&id) {
+                let read = running.get(&pty).map(agent::PaneAgent::from_core);
+                slot.agent = agent::at_quit(slot.agent.as_ref(), alive, read);
             }
         }
         self.save(true, cx);
@@ -719,6 +746,12 @@ mod tests {
             hint_shown: true,
             ..Default::default()
         };
+        // A removed worktree's set is left out, and the file marked for writing again.
+        let text = r#"{"/gone": {"groups": []}, "/w": {"active": 0}, "agentNotifyHint": true}"#;
+        let read = Store::parse(text, |k| k == "/w");
+        assert_eq!(read.sets.keys().collect::<Vec<_>>(), ["/w"]);
+        assert!(read.stale && read.hint_shown);
+        assert!(!Store::parse(r#"{"/w": {}}"#, |_| true).stale);
         store.sets.insert("/w".into(), set.clone());
         let back: serde_json::Map<String, Value> = serde_json::from_str(&store.text()).unwrap();
         assert_eq!(
