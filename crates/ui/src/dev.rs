@@ -16,7 +16,8 @@
 //! }
 //! ```
 //! `cargo build -p gitviber-changes --example demo`, then
-//! `GITVIBER_BIN=target/debug/examples/demo shot.sh out.png 4 /path/to/repo`.
+//! `GITVIBER_BACKGROUND=1 target/debug/examples/demo /path/to/repo` for a window that doesn't take
+//! the keyboard.
 //!
 //! With this crate's `snapshot` feature on (from the example crate's `[dev-dependencies]`) and
 //! `GITVIBER_SNAPSHOT=out.png` set, `run` opens no window: it draws the same host off screen on the

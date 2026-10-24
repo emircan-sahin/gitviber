@@ -1,7 +1,7 @@
 //! Opens and closes what the app opens and closes, many times, and prints the footprint and
 //! the live view counts before and after: they should come back to where they were.
 //! `cargo build -p gitviber --example cycles`, then
-//! `GITVIBER_BIN=target/debug/examples/cycles shot.sh out.png 30 /repo/a /repo/b`.
+//! `GITVIBER_BACKGROUND=1 MallocLargeCache=0 target/debug/examples/cycles /repo/a /repo/b`.
 
 use std::path::PathBuf;
 use std::time::Duration;
