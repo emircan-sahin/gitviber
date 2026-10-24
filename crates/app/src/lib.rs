@@ -45,13 +45,16 @@ fn first_folder(candidates: Vec<PathBuf>) -> Option<PathBuf> {
 /// Everything before the first window: the UI layer, core, the app's commands, menus and
 /// placeholders.
 pub fn init(cx: &mut App) {
+    // On the first launch the old app's data goes into the files the stores load from here on.
+    gitviber_ui::legacy::import_once();
     gitviber_ui::init(cx);
     let core = gitviber_ui::start_core(cx);
     windows::install_app_actions(cx);
     placeholders::register(cx);
     // Features after the placeholders: a panel or chip registered with the same id replaces one.
+    // The diff's own keys are only those the app's commands don't cover (Changes binds them).
     gitviber_diff::set_core(core, cx);
-    gitviber_diff::init(cx);
+    gitviber_changes::init(cx);
     gitviber_terminal::init(cx);
     gitviber_files::init(cx);
     gitviber_refs::init(cx);
@@ -61,6 +64,8 @@ pub fn init(cx: &mut App) {
     gitviber_github::install_bridges(cx);
     settings_window::install(cx);
     menus::install(cx);
+    // Every store has taken its keys in its init.
+    gitviber_ui::legacy::finish();
 }
 
 /// Starts the app, then `started` once it's up (the main window opens first).

@@ -307,10 +307,11 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let header = self.side_header(slot, window, cx);
-        let panel = self.workspace.update(cx, |ws, cx| {
-            let id = ws.active_panel(slot, cx)?;
-            ws.panel(id, window, cx)
-        });
+        let panel = self
+            .workspace
+            .read(cx)
+            .active_panel(slot, cx)
+            .and_then(|id| Workspace::ensure_panel(&self.workspace, id, window, cx));
         let t = cx.app_theme().clone();
         let focus = self.workspace.read(cx).slot_focus(slot).clone();
         let edge = if slot == Slot::Left {
@@ -357,10 +358,11 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let panel = self.workspace.update(cx, |ws, cx| {
-            let id = ws.active_panel(Slot::Bottom, cx)?;
-            ws.panel(id, window, cx)
-        });
+        let panel = self
+            .workspace
+            .read(cx)
+            .active_panel(Slot::Bottom, cx)
+            .and_then(|id| Workspace::ensure_panel(&self.workspace, id, window, cx));
         let t = cx.app_theme().clone();
         let focus = self.workspace.read(cx).slot_focus(Slot::Bottom).clone();
         div()

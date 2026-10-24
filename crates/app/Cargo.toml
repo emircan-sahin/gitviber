@@ -19,6 +19,7 @@ gpui-kit.workspace = true
 gitviber-ui = { path = "../ui" }
 gitviber-core = { path = "../core" }
 gitviber-diff = { path = "../diff" }
+gitviber-changes = { path = "../changes" }
 gitviber-terminal = { path = "../terminal" }
 gitviber-files = { path = "../files" }
 gitviber-history = { path = "../history" }

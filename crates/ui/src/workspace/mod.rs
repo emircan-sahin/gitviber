@@ -912,7 +912,37 @@ impl Workspace {
         self.changed(WorkspaceEvent::LayoutChanged, cx);
     }
 
-    /// A panel's view, built the first time it's asked for.
+    /// A panel's view, built the first time it's asked for, outside the workspace's update: a
+    /// panel's constructor may read the workspace, which panics during one. Views call this one.
+    pub fn ensure_panel(
+        workspace: &Entity<Self>,
+        id: &str,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<PanelHandle> {
+        let ws = workspace.read(cx);
+        if let Some(panel) = ws.panels.get(id) {
+            return Some(panel.clone());
+        }
+        let spec = Registry::get(cx).panel(id).cloned()?;
+        if spec.per_project && ws.project.is_none() {
+            return None;
+        }
+        let ctx = PanelContext {
+            workspace: workspace.downgrade(),
+            project: if spec.per_project {
+                ws.project.clone()
+            } else {
+                None
+            },
+        };
+        let panel = spec.build(&ctx, window, cx);
+        workspace.update(cx, |ws, _| ws.panels.insert(spec.id, panel.clone()));
+        Some(panel)
+    }
+
+    /// A panel's view, built the first time it's asked for, inside the workspace's update: only
+    /// for panels whose constructor doesn't read the workspace (tests). Views use `ensure_panel`.
     pub fn panel(
         &mut self,
         id: &str,
@@ -944,10 +974,22 @@ impl Workspace {
     /// Opens a slot and moves focus into its panel.
     pub fn focus_slot(&mut self, slot: Slot, window: &mut Window, cx: &mut Context<Self>) {
         self.set_open(slot, true, cx);
-        let panel = self
-            .active_panel(slot, cx)
-            .and_then(|id| self.panel(id, window, cx));
-        let handle = panel
+        let id = self.active_panel(slot, cx);
+        if let Some(id) = id.filter(|id| !self.panels.contains_key(id)) {
+            // Built on the next frame, outside this update (ensure_panel), then focused.
+            let ws = cx.weak_entity();
+            let fallback = self.side(slot).focus.clone();
+            window.on_next_frame(move |window, cx| {
+                let panel = ws
+                    .upgrade()
+                    .and_then(|ws| Self::ensure_panel(&ws, id, window, cx));
+                let handle = panel.and_then(|p| p.focus_handle(cx)).unwrap_or(fallback);
+                handle.focus(window, cx);
+            });
+            return;
+        }
+        let handle = id
+            .and_then(|id| self.panels.get(id))
             .and_then(|p| p.focus_handle(cx))
             .unwrap_or_else(|| self.side(slot).focus.clone());
         handle.focus(window, cx);
