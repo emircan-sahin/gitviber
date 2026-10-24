@@ -80,8 +80,12 @@ impl CommitBox {
                 .rows(2)
         });
         let subscriptions = vec![
-            cx.subscribe(&summary, |this, _, e: &InputEvent, cx| this.edited(e, cx)),
-            cx.subscribe(&body, |this, _, e: &InputEvent, cx| this.edited(e, cx)),
+            cx.subscribe_in(&summary, window, |this, _, e: &InputEvent, window, cx| {
+                this.edited(e, window, cx)
+            }),
+            cx.subscribe_in(&body, window, |this, _, e: &InputEvent, window, cx| {
+                this.edited(e, window, cx)
+            }),
         ];
         let mut view = CommitBox {
             workspace,
@@ -105,10 +109,17 @@ impl CommitBox {
         view
     }
 
-    fn edited(&mut self, e: &InputEvent, cx: &mut Context<Self>) {
-        if matches!(e, InputEvent::Change) {
-            self.keep_draft(cx);
-            cx.notify();
+    fn edited(&mut self, e: &InputEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match e {
+            InputEvent::Change => {
+                self.keep_draft(cx);
+                cx.notify();
+            }
+            // ⌘↵ in either field: the fields' own binding takes it before the box's.
+            InputEvent::PressEnter {
+                secondary: true, ..
+            } => self.commit(None, window, cx),
+            _ => {}
         }
     }
 
@@ -630,6 +641,7 @@ impl Render for CommitBox {
         };
         let options_weak = weak.clone();
         v_flex()
+            .key_context("CommitMessage")
             .flex_none()
             .gap_1p5()
             .p_2()

@@ -1,7 +1,199 @@
-//! What the conflict view says beside the blocks: each block's merge base, the prompt that
-//! hands the conflicts to an agent, and the merge tool by the name its app goes by.
+//! The conflict view as data: the choices made and the file they make, each block's merge
+//! base, what a conflict with no blocks offers, the prompt that hands the conflicts to an agent,
+//! and the merge tool by the name its app goes by.
 
-use super::text::Block;
+use super::text::{Block, Parsed, Segment};
+use std::collections::HashMap;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pick {
+    Ours,
+    Theirs,
+    Both,
+    /// Written by hand.
+    Custom,
+}
+
+/// What a block was resolved to, and the lines that make.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Choice {
+    pub kind: Pick,
+    pub lines: Vec<String>,
+}
+
+impl Choice {
+    pub fn of(block: &Block, kind: Pick) -> Choice {
+        let lines = match kind {
+            Pick::Ours => block.ours.clone(),
+            Pick::Theirs => block.theirs.clone(),
+            Pick::Both | Pick::Custom => block.ours.iter().chain(&block.theirs).cloned().collect(),
+        };
+        Choice { kind, lines }
+    }
+
+    pub fn custom(text: &str) -> Choice {
+        Choice {
+            kind: Pick::Custom,
+            lines: text.split('\n').map(str::to_string).collect(),
+        }
+    }
+}
+
+/// The two sides as the user knows them: in a rebase HEAD is the branch being rebased onto, and
+/// the incoming side is their own commit being replayed.
+pub fn side_names(rebase: bool) -> (&'static str, &'static str) {
+    if rebase {
+        ("Current (base)", "Incoming (your commit)")
+    } else {
+        ("Current", "Incoming")
+    }
+}
+
+/// The file's lines as the choices make it; a block not chosen yet keeps its markers (the
+/// preview shows them). A CRLF file's lines written by hand get their `\r` back.
+pub fn result_lines(parsed: &Parsed, choices: &HashMap<usize, Choice>, crlf: bool) -> Vec<String> {
+    let mut out = vec![];
+    let mut block = 0;
+    for seg in &parsed.segments {
+        match seg {
+            Segment::Text(lines) => out.extend(lines.iter().cloned()),
+            Segment::Conflict(b) => {
+                match choices.get(&block) {
+                    None => {
+                        out.push("<<<<<<< current".into());
+                        out.extend(b.ours.iter().cloned());
+                        out.push("=======".into());
+                        out.extend(b.theirs.iter().cloned());
+                        out.push(">>>>>>> incoming".into());
+                    }
+                    Some(c) if c.kind == Pick::Custom && crlf => {
+                        out.extend(c.lines.iter().map(|l| {
+                            if l.ends_with('\r') {
+                                l.clone()
+                            } else {
+                                format!("{l}\r")
+                            }
+                        }))
+                    }
+                    Some(c) => out.extend(c.lines.iter().cloned()),
+                }
+                block += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Whether the file the choices make ends with a newline. Git ends a closing marker line with
+/// one even where neither side's file did, so for a conflict at the very end it comes from the
+/// sides (`sides`: whether ours and theirs end with one, None while unknown): the one chosen, the
+/// incoming one for both (it comes last), either for an edit by hand.
+pub fn ends_with_newline(parsed: &Parsed, last: Option<Pick>, sides: Option<(bool, bool)>) -> bool {
+    let ends_in_conflict = matches!(parsed.segments.last(), Some(Segment::Conflict(_)));
+    match (ends_in_conflict, last, sides) {
+        (true, Some(kind), Some((ours, theirs))) => match kind {
+            Pick::Ours => ours,
+            Pick::Custom => ours || theirs,
+            Pick::Theirs | Pick::Both => theirs,
+        },
+        _ => parsed.trailing_newline,
+    }
+}
+
+/// Most of its lines end with `\r`: a text box gives them back without it.
+pub fn is_crlf(text: &str) -> bool {
+    let lines = text.split('\n');
+    let total = lines.clone().count();
+    lines.filter(|l| l.ends_with('\r')).count() * 2 > total
+}
+
+/// Text to paste into a terminal: nothing in it ends a bracketed paste or acts as a key, and no
+/// Enter at the end.
+pub fn for_terminal(text: &str) -> String {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let clean: String = text
+        .chars()
+        .filter(|&c| !(c.is_ascii_control() && c != '\t' && c != '\n'))
+        .collect();
+    clean.trim_end_matches('\n').to_string()
+}
+
+/// A conflict without blocks to choose in (a deleted side, a binary, markers fixed or broken by
+/// hand): a side of the whole file to keep, or the file marked resolved as it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WholeFile {
+    pub title: &'static str,
+    pub note: String,
+    /// "Mark resolved as it is" makes sense: the file holds no markers to resolve, or can't be
+    /// edited here.
+    pub as_is: bool,
+    /// Ours, then theirs: the button's label and what that side did.
+    pub sides: [(&'static str, &'static str); 2],
+}
+
+/// `code`: git's two-letter conflict status (UU, AA, UD, DU, AU, UA, DD).
+pub fn whole_file(code: &str, lossy: bool, unterminated: bool, rebase: bool) -> WholeFile {
+    let (ours, theirs) = match code {
+        "UD" => (
+            "Modified on the current side",
+            "Deleted on the incoming side",
+        ),
+        "DU" => (
+            "Deleted on the current side",
+            "Modified on the incoming side",
+        ),
+        "AU" => ("Added on the current side", "Not on the incoming side"),
+        "UA" => ("Not on the current side", "Added on the incoming side"),
+        "DD" => ("Deleted on both sides", "Deleted on both sides"),
+        _ => ("Current version", "Incoming version"),
+    };
+    let b = code.as_bytes();
+    let (o, t) = (
+        b.first().copied().unwrap_or(b'U'),
+        b.get(1).copied().unwrap_or(b'U'),
+    );
+    // A side "deletes" the file if it removed it (D) or never had it (U next to the other's A).
+    let deletes = |mine: u8, other: u8| mine == b'D' || (mine == b'U' && other == b'A');
+    let label = |del: bool, keep: &'static str| if del { "Delete the file" } else { keep };
+    let hand_merged = (code == "UU" || code == "AA") && !lossy && !unterminated;
+    let (title, note) = if hand_merged {
+        (
+            "No conflict markers left",
+            "The file was already merged by hand. Mark it resolved as it is, or replace it with one side.".to_string(),
+        )
+    } else if lossy {
+        (
+            "This conflict can't be resolved line by line",
+            "The file isn't UTF-8, so it can't be edited here safely. Keep one side, or fix it in your editor and mark it resolved.".to_string(),
+        )
+    } else if unterminated {
+        (
+            "The conflict markers are incomplete",
+            "Fix the markers in your editor, or keep one side.".to_string(),
+        )
+    } else {
+        (
+            "This conflict can't be resolved line by line",
+            format!(
+                "Choose which side of the file to keep{}.",
+                if rebase {
+                    " (in a rebase, \u{201c}incoming\u{201d} is your own commit)"
+                } else {
+                    ""
+                }
+            ),
+        )
+    };
+    WholeFile {
+        title,
+        note,
+        as_is: hand_merged || lossy || unterminated,
+        sides: [
+            (label(deletes(o, t), "Keep current"), ours),
+            (label(deletes(t, o), "Keep incoming"), theirs),
+        ],
+    }
+}
 
 fn same_line(a: &str, b: &str) -> bool {
     a.strip_suffix('\r').unwrap_or(a) == b.strip_suffix('\r').unwrap_or(b)
@@ -232,6 +424,163 @@ mod tests {
         assert_eq!(
             bases(file, rebuilt),
             [lines(&["  old_a();"]), lines(&["  old_b();"])]
+        );
+    }
+
+    #[test]
+    fn zdiff3_bases_stand_edited_blocks_get_none_and_a_deleted_side_fits_anywhere() {
+        let z = "<<<<<<< HEAD\nx\n||||||| 1a2b3c4\no\n=======\ny\n>>>>>>> feat\n";
+        assert_eq!(
+            bases(z, "<<<<<<< c\nx\n||||||| b\nWRONG\n=======\ny\n>>>>>>> i\n"),
+            [lines(&["o"])]
+        );
+        let edited = "<<<<<<< HEAD\nours, edited\n=======\ntheirs\n>>>>>>> feat\n";
+        assert_eq!(
+            bases(
+                edited,
+                "<<<<<<< c\nours\n||||||| b\nbase\n=======\ntheirs\n>>>>>>> i\n"
+            ),
+            [None]
+        );
+        assert_eq!(
+            bases("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> f\n", ""),
+            [None]
+        );
+        let del = "<<<<<<< HEAD\n=======\nkept\n>>>>>>> f\n";
+        let del_rebuilt = "<<<<<<< c\nother\n||||||| b\nb1\n=======\nunrelated\n>>>>>>> i\nmid\n<<<<<<< c\n||||||| b\nb2\n=======\nkept\n>>>>>>> i\n";
+        assert_eq!(bases(del, del_rebuilt), [lines(&["b2"])]);
+    }
+
+    #[test]
+    fn a_conflict_at_the_end_keeps_the_files_own_last_newline_or_its_lack() {
+        let parsed =
+            parse_conflicts("a\n<<<<<<< HEAD\nend-ours\n=======\nend-theirs\n>>>>>>> feat\n")
+                .unwrap();
+        assert!(parsed.trailing_newline);
+        for kind in [Pick::Ours, Pick::Theirs, Pick::Both, Pick::Custom] {
+            assert!(
+                !ends_with_newline(&parsed, Some(kind), Some((false, false))),
+                "{kind:?}"
+            );
+        }
+        let mixed = Some((true, false));
+        assert!(ends_with_newline(&parsed, Some(Pick::Ours), mixed));
+        assert!(!ends_with_newline(&parsed, Some(Pick::Theirs), mixed));
+        assert!(!ends_with_newline(&parsed, Some(Pick::Both), mixed));
+        assert!(ends_with_newline(&parsed, Some(Pick::Custom), mixed));
+        assert!(ends_with_newline(&parsed, Some(Pick::Ours), None));
+        let inner = parse_conflicts("<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> feat\nlast").unwrap();
+        assert!(!ends_with_newline(
+            &inner,
+            Some(Pick::Ours),
+            Some((false, false))
+        ));
+    }
+
+    #[test]
+    fn the_choices_make_the_file_and_open_blocks_keep_markers() {
+        let p = parse_conflicts("a\n<<<<<<< HEAD\nb\n=======\nc\n>>>>>>> main\nd\n<<<<<<< HEAD\ne\n=======\nf\n>>>>>>> main\n").unwrap();
+        let blocks: Vec<&Block> = p
+            .segments
+            .iter()
+            .filter_map(|s| match s {
+                Segment::Conflict(b) => Some(b),
+                _ => None,
+            })
+            .collect();
+        let mut choices = HashMap::from([(0, Choice::of(blocks[0], Pick::Both))]);
+        assert_eq!(
+            result_lines(&p, &choices, false),
+            [
+                "a",
+                "b",
+                "c",
+                "d",
+                "<<<<<<< current",
+                "e",
+                "=======",
+                "f",
+                ">>>>>>> incoming"
+            ]
+        );
+        choices.insert(1, Choice::custom("E\nF"));
+        assert_eq!(
+            result_lines(&p, &choices, true),
+            ["a", "b", "c", "d", "E\r", "F\r"]
+        );
+        assert!(is_crlf("a\r\nb\r\nc") && !is_crlf("a\nb\r\nc\n"));
+    }
+
+    #[test]
+    fn a_conflict_without_blocks_offers_a_side_of_the_whole_file() {
+        let ud = whole_file("UD", false, false, false);
+        assert_eq!(
+            ud.sides,
+            [
+                ("Keep current", "Modified on the current side"),
+                ("Delete the file", "Deleted on the incoming side")
+            ]
+        );
+        assert!(!ud.as_is);
+        assert_eq!(
+            whole_file("UA", false, false, false).sides[0].0,
+            "Delete the file"
+        );
+        let merged = whole_file("UU", false, false, false);
+        assert_eq!(merged.title, "No conflict markers left");
+        assert!(merged.as_is);
+        assert!(whole_file("UU", false, true, false).as_is);
+        assert!(
+            whole_file("DU", false, false, true)
+                .note
+                .contains("your own commit")
+        );
+        assert_eq!(
+            side_names(true),
+            ("Current (base)", "Incoming (your commit)")
+        );
+    }
+
+    #[test]
+    fn the_prompt_pasted_into_a_terminal_has_no_control_characters_and_no_enter() {
+        let names: Vec<String> = [
+            "it's \"quoted\".ts",
+            "back`tick`$(id).ts",
+            "new\nline.ts",
+            "esc\x1b[201~\rrun.ts",
+            "trail\n",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let pasted = for_terminal(&resolve_prompt(
+            &names,
+            merging_what(Some("merge"), None, Some("main"), Some("feat\x1b]0;x\x07")).as_deref(),
+        ));
+        assert!(
+            !pasted
+                .chars()
+                .any(|c| c.is_ascii_control() && c != '\t' && c != '\n')
+        );
+        assert!(!pasted.ends_with('\n'));
+        assert!(
+            pasted.starts_with("Resolve the merge conflicts in ")
+                && pasted.contains("back`tick`$(id).ts")
+        );
+        assert_eq!(
+            merging_what(
+                Some("revert"),
+                None,
+                Some("main"),
+                Some("parent of 1a2b3c4 (Fix)")
+            )
+            .as_deref(),
+            Some("reverting parent of 1a2b3c4 (Fix)")
+        );
+        assert_eq!(merging_what(None, None, Some("main"), Some("x")), None);
+        assert_eq!(
+            merging_what(Some("merge"), None, None, None).as_deref(),
+            Some("merging the incoming branch into HEAD")
         );
     }
 

@@ -3715,42 +3715,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[gpui_kit::test]
-    fn the_conflict_view_shows_each_blocks_base_and_hands_the_prompt_over(cx: &mut TestAppContext) {
+    /// A throwaway repo mid-merge, a.txt conflicted in git's default style: `ours` and `theirs`
+    /// are each side's file.
+    fn conflicted(name: &str, ours: &str, theirs: &str) -> PathBuf {
         let dir =
-            std::env::temp_dir().join(format!("gitviber-changes-conflict-{}", std::process::id()));
+            std::env::temp_dir().join(format!("gitviber-changes-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let run = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(&dir)
-                .output()
-                .unwrap()
-        };
-        for args in [
-            &["init", "-q", "-b", "main"][..],
-            &["config", "user.name", "Test"],
-            &["config", "user.email", "test@example.com"],
-        ] {
-            git(&dir, args);
-        }
-        std::fs::write(dir.join("a.txt"), "a\nb\nc\n").unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["config", "user.name", "Test"]);
+        git(&dir, &["config", "user.email", "test@example.com"]);
+        std::fs::write(dir.join("a.txt"), "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n").unwrap();
         git(&dir, &["add", "."]);
         git(&dir, &["commit", "-q", "-m", "base"]);
         git(&dir, &["checkout", "-q", "-b", "other"]);
-        std::fs::write(dir.join("a.txt"), "a\nB2\nc\n").unwrap();
+        std::fs::write(dir.join("a.txt"), theirs).unwrap();
         git(&dir, &["commit", "-q", "-am", "theirs"]);
         git(&dir, &["checkout", "-q", "main"]);
-        std::fs::write(dir.join("a.txt"), "a\nB1\nc\n").unwrap();
+        std::fs::write(dir.join("a.txt"), ours).unwrap();
         git(&dir, &["commit", "-q", "-am", "ours"]);
-        // Conflicts: git says so with a failure.
-        run(&["-c", "merge.conflictStyle=merge", "merge", "-q", "other"]);
-        let dir = dir.canonicalize().unwrap();
-        setup(cx);
-        let (_ws, host, cx) = open(cx, &dir);
+        // It conflicts: git says so with a failure.
+        let _ = Command::new("git")
+            .args(["-c", "merge.conflictStyle=merge", "merge", "-q", "other"])
+            .current_dir(&dir)
+            .output();
+        dir.canonicalize().unwrap()
+    }
+
+    fn conflict_view(
+        host: &Entity<Host>,
+        code: &str,
+        cx: &mut VisualTestContext,
+    ) -> Entity<crate::conflict::ConflictView> {
         let view = cx.update(|window, cx| {
-            let view = cx.new(|cx| crate::conflict::ConflictView::new("a.txt".into(), window, cx));
+            let view = cx.new(|cx| {
+                crate::conflict::ConflictView::new("a.txt".into(), code.into(), window, cx)
+            });
             host.update(cx, |h, cx| {
                 h.center = Some(view.clone().into());
                 cx.notify();
@@ -3758,17 +3758,39 @@ mod tests {
             view
         });
         cx.run_until_parked();
+        view
+    }
+
+    const OURS: &str = "a\nB1\nc\nd\ne\nf\ng\nh\nI1\nj\n";
+    const THEIRS: &str = "a\nB2\nc\nd\ne\nf\ng\nh\nI2\nj\n";
+
+    #[gpui_kit::test]
+    fn the_conflict_view_shows_each_blocks_base_and_hands_the_prompt_over(cx: &mut TestAppContext) {
+        let dir = conflicted("conflict", OURS, THEIRS);
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let view = conflict_view(&host, "UU", cx);
         cx.update(|_, cx| {
-            let v = view.read(cx);
             assert_eq!(
-                v.bases_for_test(),
-                vec![Some(vec!["b".to_string()])],
-                "the base comes from the index stages"
+                view.read(cx).bases_for_test(),
+                vec![Some(vec!["b".to_string()]), Some(vec!["i".to_string()])],
+                "the bases come from the index stages"
             );
         });
-        // No terminal runs an agent here: the prompt is copied for one.
+        // No terminal runs an agent here: the toast offers the prompt to copy.
         cx.update(|window, cx| view.update(cx, |v, cx| v.ask_agent_for_test(window, cx)));
         cx.run_until_parked();
+        let toast = cx
+            .update(|_, cx| ws.update(cx, |ws, _| ws.take_toasts()))
+            .pop()
+            .expect("a toast");
+        assert_eq!(
+            toast.title.as_deref(),
+            Some("No agent running in this worktree")
+        );
+        let action = toast.action.expect("Copy prompt");
+        assert_eq!(action.label.as_ref(), "Copy prompt");
+        cx.update(|window, cx| (action.run)(window, cx));
         let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text()));
         assert_eq!(
             copied.as_deref(),
@@ -3776,6 +3798,107 @@ mod tests {
                 "Resolve the merge conflicts in a.txt (merging other into main); keep both sides' intent, then stage the files."
             )
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn choices_and_an_edit_by_hand_resolve_the_file(cx: &mut TestAppContext) {
+        use crate::conflict::TestAct;
+        use crate::model::conflicts::Pick;
+        let dir = conflicted("resolve", OURS, THEIRS);
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let view = conflict_view(&host, "UU", cx);
+        cx.update(|window, cx| {
+            view.update(cx, |v, cx| {
+                v.act_for_test(TestAct::All(Pick::Theirs), window, cx);
+                v.act_for_test(TestAct::Choose(0, Pick::Both), window, cx);
+                v.act_for_test(TestAct::Edit(1, "I by hand".into()), window, cx);
+                v.act_for_test(TestAct::Save, window, cx);
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "a\nB1\nB2\nc\nd\ne\nf\ng\nh\nI by hand\nj\n"
+        );
+        let status = git(&dir, &["status", "--porcelain"]);
+        assert_eq!(status.trim(), "M  a.txt", "staged as resolved");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_save_over_an_outside_edit_starts_the_choices_over(cx: &mut TestAppContext) {
+        use crate::conflict::TestAct;
+        use crate::model::conflicts::Pick;
+        let dir = conflicted("outside", OURS, THEIRS);
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let view = conflict_view(&host, "UU", cx);
+        // An agent fixes the file meanwhile.
+        std::fs::write(dir.join("a.txt"), "agent\n").unwrap();
+        cx.update(|window, cx| {
+            view.update(cx, |v, cx| {
+                v.act_for_test(TestAct::All(Pick::Ours), window, cx);
+                v.act_for_test(TestAct::Save, window, cx);
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "agent\n"
+        );
+        let toast = cx
+            .update(|_, cx| ws.update(cx, |ws, _| ws.take_toasts()))
+            .pop()
+            .expect("a toast");
+        assert_eq!(toast.title.as_deref(), Some("File changed on disk"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_deleted_side_keeps_or_deletes_the_whole_file(cx: &mut TestAppContext) {
+        use crate::conflict::TestAct;
+        // Theirs deletes the file, ours changes it: UD.
+        let dir = std::env::temp_dir().join(format!("gitviber-changes-ud-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["config", "user.name", "Test"]);
+        git(&dir, &["config", "user.email", "test@example.com"]);
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-q", "-m", "base"]);
+        git(&dir, &["checkout", "-q", "-b", "other"]);
+        git(&dir, &["rm", "-q", "a.txt"]);
+        git(&dir, &["commit", "-q", "-m", "gone"]);
+        git(&dir, &["checkout", "-q", "main"]);
+        std::fs::write(dir.join("a.txt"), "two\n").unwrap();
+        git(&dir, &["commit", "-q", "-am", "ours"]);
+        let _ = Command::new("git")
+            .args(["merge", "-q", "other"])
+            .current_dir(&dir)
+            .output();
+        let dir = dir.canonicalize().unwrap();
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let view = conflict_view(&host, "UD", cx);
+        let whole = cx
+            .update(|_, cx| view.read(cx).whole_file_for_test())
+            .expect("no blocks");
+        assert_eq!(whole.sides[1].0, "Delete the file");
+        assert!(!whole.as_is);
+        cx.update(|window, cx| {
+            view.update(cx, |v, cx| {
+                v.act_for_test(TestAct::Whole(Some(GitSide::Theirs)), window, cx)
+            })
+        });
+        cx.run_until_parked();
+        assert!(
+            !dir.join("a.txt").exists(),
+            "taking the incoming side deletes it"
+        );
+        assert_eq!(git(&dir, &["status", "--porcelain"]).trim(), "D  a.txt");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

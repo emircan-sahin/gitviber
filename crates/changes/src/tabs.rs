@@ -99,13 +99,9 @@ impl ChangeTab {
     ) -> Self {
         let mut subscriptions = vec![];
         let body = match &sel {
-            Selection::Conflict { file }
-                if file
-                    .conflict
-                    .as_deref()
-                    .is_some_and(|c| c == "UU" || c == "AA") =>
-            {
-                Body::Conflict(cx.new(|cx| ConflictView::new(file.path.clone(), window, cx)))
+            Selection::Conflict { file } => {
+                let code = file.conflict.clone().unwrap_or_else(|| "UU".into());
+                Body::Conflict(cx.new(|cx| ConflictView::new(file.path.clone(), code, window, cx)))
             }
             Selection::Changes { .. } => {
                 let view = cx.new(|cx| {
@@ -182,7 +178,10 @@ impl ChangeTab {
         if let Body::Diff(view) = &self.body
             && matches!(
                 self.sel,
-                Selection::Unstaged { .. } | Selection::Staged { .. } | Selection::Branch { .. }
+                Selection::Unstaged { .. }
+                    | Selection::Staged { .. }
+                    | Selection::Branch { .. }
+                    | Selection::Conflict { .. }
             )
         {
             self._notes = Some(gitviber_review::attach_notes(view, None, cx));
@@ -224,7 +223,7 @@ impl ChangeTab {
     fn repo_changed(&mut self, cx: &mut Context<Self>) {
         match &self.body {
             Body::Diff(v) => v.update(cx, |v, cx| v.repo_changed(cx)),
-            Body::Conflict(v) => v.update(cx, |v, cx| v.refresh(cx)),
+            Body::Conflict(v) => v.update(cx, |v, cx| v.repo_changed(cx)),
             Body::Stacked(_) => self.repo_changed_stacked(cx),
         }
         self.sync_viewed(cx);

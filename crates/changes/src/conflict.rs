@@ -1,96 +1,80 @@
-//! A conflicted file block by block: each conflict's current and incoming sides, the merge base
-//! they both changed a click away, and a choice for it (current, incoming, both). Saving writes
-//! the file with the choices made, keeps the markers of blocks not decided yet, and marks the
-//! file resolved once none are left. The conflicts can also go to the worktree's agent, or to the
-//! merge tool git's config names.
+//! A conflicted file, block by block: each conflict's two sides with the merge base they both
+//! changed a click away, and a choice for it (current, incoming, both, or written by hand). The
+//! text between folds to a few lines; the result can be previewed whole. Once every block is
+//! chosen, Mark resolved writes the file and stages it. A conflict with no blocks to choose in
+//! (a deleted side, a binary, markers already gone) keeps one side of the whole file instead.
+//! The conflicts can also go to the worktree's agent, or to the merge tool git's config names.
 
-use crate::model::conflicts::{bases_for, merging_what, resolve_prompt, tool_can_open, tool_name};
+use crate::model::conflicts::{
+    Choice, Pick, bases_for, ends_with_newline, for_terminal, is_crlf, merging_what,
+    resolve_prompt, result_lines, side_names, tool_can_open, tool_name, whole_file,
+};
 use crate::model::text::{Block, Parsed, Segment, parse_conflicts};
 use gitviber_core::api;
+use gitviber_core::git::Side as GitSide;
 use gitviber_diff::DiffStyle;
 use gitviber_terminal::agent::{Handoff, handoff_to};
 use gitviber_ui::memory::Live;
+use gitviber_ui::widgets::{FileIcon, PathLabel};
 use gitviber_ui::workspace::{Toast, Workspace};
+use gitviber_ui::{ActiveAppTheme as _, AppTheme};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Textarea, TextareaState};
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
-    App, AppContext as _, Context, FocusHandle, Focusable, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Task, Window, div, prelude::FluentBuilder as _, px,
+    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable, Hsla,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Task, Window, div, prelude::FluentBuilder as _,
+    px,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Choice {
-    Current,
-    Incoming,
-    Both,
-}
+/// Unchanged lines a fold between conflicts leaves on each side.
+const CONTEXT: usize = 3;
 
-/// The file the choices make; blocks with none keep their markers.
-pub fn resolved_text(parsed: &Parsed, choices: &HashMap<usize, Choice>) -> String {
-    let mut lines: Vec<String> = vec![];
-    let mut block = 0;
-    for seg in &parsed.segments {
-        match seg {
-            Segment::Text(t) => lines.extend(t.iter().cloned()),
-            Segment::Conflict(b) => {
-                match choices.get(&block) {
-                    Some(Choice::Current) => lines.extend(b.ours.iter().cloned()),
-                    Some(Choice::Incoming) => lines.extend(b.theirs.iter().cloned()),
-                    Some(Choice::Both) => lines.extend(b.ours.iter().chain(&b.theirs).cloned()),
-                    None => lines.extend(markers(b)),
-                }
-                block += 1;
-            }
-        }
-    }
-    let mut out = lines.join("\n");
-    if parsed.trailing_newline {
-        out.push('\n');
-    }
-    out
-}
-
-fn markers(b: &Block) -> Vec<String> {
-    let label = |m: &str, l: &str| {
-        if l.is_empty() {
-            m.to_string()
-        } else {
-            format!("{m} {l}")
-        }
-    };
-    let mut out = vec![label("<<<<<<<", &b.ours_label)];
-    out.extend(b.ours.iter().cloned());
-    if let Some(base) = &b.base {
-        out.push("|||||||".into());
-        out.extend(base.iter().cloned());
-    }
-    out.push("=======".into());
-    out.extend(b.theirs.iter().cloned());
-    out.push(label(">>>>>>>", &b.theirs_label));
-    out
+struct Loaded {
+    /// The file as read: a save checks nothing changed it since.
+    text: String,
+    lossy: bool,
+    /// None when it can't be split into blocks: not UTF-8, or a marker left open.
+    parsed: Option<Parsed>,
+    /// Whether each side's file ends with a newline, for a conflict at the very end.
+    sides: Option<(bool, bool)>,
+    crlf: bool,
 }
 
 enum State {
     Loading,
     Failed(String),
-    /// Not text git can merge by hand here (binary, too large), or no markers left.
-    Plain(String),
-    Ready(Parsed),
+    Loaded(Loaded),
+}
+
+enum Saved {
+    Done,
+    /// The file changed on disk since it was read.
+    Changed,
 }
 
 pub struct ConflictView {
     path: String,
+    /// git's two-letter conflict status: UU, AA, UD, DU, AU, UA or DD.
+    code: String,
     state: State,
     choices: HashMap<usize, Choice>,
-    /// Each block's merge base, by block; None where it can't be told.
+    /// Blocks being written by hand, by block.
+    editing: HashMap<usize, Entity<TextareaState>>,
+    /// Each block's merge base; None where it can't be told.
     bases: Vec<Option<Vec<String>>>,
     /// Blocks whose base is shown; the ones the file wrote a base for (diff3 style) start so.
     open_bases: HashSet<usize>,
-    /// The merge tool git's config names; None for none.
+    /// Folded runs of text between conflicts opened, by segment.
+    open_runs: HashSet<usize>,
+    preview: bool,
+    /// In a rebase the sides swap meaning: HEAD is the base, incoming the user's own commit.
+    rebase: bool,
+    /// The merge tool git's config names.
     merge_tool: Option<String>,
     /// The tool is open on the file: a second click waits for it.
     in_tool: bool,
@@ -103,14 +87,29 @@ pub struct ConflictView {
     _live: Live,
 }
 
+fn conflict_blocks(p: &Parsed) -> Vec<&Block> {
+    p.segments
+        .iter()
+        .filter_map(|s| match s {
+            Segment::Conflict(b) => Some(b),
+            Segment::Text(_) => None,
+        })
+        .collect()
+}
+
 impl ConflictView {
-    pub fn new(path: String, _: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(path: String, code: String, _: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut view = ConflictView {
             path,
+            code,
             state: State::Loading,
             choices: HashMap::new(),
+            editing: HashMap::new(),
             bases: vec![],
             open_bases: HashSet::new(),
+            open_runs: HashSet::new(),
+            preview: false,
+            rebase: false,
             merge_tool: None,
             in_tool: false,
             focus: cx.focus_handle(),
@@ -125,45 +124,138 @@ impl ConflictView {
         view
     }
 
-    /// Reads the file again; choices made stay while the blocks are the same count.
+    /// The repo changed on disk: read again, unless the user started resolving.
+    pub fn repo_changed(&mut self, cx: &mut Context<Self>) {
+        if self.choices.is_empty() && self.editing.is_empty() {
+            self.refresh(cx);
+        }
+    }
+
+    /// Reads the file again, with its base, the merge tool and what operation is going on.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let (core, path) = (crate::core(cx), self.path.clone());
         self._load = cx.spawn(async move |this, cx| {
-            let (text, sides, tools) = cx
+            let (file, sides, tools, rebase) = cx
                 .background_spawn(async move {
-                    let text = api::files::read_file(&core, path.clone());
+                    let file = api::files::read_file(&core, path.clone());
                     // The file merged again in diff3 style, for the bases git's default style
-                    // doesn't write.
+                    // doesn't write, and how each side ends.
                     let sides = api::changes::conflict_base(&core, path).ok().flatten();
-                    (text, sides, api::changes::external_tools(&core).ok())
+                    let tools = api::changes::external_tools(&core).ok();
+                    let rebase = api::changes::status(&core)
+                        .ok()
+                        .and_then(|s| s.operation)
+                        .is_some_and(|o| o.kind == "rebase");
+                    (file, sides, tools, rebase)
                 })
                 .await;
             this.update(cx, |this, cx| {
                 this.merge_tool = tools.and_then(|t| t.merge);
-                this.state = match text {
+                this.rebase = rebase;
+                this.state = match file {
                     Err(e) => State::Failed(e),
-                    Ok(f) if !f.exists => State::Plain("This file was deleted on one side. Take a side from the Changes list.".into()),
-                    Ok(f) if f.binary || f.too_large || f.lossy => State::Plain("This file can't be merged by hand here. Take a side from the Changes list.".into()),
-                    Ok(f) => match parse_conflicts(&f.text) {
-                        None => State::Plain("A conflict marker is left open: fix the file in an editor.".into()),
-                        Some(p) if !p.segments.iter().any(|s| matches!(s, Segment::Conflict(_))) => State::Plain("No conflicts are left. Mark it resolved from the Changes list.".into()),
-                        Some(p) => {
-                            let blocks = conflict_blocks(&p);
-                            this.choices.retain(|i, _| *i < blocks.len());
-                            let rebuilt = sides
-                                .and_then(|s| s.merged)
-                                .and_then(|m| parse_conflicts(&m))
-                                .unwrap_or(Parsed { segments: vec![], trailing_newline: false });
-                            this.bases = bases_for(&blocks, &conflict_blocks(&rebuilt));
-                            this.open_bases = (0..blocks.len()).filter(|&i| blocks[i].base.is_some()).collect();
-                            State::Ready(p)
-                        }
-                    },
+                    Ok(f) => {
+                        let text = if f.exists && !f.binary && !f.too_large {
+                            f.text
+                        } else {
+                            String::new()
+                        };
+                        let parsed = if f.lossy {
+                            None
+                        } else {
+                            parse_conflicts(&text)
+                        };
+                        let rebuilt = sides
+                            .as_ref()
+                            .and_then(|s| s.merged.as_deref())
+                            .and_then(parse_conflicts);
+                        let blocks = parsed.as_ref().map(conflict_blocks).unwrap_or_default();
+                        let rebuilt = rebuilt.as_ref().map(conflict_blocks).unwrap_or_default();
+                        this.bases = bases_for(&blocks, &rebuilt);
+                        this.open_bases = (0..blocks.len())
+                            .filter(|&i| blocks[i].base.is_some())
+                            .collect();
+                        let n = blocks.len();
+                        this.choices.retain(|i, _| *i < n);
+                        this.editing.retain(|i, _| *i < n);
+                        State::Loaded(Loaded {
+                            crlf: is_crlf(&text),
+                            lossy: f.lossy,
+                            sides: sides.map(|s| (s.ours_newline, s.theirs_newline)),
+                            parsed,
+                            text,
+                        })
+                    }
                 };
                 cx.notify();
             })
             .ok();
         });
+    }
+
+    fn blocks(&self) -> Vec<&Block> {
+        match &self.state {
+            State::Loaded(Loaded {
+                parsed: Some(p), ..
+            }) => conflict_blocks(p),
+            _ => vec![],
+        }
+    }
+
+    fn choose(&mut self, block: usize, kind: Pick, cx: &mut Context<Self>) {
+        if let Some(b) = self.blocks().get(block) {
+            let choice = Choice::of(b, kind);
+            self.choices.insert(block, choice);
+            cx.notify();
+        }
+    }
+
+    fn choose_all(&mut self, kind: Pick, cx: &mut Context<Self>) {
+        let all: Vec<Choice> = self.blocks().iter().map(|b| Choice::of(b, kind)).collect();
+        self.editing.clear();
+        self.choices = all.into_iter().enumerate().collect();
+        cx.notify();
+    }
+
+    fn undo(&mut self, block: usize, cx: &mut Context<Self>) {
+        self.choices.remove(&block);
+        cx.notify();
+    }
+
+    /// Both sides in a text box, to write the block as it should be.
+    fn edit(&mut self, block: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(b) = self.blocks().get(block).copied() else {
+            return;
+        };
+        let lines: Vec<String> = b
+            .ours
+            .iter()
+            .chain(&b.theirs)
+            .map(|l| l.strip_suffix('\r').unwrap_or(l).to_string())
+            .collect();
+        let rows = (lines.len() + 1).min(24);
+        let text = lines.join("\n");
+        let state = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .rows(rows)
+                .default_value(text)
+        });
+        state.update(cx, |s, cx| s.focus(window, cx));
+        self.editing.insert(block, state);
+        cx.notify();
+    }
+
+    fn use_edit(&mut self, block: usize, cx: &mut Context<Self>) {
+        if let Some(state) = self.editing.remove(&block) {
+            let text = state.read(cx).value();
+            self.choices.insert(block, Choice::custom(&text));
+            cx.notify();
+        }
+    }
+
+    fn cancel_edit(&mut self, block: usize, cx: &mut Context<Self>) {
+        self.editing.remove(&block);
+        cx.notify();
     }
 
     fn toggle_base(&mut self, block: usize, cx: &mut Context<Self>) {
@@ -179,14 +271,101 @@ impl ConflictView {
         }
     }
 
-    /// Hands every conflicted file to the agent running in this worktree's terminal. Without
-    /// one, or while it's busy, the prompt is copied for it instead.
-    fn ask_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (core, path) = (crate::core(cx), self.path.clone());
-        let theirs = match &self.state {
-            State::Ready(p) => conflict_blocks(p).first().map(|b| b.theirs_label.clone()),
+    /// Writes the file the choices make and stages it, unless something changed the file since
+    /// it was read: then the choices start over, so nothing is overwritten.
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let State::Loaded(l) = &self.state else {
+            return;
+        };
+        let Some(parsed) = &l.parsed else { return };
+        let n = conflict_blocks(parsed).len();
+        if n == 0 || self.choices.len() < n {
+            return;
+        }
+        let last = match parsed.segments.last() {
+            Some(Segment::Conflict(_)) => self.choices.get(&(n - 1)).map(|c| c.kind),
             _ => None,
         };
+        let mut out = result_lines(parsed, &self.choices, l.crlf).join("\n");
+        if ends_with_newline(parsed, last, l.sides) {
+            out.push('\n');
+        }
+        let (core, path, read) = (crate::core(cx), self.path.clone(), l.text.clone());
+        self.busy = true;
+        cx.notify();
+        self._save = cx.spawn_in(window, async move |this, cx| {
+            let p = path.clone();
+            let result = cx
+                .background_spawn(async move {
+                    let now = api::files::read_file(&core, p.clone())?;
+                    if now.text != read {
+                        return Ok(Saved::Changed);
+                    }
+                    api::files::write_file(&core, p.clone(), out)?;
+                    api::changes::stage(&core, vec![p], false)?;
+                    Ok::<_, String>(Saved::Done)
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                this.busy = false;
+                let toast = match result {
+                    Ok(Saved::Done) => Toast::success(path.clone()).title("Conflict resolved"),
+                    Ok(Saved::Changed) => Toast::error(
+                        "Your choices were reset so nothing is overwritten. Resolve again.",
+                    )
+                    .title("File changed on disk"),
+                    Err(e) => Toast::error(e).title("Could not save resolution"),
+                };
+                this.toast(toast, window, cx);
+                this.choices.clear();
+                this.editing.clear();
+                this.refresh(cx);
+            })
+            .ok();
+        });
+    }
+
+    /// For a conflict with no blocks: one side of the whole file, or the file as it is.
+    fn resolve_whole(
+        &mut self,
+        side: Option<GitSide>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (core, path) = (crate::core(cx), self.path.clone());
+        let as_is = side.is_none();
+        self.busy = true;
+        cx.notify();
+        self._save = cx.spawn_in(window, async move |this, cx| {
+            let p = path.clone();
+            let result = cx
+                .background_spawn(async move {
+                    match side {
+                        Some(side) => api::changes::resolve_side(&core, p, side),
+                        None => api::changes::stage(&core, vec![p], false),
+                    }
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                this.busy = false;
+                let toast = match (result, as_is) {
+                    (Ok(()), true) => Toast::success(path.clone()).title("Marked resolved"),
+                    (Ok(()), false) => Toast::success(path.clone()).title("Conflict resolved"),
+                    (Err(e), true) => Toast::error(e).title("Could not mark resolved"),
+                    (Err(e), false) => Toast::error(e).title("Could not resolve"),
+                };
+                this.toast(toast, window, cx);
+                this.refresh(cx);
+            })
+            .ok();
+        });
+    }
+
+    /// Hands every conflicted file to the agent running in this worktree's terminal; without
+    /// one, or while it's busy, the toast offers the prompt to copy.
+    fn ask_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (core, path) = (crate::core(cx), self.path.clone());
+        let theirs = self.blocks().first().map(|b| b.theirs_label.clone());
         self._ask = cx.spawn_in(window, async move |this, cx| {
             let status = cx
                 .background_spawn(async move { api::changes::status(&core) })
@@ -210,20 +389,26 @@ impl ConflictView {
                 let prompt = resolve_prompt(&files, merging.as_deref());
                 let root = Path::new(&status.root);
                 let agent = gitviber_terminal::worktree_agent(root, cx);
-                let copied =
-                    |this: &Self, title: String, why: &str, window: &Window, cx: &mut App| {
-                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(prompt.clone()));
-                        this.toast(
-                            Toast::info(format!("{why} The prompt is copied.")).title(title),
+                let offer = |title: String, why: &str| {
+                    let prompt = prompt.clone();
+                    Toast::info(format!("{why}, or copy the prompt for it."))
+                        .title(title)
+                        .action("Copy prompt", move |_, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(prompt.clone()))
+                        })
+                };
+                let toast = match handoff_to(agent.as_ref()) {
+                    Handoff::Paste
+                        if gitviber_terminal::paste_to_agent(
+                            root,
+                            &for_terminal(&prompt),
                             window,
                             cx,
-                        );
-                    };
-                match handoff_to(agent.as_ref()) {
-                    Handoff::Paste
-                        if gitviber_terminal::paste_to_agent(root, &prompt, window, cx) => {}
-                    Handoff::Wait { name, working } => copied(
-                        this,
+                        ) =>
+                    {
+                        return;
+                    }
+                    Handoff::Wait { name, working } => offer(
                         format!(
                             "{name} is {}",
                             if working {
@@ -232,18 +417,14 @@ impl ConflictView {
                                 "asking something"
                             }
                         ),
-                        "Paste it once it's free.",
-                        window,
-                        cx,
+                        "Ask again once it's free",
                     ),
-                    _ => copied(
-                        this,
+                    _ => offer(
                         "No agent running in this worktree".into(),
-                        "Start one in a terminal here and paste it.",
-                        window,
-                        cx,
+                        "Start one in a terminal here",
                     ),
-                }
+                };
+                this.toast(toast, window, cx);
             })
             .ok();
         });
@@ -274,52 +455,7 @@ impl ConflictView {
                 };
                 this.toast(toast, window, cx);
                 this.choices.clear();
-                this.refresh(cx);
-            })
-            .ok();
-        });
-    }
-
-    fn choose(&mut self, block: usize, choice: Choice, cx: &mut Context<Self>) {
-        if self.choices.get(&block) == Some(&choice) {
-            self.choices.remove(&block);
-        } else {
-            self.choices.insert(block, choice);
-        }
-        cx.notify();
-    }
-
-    /// Writes the choices; with every block decided, the file is staged (marked resolved).
-    fn save(&mut self, cx: &mut Context<Self>) {
-        let State::Ready(parsed) = &self.state else {
-            return;
-        };
-        let blocks = parsed
-            .segments
-            .iter()
-            .filter(|s| matches!(s, Segment::Conflict(_)))
-            .count();
-        let done = self.choices.len() == blocks;
-        let text = resolved_text(parsed, &self.choices);
-        let (core, path) = (crate::core(cx), self.path.clone());
-        self.busy = true;
-        self._save = cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move {
-                    api::files::write_file(&core, path.clone(), text)?;
-                    if done {
-                        api::changes::stage(&core, vec![path], false)
-                    } else {
-                        Ok(())
-                    }
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                this.busy = false;
-                if let Err(e) = result {
-                    this.state = State::Failed(e);
-                }
-                this.choices.clear();
+                this.editing.clear();
                 this.refresh(cx);
             })
             .ok();
@@ -336,16 +472,48 @@ impl ConflictView {
     pub(crate) fn ask_agent_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.ask_agent(window, cx);
     }
+
+    pub(crate) fn act_for_test(
+        &mut self,
+        act: TestAct,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match act {
+            TestAct::Choose(b, kind) => self.choose(b, kind, cx),
+            TestAct::All(kind) => self.choose_all(kind, cx),
+            TestAct::Edit(b, text) => {
+                self.edit(b, window, cx);
+                if let Some(s) = self.editing.get(&b) {
+                    s.update(cx, |s, cx| s.set_value(text, window, cx));
+                }
+                self.use_edit(b, cx);
+            }
+            TestAct::Save => self.save(window, cx),
+            TestAct::Whole(side) => self.resolve_whole(side, window, cx),
+        }
+    }
+
+    pub(crate) fn whole_file_for_test(&self) -> Option<crate::model::conflicts::WholeFile> {
+        match &self.state {
+            State::Loaded(l) if self.blocks().is_empty() => Some(whole_file(
+                &self.code,
+                l.lossy,
+                !l.lossy && l.parsed.is_none(),
+                self.rebase,
+            )),
+            _ => None,
+        }
+    }
 }
 
-fn conflict_blocks(p: &Parsed) -> Vec<&Block> {
-    p.segments
-        .iter()
-        .filter_map(|s| match s {
-            Segment::Conflict(b) => Some(b),
-            Segment::Text(_) => None,
-        })
-        .collect()
+#[cfg(test)]
+pub(crate) enum TestAct {
+    Choose(usize, Pick),
+    All(Pick),
+    Edit(usize, String),
+    Save,
+    Whole(Option<GitSide>),
 }
 
 impl Focusable for ConflictView {
@@ -354,153 +522,428 @@ impl Focusable for ConflictView {
     }
 }
 
-fn lines(lines: &[String], bg: Option<Hsla>, style: &DiffStyle) -> gpui_kit::Div {
+fn code_lines(lines: &[String], color: Option<Hsla>, style: &DiffStyle) -> gpui_kit::Div {
     v_flex()
         .w_full()
-        .when_some(bg, |el, bg| el.bg(bg))
+        .py_0p5()
         .font_family(style.font_family.clone())
         .text_size(style.font_size)
         .line_height(style.line_px())
+        .when_some(color, |el, c| el.text_color(c))
         .children(lines.iter().map(|l| {
+            let l = l.strip_suffix('\r').unwrap_or(l);
             div()
-                .px_3()
+                .px_4()
+                .min_h(style.line_px())
                 .whitespace_nowrap()
                 .child(SharedString::from(l.replace('\t', "    ")))
         }))
 }
 
+impl ConflictView {
+    /// Unchanged text between conflicts, folded to a few lines each side.
+    fn text_run(
+        &self,
+        seg: usize,
+        lines: &[String],
+        t: &AppTheme,
+        style: &DiffStyle,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let dim = Some(t.foreground.opacity(0.7));
+        if self.open_runs.contains(&seg) || lines.len() <= CONTEXT * 2 + 1 {
+            return code_lines(lines, dim, style).into_any_element();
+        }
+        v_flex()
+            .child(code_lines(&lines[..CONTEXT], dim, style))
+            .child(
+                h_flex()
+                    .id(("fold", seg))
+                    .gap_2()
+                    .px_4()
+                    .py_1()
+                    .border_y_1()
+                    .border_color(t.border)
+                    .bg(t.panel)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(t.elevated))
+                    .text_size(px(11.5))
+                    .text_color(t.subtle)
+                    .child(Icon::new(Lucide::ChevronsUpDown).xsmall())
+                    .child(format!("{} unchanged lines", lines.len() - CONTEXT * 2))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_runs.insert(seg);
+                        cx.notify();
+                    })),
+            )
+            .child(code_lines(&lines[lines.len() - CONTEXT..], dim, style))
+            .into_any_element()
+    }
+
+    fn side(
+        title: &str,
+        label: &str,
+        tone: Hsla,
+        lines: &[String],
+        t: &AppTheme,
+        style: &DiffStyle,
+    ) -> gpui_kit::Div {
+        v_flex()
+            .border_l_2()
+            .border_color(tone)
+            .bg(tone.opacity(0.1))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .px_4()
+                    .pt_1p5()
+                    .text_size(px(10.5))
+                    .text_color(t.muted_foreground)
+                    .child(
+                        div()
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                            .child(title.to_uppercase()),
+                    )
+                    .when(!label.is_empty(), |el| {
+                        el.child(
+                            div()
+                                .font_family(style.font_family.clone())
+                                .text_color(t.subtle)
+                                .child(label.to_string()),
+                        )
+                    }),
+            )
+            .child(if lines.is_empty() {
+                div()
+                    .px_4()
+                    .pb_1p5()
+                    .text_size(px(11.5))
+                    .italic()
+                    .text_color(t.subtle)
+                    .child("(empty)")
+            } else {
+                code_lines(lines, None, style).pb_1()
+            })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn card(
+        &self,
+        i: usize,
+        n: usize,
+        b: &Block,
+        names: (&str, &str),
+        t: &AppTheme,
+        style: &DiffStyle,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let choice = self.choices.get(&i);
+        let editing = self.editing.get(&i).cloned();
+        let label = choice.map(|c| match c.kind {
+            Pick::Ours => format!("Accepted {}", names.0.to_lowercase()),
+            Pick::Theirs => format!("Accepted {}", names.1.to_lowercase()),
+            Pick::Both => "Accepted both".into(),
+            Pick::Custom => "Edited".into(),
+        });
+        let button = |id: &str, text: &'static str| {
+            Button::new(SharedString::from(format!("{id}-{i}")))
+                .xsmall()
+                .label(text)
+        };
+        let buttons: Vec<AnyElement> = if choice.is_some() {
+            vec![
+                button("undo", "Undo")
+                    .ghost()
+                    .icon(Lucide::Undo2)
+                    .on_click(cx.listener(move |this, _, _, cx| this.undo(i, cx)))
+                    .into_any_element(),
+            ]
+        } else if editing.is_some() {
+            vec![
+                button("cancel", "Cancel")
+                    .ghost()
+                    .on_click(cx.listener(move |this, _, _, cx| this.cancel_edit(i, cx)))
+                    .into_any_element(),
+                button("use", "Use this")
+                    .primary()
+                    .on_click(cx.listener(move |this, _, _, cx| this.use_edit(i, cx)))
+                    .into_any_element(),
+            ]
+        } else {
+            vec![
+                button("ours", "Accept current")
+                    .on_click(cx.listener(move |this, _, _, cx| this.choose(i, Pick::Ours, cx)))
+                    .into_any_element(),
+                button("theirs", "Accept incoming")
+                    .on_click(cx.listener(move |this, _, _, cx| this.choose(i, Pick::Theirs, cx)))
+                    .into_any_element(),
+                button("both", "Accept both")
+                    .on_click(cx.listener(move |this, _, _, cx| this.choose(i, Pick::Both, cx)))
+                    .into_any_element(),
+                button("edit", "Edit")
+                    .ghost()
+                    .icon(Lucide::Pencil)
+                    .on_click(cx.listener(move |this, _, window, cx| this.edit(i, window, cx)))
+                    .into_any_element(),
+            ]
+        };
+        let tone = if choice.is_some() {
+            t.added
+        } else {
+            t.conflict
+        };
+        let body = if let Some(c) = choice {
+            code_lines(&c.lines, None, style)
+                .bg(t.add_bg)
+                .into_any_element()
+        } else if let Some(state) = editing {
+            div()
+                .p_1()
+                .font_family(style.font_family.clone())
+                .text_size(style.font_size)
+                .child(Textarea::new(&state))
+                .into_any_element()
+        } else {
+            v_flex()
+                .child(Self::side(
+                    names.0,
+                    &b.ours_label,
+                    t.primary,
+                    &b.ours,
+                    t,
+                    style,
+                ))
+                .when_some(self.bases.get(i).cloned().flatten(), |el, base| {
+                    el.child(self.base_strip(i, &base, t, style, cx))
+                })
+                .child(Self::side(
+                    names.1,
+                    &b.theirs_label,
+                    t.renamed,
+                    &b.theirs,
+                    t,
+                    style,
+                ))
+                .into_any_element()
+        };
+        v_flex()
+            .mx_3()
+            .my_2()
+            .rounded_md()
+            .overflow_hidden()
+            .border_1()
+            .border_color(tone.opacity(0.55))
+            .child(
+                h_flex()
+                    .h(px(32.))
+                    .gap_2()
+                    .px_3()
+                    .border_b_1()
+                    .border_color(t.border)
+                    .bg(t.panel)
+                    .text_size(px(11.5))
+                    .child(
+                        div()
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                            .text_color(tone)
+                            .child(format!("Conflict {} of {n}", i + 1)),
+                    )
+                    .when_some(label, |el, l| {
+                        el.child(div().text_color(t.muted_foreground).child(format!("· {l}")))
+                    })
+                    .child(div().flex_1())
+                    .children(buttons),
+            )
+            .child(body)
+            .into_any_element()
+    }
+
+    /// The merge base between the two sides, folded to a strip: open to see what each changed.
+    fn base_strip(
+        &self,
+        i: usize,
+        base: &[String],
+        t: &AppTheme,
+        style: &DiffStyle,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self.open_bases.contains(&i);
+        let what = match base.len() {
+            0 => "empty: both sides added these lines".to_string(),
+            1 => "1 line before either side changed it".to_string(),
+            n => format!("{n} lines before either side changed them"),
+        };
+        v_flex()
+            .border_l_2()
+            .border_color(t.subtle)
+            .bg(t.hover)
+            .child(
+                h_flex()
+                    .id(("base", i))
+                    .gap_1()
+                    .px_4()
+                    .py_1()
+                    .cursor_pointer()
+                    .text_size(px(10.5))
+                    .text_color(t.muted_foreground)
+                    .child(
+                        Icon::new(if open {
+                            Lucide::ChevronDown
+                        } else {
+                            Lucide::ChevronRight
+                        })
+                        .xsmall(),
+                    )
+                    .child(
+                        div()
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                            .child("BASE"),
+                    )
+                    .child(div().text_color(t.subtle).child(what))
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_base(i, cx))),
+            )
+            .when(open && !base.is_empty(), |el| {
+                el.child(code_lines(base, None, style).pb_1())
+            })
+            .into_any_element()
+    }
+
+    /// Conflicts without text blocks (deletions, binaries): a side of the whole file.
+    fn whole(&self, l: &Loaded, t: &AppTheme, cx: &mut Context<Self>) -> AnyElement {
+        let w = whole_file(
+            &self.code,
+            l.lossy,
+            !l.lossy && l.parsed.is_none(),
+            self.rebase,
+        );
+        let busy = self.busy;
+        let side = |ix: usize, git: GitSide, cx: &mut Context<Self>| {
+            let (label, note) = w.sides[ix];
+            v_flex()
+                .id(("whole", ix))
+                .flex_1()
+                .p_3()
+                .rounded_md()
+                .border_1()
+                .border_color(t.border_strong)
+                .bg(t.panel)
+                .when(!busy, |el| {
+                    el.cursor_pointer()
+                        .hover(|s| s.border_color(t.primary))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.resolve_whole(Some(git), window, cx)
+                        }))
+                })
+                .when(busy, |el| el.opacity(0.5))
+                .child(
+                    div()
+                        .text_size(px(12.5))
+                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .mt_0p5()
+                        .text_size(px(11.5))
+                        .text_color(t.muted_foreground)
+                        .child(note),
+                )
+        };
+        v_flex()
+            .items_center()
+            .w_full()
+            .pt_16()
+            .px_6()
+            .child(
+                v_flex()
+                    .max_w(px(512.))
+                    .w_full()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        Icon::new(Lucide::GitMerge)
+                            .size(px(28.))
+                            .text_color(t.conflict),
+                    )
+                    .child(
+                        div()
+                            .mt_2()
+                            .text_size(px(13.))
+                            .font_weight(gpui_kit::FontWeight::MEDIUM)
+                            .child(w.title),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(t.muted_foreground)
+                            .child(w.note.clone()),
+                    )
+                    .when(w.as_is, |el| {
+                        el.child(
+                            div().mt_3().child(
+                                Button::new("as-is")
+                                    .small()
+                                    .primary()
+                                    .icon(Lucide::Check)
+                                    .label("Mark resolved as it is")
+                                    .disabled(busy)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.resolve_whole(None, window, cx)
+                                    })),
+                            ),
+                        )
+                    })
+                    .child(
+                        h_flex()
+                            .mt_4()
+                            .w_full()
+                            .gap_2()
+                            .child(side(0, GitSide::Ours, cx))
+                            .child(side(1, GitSide::Theirs, cx)),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
 impl Render for ConflictView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let style = DiffStyle::get(cx).clone();
-        let c = &style.colors;
+        let t = cx.app_theme().clone();
+        let names = side_names(self.rebase);
+        let n = self.blocks().len();
+        let resolved = self.choices.len();
         let body = match &self.state {
             State::Loading => div().into_any_element(),
             State::Failed(e) => div()
                 .p_6()
-                .text_color(c.muted)
+                .text_color(t.muted_foreground)
                 .child(format!("Could not read the file: {e}"))
                 .into_any_element(),
-            State::Plain(text) => div()
-                .p_6()
-                .text_color(c.muted)
-                .child(text.clone())
-                .into_any_element(),
-            State::Ready(parsed) => {
-                let mut block = 0;
-                let mut parts = vec![];
-                for seg in &parsed.segments {
-                    match seg {
-                        Segment::Text(t) => parts.push(lines(t, None, &style).into_any_element()),
-                        Segment::Conflict(b) => {
-                            let i = block;
-                            block += 1;
-                            let chosen = self.choices.get(&i).copied();
-                            let pick =
-                                |label: &'static str, choice: Choice, cx: &mut Context<Self>| {
-                                    Button::new(SharedString::from(format!("{label}-{i}")))
-                                        .xsmall()
-                                        .label(label)
-                                        .toggled(chosen == Some(choice))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.choose(i, choice, cx)
-                                        }))
-                                };
-                            let dim = |on: bool| if chosen.is_none() || on { 1. } else { 0.4 };
-                            parts.push(
-                                v_flex()
-                                    .w_full()
-                                    .my_1()
-                                    .border_1()
-                                    .border_color(c.border)
-                                    .child(
-                                        h_flex()
-                                            .gap_1()
-                                            .px_2()
-                                            .py_1()
-                                            .bg(c.panel)
-                                            .text_size(style.ui_font_size)
-                                            .child(
-                                                div()
-                                                    .text_color(c.subtle)
-                                                    .child(format!("Conflict {}", i + 1)),
-                                            )
-                                            .child(div().flex_1())
-                                            .child(pick("Current", Choice::Current, cx))
-                                            .child(pick("Incoming", Choice::Incoming, cx))
-                                            .child(pick("Both", Choice::Both, cx)),
-                                    )
-                                    .child(
-                                        div()
-                                            .px_3()
-                                            .text_size(style.ui_font_size - px(1.))
-                                            .text_color(c.subtle)
-                                            .child(format!("Current ({})", b.ours_label)),
-                                    )
-                                    .child(
-                                        div()
-                                            .opacity(dim(matches!(
-                                                chosen,
-                                                Some(Choice::Current | Choice::Both)
-                                            )))
-                                            .child(lines(&b.ours, Some(c.add_bg), &style)),
-                                    )
-                                    .child(
-                                        div()
-                                            .px_3()
-                                            .text_size(style.ui_font_size - px(1.))
-                                            .text_color(c.subtle)
-                                            .child(format!("Incoming ({})", b.theirs_label)),
-                                    )
-                                    .child(
-                                        div()
-                                            .opacity(dim(matches!(
-                                                chosen,
-                                                Some(Choice::Incoming | Choice::Both)
-                                            )))
-                                            .child(lines(&b.theirs, Some(c.del_bg), &style)),
-                                    )
-                                    .when_some(self.bases.get(i).cloned().flatten(), |el, base| {
-                                        let open = self.open_bases.contains(&i);
-                                        let what = match base.len() {
-                                            0 => "empty: both sides added these lines".to_string(),
-                                            1 => "1 line before either side changed it".to_string(),
-                                            n => {
-                                                format!("{n} lines before either side changed them")
-                                            }
-                                        };
-                                        el.child(
-                                            h_flex()
-                                                .id(("base", i))
-                                                .gap_1()
-                                                .px_3()
-                                                .py_0p5()
-                                                .bg(c.hover)
-                                                .cursor_pointer()
-                                                .text_size(style.ui_font_size - px(1.))
-                                                .text_color(c.subtle)
-                                                .child(
-                                                    Icon::new(if open {
-                                                        Lucide::ChevronDown
-                                                    } else {
-                                                        Lucide::ChevronRight
-                                                    })
-                                                    .xsmall(),
-                                                )
-                                                .child(div().text_color(c.muted).child("Base"))
-                                                .child(what)
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.toggle_base(i, cx)
-                                                })),
-                                        )
-                                        .when(open && !base.is_empty(), |el| {
-                                            el.child(lines(&base, Some(c.hover), &style))
-                                        })
-                                    })
-                                    .into_any_element(),
-                            );
+            State::Loaded(l) if n == 0 => self.whole(l, &t, cx),
+            State::Loaded(l) => {
+                let parsed = l.parsed.as_ref().expect("blocks come from a parse");
+                let parts: Vec<AnyElement> = if self.preview {
+                    vec![
+                        code_lines(&result_lines(parsed, &self.choices, false), None, &style)
+                            .into_any_element(),
+                    ]
+                } else {
+                    let mut block = 0;
+                    let mut parts = vec![];
+                    for (seg, s) in parsed.segments.iter().enumerate() {
+                        match s {
+                            Segment::Text(lines) => {
+                                parts.push(self.text_run(seg, lines, &t, &style, cx))
+                            }
+                            Segment::Conflict(b) => {
+                                parts.push(self.card(block, n, b, names, &t, &style, cx));
+                                block += 1;
+                            }
                         }
                     }
-                }
+                    parts
+                };
                 div()
                     .id("conflict-scroll")
                     .size_full()
@@ -510,103 +953,110 @@ impl Render for ConflictView {
                     .into_any_element()
             }
         };
-        let blocks = match &self.state {
-            State::Ready(p) => p
-                .segments
-                .iter()
-                .filter(|s| matches!(s, Segment::Conflict(_)))
-                .count(),
-            _ => 0,
-        };
-        let decided = self.choices.len();
+        let tool = self
+            .merge_tool
+            .clone()
+            .filter(|_| (self.code == "UU" || self.code == "AA") && tool_can_open(&self.path));
+        let small = |id: &'static str, label: String| Button::new(id).xsmall().label(label);
         v_flex()
             .id("conflict-view")
             .track_focus(&self.focus)
             .size_full()
-            .bg(c.background)
-            .text_color(c.foreground)
+            .bg(style.colors.background)
+            .text_color(t.foreground)
             .child(
                 h_flex()
-                    .h(px(34.))
+                    .h(px(36.))
                     .flex_none()
                     .gap_2()
-                    .px_3()
+                    .pl_3()
+                    .pr_2()
                     .border_b_1()
-                    .border_color(c.border)
-                    .text_size(style.ui_font_size)
-                    .child(div().child(self.path.clone()))
-                    .when(blocks > 0, |el| {
+                    .border_color(t.border)
+                    .text_size(px(12.))
+                    .child(FileIcon::file(&self.path))
+                    .child(div().min_w_0().child(PathLabel(self.path.clone().into())))
+                    .child(
+                        div()
+                            .px_1p5()
+                            .rounded_sm()
+                            .bg(t.conflict_fill)
+                            .text_size(px(10.5))
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                            .text_color(t.on_status)
+                            .child("Conflict"),
+                    )
+                    .when(n > 0, |el| {
                         el.child(
-                            div()
-                                .text_color(c.subtle)
-                                .child(format!("{decided}/{blocks} decided")),
+                            h_flex()
+                                .text_size(px(11.5))
+                                .text_color(t.muted_foreground)
+                                .child(
+                                    div()
+                                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                                        .text_color(if resolved == n {
+                                            t.added
+                                        } else {
+                                            t.foreground
+                                        })
+                                        .child(resolved.to_string()),
+                                )
+                                .child(format!("/{n} resolved")),
                         )
                     })
                     .child(div().flex_1())
                     .child(
-                        Button::new("ask-agent")
-                            .xsmall()
+                        small("ask-agent", "Ask agent to resolve".into())
                             .icon(Lucide::Bot)
-                            .label("Ask agent to resolve")
-                            .tooltip("Hands the conflicts to the agent in this worktree's terminal")
+                            .tooltip("Pastes a prompt into the terminal an agent runs in, here")
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.ask_agent(window, cx)),
                             ),
                     )
-                    .when_some(
-                        self.merge_tool
-                            .clone()
-                            .filter(|_| tool_can_open(&self.path)),
-                        |el, tool| {
-                            let name = tool_name(&tool);
-                            el.child(
-                                Button::new("merge-tool")
-                                    .xsmall()
-                                    .icon(Lucide::GitMerge)
-                                    .label(if self.in_tool {
-                                        format!("Waiting for {name}…")
-                                    } else {
-                                        format!("Open in {name}")
-                                    })
-                                    .disabled(self.in_tool || self.busy)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_tool(window, cx)
-                                    })),
-                            )
-                        },
-                    )
-                    .when(blocks > 0, |el| {
+                    .when_some(tool, |el, tool| {
+                        let name = tool_name(&tool);
                         el.child(
-                            Button::new("save-resolution")
-                                .xsmall()
-                                .primary()
-                                .label(if decided == blocks {
-                                    "Save and mark resolved"
+                            small(
+                                "merge-tool",
+                                if self.in_tool {
+                                    format!("Waiting for {name}…")
                                 } else {
-                                    "Save choices"
-                                })
+                                    format!("Open in {name}")
+                                },
+                            )
+                            .icon(Lucide::GitMerge)
+                            .disabled(self.in_tool || self.busy)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_tool(window, cx)),
+                            ),
+                        )
+                    })
+                    .when(n > 0, |el| {
+                        el.child(
+                            small("preview", "Preview result".into())
+                                .icon(Lucide::Eye)
+                                .toggled(self.preview)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.preview = !this.preview;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(small("all-current", "All current".into()).on_click(
+                            cx.listener(|this, _, _, cx| this.choose_all(Pick::Ours, cx)),
+                        ))
+                        .child(small("all-incoming", "All incoming".into()).on_click(
+                            cx.listener(|this, _, _, cx| this.choose_all(Pick::Theirs, cx)),
+                        ))
+                        .child(
+                            small("mark-resolved", "Mark resolved".into())
+                                .primary()
+                                .icon(Lucide::Check)
                                 .loading(self.busy)
-                                .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
+                                .disabled(self.busy || resolved < n)
+                                .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
                         )
                     }),
             )
             .child(div().flex_1().min_h_0().child(body))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn choices_make_the_file_and_undecided_blocks_keep_markers() {
-        let p = parse_conflicts("a\n<<<<<<< HEAD\nb\n=======\nc\n>>>>>>> main\nd\n<<<<<<< HEAD\ne\n=======\nf\n>>>>>>> main\n").unwrap();
-        let mut choices = HashMap::from([(0, Choice::Both)]);
-        assert_eq!(
-            resolved_text(&p, &choices),
-            "a\nb\nc\nd\n<<<<<<< HEAD\ne\n=======\nf\n>>>>>>> main\n"
-        );
-        choices.insert(1, Choice::Incoming);
-        assert_eq!(resolved_text(&p, &choices), "a\nb\nc\nd\nf\n");
     }
 }

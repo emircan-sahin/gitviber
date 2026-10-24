@@ -11,12 +11,33 @@ use gpui_kit::{App, px};
 /// Keeps the diffs' look and options in step from now on. Once, from `init`.
 pub fn install(cx: &mut App) {
     gitviber_diff::set_core(crate::core(cx), cx);
+    answer_commands(cx);
     apply_style(cx);
     apply_settings(cx);
     cx.observe_global::<AppTheme>(apply_style).detach();
     cx.observe_global::<SyntaxTheme>(apply_style).detach();
     cx.observe_global::<Settings>(apply_settings).detach();
     cx.observe_global::<DiffOptions>(save_options).detach();
+}
+
+/// The app's diff and review keys reach the focused diff in any view that shows one (a pull
+/// request's file, a commit, a guide), not only Changes' tabs.
+fn answer_commands(cx: &mut App) {
+    use gitviber_diff::Command as C;
+    use gitviber_ui::actions::{diff, file, review};
+    let commands: Vec<(Box<dyn gpui_kit::Action>, C)> = vec![
+        (Box::new(diff::NextChange), C::NextChange),
+        (Box::new(diff::PrevChange), C::PrevChange),
+        (Box::new(diff::StageChange), C::Stage),
+        (Box::new(diff::UnstageChange), C::Unstage),
+        (Box::new(diff::DiscardChange), C::Discard),
+        (Box::new(review::AddNote), C::AddNote),
+        (Box::new(review::ToggleViewed), C::ToggleViewed),
+        (Box::new(review::NextFile), C::NextFile),
+        (Box::new(review::PrevFile), C::PrevFile),
+        (Box::new(file::Save), C::Save),
+    ];
+    gitviber_diff::answer(cx, commands);
 }
 
 fn apply_style(cx: &mut App) {
