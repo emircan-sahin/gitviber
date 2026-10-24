@@ -75,17 +75,26 @@ pub fn open_main_window(project: Option<PathBuf>, cx: &mut App) {
         cx,
     );
     let opened = gpui_kit::open_window(options, cx, move |window, cx| {
-        let workspace = cx.new(Workspace::new);
-        Workspace::register_window(&workspace, window, cx);
-        if let Some(root) = project {
-            workspace.update(cx, |ws, cx| ws.open_project(root, window, cx));
-        }
-        cx.new(|cx| WorkspaceView::new(workspace, window, cx))
+        main_view(project, window, cx)
     });
     if let Err(err) = opened {
         eprintln!("gitviber: couldn't open the window: {err}");
         cx.quit();
     }
+}
+
+/// The main window's view: its workspace, with `project` opened when there is one.
+pub(crate) fn main_view(
+    project: Option<PathBuf>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<WorkspaceView> {
+    let workspace = cx.new(Workspace::new);
+    Workspace::register_window(&workspace, window, cx);
+    if let Some(root) = project {
+        workspace.update(cx, |ws, cx| ws.open_project(root, window, cx));
+    }
+    cx.new(|cx| WorkspaceView::new(workspace, window, cx))
 }
 
 impl WorkspaceView {

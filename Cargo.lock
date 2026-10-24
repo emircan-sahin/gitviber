@@ -2283,10 +2283,12 @@ name = "gitviber-files"
 version = "0.1.17"
 dependencies = [
  "gitviber-core",
+ "gitviber-diff",
  "gitviber-markdown",
  "gitviber-ui",
  "gpui-kit",
  "gpui-pre",
+ "image",
  "lsp-types",
 ]
 

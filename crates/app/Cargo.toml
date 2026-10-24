@@ -18,3 +18,8 @@ path = "src/main.rs"
 gpui-kit.workspace = true
 gitviber-ui = { path = "../ui" }
 gitviber-core = { path = "../core" }
+
+[features]
+# GITVIBER_SNAPSHOT=out.png draws the main window off screen into a PNG and exits (gitviber-ui's
+# `snapshot`): for checking the whole app without a window on screen. Never in a release.
+snapshot = ["gitviber-ui/snapshot"]

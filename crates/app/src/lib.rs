@@ -50,6 +50,26 @@ pub fn init(cx: &mut App) {
 
 /// Starts the app, then `started` once it's up (the main window opens first).
 pub fn run(started: impl FnOnce(&mut App) + 'static) {
+    #[cfg(feature = "snapshot")]
+    if let Some(out) = std::env::var_os("GITVIBER_SNAPSHOT") {
+        let wait = std::env::var("GITVIBER_SNAPSHOT_WAIT")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(3.);
+        let size = gpui_kit::size(gpui_kit::px(1400.), gpui_kit::px(900.));
+        let shot = gitviber_ui::dev::snapshot_with(
+            std::path::Path::new(&out),
+            size,
+            wait,
+            init,
+            |window, cx| workspace_view::main_view(project_to_open(cx), window, cx).into(),
+        );
+        if let Err(err) = shot {
+            eprintln!("gitviber: snapshot failed: {err}");
+            std::process::exit(1);
+        }
+        std::process::exit(0);
+    }
     gpui_kit::application().with_assets(Assets).run(move |cx| {
         init(cx);
         let project = project_to_open(cx);

@@ -154,6 +154,28 @@ pub fn snapshot(
     wait: f32,
     build: impl FnOnce(&mut Window, &mut App) -> AnyView + 'static,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    snapshot_with(
+        out,
+        size,
+        wait,
+        |cx| {
+            crate::init(cx);
+            crate::start_core(cx);
+            windows::install_app_actions(cx);
+        },
+        move |window, cx| host(build, window, cx).into(),
+    )
+}
+
+/// `snapshot` for any root: `setup` does the app's init, `root` builds the window's view.
+#[cfg(feature = "snapshot")]
+pub fn snapshot_with(
+    out: &std::path::Path,
+    size: gpui_kit::Size<gpui_kit::Pixels>,
+    wait: f32,
+    setup: impl FnOnce(&mut App),
+    root: impl FnOnce(&mut Window, &mut App) -> AnyView + 'static,
+) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
 
     let text_system = gpui_snapshot_platform::current_platform(true).text_system();
@@ -162,13 +184,9 @@ pub fn snapshot(
         std::sync::Arc::new(Assets),
         gpui_snapshot_platform::current_headless_renderer,
     );
-    cx.update(|cx| {
-        crate::init(cx);
-        crate::start_core(cx);
-        windows::install_app_actions(cx);
-    });
+    cx.update(setup);
     let window = cx.open_window(size, move |window, cx| {
-        let view = host(build, window, cx);
+        let view = root(window, cx);
         cx.new(|cx| gpui_kit::base::Root::new(view, window, cx))
     })?;
     // Core answers on its own threads; the test dispatcher only runs what's already queued.
