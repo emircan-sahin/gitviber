@@ -2,6 +2,7 @@
 //! code blocks colored with the syntax theme), our alerts and diagram blocks, frontmatter as a
 //! table, links followed the way the old viewer did, and images through a cache the view owns.
 
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -10,19 +11,21 @@ use gitviber_ui::memory::Live;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::text::{
     InlineElement, InlineRenderContext, MarkdownExtensions, MarkdownNode, MarkdownParseContext,
-    MarkdownPlugin, TextView, TextViewState, markdown_ast,
+    MarkdownPlugin, RangeHighlight, RenderedText, TextView, TextViewState, markdown_ast,
 };
 use gpui_kit::component::text::FrontmatterPlugin;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    App, AppContext as _, ClipboardItem, Context, ElementId, Entity, EventEmitter, FocusHandle,
-    Focusable, Hsla, ImageSource, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    RenderImage, Resource, SharedString, SharedUri, StatefulInteractiveElement as _, Styled as _,
-    WeakEntity, Window, div, image_cache, prelude::FluentBuilder as _, px, rems,
+    App, AppContext as _, Bounds, ClipboardItem, Context, ElementId, Entity, EventEmitter,
+    FocusHandle, Focusable, Hsla, ImageSource, InteractiveElement as _, IntoElement,
+    ParentElement as _, Pixels, Render, RenderImage, Resource, ScrollHandle, SharedString,
+    SharedUri, StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div,
+    image_cache, point, prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::blocks::{self, Callout, Callouts, DiagramKind, SourceBlock};
 use crate::diagrams::{Diagrams, Drawn, Look};
+use crate::find::{self, FindQuery};
 use crate::images::BoundedImageCache;
 use crate::links::{self, Link};
 
@@ -70,6 +73,22 @@ pub enum MarkdownEvent {
     OpenFile { path: String, line: Option<u32> },
 }
 
+/// The text changed under a find ([`MarkdownView::find`]): its matches were looked for again,
+/// `matches` of them now; the current one stays where it can.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FindChanged {
+    pub matches: usize,
+}
+
+/// A find the host asked for: the query, the text it ran on, what it found.
+struct Found {
+    query: FindQuery,
+    /// What `matches` index; the view showing other text runs the query again.
+    text: RenderedText,
+    matches: Vec<Range<usize>>,
+    current: Option<usize>,
+}
+
 pub struct MarkdownView {
     state: Entity<TextViewState>,
     base: Arc<MarkdownBase>,
@@ -78,11 +97,16 @@ pub struct MarkdownView {
     extensions: MarkdownExtensions,
     /// Sized to its content, inside something else that scrolls (a PR body, a comment).
     inline: bool,
+    found: Option<Found>,
+    /// The scrolling div an inline view sits in, for revealing a match.
+    reveal_in: Option<ScrollHandle>,
     focus: FocusHandle,
+    _text: Subscription,
     _live: Live,
 }
 
 impl EventEmitter<MarkdownEvent> for MarkdownView {}
+impl EventEmitter<FindChanged> for MarkdownView {}
 
 impl MarkdownView {
     /// A document filling its place: it scrolls, on the code background, centered.
@@ -125,6 +149,7 @@ impl MarkdownView {
             })
         });
         let extensions = extensions(cx.weak_entity(), base.clone(), true);
+        let text = cx.observe(&state, |this: &mut Self, _, cx| this.find_again(cx));
         MarkdownView {
             state,
             base,
@@ -132,7 +157,10 @@ impl MarkdownView {
             diagrams,
             extensions,
             inline,
+            found: None,
+            reveal_in: None,
             focus: cx.focus_handle(),
+            _text: text,
             _live: Live::new("MarkdownView"),
         }
     }
@@ -162,6 +190,132 @@ impl MarkdownView {
             }
             Link::File { path, line } => cx.emit(MarkdownEvent::OpenFile { path, line }),
         }
+    }
+
+    /// Find in the text the view shows (not its markdown source): every match of `query` is
+    /// washed in the theme's find color and their count comes back (at most
+    /// [`find::MAX_MATCHES`]), or why the query can't run. An empty query clears the marks.
+    /// None is current until [`Self::select_match`]. Text that changes later is searched again,
+    /// with [`FindChanged`] emitted.
+    pub fn find(&mut self, query: &FindQuery, cx: &mut Context<Self>) -> Result<usize, String> {
+        if query.text.is_empty() {
+            if self.found.take().is_some() {
+                self.state.update(cx, |s, cx| s.clear_range_highlights(cx));
+            }
+            return Ok(0);
+        }
+        let text = self.state.read(cx).rendered_text();
+        if let Some(f) = &self.found
+            && f.query == *query
+            && f.text == text
+        {
+            return Ok(f.matches.len());
+        }
+        let matches = match find::find_matches(text.as_str(), query, find::MAX_MATCHES) {
+            Ok(m) => m,
+            Err(e) => {
+                _ = self.find(&FindQuery::default(), cx);
+                return Err(e);
+            }
+        };
+        let n = matches.len();
+        self.found = Some(Found {
+            query: query.clone(),
+            text,
+            matches,
+            current: None,
+        });
+        self.paint_matches(cx);
+        Ok(n)
+    }
+
+    /// Makes match `ix` of the find the current one, or none in this view (`None`: for a host
+    /// whose matches run across several views). `reveal` scrolls to it: a view that scrolls does
+    /// so itself; an inline one scrolls the `gpui::list` around it once its row is laid out
+    /// (scroll the list to that row first), or the div given to [`Self::reveal_in`].
+    pub fn select_match(&mut self, ix: Option<usize>, reveal: bool, cx: &mut Context<Self>) {
+        let Some(f) = &mut self.found else { return };
+        let ix = ix.filter(|i| *i < f.matches.len());
+        let range = ix.map(|i| f.matches[i].clone());
+        if f.current != ix {
+            f.current = ix;
+            self.paint_matches(cx);
+        }
+        if let Some(range) = range.filter(|_| reveal) {
+            self.state.update(cx, |s, cx| {
+                _ = s.reveal_range(range, cx);
+            });
+        }
+    }
+
+    /// The next match (`dir` 1) or the one before (-1), round, revealed; the first or the last
+    /// when none is current. The current one, if any.
+    pub fn step_match(&mut self, dir: isize, cx: &mut Context<Self>) -> Option<usize> {
+        let (current, n) = self.matches();
+        if n == 0 {
+            return None;
+        }
+        let next = match current {
+            Some(i) => (i as isize + dir).rem_euclid(n as isize) as usize,
+            None if dir < 0 => n - 1,
+            None => 0,
+        };
+        self.select_match(Some(next), true, cx);
+        Some(next)
+    }
+
+    /// The find's current match and how many there are.
+    pub fn matches(&self) -> (Option<usize>, usize) {
+        self.found
+            .as_ref()
+            .map_or((None, 0), |f| (f.current, f.matches.len()))
+    }
+
+    /// For an inline view in a div that scrolls (`overflow_y_scroll` + `track_scroll(handle)`):
+    /// revealing a match scrolls that div.
+    pub fn reveal_in(&mut self, handle: ScrollHandle) {
+        self.reveal_in = Some(handle);
+    }
+
+    /// The view shows other text than a find ran on: run it again.
+    fn find_again(&mut self, cx: &mut Context<Self>) {
+        let Some(f) = &self.found else { return };
+        let text = self.state.read(cx).rendered_text();
+        if f.text == text {
+            return;
+        }
+        let matches =
+            find::find_matches(text.as_str(), &f.query, find::MAX_MATCHES).unwrap_or_default();
+        let n = matches.len();
+        let current = f
+            .current
+            .and_then(|i| n.checked_sub(1).map(|last| i.min(last)));
+        self.found = Some(Found {
+            query: f.query.clone(),
+            text,
+            matches,
+            current,
+        });
+        self.paint_matches(cx);
+        cx.emit(FindChanged { matches: n });
+    }
+
+    fn paint_matches(&mut self, cx: &mut Context<Self>) {
+        let Some(f) = &self.found else { return };
+        let t = cx.app_theme();
+        let (wash, current) = (t.find_match, t.find_current);
+        let marks: Vec<RangeHighlight> = f
+            .matches
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let color = if Some(i) == f.current { current } else { wash };
+                RangeHighlight::new(r.clone(), color)
+            })
+            .collect();
+        self.state.update(cx, |s, cx| {
+            _ = s.set_range_highlights(marks, cx);
+        });
     }
 
     /// Scrolls to the heading `anchor` names (GitHub's slug); false if there's none.
@@ -496,7 +650,11 @@ impl Render for MarkdownView {
             self.extensions.clone(),
         )
         .scrollable(!self.inline)
-        .selectable(true);
+        .selectable(true)
+        .when_some(
+            self.reveal_in.clone().filter(|_| self.inline),
+            |v, handle| v.on_reveal(move |line, window, _| scroll_to_line(&handle, line, window)),
+        );
         if self.inline {
             return div()
                 .id("markdown-inline")
@@ -522,6 +680,20 @@ impl Render for MarkdownView {
                     .child(view),
             )
     }
+}
+
+/// Brings `line` (window coordinates) into `handle`'s view a third of the way down, only when
+/// it's off screen.
+fn scroll_to_line(handle: &ScrollHandle, line: Bounds<Pixels>, window: &mut Window) {
+    let view = handle.bounds();
+    if line.top() >= view.top() && line.bottom() <= view.bottom() {
+        return;
+    }
+    let offset = handle.offset();
+    let y = offset.y + view.top() + view.size.height / 3. - line.top();
+    let max = handle.max_offset().y;
+    handle.set_offset(point(offset.x, y.clamp(-max, px(0.))));
+    window.refresh();
 }
 
 /// Whether `path` is a markdown file by its name.

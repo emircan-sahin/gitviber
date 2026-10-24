@@ -15,6 +15,8 @@ gpui-kit.workspace = true
 gitviber-ui = { path = "../ui" }
 # Already in the tree through gpui; decodes still images scaled down (images.rs).
 image = { version = "=0.25.10", default-features = false }
+# Already in the tree through gpui, with these features: find's Regex toggle (find.rs).
+regex = "=1.13.1"
 # Mermaid diagrams (as SVG, which gpui's resvg draws) and TeX math (as pixels), no JS: diagrams.rs.
 # All MIT. mermaid's defaults would add a CLI and a third resvg; json5 and ratex's own crates
 # are pinned below their newest releases, out less than two weeks.

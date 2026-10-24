@@ -42,6 +42,20 @@ fn closing_a_document_gives_its_entities_back(cx: &mut TestAppContext) {
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();
+        // A find's marks and its text snapshot go with the view.
+        let view = host.read_with(cx, |h, _| {
+            h.0.clone().and_then(|v| v.downcast::<MarkdownView>().ok())
+        });
+        if let Some(view) = view {
+            view.update(cx, |v, cx| {
+                let query = crate::FindQuery {
+                    text: "a".into(),
+                    ..Default::default()
+                };
+                assert!(v.find(&query, cx).is_ok_and(|n| n > 0));
+                v.step_match(1, cx);
+            });
+        }
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.update(|window, cx| {
             host.update(cx, |h, cx| {
