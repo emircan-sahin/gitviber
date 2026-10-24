@@ -26,6 +26,7 @@ use gpui_kit::{
 
 use crate::layout::{self, LEFT, RIGHT};
 use crate::menus::{ClearRecent, OpenRecent};
+use crate::open_in_button::OpenInButton;
 use crate::overlay::ShortcutOverlay;
 use crate::palette::{Mode, Palette};
 use crate::status_bar::{STATUS_BAR_HEIGHT, status_bar};
@@ -58,6 +59,7 @@ drag_preview!(ResizeLeft, ResizeRight, ResizeBottom);
 pub struct WorkspaceView {
     workspace: Entity<Workspace>,
     overlay: Entity<ShortcutOverlay>,
+    open_in: Entity<OpenInButton>,
     focus: FocusHandle,
     sizes: PanelSizes,
     /// A frame was drawn: GPUI can tell which commands apply only from one.
@@ -168,6 +170,7 @@ impl WorkspaceView {
             },
         ));
         let overlay = cx.new(|_| ShortcutOverlay::new(workspace.clone()));
+        let open_in = cx.new(|_| OpenInButton::new(workspace.clone()));
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let memory_tick = memory::readout_enabled().then(|| {
@@ -185,6 +188,7 @@ impl WorkspaceView {
         Self {
             workspace,
             overlay,
+            open_in,
             focus,
             sizes: UiState::get(cx).panels.clone(),
             drawn: false,
@@ -521,7 +525,7 @@ impl Render for WorkspaceView {
         let t = cx.app_theme().clone();
         let top = top_bar(&ctx, self.drawn, window, cx);
         self.drawn = true;
-        let status = status_bar(&ctx, window, cx);
+        let status = status_bar(&ctx, &self.open_in, window, cx);
         let viewport = window.viewport_size();
         let (ws_has_project, left_open, right_open, bottom_open, maximized) = {
             let ws = self.workspace.read(cx);
@@ -643,6 +647,9 @@ impl Render for WorkspaceView {
             )
             .on_action(cx.listener(|this, _: &workbench::QuickOpen, window, cx| {
                 Palette::open(Mode::Files, &this.workspace, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &file::OpenIn, _, cx| {
+                this.open_in.update(cx, |b, cx| b.run(cx))
             }))
             .on_action(cx.listener(|this, _: &terminal::NewInProject, window, cx| {
                 Palette::open(Mode::Projects, &this.workspace, window, cx)

@@ -185,8 +185,6 @@ pub struct SkillInfo {
 
 #[derive(Default)]
 pub struct Data {
-    /// The editors, terminals and git clients found here: id, name.
-    pub apps: Option<Vec<(String, String)>>,
     pub permission: Option<Permission>,
     /// macOS's notification prompt is up.
     pub asking: bool,
@@ -259,6 +257,7 @@ impl SettingsWindow {
             }
             cx.notify();
         }));
+        subs.push(cx.observe_global::<gitviber_ui::open_in::Found>(|_, cx| cx.notify()));
         // Back from System Settings or Obsidian: what they changed shows.
         subs.push(cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
@@ -298,7 +297,7 @@ impl SettingsWindow {
             _subscriptions: subs,
         };
         if gitviber_ui::has_core(cx) {
-            this.load_apps(cx);
+            gitviber_ui::open_in::refresh(cx);
             this.load_permission(cx);
             this.load_vaults(cx);
             this.load_git(cx);
@@ -334,15 +333,6 @@ impl SettingsWindow {
             });
         });
         self.loads.insert(name, task);
-    }
-
-    fn load_apps(&mut self, cx: &mut Context<Self>) {
-        self.load(
-            "apps",
-            crate::menus::installed_apps,
-            |this, apps, _| this.data.apps = Some(apps),
-            cx,
-        );
     }
 
     fn load_permission(&mut self, cx: &mut Context<Self>) {

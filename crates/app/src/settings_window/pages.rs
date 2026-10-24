@@ -627,17 +627,9 @@ pub fn thousands(n: u32) -> String {
 }
 
 /// "None: show the list", then the apps found here (unless hidden) and the user's own.
-fn open_in_choices(apps: Option<&[(String, String)]>, s: &Settings) -> Vec<(String, String)> {
+fn open_in_choices(apps: &[gitviber_ui::open_in::OpenApp], s: &Settings) -> Vec<(String, String)> {
     let mut out = vec![(String::new(), "None: show the list".to_string())];
-    if !s.open_in_hide_builtins {
-        out.extend(apps.unwrap_or_default().iter().cloned());
-    }
-    out.extend(
-        s.open_in_custom
-            .iter()
-            .filter(|a| !a.name.trim().is_empty())
-            .map(|a| (a.id.clone(), a.name.clone())),
-    );
+    out.extend(apps.iter().map(|a| (a.id.clone(), a.name.clone())));
     // The default stays listed while what it names isn't found, so it can be seen and changed.
     if !s.open_in_app.is_empty() && !out.iter().any(|(id, _)| *id == s.open_in_app) {
         out.push((s.open_in_app.clone(), s.open_in_app.clone()));
@@ -718,7 +710,8 @@ fn custom_app_row(i: usize, app: CustomApp, window: &mut Window, cx: &mut App) -
 }
 
 pub fn open_in(w: &SettingsWindow, cx: &App) -> SettingPage {
-    let choices = open_in_choices(w.data.apps.as_deref(), Settings::get(cx));
+    let _ = w;
+    let choices = open_in_choices(&gitviber_ui::open_in::apps(cx), Settings::get(cx));
     SettingPage::new("Open In")
         .icon(IconName::SquareArrowOutUpRight)
         .groups([
@@ -1284,26 +1277,17 @@ mod tests {
     fn the_default_app_list_keeps_a_missing_default() {
         let s = Settings {
             open_in_app: "custom:gone".into(),
-            open_in_custom: vec![CustomApp {
-                id: "custom:a".into(),
-                name: "Mine".into(),
-                command: "mine {path}".into(),
-            }],
             ..Settings::default()
         };
-        let apps = vec![("zed".to_string(), "Zed".to_string())];
-        let list = open_in_choices(Some(&apps), &s);
+        let apps = vec![gitviber_ui::open_in::OpenApp {
+            id: "zed".into(),
+            name: "Zed".into(),
+            group: gitviber_ui::open_in::Group::Editor,
+            command: None,
+        }];
+        let list = open_in_choices(&apps, &s);
         let ids: Vec<&str> = list.iter().map(|(id, _)| id.as_str()).collect();
-        assert_eq!(ids, ["", "zed", "custom:a", "custom:gone"]);
-        let hidden = Settings {
-            open_in_hide_builtins: true,
-            ..s
-        };
-        assert!(
-            !open_in_choices(Some(&apps), &hidden)
-                .iter()
-                .any(|(id, _)| id == "zed")
-        );
+        assert_eq!(ids, ["", "zed", "custom:gone"]);
     }
 
     #[test]
