@@ -42,6 +42,12 @@ pub trait TabItem: Render {
     fn reopenable(&self, _cx: &App) -> bool {
         true
     }
+
+    /// Left out of the tab strip while it keeps running (an agent's page with Settings → Browser
+    /// → Show agents' tabs off).
+    fn hidden(&self, _cx: &App) -> bool {
+        false
+    }
 }
 
 /// The icon before a tab's title.
@@ -62,6 +68,7 @@ trait AnyTab {
     fn dirty(&self, cx: &App) -> bool;
     fn focus(&self, cx: &App) -> Option<FocusHandle>;
     fn reopenable(&self, cx: &App) -> bool;
+    fn hidden(&self, cx: &App) -> bool;
     fn view(&self) -> AnyView;
     fn id(&self) -> EntityId;
 }
@@ -90,6 +97,9 @@ impl<V: TabItem> AnyTab for Entity<V> {
     }
     fn reopenable(&self, cx: &App) -> bool {
         self.read(cx).reopenable(cx)
+    }
+    fn hidden(&self, cx: &App) -> bool {
+        self.read(cx).hidden(cx)
     }
     fn view(&self) -> AnyView {
         self.clone().into()
@@ -131,6 +141,9 @@ impl TabHandle {
     }
     pub fn reopenable(&self, cx: &App) -> bool {
         self.0.reopenable(cx)
+    }
+    pub fn hidden(&self, cx: &App) -> bool {
+        self.0.hidden(cx)
     }
     pub fn view(&self) -> AnyView {
         self.0.view()

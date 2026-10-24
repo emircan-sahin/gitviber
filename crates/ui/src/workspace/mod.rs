@@ -558,6 +558,21 @@ impl Workspace {
         self.tabs.get(&selection_key(selection))
     }
 
+    /// Changes what a tab under `key` saves as its selection (a page that moved to another address)
+    /// without showing it or opening anything; its key stays.
+    pub fn set_selection(
+        &mut self,
+        key: &SharedString,
+        selection: Selection,
+        cx: &mut Context<Self>,
+    ) {
+        if self.tabs.get(key).is_none() {
+            return;
+        }
+        self.tabs.set(key, |tab| tab.selection = Some(selection));
+        self.changed(WorkspaceEvent::TabsChanged, cx);
+    }
+
     /// Opens a center tab under `key` that no selection describes (it isn't saved or reopened),
     /// or shows it when it's open already, without building it again. `preview`: a single
     /// click's tab, which the next preview open replaces; false keeps it.
