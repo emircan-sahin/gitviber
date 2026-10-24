@@ -2,10 +2,7 @@
 //! math, which have no renderer here yet and show as their source in a labeled block. The
 //! parsing is plain functions on the source, so tests run without a window.
 
-use std::sync::Arc;
-
 use gpui_kit::component::text::markdown_ast as mdast;
-use gpui_kit::{AnyElement, App, Window};
 
 /// GitHub's five alert types.
 pub const GITHUB_ALERTS: [&str; 5] = ["note", "tip", "important", "warning", "caution"];
@@ -139,7 +136,8 @@ pub fn parse_callout(quote_source: &str, flavor: Callouts) -> Option<Callout> {
     }
 }
 
-/// A block with no renderer yet: shown as its source under a label.
+/// A diagram or a formula: its picture once drawn, its source under a label until then (and
+/// when it can't be drawn).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceBlock {
     pub kind: DiagramKind,
@@ -161,7 +159,7 @@ impl DiagramKind {
     }
 }
 
-/// Mermaid fences and `$$` math, which need a renderer of their own.
+/// Mermaid fences, `$$` math and ```math fences: drawn as pictures (diagrams.rs).
 pub fn parse_source_block(node: &mdast::Node) -> Option<SourceBlock> {
     match node {
         mdast::Node::Code(code)
@@ -175,32 +173,23 @@ pub fn parse_source_block(node: &mdast::Node) -> Option<SourceBlock> {
                 source: code.value.clone(),
             })
         }
-        mdast::Node::Code(code) if code.lang.as_deref() == Some("math") => Some(SourceBlock {
-            kind: DiagramKind::Math,
-            source: code.value.clone(),
-        }),
+        mdast::Node::Code(code)
+            if code
+                .lang
+                .as_deref()
+                .is_some_and(|l| l.eq_ignore_ascii_case("math")) =>
+        {
+            Some(SourceBlock {
+                kind: DiagramKind::Math,
+                source: code.value.clone(),
+            })
+        }
         mdast::Node::Math(math) => Some(SourceBlock {
             kind: DiagramKind::Math,
             source: math.value.clone(),
         }),
         _ => None,
     }
-}
-
-/// Draws a diagram or a formula from its source; None leaves the labeled source. The app sets one
-/// once something can draw them (`set_diagram_renderer`).
-pub type DiagramRenderer =
-    Arc<dyn Fn(DiagramKind, &str, &mut Window, &mut App) -> Option<AnyElement> + Send + Sync>;
-
-struct Renderer(DiagramRenderer);
-impl gpui_kit::Global for Renderer {}
-
-pub fn set_diagram_renderer(cx: &mut App, renderer: DiagramRenderer) {
-    cx.set_global(Renderer(renderer));
-}
-
-pub(crate) fn diagram_renderer(cx: &App) -> Option<DiagramRenderer> {
-    cx.try_global::<Renderer>().map(|r| r.0.clone())
 }
 
 #[cfg(test)]
@@ -239,5 +228,27 @@ mod tests {
     fn nested_quote_lines_keep_their_inner_marker() {
         let c = parse_callout("> [!TIP]\n> > inner\n> text", Callouts::GitHub).unwrap();
         assert_eq!(c.body, "> inner\ntext");
+    }
+}
+
+/// Inline math as GitHub and Obsidian read it: `$` with no space inside either end and no digit
+/// right after the closing one, so "$5 and $10" stays text. `after`: the source past the node.
+pub fn is_inline_math(value: &str, after: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with(char::is_whitespace)
+        && !value.ends_with(char::is_whitespace)
+        && !after.starts_with(|c: char| c.is_ascii_digit())
+}
+
+#[cfg(test)]
+mod math_tests {
+    use super::is_inline_math;
+
+    #[test]
+    fn dollars_in_prose_stay_text() {
+        assert!(is_inline_math("x^2", " and more"));
+        assert!(!is_inline_math("5 and ", "10"));
+        assert!(!is_inline_math(" x", ""));
+        assert!(!is_inline_math("x", "5"));
     }
 }

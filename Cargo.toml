@@ -75,6 +75,11 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
+# The vendored gpui-base is a path package, so cargo would build it incrementally like our own
+# crates; we don't edit it day to day, and its incremental data ran ~400 MB a build variant.
+[profile.dev.package.gpui-base]
+incremental = false
+
 # The hot loops of the terminal and the diff, optimized even in a debug build, so a debug app
 # keeps up with Claude Code's output. Built once, like any dependency.
 [profile.dev.package.alacritty_terminal]

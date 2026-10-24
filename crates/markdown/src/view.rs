@@ -8,17 +8,21 @@ use std::sync::Arc;
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::memory::Live;
 use gpui_kit::assets::IconName;
-use gpui_kit::base::text::{MarkdownExtensions, MarkdownNode, TextView, TextViewState};
+use gpui_kit::base::text::{
+    InlineElement, InlineRenderContext, MarkdownExtensions, MarkdownNode, MarkdownParseContext,
+    MarkdownPlugin, TextView, TextViewState, markdown_ast,
+};
 use gpui_kit::component::text::FrontmatterPlugin;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     App, AppContext as _, ClipboardItem, Context, ElementId, Entity, EventEmitter, FocusHandle,
     Focusable, Hsla, ImageSource, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    Resource, SharedString, SharedUri, Styled as _, WeakEntity, Window, div, image_cache,
-    prelude::FluentBuilder as _, px, rems,
+    RenderImage, Resource, SharedString, SharedUri, StatefulInteractiveElement as _, Styled as _,
+    WeakEntity, Window, div, image_cache, prelude::FluentBuilder as _, px, rems,
 };
 
-use crate::blocks::{self, Callout, Callouts, SourceBlock};
+use crate::blocks::{self, Callout, Callouts, DiagramKind, SourceBlock};
+use crate::diagrams::{Diagrams, Drawn, Look};
 use crate::images::BoundedImageCache;
 use crate::links::{self, Link};
 
@@ -70,6 +74,7 @@ pub struct MarkdownView {
     state: Entity<TextViewState>,
     base: Arc<MarkdownBase>,
     images: Entity<BoundedImageCache>,
+    diagrams: Entity<Diagrams>,
     extensions: MarkdownExtensions,
     /// Sized to its content, inside something else that scrolls (a PR body, a comment).
     inline: bool,
@@ -111,11 +116,20 @@ impl MarkdownView {
         let base = Arc::new(base);
         let state = cx.new(|cx| TextViewState::markdown(source, cx));
         let images = BoundedImageCache::new(BoundedImageCache::display_side(window), cx);
+        let diagrams = Diagrams::new(cx);
+        // A picture landing changes its block's height: the document is laid out again.
+        let doc = state.downgrade();
+        diagrams.update(cx, |d, _| {
+            d.on_ready(move |cx| {
+                _ = doc.update(cx, |s, cx| s.invalidate_inline_layout(cx));
+            })
+        });
         let extensions = extensions(cx.weak_entity(), base.clone(), true);
         MarkdownView {
             state,
             base,
             images,
+            diagrams,
             extensions,
             inline,
             focus: cx.focus_handle(),
@@ -194,6 +208,147 @@ fn text_view(
         })
 }
 
+/// How pictures are drawn now: the theme's ink, the display's density.
+fn look(font_size: gpui_kit::Pixels, window: &Window, cx: &App) -> Look {
+    let t = cx.app_theme();
+    Look {
+        dark: t.dark,
+        color: t.foreground,
+        font_size: f32::from(font_size),
+        scale: window.scale_factor(),
+    }
+}
+
+/// The view's picture of `source`, starting it the first time.
+fn drawn(
+    view: &WeakEntity<MarkdownView>,
+    kind: DiagramKind,
+    source: &str,
+    inline: bool,
+    look: Look,
+    cx: &mut App,
+) -> Option<Drawn> {
+    let diagrams = view.upgrade()?.read(cx).diagrams.clone();
+    diagrams.update(cx, |d, cx| d.get(kind, source, inline, look, cx))
+}
+
+/// A drawn diagram or formula: its own size, centered; a wide one scrolls sideways.
+fn picture(
+    image: Arc<RenderImage>,
+    scale: f32,
+    kind: DiagramKind,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    let t = cx.app_theme();
+    let size = image.size(0);
+    let (w, h) = (
+        i32::from(size.width) as f32 / scale,
+        i32::from(size.height) as f32 / scale,
+    );
+    div()
+        .id(ElementId::Name(
+            format!("gv-picture-{:p}", Arc::as_ptr(&image)).into(),
+        ))
+        .my_2()
+        .w_full()
+        .overflow_x_scroll()
+        .flex()
+        .justify_center()
+        .when(kind == DiagramKind::Mermaid, |d| {
+            d.p_3().rounded(px(6.)).border_1().border_color(t.border)
+        })
+        .child(
+            gpui_kit::img(ImageSource::Render(image))
+                .w(px(w))
+                .h(px(h))
+                .flex_none(),
+        )
+        .into_any_element()
+}
+
+/// A diagram or formula as its source under a label: while it's drawn, or when it can't be.
+fn source_block(block: &SourceBlock, failed: bool, cx: &App) -> gpui_kit::AnyElement {
+    let t = cx.app_theme();
+    let label = if failed {
+        format!("{} (couldn't be drawn)", block.kind.label())
+    } else {
+        block.kind.label().to_string()
+    };
+    div()
+        .my_2()
+        .p_3()
+        .rounded(px(6.))
+        .border_1()
+        .border_color(t.border)
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .text_size(rems(0.6875))
+                .text_color(t.subtle)
+                .child(label),
+        )
+        .child(
+            div()
+                .font_family(t.fonts.code.clone())
+                .text_size(t.fonts.code_size)
+                .text_color(t.foreground)
+                .child(block.source.trim_end().to_string()),
+        )
+        .into_any_element()
+}
+
+/// `$…$` in a paragraph, drawn in the line; its source shows until then, or if it can't be drawn.
+struct InlineMath {
+    view: WeakEntity<MarkdownView>,
+}
+
+impl MarkdownPlugin for InlineMath {
+    fn name(&self) -> &str {
+        "gv-math"
+    }
+
+    fn parse(
+        &self,
+        node: &markdown_ast::Node,
+        cx: &MarkdownParseContext<'_>,
+    ) -> Option<MarkdownNode> {
+        let markdown_ast::Node::InlineMath(math) = node else {
+            return None;
+        };
+        let end = node.position()?.end.offset.checked_sub(cx.offset())?;
+        if !blocks::is_inline_math(&math.value, cx.source().get(end..).unwrap_or("")) {
+            return None;
+        }
+        Some(MarkdownNode::new("gv-math", math.value.clone()).text(math.value.clone()))
+    }
+
+    fn render_inline(
+        &self,
+        node: &MarkdownNode,
+        context: &InlineRenderContext,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<InlineElement> {
+        let source = node.data::<String>()?;
+        let look = look(context.font_size(), window, cx);
+        let Some(Drawn::Ready { image, scale }) =
+            drawn(&self.view, DiagramKind::Math, source, true, look, cx)
+        else {
+            return None;
+        };
+        let size = image.size(0);
+        let (w, h) = (
+            i32::from(size.width) as f32 / scale,
+            i32::from(size.height) as f32 / scale,
+        );
+        Some(InlineElement::new(
+            gpui_kit::img(ImageSource::Render(image)).w(px(w)).h(px(h)),
+        ))
+    }
+}
+
 fn kind_color(kind: &str, dark: bool) -> Hsla {
     let rgb = |d: u32, l: u32| gpui_kit::rgb(if dark { d } else { l }).into();
     match kind {
@@ -251,40 +406,20 @@ fn extensions(
             let text = block.source.clone();
             Some(MarkdownNode::new("gv-source", block).text(text))
         })
-        .block_renderer("gv-source", |node, window, cx| {
-            let Some(block) = node.data::<SourceBlock>() else {
-                return div().into_any_element();
-            };
-            if let Some(drawn) =
-                blocks::diagram_renderer(cx).and_then(|r| r(block.kind, &block.source, window, cx))
-            {
-                return drawn;
+        .block_renderer("gv-source", {
+            let view = view.clone();
+            move |node, window, cx| {
+                let Some(block) = node.data::<SourceBlock>() else {
+                    return div().into_any_element();
+                };
+                let look = look(window.rem_size(), window, cx);
+                match drawn(&view, block.kind, &block.source, false, look, cx) {
+                    Some(Drawn::Ready { image, scale }) => picture(image, scale, block.kind, cx),
+                    drawn => source_block(block, matches!(drawn, Some(Drawn::Failed(_))), cx),
+                }
             }
-            let t = cx.app_theme();
-            div()
-                .my_2()
-                .p_3()
-                .rounded(px(6.))
-                .border_1()
-                .border_color(t.border)
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(
-                    div()
-                        .text_size(rems(0.6875))
-                        .text_color(t.subtle)
-                        .child(block.kind.label()),
-                )
-                .child(
-                    div()
-                        .font_family(t.fonts.code.clone())
-                        .text_size(t.fonts.code_size)
-                        .text_color(t.foreground)
-                        .child(block.source.trim_end().to_string()),
-                )
-                .into_any_element()
         })
+        .plugin(InlineMath { view: view.clone() })
         .block_parser(move |node, cx| {
             let gpui_kit::component::text::markdown_ast::Node::Blockquote(_) = node else {
                 return None;
