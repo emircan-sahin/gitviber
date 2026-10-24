@@ -21,7 +21,8 @@ pub use model::list::ChangesView;
 pub use panel::ChangesPanel;
 pub use tabs::ChangeTab;
 
-use gitviber_ui::workspace::{PanelSpec, Slot, register_panel};
+use gitviber_ui::actions::changes as changes_actions;
+use gitviber_ui::workspace::{PanelSpec, Slot, Workspace, register_panel};
 use gpui_kit::{App, AppContext as _};
 use std::sync::Arc;
 
@@ -56,4 +57,27 @@ pub fn init(cx: &mut App) {
         })
         .order(0),
     );
+    // ⌃⌘C from anywhere, as in the old app: the panel shows, built if it wasn't yet, and its
+    // commit message takes the focus. With focus in the panel, the panel's own handler runs.
+    cx.on_action(|_: &changes_actions::FocusMessage, cx| {
+        let Some(handle) = cx.active_window() else {
+            return;
+        };
+        // The window is in the middle of dispatching the action: it can be updated after.
+        cx.defer(move |cx| {
+            handle
+                .update(cx, |_, window, cx| {
+                    let Some(ws) = Workspace::for_window(window, cx) else {
+                        return;
+                    };
+                    ws.update(cx, |ws, cx| ws.show_panel("changes", cx));
+                    let panel = Workspace::ensure_panel(&ws, "changes", window, cx)
+                        .and_then(|p| p.view().downcast::<ChangesPanel>().ok());
+                    if let Some(panel) = panel {
+                        panel.update(cx, |p, cx| p.focus_message(window, cx));
+                    }
+                })
+                .ok();
+        });
+    });
 }

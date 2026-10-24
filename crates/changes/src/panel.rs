@@ -19,14 +19,14 @@ use gitviber_ui::actions::{changes as changes_actions, git, review};
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{ChangeKind, FileIcon, LineCounts, PathLabel, StatusLetter};
 use gitviber_ui::workspace::{
-    ChangesOf, Panel, PanelContext, ProjectEvent, Selection, Toast, Workspace, WorkspaceEvent,
-    selection_key,
+    ChangesOf, GuideOf, Panel, PanelContext, ProjectEvent, Selection, Toast, Workspace,
+    WorkspaceEvent, selection_key,
 };
 use gitviber_ui::{ActiveAppTheme as _, AppTheme};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, Focusable,
@@ -175,6 +175,15 @@ pub fn selection_for(ws: &Entity<Workspace>, source: &DiffSource, cx: &App) -> O
         },
     })
 }
+
+/// As the file manager is named where the file opens.
+const REVEAL_LABEL: &str = if cfg!(target_os = "macos") {
+    "Reveal in Finder"
+} else if cfg!(windows) {
+    "Show in Explorer"
+} else {
+    "Show in Folder"
+};
 
 // MARK: The panel
 
@@ -686,6 +695,15 @@ impl ChangesPanel {
         self.keys = rows.iter().map(row_key).collect();
         self.rows = rows;
         cx.notify();
+    }
+
+    /// ⌃⌘C: into the commit message, the uncommitted files shown rather than a branch review.
+    pub fn focus_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.review.is_some() {
+            self.end_review(cx);
+        }
+        let commit = self.commit.clone();
+        commit.update(cx, |b, cx| b.focus_message(window, cx));
     }
 
     /// A section closed or opened again, as it'll be at the next launch.
@@ -1806,7 +1824,7 @@ impl ChangesPanel {
                         h_flex()
                             .invisible()
                             .group_hover("row", |s| s.visible())
-                            .children(self.actions_for(kind, rows, true, cx)),
+                            .children(self.actions_for(kind, rows.clone(), true, cx)),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !this.closed.remove(&key) {
@@ -1814,6 +1832,7 @@ impl ChangesPanel {
                         }
                         this.rebuild(cx);
                     }))
+                    .context_menu(self.folder_menu(kind, path, rows, ws, cx))
                     .into_any_element()
             }
             Row::Item(Item::File {
@@ -2113,6 +2132,127 @@ impl ChangesPanel {
             .children(buttons)
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_section(section, cx)))
             .into_any_element()
+    }
+
+    /// A tree folder's right-click menu: its git actions cover `rows`, every file under it.
+    fn folder_menu(
+        &self,
+        kind: Kind,
+        path: String,
+        rows: Vec<Arc<FileChange>>,
+        ws: Option<&Entity<Workspace>>,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+        let weak = cx.entity().downgrade();
+        let sels: Vec<Selection> = rows.iter().map(|f| selection_of(kind, f.clone())).collect();
+        let all_viewed = ws.is_some_and(|ws| sels.iter().all(|s| is_viewed(ws.read(cx), s)));
+        let can_stash = self.operation.is_none();
+        let root = self.root.clone();
+        move |menu, _, _| {
+            let n = rows.len();
+            let act = |f: fn(
+                &mut ChangesPanel,
+                Vec<Arc<FileChange>>,
+                &mut Window,
+                &mut Context<ChangesPanel>,
+            )| {
+                let (w, rows) = (weak.clone(), rows.clone());
+                move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    w.update(cx, |this, cx| f(this, rows.clone(), window, cx))
+                        .ok();
+                }
+            };
+            let mut menu = menu;
+            match kind {
+                Kind::Unstaged => {
+                    menu = menu
+                        .item(
+                            PopupMenuItem::new(format!("Stage {}", files(n)))
+                                .disabled(n == 0)
+                                .on_click(act(|this, rows, _, cx| this.stage(rows, cx))),
+                        )
+                        .item(
+                            PopupMenuItem::new(format!("Discard {}…", files(n)))
+                                .disabled(rows.iter().all(|f| kept_by_restore(f)))
+                                .on_click(act(|this, rows, window, cx| {
+                                    this.discard(rows, window, cx)
+                                })),
+                        );
+                }
+                Kind::Staged => {
+                    menu = menu.item(
+                        PopupMenuItem::new(format!("Unstage {}", files(n)))
+                            .on_click(act(|this, rows, _, cx| this.unstage_files(rows, cx))),
+                    );
+                }
+                Kind::Conflict => {
+                    menu = menu
+                        .item(
+                            PopupMenuItem::new(format!("Mark {} as Resolved", files(n))).on_click(
+                                act(|this, rows, window, cx| this.mark_resolved(rows, window, cx)),
+                            ),
+                        )
+                        .item(
+                            PopupMenuItem::new(format!("Take Current Version of {}", files(n)))
+                                .on_click(act(|this, rows, _, cx| {
+                                    this.resolve(rows, GitSide::Ours, cx)
+                                })),
+                        )
+                        .item(
+                            PopupMenuItem::new(format!("Take Incoming Version of {}", files(n)))
+                                .on_click(act(|this, rows, _, cx| {
+                                    this.resolve(rows, GitSide::Theirs, cx)
+                                })),
+                        );
+                }
+            }
+            if kind != Kind::Conflict && can_stash {
+                menu = menu.item(
+                    PopupMenuItem::new(format!("Stash {}…", files(n)))
+                        .disabled(n == 0)
+                        .on_click(act(|this, rows, window, cx| {
+                            let paths = rows.iter().map(|f| f.path.clone()).collect();
+                            this.stash_dialog(paths, window, cx)
+                        })),
+                );
+            }
+            if kind == Kind::Unstaged && n > 0 {
+                let (w, sels) = (weak.clone(), sels.clone());
+                menu = menu.item(
+                    PopupMenuItem::new(format!(
+                        "Mark {} as {}",
+                        files(n),
+                        if all_viewed { "Not Viewed" } else { "Viewed" }
+                    ))
+                    .on_click(move |_, _, cx| {
+                        w.update(cx, |this, cx| {
+                            this.mark_viewed(sels.clone(), !all_viewed, cx)
+                        })
+                        .ok();
+                    }),
+                );
+            }
+            let (abs, rel, reveal) = (
+                format!("{}/{}", root.trim_end_matches('/'), path),
+                path.clone(),
+                path.clone(),
+            );
+            menu.separator()
+                .item(PopupMenuItem::new(REVEAL_LABEL).on_click(move |_, _, cx| {
+                    let (core, path) = (crate::core(cx), reveal.clone());
+                    cx.background_spawn(async move { api::files::reveal_path(&core, path) })
+                        .detach();
+                }))
+                .separator()
+                .item(PopupMenuItem::new("Copy Path").on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(abs.clone()))
+                }))
+                .item(
+                    PopupMenuItem::new("Copy Relative Path").on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(rel.clone()))
+                    }),
+                )
+        }
     }
 
     /// A row's buttons, for its own file or a folder's (`files`, every file under it).
@@ -2438,6 +2578,25 @@ impl ChangesPanel {
                                     .ok();
                             }),
                         );
+                        if can_stash {
+                            let (w5, p5) = (
+                                w.clone(),
+                                rows.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
+                            );
+                            menu = menu.item(
+                                PopupMenuItem::new(if n > 1 {
+                                    format!("Stash {}…", files(n))
+                                } else {
+                                    "Stash This File…".into()
+                                })
+                                .on_click(move |_, window, cx| {
+                                    w5.update(cx, |this, cx| {
+                                        this.stash_dialog(p5.clone(), window, cx)
+                                    })
+                                    .ok();
+                                }),
+                            );
+                        }
                     }
                     Kind::Conflict => {
                         let (w3, r3) = (w.clone(), rows.clone());
@@ -2803,6 +2962,23 @@ impl ChangesPanel {
                             })
                         }),
                 )
+                .child({
+                    let (base, label) = (review.reference.clone(), review.label.clone());
+                    Button::new("guide-branch")
+                        .ghost()
+                        .xsmall()
+                        .icon(Lucide::Sparkles)
+                        .tooltip(format!(
+                            "Guided review of the branch's commits since {label}"
+                        ))
+                        .on_click(move |_, window, cx| {
+                            let of = GuideOf::Branch {
+                                base: base.clone(),
+                                label: label.clone(),
+                            };
+                            gitviber_review::open_guide(of, window, cx)
+                        })
+                })
                 .child(div().flex_1())
                 .child(
                     Button::new("review-close")
@@ -3144,8 +3320,7 @@ impl Render for ChangesPanel {
             }))
             .on_action(
                 cx.listener(|this, _: &changes_actions::FocusMessage, window, cx| {
-                    let commit = this.commit.clone();
-                    commit.update(cx, |b, cx| b.focus_message(window, cx));
+                    this.focus_message(window, cx)
                 }),
             )
     }
@@ -3537,6 +3712,103 @@ mod tests {
             "mine\n"
         );
         assert_eq!(cx.update(|_, cx| store::edit(&root, "a.txt", cx)), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn the_conflict_view_shows_each_blocks_base_and_hands_the_prompt_over(cx: &mut TestAppContext) {
+        let dir =
+            std::env::temp_dir().join(format!("gitviber-changes-conflict-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .unwrap()
+        };
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "Test"],
+            &["config", "user.email", "test@example.com"],
+        ] {
+            git(&dir, args);
+        }
+        std::fs::write(dir.join("a.txt"), "a\nb\nc\n").unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-q", "-m", "base"]);
+        git(&dir, &["checkout", "-q", "-b", "other"]);
+        std::fs::write(dir.join("a.txt"), "a\nB2\nc\n").unwrap();
+        git(&dir, &["commit", "-q", "-am", "theirs"]);
+        git(&dir, &["checkout", "-q", "main"]);
+        std::fs::write(dir.join("a.txt"), "a\nB1\nc\n").unwrap();
+        git(&dir, &["commit", "-q", "-am", "ours"]);
+        // Conflicts: git says so with a failure.
+        run(&["-c", "merge.conflictStyle=merge", "merge", "-q", "other"]);
+        let dir = dir.canonicalize().unwrap();
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let view = cx.update(|window, cx| {
+            let view = cx.new(|cx| crate::conflict::ConflictView::new("a.txt".into(), window, cx));
+            host.update(cx, |h, cx| {
+                h.center = Some(view.clone().into());
+                cx.notify();
+            });
+            view
+        });
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            let v = view.read(cx);
+            assert_eq!(
+                v.bases_for_test(),
+                vec![Some(vec!["b".to_string()])],
+                "the base comes from the index stages"
+            );
+        });
+        // No terminal runs an agent here: the prompt is copied for one.
+        cx.update(|window, cx| view.update(cx, |v, cx| v.ask_agent_for_test(window, cx)));
+        cx.run_until_parked();
+        let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text()));
+        assert_eq!(
+            copied.as_deref(),
+            Some(
+                "Resolve the merge conflicts in a.txt (merging other into main); keep both sides' intent, then stage the files."
+            )
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn focus_message_works_from_outside_the_panel(cx: &mut TestAppContext) {
+        let dir = repo("focus");
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(dir.clone(), window, cx)));
+        // The workspace's own panel drawn, and the left side closed, focus nowhere in it.
+        let panel = cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.set_open(gitviber_ui::workspace::Slot::Left, false, cx)
+            });
+            let panel = Workspace::ensure_panel(&ws, "changes", window, cx)
+                .and_then(|p| p.view().downcast::<ChangesPanel>().ok())
+                .expect("the panel is built");
+            host.update(cx, |h, cx| {
+                h.panel = Some(panel.clone());
+                cx.notify();
+            });
+            window.blur(cx);
+            window.activate_window();
+            panel
+        });
+        cx.run_until_parked();
+        cx.dispatch_action(changes_actions::FocusMessage);
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            assert!(ws.read(cx).is_open(gitviber_ui::workspace::Slot::Left));
+            assert!(panel.read(cx).commit.read(cx).message_focused(window, cx));
+        });
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

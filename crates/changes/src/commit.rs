@@ -569,6 +569,12 @@ impl CommitBox {
         self.set_fields(summary, body, window, cx);
     }
 
+    #[cfg(test)]
+    pub(crate) fn message_focused(&self, window: &Window, cx: &App) -> bool {
+        use gpui_kit::Focusable as _;
+        self.summary.read(cx).focus_handle(cx).is_focused(window)
+    }
+
     pub fn focus_message(&self, window: &mut Window, cx: &mut App) {
         self.summary.update(cx, |s, cx| s.focus(window, cx));
     }

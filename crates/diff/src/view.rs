@@ -20,13 +20,14 @@ use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::input::Rope;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::highlighter::{HighlightTheme, SyntaxHighlighter};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::scroll::Scrollbar;
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
     ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    StyledText, Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
+    StyledText, Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -1018,6 +1019,86 @@ impl DiffView {
         cx.notify();
     }
 
+    /// A right-click outside the lines picked picks the line under it, so the menu acts on the
+    /// change there; inside, the pick stays.
+    fn press_right(
+        &mut self,
+        ix: usize,
+        column: Column,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.focus(&self.focus, cx);
+        if self
+            .sel
+            .is_some_and(|s| s.column == column && s.items().contains(&ix))
+        {
+            return;
+        }
+        self.sel = Some(Sel {
+            column,
+            anchor: ix,
+            head: ix,
+            whole: true,
+        });
+        cx.emit(DiffEvent::SelectionChanged(self.selection()));
+        cx.notify();
+    }
+
+    /// The right-click menu: what the lines picked (or the change under them) can do here, and
+    /// copying them as text or as a patch.
+    fn line_menu(&self, menu: PopupMenu, view: WeakEntity<Self>) -> PopupMenu {
+        if self.edit.is_some() || self.data.is_none() {
+            return menu;
+        }
+        let lines = self.sel.is_some_and(|s| !s.is_cursor());
+        let picked = self.picked(false).is_some_and(|p| !p.is_empty());
+        let mut menu = menu;
+        let actions = [
+            LineAction::Stage,
+            LineAction::Stash,
+            LineAction::Discard,
+            LineAction::Unstage,
+            LineAction::Revert,
+        ];
+        let mut any = false;
+        for action in actions.into_iter().filter(|a| a.fits(&self.source.compare)) {
+            let v = view.clone();
+            let what = if lines { "Selected Lines" } else { "Change" };
+            menu = menu.item(
+                PopupMenuItem::new(format!("{} {what}", action.label()))
+                    .disabled(!picked)
+                    .on_click(move |_, _, cx| {
+                        v.update(cx, |this, cx| this.run_action(action, false, cx))
+                            .ok();
+                    }),
+            );
+            any = true;
+        }
+        if any {
+            menu = menu.separator();
+        }
+        let (copy, patch) = (view.clone(), view);
+        menu.item(
+            PopupMenuItem::new("Copy")
+                .disabled(self.sel.is_none())
+                .on_click(move |_, _, cx| {
+                    copy.update(cx, |this, cx| this.copy_lines(cx)).ok();
+                }),
+        )
+        .item(
+            PopupMenuItem::new(if lines {
+                "Copy Selected Lines as Patch"
+            } else {
+                "Copy Change as Patch"
+            })
+            .disabled(!picked)
+            .on_click(move |_, _, cx| {
+                patch.update(cx, |this, cx| this.copy_patch(cx)).ok();
+            }),
+        )
+    }
+
     fn moved(&mut self, ix: usize, column: Column, e: &MouseMoveEvent, cx: &mut Context<Self>) {
         let hover = self.change_of_item(ix);
         let mut changed = hover != self.hover || Some(ix) != self.hover_item;
@@ -1433,6 +1514,10 @@ impl DiffView {
                     this.press(ix, column, e, window, cx)
                 }),
             )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, _, window, cx| this.press_right(ix, column, window, cx)),
+            )
             .on_mouse_move(
                 cx.listener(move |this, e: &MouseMoveEvent, _, cx| this.moved(ix, column, e, cx)),
             )
@@ -1511,6 +1596,12 @@ impl DiffView {
                     MouseButton::Left,
                     cx.listener(move |this, e: &MouseDownEvent, window, cx| {
                         this.press(ix, column, e, window, cx)
+                    }),
+                )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, _, window, cx| {
+                        this.press_right(ix, column, window, cx)
                     }),
                 )
                 .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _, cx| {
@@ -1970,6 +2061,7 @@ impl Render for DiffView {
             }
             (_, Some(_)) => {
                 let view = cx.entity().downgrade();
+                let menu_view = view.clone();
                 div()
                     .id("diff-body")
                     .relative()
@@ -2013,6 +2105,10 @@ impl Render for DiffView {
                             cx.notify();
                         }
                     }))
+                    .context_menu(move |menu, _, cx| match menu_view.upgrade() {
+                        Some(v) => v.read(cx).line_menu(menu, menu_view.clone()),
+                        None => menu,
+                    })
                     .into_any_element()
             }
         };
