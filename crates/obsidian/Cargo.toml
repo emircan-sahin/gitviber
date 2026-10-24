@@ -1,0 +1,30 @@
+[package]
+name = "gitviber-obsidian"
+description = "GitViber's Obsidian vault beside the code: its files in a panel, notes as Obsidian's reading view shows them, canvases drawn natively."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "gitviber_obsidian"
+
+[dependencies]
+gitviber-core = { path = "../core" }
+gitviber-ui = { path = "../ui" }
+gitviber-markdown = { path = "../markdown" }
+# The tree model, the media view, the editor's languages and line-ending rules.
+gitviber-files = { path = "../files" }
+gpui-kit.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+gitviber-ui = { path = "../ui", features = ["snapshot"] }
+# Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.
+gpui-test.workspace = true
+
+# Every crate's example shares target/debug/examples/: a plain "demo" would be overwritten.
+[[example]]
+name = "obsidian-demo"
+path = "examples/demo.rs"
