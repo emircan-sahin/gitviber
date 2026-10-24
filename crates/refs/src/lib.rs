@@ -21,6 +21,7 @@ pub mod names;
 pub mod net;
 pub mod ops;
 pub mod points;
+pub mod remote_tags;
 pub mod repo;
 pub mod requests;
 pub mod store;

@@ -43,16 +43,31 @@ pub fn open_form<V: Render>(
 pub fn open_row_menu(row: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
     let at = row.center();
     window.defer(cx, move |window, cx| {
-        let down = MouseDownEvent { button: MouseButton::Right, position: at, modifiers: Modifiers::default(), click_count: 1, first_mouse: false };
+        let down = MouseDownEvent {
+            button: MouseButton::Right,
+            position: at,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        };
         window.dispatch_event(PlatformInput::MouseDown(down), cx);
-        let up = MouseUpEvent { button: MouseButton::Right, position: at, modifiers: Modifiers::default(), click_count: 1 };
+        let up = MouseUpEvent {
+            button: MouseButton::Right,
+            position: at,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        };
         window.dispatch_event(PlatformInput::MouseUp(up), cx);
     });
 }
 
 /// ⇧F10, as a list's key handler sees it.
 pub fn is_menu_key(k: &gpui_kit::Keystroke) -> bool {
-    k.key == "f10" && k.modifiers.shift && !k.modifiers.platform && !k.modifiers.control && !k.modifiers.alt
+    k.key == "f10"
+        && k.modifiers.shift
+        && !k.modifiers.platform
+        && !k.modifiers.control
+        && !k.modifiers.alt
 }
 
 /// The line under a typed name: what it became, or that it's taken.

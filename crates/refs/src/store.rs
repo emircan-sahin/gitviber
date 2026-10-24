@@ -151,7 +151,11 @@ pub fn worktree_run(main: &str, cx: &mut App) -> String {
 /// An issue's worktree runs what the last one did, else what a plain one runs.
 pub fn issue_run(main: &str, cx: &mut App) -> String {
     let s = get(cx);
-    s.issue_run.get(main).or_else(|| s.worktree_run.get(main)).cloned().unwrap_or_default()
+    s.issue_run
+        .get(main)
+        .or_else(|| s.worktree_run.get(main))
+        .cloned()
+        .unwrap_or_default()
 }
 
 pub fn set_issue_run(main: &str, run: &str, cx: &mut App) {

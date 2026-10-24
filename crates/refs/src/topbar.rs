@@ -3,7 +3,8 @@
 //! Pull and Push (or Publish) with their menus. Each keeps its state in the bar's element state
 //! per project, so it goes with the project.
 
-use std::time::{Duration, Instant};
+use std::collections::HashSet;
+use std::time::Duration;
 
 use gitviber_core::{api, git};
 use gitviber_ui::keymap::{file, shortcut_label};
@@ -25,6 +26,7 @@ use gpui_kit::{
 use crate::names::folder_name;
 use crate::net::{NetActivity, NetOp, progress_text};
 use crate::ops;
+use crate::remote_tags;
 use crate::repo::RepoState;
 use crate::worktrees::{list as wt_list, worktree_chip};
 
@@ -846,20 +848,6 @@ fn push_button(state: &Entity<RepoState>, cx: &mut App) -> AnyElement {
     publish_button(state, &status, busy)
 }
 
-/// Remote tags, asked when the push menu opens and reused for a few seconds.
-#[derive(Default)]
-struct RemoteTagsCache(Option<(Instant, String, Vec<String>)>);
-impl Global for RemoteTagsCache {}
-
-const FRESH: Duration = Duration::from_secs(10);
-/// A menu gives up on a remote that doesn't answer; git would wait minutes.
-const GIVE_UP: Duration = Duration::from_secs(6);
-
-/// Pushing or deleting a tag changes the answer.
-pub fn forget_remote_tags(cx: &mut App) {
-    cx.set_global(RemoteTagsCache(None));
-}
-
 /// Push with tags, and the local tags the remote lacks: which those are takes a network call,
 /// so it is asked only as the menu opens.
 fn push_menu(
@@ -878,67 +866,41 @@ fn push_menu(
                 .on_click(move |_, window, cx| {
                     if let Some(s) = st.upgrade() {
                         ops::push(&s, true, false, window, cx);
-                        forget_remote_tags(cx);
                     }
                 }),
         )
         .label("Also sends annotated tags on the pushed commits (--follow-tags).")
         .separator()
         .label("Local tags");
-    let cached = cx
-        .try_global::<RemoteTagsCache>()
-        .and_then(|c| c.0.clone())
-        .filter(|(at, _, _)| at.elapsed() < FRESH);
+    let root = state.read(cx).root().clone();
+    let there = remote_tags::lookup(&root, cx);
     let core = gitviber_ui::core(cx);
-    let op = NetOp::quiet();
-    if cached.is_none() {
-        let (c2, id) = (core.clone(), op.id.clone());
-        let timer = cx.background_executor().timer(GIVE_UP);
-        cx.background_spawn(async move {
-            timer.await;
-            api::sync::cancel_network(&c2, id);
-        })
-        .detach();
-    }
-    let read = cx.background_spawn(async move {
-        let local = api::branches::tags(&core)?;
-        let (remote, there) = match cached {
-            Some((_, r, n)) => (r, n),
-            None => {
-                let r = api::branches::remote_tags(&core, op.id.clone(), op.progress()).map_err(
-                    |e| {
-                        if e == gitviber_core::network::CANCELLED {
-                            "The remote didn't answer in time.".to_string()
-                        } else {
-                            e
-                        }
-                    },
-                )?;
-                (r.remote, r.names)
-            }
-        };
-        let lacking: Vec<String> = local.into_iter().filter(|t| !there.contains(t)).collect();
-        Ok::<_, String>((remote, there, lacking))
-    });
+    let local = cx.background_spawn(async move { api::branches::tags(&core) });
     cx.spawn_in(window, async move |menu, cx| {
-        let read = read.await;
+        let there = there.await;
+        // Thousands of tags on either side: not on the UI thread.
+        let read = cx
+            .background_spawn(async move {
+                let (remote, there) = there?;
+                let there: HashSet<String> = there.into_iter().collect();
+                let lacking: Vec<String> = local
+                    .await?
+                    .into_iter()
+                    .filter(|t| !there.contains(t))
+                    .collect();
+                Ok::<_, String>((remote, lacking))
+            })
+            .await;
         let _ = menu.update_in(cx, |menu, window, cx| {
-            if let Ok((remote, there, _)) = &read {
-                cx.set_global(RemoteTagsCache(Some((
-                    Instant::now(),
-                    remote.clone(),
-                    there.clone(),
-                ))));
-            }
             let weak = weak.clone();
             menu.rebuild(window, cx, move |m, _, _| {
                 let m = m.min_w(px(288.)).label("Local tags");
                 match read {
                     Err(e) => m.label(format!("Couldn't compare tags with the remote: {e}")),
-                    Ok((remote, _, lacking)) if lacking.is_empty() => {
+                    Ok((remote, lacking)) if lacking.is_empty() => {
                         m.label(format!("{remote} has every local tag."))
                     }
-                    Ok((remote, _, lacking)) => {
+                    Ok((remote, lacking)) => {
                         let shown = lacking
                             .iter()
                             .take(3)
@@ -964,7 +926,6 @@ fn push_menu(
                             .on_click(move |_, window, cx| {
                                 if let Some(s) = weak.upgrade() {
                                     ops::push_tags(&s, lacking.clone(), remote.clone(), window, cx);
-                                    forget_remote_tags(cx);
                                 }
                             }),
                         )

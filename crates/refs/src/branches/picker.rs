@@ -23,7 +23,7 @@ use gpui_kit::{
     WeakEntity, Window, div, prelude::FluentBuilder as _, px, rems,
 };
 
-use super::{deletable, create_name, groups, held_in};
+use super::{create_name, deletable, groups, held_in};
 use crate::names::{Branch, branch_tracking, folder_name};
 use crate::ops;
 use crate::points::branch_point;
@@ -259,47 +259,53 @@ impl BranchPicker {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.guarded = protected.into_iter().map(|n| format!("origin/{n}")).collect();
+                this.guarded = protected
+                    .into_iter()
+                    .map(|n| format!("origin/{n}"))
+                    .collect();
                 this.remote_repos = remotes.into_iter().map(|r| (r.name, r.repo)).collect();
                 cx.notify();
             });
         });
-        let reads = vec![rights, cx.spawn(async move |this, cx| {
-            let c = core.clone();
-            let (visited, tracks) = cx
-                .background_spawn(async move {
-                    (
-                        api::branches::recent_branches(&c).unwrap_or_default(),
-                        api::branches::branch_tracking(&c).unwrap_or_default(),
-                    )
-                })
-                .await;
-            if this
-                .update(cx, |this, cx| {
-                    let hot = this.hot_key(cx);
-                    this.visited = visited;
-                    this.tracks = tracks
-                        .into_iter()
-                        .map(|t| (t.name, (t.ahead, t.behind, t.gone)))
-                        .collect();
-                    this.index = this.keep_index(hot, cx);
+        let reads = vec![
+            rights,
+            cx.spawn(async move |this, cx| {
+                let c = core.clone();
+                let (visited, tracks) = cx
+                    .background_spawn(async move {
+                        (
+                            api::branches::recent_branches(&c).unwrap_or_default(),
+                            api::branches::branch_tracking(&c).unwrap_or_default(),
+                        )
+                    })
+                    .await;
+                if this
+                    .update(cx, |this, cx| {
+                        let hot = this.hot_key(cx);
+                        this.visited = visited;
+                        this.tracks = tracks
+                            .into_iter()
+                            .map(|t| (t.name, (t.ahead, t.behind, t.gone)))
+                            .collect();
+                        this.index = this.keep_index(hot, cx);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+                // Reads their diffs: asked on each open, never on a refresh.
+                let landed = cx
+                    .background_spawn(async move {
+                        api::branches::merged_upstream(&core).unwrap_or_default()
+                    })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.landed = Some(landed.into_iter().collect());
                     cx.notify();
-                })
-                .is_err()
-            {
-                return;
-            }
-            // Reads their diffs: asked on each open, never on a refresh.
-            let landed = cx
-                .background_spawn(async move {
-                    api::branches::merged_upstream(&core).unwrap_or_default()
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.landed = Some(landed.into_iter().collect());
-                cx.notify();
-            });
-        })];
+                });
+            }),
+        ];
         let mut picker = BranchPicker {
             state,
             chip,

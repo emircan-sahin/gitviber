@@ -768,9 +768,18 @@ mod tests {
 
     #[test]
     fn a_network_action_says_how_it_ended_unless_stopped() {
-        assert_eq!(net_note("Push", &Ok(false)), Some(("Push finished".into(), String::new())));
-        assert_eq!(net_note("Pull", &Ok(true)), Some(("Pull finished".into(), String::new())));
-        assert_eq!(net_note("Fetch", &Err("fatal: no route".into())), Some(("Fetch failed".into(), "fatal: no route".into())));
+        assert_eq!(
+            net_note("Push", &Ok(false)),
+            Some(("Push finished".into(), String::new()))
+        );
+        assert_eq!(
+            net_note("Pull", &Ok(true)),
+            Some(("Pull finished".into(), String::new()))
+        );
+        assert_eq!(
+            net_note("Fetch", &Err("fatal: no route".into())),
+            Some(("Fetch failed".into(), "fatal: no route".into()))
+        );
         assert_eq!(net_note("Push", &Err(CANCELLED.into())), None);
         assert_eq!(net_note("Pull", &Err(git::CANCELLED_STASHED.into())), None);
     }

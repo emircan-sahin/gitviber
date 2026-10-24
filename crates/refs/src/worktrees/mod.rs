@@ -5,7 +5,10 @@
 mod dialogs;
 mod picker;
 
-pub use dialogs::{IssueAsk, PullAsk, Remember, open_clean_up, open_lock, open_new_worktree, open_rename, open_worktree_for_issue, open_worktree_for_pull, with_issue};
+pub use dialogs::{
+    IssueAsk, PullAsk, Remember, open_clean_up, open_lock, open_new_worktree, open_rename,
+    open_worktree_for_issue, open_worktree_for_pull, with_issue,
+};
 pub use picker::{WorktreePicker, pull_chip as picker_pull_chip, worktree_chip};
 
 use std::collections::{BTreeMap, HashMap};
@@ -453,7 +456,10 @@ mod tests {
 
     #[test]
     fn an_issues_number_fills_in_its_command() {
-        assert_eq!(with_issue("claude \"Fix #{issue}\"", 12), "claude \"Fix #12\"");
+        assert_eq!(
+            with_issue("claude \"Fix #{issue}\"", 12),
+            "claude \"Fix #12\""
+        );
         assert_eq!(with_issue("claude", 12), "claude");
         assert_eq!(with_issue("{issue} {issue}", 7), "7 7");
     }

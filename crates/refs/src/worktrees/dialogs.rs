@@ -121,7 +121,11 @@ fn open_with(source: Source, base: Option<String>, window: &mut Window, cx: &mut
     };
     let pull = matches!(source, Source::Pull(_));
     let form = cx.new(|cx| NewWorktree::new(state, base, source, window, cx));
-    let focus = if pull { form.read(cx).focus.clone() } else { form.read(cx).name.focus_handle(cx) };
+    let focus = if pull {
+        form.read(cx).focus.clone()
+    } else {
+        form.read(cx).name.focus_handle(cx)
+    };
     open_form(title, 480., form, Some(focus), window, cx);
 }
 
@@ -160,26 +164,42 @@ impl NewWorktree {
         let dir = crate::store::worktree_dir(&main, cx).unwrap_or_else(|| fallback.clone());
         let from = base.unwrap_or_else(|| worktree_base(&state.read(cx).branches));
         let issue = matches!(source, Source::Issue(_));
-        let run = if issue { crate::store::issue_run(&main, cx) } else { crate::store::worktree_run(&main, cx) };
+        let run = if issue {
+            crate::store::issue_run(&main, cx)
+        } else {
+            crate::store::worktree_run(&main, cx)
+        };
         let proposed = match &source {
             Source::Issue(i) => i.branch.clone(),
             _ => String::new(),
         };
-        let name = cx.new(|cx| InputState::new(window, cx).placeholder("Branch name").default_value(proposed));
+        let name = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Branch name")
+                .default_value(proposed)
+        });
         let command = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(if issue { "and run… (e.g. claude \"Fix #{issue}\")" } else { "and run… (e.g. claude)" })
+                .placeholder(if issue {
+                    "and run… (e.g. claude \"Fix #{issue}\")"
+                } else {
+                    "and run… (e.g. claude)"
+                })
                 .default_value(run)
         });
         let subs = vec![
-            cx.subscribe_in(&name, window, |this: &mut Self, _, e: &InputEvent, window, cx| match e {
-                InputEvent::Change => {
-                    this.warned = false;
-                    cx.notify();
-                }
-                InputEvent::PressEnter { .. } => this.submit(window, cx),
-                _ => {}
-            }),
+            cx.subscribe_in(
+                &name,
+                window,
+                |this: &mut Self, _, e: &InputEvent, window, cx| match e {
+                    InputEvent::Change => {
+                        this.warned = false;
+                        cx.notify();
+                    }
+                    InputEvent::PressEnter { .. } => this.submit(window, cx),
+                    _ => {}
+                },
+            ),
             // The hint under the command follows what's typed in it.
             cx.subscribe(&command, |_, _, e: &InputEvent, cx| {
                 if let InputEvent::Change = e {
@@ -287,10 +307,15 @@ impl NewWorktree {
             main: self.main.clone(),
             dir: self.dir.clone(),
             fallback: self.fallback.clone(),
-            typed: self.terminal.then(|| self.command.read(cx).value().trim().to_string()),
+            typed: self
+                .terminal
+                .then(|| self.command.read(cx).value().trim().to_string()),
             command: self.command_to_run(cx),
             issue: self.issue().is_some(),
-            remember: self.issue().and_then(|i| i.remember.clone()).map(|r| (r, branch)),
+            remember: self
+                .issue()
+                .and_then(|i| i.remember.clone())
+                .map(|r| (r, branch)),
             switch_to: self.switch_to,
         }
     }
@@ -361,7 +386,11 @@ impl NewWorktree {
         let made = Arc::new(Mutex::new(None::<String>));
         let slot = made.clone();
         let after = self.after(pull.branch.clone(), cx);
-        let done = format!("Checked out #{} in worktree {}", pull.number, folder_for_branch(&pull.branch));
+        let done = format!(
+            "Checked out #{} in worktree {}",
+            pull.number,
+            folder_for_branch(&pull.branch)
+        );
         self.pending = true;
         let rx = self.state.update(cx, |s, cx| {
             s.run(
@@ -450,7 +479,11 @@ struct After {
 impl After {
     fn made(self, path: String, window: &mut Window, cx: &mut App) {
         // Remembered for the project once it worked, so its next worktree goes there too.
-        crate::store::set_worktree_dir(&self.main, (self.dir != self.fallback).then_some(self.dir.clone()), cx);
+        crate::store::set_worktree_dir(
+            &self.main,
+            (self.dir != self.fallback).then_some(self.dir.clone()),
+            cx,
+        );
         if let Some(c) = &self.typed {
             if self.issue {
                 crate::store::set_issue_run(&self.main, c, cx);
@@ -461,7 +494,13 @@ impl After {
         if let Some((remember, branch)) = &self.remember {
             remember(branch, cx);
         }
-        WorktreeEvents::emit(WorktreeEvent::Created { path: path.clone(), command: self.command }, cx);
+        WorktreeEvents::emit(
+            WorktreeEvent::Created {
+                path: path.clone(),
+                command: self.command,
+            },
+            cx,
+        );
         if self.switch_to {
             open_worktree(path, window, cx);
         }
@@ -478,7 +517,9 @@ impl Render for NewWorktree {
         let picked = worktree_branch(&typed, &branches, FOLD_CASE);
         // A pull request's branch is the PR's: nothing to check or pick a base for.
         let existing = pull.is_some() || picked.base != WorktreeBase::Picked;
-        let n = pull.as_ref().map_or(picked.name.clone(), |p| p.branch.clone());
+        let n = pull
+            .as_ref()
+            .map_or(picked.name.clone(), |p| p.branch.clone());
         let guarded = pull.is_none()
             && existing
             && !picked.taken
@@ -487,15 +528,25 @@ impl Render for NewWorktree {
         let ready = !n.is_empty() && (pull.is_some() || !picked.taken) && !self.pending && !warning;
         let weak = cx.weak_entity();
         let about = match (&pull, &issue) {
-            (Some(p), _) => format!("The pull request's branch, {}, in its own folder; this one stays as it is.", p.branch),
-            (None, Some(i)) => format!("A new branch for “{}”, in its own folder; its pull request will close #{}.", i.title, i.number),
+            (Some(p), _) => format!(
+                "The pull request's branch, {}, in its own folder; this one stays as it is.",
+                p.branch
+            ),
+            (None, Some(i)) => format!(
+                "A new branch for “{}”, in its own folder; its pull request will close #{}.",
+                i.title, i.number
+            ),
             _ => "A new branch, checked out in its own folder, side by side with this one.".into(),
         };
         let command_typed = self.command.read(cx).value().to_string();
-        let issue_hint = (self.terminal && (issue.is_some() || command_typed.contains("{issue}"))).then(|| match &issue {
-            Some(i) => format!("{{issue}} in the command becomes {}, the issue's number.", i.number),
-            None => "{issue} is filled in only when starting from an issue.".to_string(),
-        });
+        let issue_hint = (self.terminal && (issue.is_some() || command_typed.contains("{issue}")))
+            .then(|| match &issue {
+                Some(i) => format!(
+                    "{{issue}} in the command becomes {}, the issue's number.",
+                    i.number
+                ),
+                None => "{issue} is filled in only when starting from an issue.".to_string(),
+            });
         let base: Option<gpui_kit::AnyElement> = if existing {
             None
         } else if is_commit(&self.from) {

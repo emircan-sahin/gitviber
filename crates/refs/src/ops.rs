@@ -11,6 +11,7 @@ use crate::ask::{Ask, ask, ask_stacked};
 use crate::errors::GitFix;
 use crate::names::{Branch, folder_name, plural, short_ref};
 use crate::net::NetOp;
+use crate::remote_tags;
 use crate::repo::{GitAction, RepoState, plain};
 use crate::toast::{Action, Note};
 use crate::worktrees::{
@@ -233,7 +234,8 @@ pub fn push(state: &Entity<RepoState>, tags: bool, force: bool, window: &mut Win
     if pushes_upstream(state, cx) {
         action = action.fix(GitFix::FetchFirst, pulls(state));
     }
-    go(
+    // With tags or followTags, what the remote has of them may change.
+    let done = run(
         state,
         action,
         move |core, op| match api::sync::push(
@@ -257,6 +259,7 @@ pub fn push(state: &Entity<RepoState>, tags: bool, force: bool, window: &mut Win
         window,
         cx,
     );
+    remote_tags::forget_after(done, cx);
 }
 
 /// Pushes the branch to `remote` and tracks it there.
@@ -299,7 +302,7 @@ pub fn push_tags(
         .net()
         .untracked()
         .done(format!("Pushed {what} to {remote}"));
-    go(
+    let done = run(
         state,
         action,
         move |core, op| {
@@ -313,6 +316,7 @@ pub fn push_tags(
         window,
         cx,
     );
+    remote_tags::forget_after(done, cx);
 }
 
 /// Merges `name` into HEAD's branch. A squash's changes would get the stash back before they're
