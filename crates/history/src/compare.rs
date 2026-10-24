@@ -512,7 +512,7 @@ impl CompareView {
                     .when_some(url, |d, url| {
                         d.child(Button::new("on-github").ghost().small().icon(IconName::ExternalLink).label("Open on GitHub").on_click(move |_, _, cx| cx.open_url(&url)))
                     })
-                    .child(Button::new("open-all").small().icon(IconName::Files).label("Open All").disabled(c.files.is_empty()).on_click(cx.listener(move |this, _, window, cx| {
+                    .child(Button::new("open-all").small().icon(IconName::Files).label("Open all").disabled(c.files.is_empty()).on_click(cx.listener(move |this, _, window, cx| {
                         let (base, head, label) = range.clone();
                         crate::open::open_range(&this.workspace, base, head, label, window, cx);
                     }))),

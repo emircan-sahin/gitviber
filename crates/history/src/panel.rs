@@ -114,9 +114,8 @@ impl HistoryPanel {
         let all = store::get(cx).all_branches;
         let main = Self::main_of(&project, cx);
         let refs = store::graph_refs(&main, cx);
-        let search = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Search commits  ·  author: path: code:")
-        });
+        // The filters are in the ? beside it: written here they were cut off mid-word.
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search commits"));
         let (source, options) = Self::source_for("", &None, all, &refs);
         let list =
             cx.new(|cx| CommitList::new(repo.clone(), ctx.workspace.clone(), source, options, cx));
@@ -567,7 +566,7 @@ impl HistoryPanel {
         }
     }
 
-    /// "Open All" by a comparison's files: all their diffs in one tab.
+    /// "Open all" by a comparison's files: all their diffs in one tab.
     fn open_all(&self, cx: &mut Context<Self>) -> AnyEl {
         let t = cx.app_theme().clone();
         div()
@@ -577,7 +576,7 @@ impl HistoryPanel {
             .text_color(t.primary)
             .cursor_pointer()
             .hover(|s| s.bg(t.hover))
-            .child("Open All")
+            .child("Open all")
             .on_click(cx.listener(|this, _, window, cx| this.open_all_compared(window, cx)))
             .into_any_element()
     }

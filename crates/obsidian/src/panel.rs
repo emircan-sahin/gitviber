@@ -526,7 +526,6 @@ impl VaultPanel {
                 .px_1()
                 .min_w_0()
                 .truncate()
-                .font_family(t.fonts.code.clone())
                 .text_size(px(11.))
                 .text_color(t.subtle)
                 .child(name)

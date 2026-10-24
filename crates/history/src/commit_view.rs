@@ -1,6 +1,6 @@
 //! A commit's tabs and a range's: who made the commit and when, its signature and trailers, the
 //! files it changed and the diff of the one picked; or one file of it alone (a "commit"
-//! selection); or every file between two commits (Compare's Open All). Closing the tab drops
+//! selection); or every file between two commits (Compare's Open all). Closing the tab drops
 //! the diff and everything it read.
 
 use std::rc::Rc;

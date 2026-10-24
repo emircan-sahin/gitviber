@@ -1534,7 +1534,7 @@ impl CommitList {
                         .text_color(t.primary)
                         .cursor_pointer()
                         .hover(|s| s.bg(t.hover))
-                        .child("Open All")
+                        .child("Open all")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             crate::open::open_commit(this, &commit, window, cx)
                         })),
