@@ -1,0 +1,25 @@
+[package]
+name = "gitviber-diff"
+description = "GitViber's diff viewer: one file or a whole list, unified or split, with line staging."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "gitviber_diff"
+
+[dependencies]
+# Syntax colors: gpui-component's tree-sitter highlighter with the grammars it bundles.
+gpui-kit = { workspace = true, features = ["tree-sitter-astro", "tree-sitter-bash", "tree-sitter-c", "tree-sitter-cmake", "tree-sitter-cpp", "tree-sitter-csharp", "tree-sitter-css", "tree-sitter-diff", "tree-sitter-ejs", "tree-sitter-elixir", "tree-sitter-erb", "tree-sitter-go", "tree-sitter-graphql", "tree-sitter-html", "tree-sitter-java", "tree-sitter-javascript", "tree-sitter-jsdoc", "tree-sitter-kotlin", "tree-sitter-lua", "tree-sitter-make", "tree-sitter-markdown", "tree-sitter-php", "tree-sitter-proto", "tree-sitter-python", "tree-sitter-ruby", "tree-sitter-rust", "tree-sitter-scala", "tree-sitter-svelte", "tree-sitter-swift", "tree-sitter-toml", "tree-sitter-tsx", "tree-sitter-typescript", "tree-sitter-yaml", "tree-sitter-zig"] }
+gitviber-core = { path = "../core" }
+
+[dev-dependencies]
+# Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.
+gpui-test = { package = "gpui-pre", version = "=0.3.9", features = ["test-support", "leak-detection"] }
+
+# Every crate's example shares target/debug/examples/: a plain "demo" would be overwritten.
+[[example]]
+name = "diff-demo"
+path = "examples/demo.rs"
