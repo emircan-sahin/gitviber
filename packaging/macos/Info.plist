@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- GitViber.app's Info.plist; scripts/macos.sh fills in @VERSION@. The keys the Tauri bundle had,
+     plus LSEnvironment. Folders are a document type, so one dropped on the Dock icon or opened with
+     Finder's Open With reaches the app; Alternate: offered for folders, never their default app. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleDisplayName</key>
+  <string>GitViber</string>
+  <key>CFBundleName</key>
+  <string>GitViber</string>
+  <key>CFBundleExecutable</key>
+  <string>gitviber</string>
+  <key>CFBundleIdentifier</key>
+  <string>app.gitviber.desktop</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@VERSION@</string>
+  <key>CFBundleVersion</key>
+  <string>@VERSION@</string>
+  <!-- macOS 26 draws Assets.car's AppIcon (Icon Composer); 13–15 fall back to icon.icns. -->
+  <key>CFBundleIconFile</key>
+  <string>icon.icns</string>
+  <key>CFBundleIconName</key>
+  <string>AppIcon</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.developer-tools</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>13.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>© 2026 Emircan Sahin. GPL-3.0 License.</string>
+  <!-- malloc reads this once, at start: a launch from Finder or the Dock gets it here, so the
+       binary needn't start itself again with it (crates/core/src/malloc.rs). -->
+  <key>LSEnvironment</key>
+  <dict>
+    <key>MallocLargeCache</key>
+    <string>0</string>
+  </dict>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Folder</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.folder</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>

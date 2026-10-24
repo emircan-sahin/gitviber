@@ -18,10 +18,11 @@ cask "gitviber" do
   depends_on macos: :ventura
 
   app "GitViber.app"
-  # The `gitviber` command (src-tauri/resources/gitviber), linked into Homebrew's bin.
+  # The `gitviber` command (packaging/macos/gitviber), linked into Homebrew's bin.
   binary "#{appdir}/GitViber.app/Contents/Resources/bin/gitviber"
 
   zap trash: [
+    "~/Library/Application Support/app.gitviber.desktop",
     "~/Library/Caches/app.gitviber.desktop",
     "~/Library/HTTPStorages/app.gitviber.desktop",
     "~/Library/Logs/app.gitviber.desktop",

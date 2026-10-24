@@ -20,8 +20,9 @@ a 404 (other methods a 405), and the Worker only follows redirects that stay on 
 release file of this repository, the Worker answers 502 and serves nothing.
 
 **An update is as safe as it was.** The app checks every download against the minisign public key
-in `tauri.conf.json`, so a compromised or misbehaving Worker can refuse to serve, but can't make
-anyone install something that wasn't signed with the release key.
+(`PUBLIC_KEY` in `crates/updater/src/lib.rs`, the one `tauri.conf.json` had), so a compromised or
+misbehaving Worker can refuse to serve, but can't make anyone install something that wasn't
+signed with the release key.
 
 ## Deploy
 
@@ -65,27 +66,29 @@ above show.
 
 ## Point the app at it
 
-The mirror goes first and GitHub second, in `plugins.updater.endpoints` of
-`src-tauri/tauri.conf.json`:
+The mirror goes first and GitHub second, in `ENDPOINTS` of `crates/updater/src/lib.rs` (and in
+`plugins.updater.endpoints` of `src-tauri/tauri.conf.json` for the Tauri-built versions):
 
-```json
-"endpoints": ["https://gitviber-updates.gitviber.workers.dev/latest.json", "https://github.com/emircan-sahin/gitviber/releases/latest/download/latest.json"]
+```rust
+pub const ENDPOINTS: [&str; 2] = [
+    "https://gitviber-updates.gitviber.workers.dev/latest.json",
+    "https://github.com/emircan-sahin/gitviber/releases/latest/download/latest.json",
+];
 ```
 
-It takes effect in the release that ships it; installed versions keep asking GitHub only.
+It takes effect in the release that ships it; installed versions keep asking what they shipped
+with.
 
-How the updater (`tauri-plugin-updater` 2.11) treats two endpoints: it asks them in order and
-takes the first answer that is a 2xx with a valid manifest. A network error, a non-2xx status
-(the Worker's 502, or a Cloudflare error page when the free quota is spent) or a body that isn't
-a manifest moves on to the next one. A 204 means "no update" and ends the search. The
-`{{target}}`, `{{arch}}` and `{{current_version}}` placeholders aren't needed: `latest.json`
-already has one entry per platform.
+How both updaters (`tauri-plugin-updater` 2.11 in the Tauri builds, `crates/updater` since)
+treat two endpoints: they ask them in order and take the first answer that is a 2xx with a valid
+manifest. A network error, a non-2xx status (the Worker's 502, or a Cloudflare error page when
+the free quota is spent) or a body that isn't a manifest moves on to the next one. A 204 means
+"no update" and ends the search. The `{{target}}`, `{{arch}}` and `{{current_version}}`
+placeholders aren't needed: `latest.json` already has one entry per platform.
 
-What stays as it is: a manifest that answers 200 but whose download then fails doesn't fall back
-to GitHub (the user can try again from the update dialog), and the app needs no CSP change. The
-check and the download run in Rust (`reqwest`), not in the page, and the page's `connect-src`
-(`ipc: http://ipc.localhost`) lists no host today, GitHub's included. Nothing in `src/` or
-`src-tauri/src/` assumes a `github.com` download URL; `RELEASES_URL` is only the link the
+A manifest that answers 200 but whose download then fails: the Tauri builds don't fall back (the
+user can try again from the update dialog); `crates/updater` fetches the same file from the
+GitHub release instead. The signature is checked either way. `RELEASES_URL` is only the link the
 `.deb`/`.rpm` installs open.
 
 ## Limits and cost

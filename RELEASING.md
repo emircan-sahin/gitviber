@@ -11,9 +11,10 @@ and notes from [CHANGELOG.md](CHANGELOG.md). Nothing is public until you publish
   only lets `v*` tags use it. A branch, a pull request or a dry run never sees them.
 - **Only admins can create, move or delete `v*` tags** (the "Release tags" ruleset), so only an
   admin can start a signed build.
-- **Dependency code never runs next to a secret.** Each build job installs and compiles first
-  (`tauri build --no-bundle` on macOS, the whole Linux build), with no secret in reach; only
-  then do the Tauri CLI's bundle and sign steps get them. No caches are restored, so nothing a
+- **Dependency code never runs next to a secret.** Each build job compiles first, with no secret
+  in reach: the app (`scripts/macos.sh build` for both architectures, `scripts/linux.sh build`),
+  the updater signer (`crates/updater/examples/sign.rs`), and the bundles around them. Only then
+  do `codesign`, `notarytool` and the signer get the secrets. No caches are restored, so nothing a
   CI run on a branch left behind ends up in a release.
 - **Only the last job can write to the repository.** The build jobs have read access; `publish`
   gets `contents: write` to create the draft, and runs for tags only.
@@ -52,11 +53,14 @@ renewed or the API key revoked.
 
 ### The updater key
 
-`tauri.conf.json` leaves updater bundles off, so any build works without this key; tag builds
-turn them on and sign them with it, and installed copies only accept updates signed by it. The
-private key is `~/.tauri/gitviber-updater.key`, its password is in the macOS Keychain
-(`security find-generic-password -s "gitviber updater key password" -w`), and both are already
-in the `release` environment. **Back both up somewhere safe and offline.** If the key or its password
+Tag builds sign the updater bundles (`.app.tar.gz`, `.deb`, `.rpm`, `.AppImage`) with this key,
+and installed copies only accept updates signed by it: the Tauri-built ones (0.1.17 and earlier,
+through `tauri-plugin-updater`) and the native ones (`crates/updater`, whose `PUBLIC_KEY` is the
+key `tauri.conf.json` has). `crates/updater/examples/sign.rs` writes the same `.sig` that
+`tauri signer sign` did, from the same `TAURI_SIGNING_PRIVATE_KEY` and its password; any other
+build simply has no `.sig`. The private key is `~/.tauri/gitviber-updater.key`, its password is
+in the macOS Keychain (`security find-generic-password -s "gitviber updater key password" -w`),
+and both are already in the `release` environment. **Back both up somewhere safe and offline.** If the key or its password
 is lost, no installed copy can be updated again; everyone has to download the next version by
 hand. If it leaks, anyone who can serve a `latest.json` to users can ship them an update.
 
@@ -79,18 +83,19 @@ rm tap_key tap_key.pub
 
 ## Each release
 
-1. **Bump the version** everywhere at once: `pnpm version:set 0.1.1`. It writes `package.json`,
-   `src-tauri/Cargo.toml` and `Cargo.lock` (`tauri.conf.json` reads `package.json`), and
-   `pnpm check` fails if they ever disagree.
+1. **Bump the version** everywhere at once: `scripts/version.sh set 0.1.1`. It writes the
+   workspace's version (`[workspace.package]` in `Cargo.toml`, which every crate and the bundles
+   take) and our crates' entries in `Cargo.lock`, and `scripts/version.sh check` (CI) fails if
+   they ever disagree.
 2. **Write the changelog.** Move what's under `## [Unreleased]` into
    `## [0.1.1] - YYYY-MM-DD` with today's date, and update the links at the bottom. The section
    becomes the release notes and what the updater shows; the workflow refuses an undated or
    missing one.
 3. **Commit and push** to `main` (`chore(release): 0.1.1`), and let CI pass.
-4. **Tag and push the tag:**
+4. **Tag and push the tag** (an annotated tag, signed by your git config):
 
    ```sh
-   git tag v0.1.1 && git push origin v0.1.1
+   git tag -m v0.1.1 v0.1.1 && git push origin v0.1.1
    ```
 
    The workflow checks that the tag matches the version before it builds anything.
@@ -113,7 +118,7 @@ A test tag signs and notarizes like a release, but its draft is marked as a pre-
 `releases/latest` (and so the updater) skips. It builds the current version, so there's no bump:
 
 ```sh
-git tag v0.1.1-rc.1 && git push origin v0.1.1-rc.1
+git tag -m v0.1.1-rc.1 v0.1.1-rc.1 && git push origin v0.1.1-rc.1
 ```
 
 Delete the draft and the tag afterwards (`gh release delete v0.1.1-rc.1 --cleanup-tag`).
@@ -142,8 +147,8 @@ Users install it with
 
 ## Update mirror
 
-GitHub's asset host is very slow for some users, so the app can ask a download mirror first and
-GitHub second (`plugins.updater.endpoints`, once the mirror is deployed and listed). The mirror
+GitHub's asset host is very slow for some users, so the app asks a download mirror first and
+GitHub second (`ENDPOINTS` in `crates/updater/src/lib.rs`). The mirror
 is a Cloudflare Worker, [`packaging/update-proxy/`](packaging/update-proxy/README.md), that serves
 the latest release's `latest.json` with its URLs pointed at itself and streams the files from
 GitHub. There is no release step: it reads `releases/latest` when asked, so publishing the draft updates it too. It
@@ -157,19 +162,58 @@ curl -s -r 0-99 -o /dev/null -w '%{http_code} %{size_download}\n' \
   $MIRROR/download/vX.Y.Z/GitViber_X.Y.Z_universal.app.tar.gz        # 206 100
 ```
 
-Installs fall back to GitHub when the mirror fails, so a broken mirror slows an update down
-without blocking it.
+Installs fall back to GitHub when the mirror fails (the native app's downloads too), so a broken
+mirror slows an update down without blocking it.
+
+## Updating from the Tauri-built app
+
+The first native release must install over 0.1.17 through 0.1.17's own updater, and it does: the
+release keeps everything that updater reads. `latest.json` has the same shape and keys
+(`scripts/updater-json.sh`, `{os}-{arch}-{bundle}` then `{os}-{arch}`), the files keep their names,
+`GitViber_X.Y.Z_universal.app.tar.gz` holds one folder, `GitViber.app` (that updater drops the
+first path component and swaps the rest in for the running app), and every `.sig` comes from the
+same key in the same format. The bundle keeps the identifier `app.gitviber.desktop` and the
+executable name `gitviber`, and the Linux packages stay `git-viber`, so a new `.deb` or `.rpm`
+upgrades the old one.
+
+## Building locally
+
+An unsigned or ad hoc signed app, for trying a release build; never with your own identity, the
+release signs:
+
+```sh
+scripts/macos.sh build --host      # --host: this Mac's architecture only; without it, universal
+scripts/macos.sh app && scripts/macos.sh sign   # ad hoc unless APPLE_SIGNING_IDENTITY is set
+open target/dist/macos/GitViber.app
+```
+
+`scripts/macos.sh dmg` and `scripts/macos.sh updater` pack it as the release does. The Linux steps
+(`scripts/linux.sh build|deb|rpm|appimage`) need Ubuntu 22.04 with the packages `release.yml`
+installs.
+
+## Third-party licenses
+
+`crates/app/licenses/third-party-licenses.json` lists every crate the app ships with the license
+texts they include, plus the fonts, file icons and device list (About → Third-Party Licenses).
+After a dependency change, regenerate it and commit it; CI fails while it is out of date:
+
+```sh
+GITVIBER_WRITE_LICENSES=1 cargo nextest run -p gitviber licenses_are_current
+```
 
 ## App icon
 
-macOS 26 draws the icon from `src-tauri/icons/Assets.car`, compiled from the Icon Composer source
-`src-tauri/icons/AppIcon.icon` (a gradient fill and the mark as one glass layer). macOS 13–15
-take the `.car`'s flattened sizes or `icon.icns`, both the same design. The `.car` is committed so the release doesn't depend on the runner's
-`actool`. After editing the `.icon` (in Icon Composer, which comes with Xcode 26), rebuild it:
+macOS 26 draws the icon from `packaging/icons/Assets.car`, compiled from the Icon Composer source
+`packaging/icons/AppIcon.icon` (a gradient fill and the mark as one glass layer). macOS 13–15
+take the `.car`'s flattened sizes or `icon.icns`, both the same design. The `.car` is committed
+so the release doesn't depend on the runner's `actool`. After editing the `.icon` (in Icon
+Composer, which comes with Xcode 26), rebuild it:
 
 ```sh
-xcrun actool src-tauri/icons/AppIcon.icon --compile /tmp/appicon --app-icon AppIcon \
+xcrun actool packaging/icons/AppIcon.icon --compile /tmp/appicon --app-icon AppIcon \
   --platform macosx --target-device mac --minimum-deployment-target 26.0 \
   --output-partial-info-plist /tmp/appicon/partial.plist
-cp /tmp/appicon/Assets.car src-tauri/icons/Assets.car
+cp /tmp/appicon/Assets.car packaging/icons/Assets.car
 ```
+
+The Linux packages take the PNGs beside it (32, 128 and 256 px).

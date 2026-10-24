@@ -25,6 +25,7 @@ defaults:
 
 env:
   RELEASE: ${{ github.event_name == 'push' }}
+  CARGO_TERM_COLOR: always
 
 jobs:
   prepare:
@@ -36,18 +37,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-
       # Fails before an hour of building when the tag, the version or the notes are off.
       - id: version
         run: |
           if [ "$RELEASE" = true ]; then
-            version=$(node scripts/version.mjs check "$GITHUB_REF_NAME")
-            node scripts/release-notes.mjs "$GITHUB_REF_NAME" > /dev/null
+            version=$(scripts/version.sh check "$GITHUB_REF_NAME")
+            scripts/release-notes.sh "$GITHUB_REF_NAME" > /dev/null
           else
-            version=$(node scripts/version.mjs check)
+            version=$(scripts/version.sh check)
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
@@ -55,7 +52,7 @@ jobs:
     needs: prepare
     runs-on: macos-latest
     environment: ${{ github.event_name == 'push' && 'release' || '' }}
-    timeout-minutes: 120
+    timeout-minutes: 150
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
     steps:
@@ -63,26 +60,19 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 10
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-03
         with:
-          toolchain: stable
+          toolchain: "1.99"
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      # Also applies the xterm.js patches in patches/.
-      - run: pnpm install --frozen-lockfile
-
-      # Everything that runs code from dependencies (install scripts, Vite, build.rs) happens
-      # before any secret is in reach. Signing only bundles the binary built here.
+      # Everything that runs code from dependencies (build.rs, proc macros) happens before any
+      # secret is in reach: the app for both architectures, and the updater signer. The signing
+      # steps only sign what was built here.
       - name: Build
-        run: pnpm tauri build --target universal-apple-darwin --no-bundle
+        run: |
+          scripts/macos.sh build
+          cargo build -p gitviber-updater --example sign --release --locked
+          scripts/macos.sh app
 
       # The certificate goes into a keychain of its own, non-extractable, deleted with the key
       # files at the end.
@@ -152,37 +142,9 @@ jobs:
             problem "Signed but not notarized: set APPLE_API_KEY, APPLE_API_ISSUER and APPLE_API_PRIVATE_KEY, or APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID."
           fi
 
-      # Signs and notarizes the .app, packs the .dmg, and signs the updater bundle.
-      - name: Bundle
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          # Tauri counts an empty variable as set (an empty APPLE_ID makes it try to notarize).
-          for name in APPLE_API_KEY APPLE_API_ISSUER APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
-            if [ -z "${!name}" ]; then unset "$name"; fi
-          done
-          args=(--target universal-apple-darwin)
-          # tauri.conf.json leaves updater bundles off, so a build without the key works.
-          if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
-            args+=(--config '{"bundle":{"createUpdaterArtifacts":true}}')
-          elif [ "$RELEASE" = true ]; then
-            echo "::error::TAURI_SIGNING_PRIVATE_KEY isn't set in the release environment; installed copies couldn't update."
-            exit 1
-          else
-            echo "::warning::No updater signing key, so no updater bundle (.app.tar.gz and .sig)."
-          fi
-          pnpm tauri bundle "${args[@]}"
-
-      # Tauri notarizes the app inside; the .dmg around it gets its own ticket, so opening the
-      # download doesn't ask Apple either.
-      - name: Notarize the .dmg
-        if: env.NOTARIZED == 'true'
+      # The app with the hardened runtime, its ticket stapled; then the .dmg around it, signed
+      # and with a ticket of its own, so opening the download doesn't ask Apple either.
+      - name: Sign, notarize and pack
         env:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -190,43 +152,49 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          if [ -n "${APPLE_API_KEY_PATH:-}" ]; then
-            auth=(--key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER")
-          else
-            auth=(--apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID")
-          fi
-          dmg=$(echo src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg)
-          result=$(xcrun notarytool submit "$dmg" "${auth[@]}" --wait --output-format json)
-          echo "$result"
-          if [ "$(jq -r .status <<< "$result")" != Accepted ]; then
-            xcrun notarytool log "$(jq -r .id <<< "$result")" "${auth[@]}" || true
-            echo "::error::Apple didn't accept the .dmg."
-            exit 1
-          fi
-          xcrun stapler staple "$dmg"
+          # The script picks the API key when its file is there, else the Apple ID.
+          if [ -z "${APPLE_API_KEY_PATH:-}" ]; then unset APPLE_API_KEY APPLE_API_ISSUER; fi
+          if [ -z "$APPLE_ID" ]; then unset APPLE_ID; fi
+          scripts/macos.sh sign
+          if [ "${NOTARIZED:-}" = true ]; then scripts/macos.sh notarize target/dist/macos/GitViber.app; fi
+          scripts/macos.sh dmg
+          if [ "${NOTARIZED:-}" = true ]; then scripts/macos.sh notarize "target/dist/macos/GitViber_${VERSION}_universal.dmg"; fi
+          scripts/macos.sh updater
 
       - name: Check that Gatekeeper accepts it
         if: env.NOTARIZED == 'true'
         run: |
-          bundle=src-tauri/target/universal-apple-darwin/release/bundle
-          app="$bundle/macos/GitViber.app"
+          app=target/dist/macos/GitViber.app
+          dmg="target/dist/macos/GitViber_${VERSION}_universal.dmg"
           codesign --verify --deep --strict "$app"
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=2 "$app"
-          for dmg in "$bundle"/dmg/*.dmg; do
-            xcrun stapler validate "$dmg"
-            spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
-          done
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
+
+      # The updater bundle carries the Tauri updater key's signature, so copies installed by the
+      # Tauri-built app (tauri-plugin-updater) and by this one both take it.
+      - name: Sign for the updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            if [ "$RELEASE" = true ]; then
+              echo "::error::TAURI_SIGNING_PRIVATE_KEY isn't set in the release environment; installed copies couldn't update."
+              exit 1
+            fi
+            echo "::warning::No updater signing key, so no updater signature (.sig)."
+            exit 0
+          fi
+          target/release/examples/sign "target/dist/macos/GitViber_${VERSION}_universal.app.tar.gz"
 
       - name: Collect the bundles
         run: |
-          bundle=src-tauri/target/universal-apple-darwin/release/bundle
           out="$RUNNER_TEMP/release"
           mkdir -p "$out"
-          cp "$bundle"/dmg/*.dmg "$out/"
-          # The updater bundle is plain GitViber.app.tar.gz; give it the version, as the .dmg has.
-          for file in "$bundle"/macos/GitViber.app.tar.gz "$bundle"/macos/GitViber.app.tar.gz.sig; do
-            if [ -e "$file" ]; then cp "$file" "$out/GitViber_${VERSION}_universal.${file##*/GitViber.}"; fi
+          for file in target/dist/macos/GitViber_"${VERSION}"_universal.{dmg,app.tar.gz,app.tar.gz.sig}; do
+            if [ -e "$file" ]; then cp "$file" "$out/"; fi
           done
           ls -l "$out"
 
@@ -249,54 +217,41 @@ jobs:
     # The oldest supported runner, so the binaries need no newer glibc than 22.04's.
     runs-on: ubuntu-22.04
     environment: ${{ github.event_name == 'push' && 'release' || '' }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      # WebKitGTK for Tauri's webview as in CI, plus what the AppImage bundler uses.
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf
-
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 10
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
+      # GPUI's and GTK's headers as in CI, and what the packages are made with: dpkg-dev
+      # (dpkg-shlibdeps), rpm (rpmbuild), squashfs-tools (mksquashfs, for the AppImage).
+      - run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev \
+            libxcb1-dev libwayland-dev libfontconfig-dev libfreetype-dev dpkg-dev rpm squashfs-tools
 
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-03
         with:
-          toolchain: stable
+          toolchain: "1.99"
 
-      - run: pnpm install --frozen-lockfile
-
-      # Tauri saves the AppRun it downloads as 0770 and copies that mode into the AppImage, so
-      # when root mounts it and another user runs it (firejail, the AppImage catalog's test),
-      # AppRun.wrapped is "Permission denied" (tauri-apps/tauri#16155, still so in CLI 2.12.0).
-      # A copy already in Tauri's cache isn't downloaded again, so it keeps this mode.
-      - name: Seed Tauri's AppRun as 0755
-        run: |
-          mkdir -p ~/.cache/tauri
-          curl -fsSL -o ~/.cache/tauri/AppRun-x86_64 \
-            https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-x86_64
-          # apprun-old is a tag that can move; this binary goes into every AppImage.
-          echo "f30140a43a0a59e46db21bdefdf749b9e9f2c6946e92afabbacf98b8ae73fb4f  $HOME/.cache/tauri/AppRun-x86_64" | sha256sum -c -
-          chmod 755 ~/.cache/tauri/AppRun-x86_64
-
-      # No secrets here: the bundles (.deb, .rpm, AppImage) are built without the updater key,
-      # and only the Tauri CLI sees it, in the next step.
+      # No secrets here: the app, the updater signer and the bundles (.deb, .rpm, AppImage) are
+      # built without the updater key; only the signer sees it, in the next step but one.
       - name: Build
-        run: pnpm tauri build
+        run: |
+          scripts/linux.sh build
+          cargo build -p gitviber-updater --example sign --release --locked
+          scripts/linux.sh deb
+          scripts/linux.sh rpm
+          scripts/linux.sh appimage
 
-      # The seed above leans on Tauri's cache path; if that moves, fail here, not in users' hands.
+      # Root mounts an AppImage and another user runs it (firejail, the AppImage catalog's test):
+      # anything executable only for its owner inside would be "Permission denied".
       - name: Check the AppImage runs for any user
         run: |
-          img=$(echo "$GITHUB_WORKSPACE"/src-tauri/target/release/bundle/appimage/*.AppImage)
+          img=$(echo target/dist/linux/*.AppImage)
           # The modes as the image holds them: --appimage-extract makes every folder 0700 on the
           # runner image of 2026-09-27, whatever the image says.
-          command -v unsquashfs > /dev/null || sudo apt-get install -y squashfs-tools > /dev/null
           bad=$(unsquashfs -o "$("$img" --appimage-offset)" -lln "$img" |
             awk 'substr($1, 1, 1) ~ /[-d]/ && substr($1, 4, 1) ~ /[xs]/ && substr($1, 10, 1) !~ /[xt]/')
           if [ -n "$bad" ]; then
@@ -318,16 +273,13 @@ jobs:
             echo "::warning::No updater signing key, so no updater signatures (.sig)."
             exit 0
           fi
-          for file in src-tauri/target/release/bundle/{deb/*.deb,rpm/*.rpm,appimage/*.AppImage}; do
-            node_modules/.bin/tauri signer sign "$file" > /dev/null
-            echo "signed $file"
-          done
+          target/release/examples/sign target/dist/linux/*.{deb,rpm,AppImage}
 
       - name: Collect the bundles
         run: |
           out="$RUNNER_TEMP/release"
           mkdir -p "$out"
-          find src-tauri/target/release/bundle/{deb,rpm,appimage} -maxdepth 1 -type f \
+          find target/dist/linux -maxdepth 1 -type f \
             \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.sig' \) -exec cp {} "$out/" \;
           ls -l "$out"
 
@@ -349,10 +301,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: release
@@ -361,8 +309,8 @@ jobs:
       - name: Notes and latest.json
         if: github.event_name == 'push'
         run: |
-          node scripts/release-notes.mjs "$GITHUB_REF_NAME" > notes.md
-          node scripts/updater-json.mjs release "$GITHUB_REF_NAME" "$VERSION" notes.md
+          scripts/release-notes.sh "$GITHUB_REF_NAME" > notes.md
+          scripts/updater-json.sh release "$GITHUB_REF_NAME" "$VERSION" notes.md
 
       - name: SHA256SUMS
         run: |
