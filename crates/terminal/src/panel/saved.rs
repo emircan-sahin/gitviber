@@ -329,7 +329,13 @@ fn offer_text(saved: &SavedSet, mode: ResumeMode) -> (String, String) {
             })
         })
         .count();
-    let plural = |n: usize, w: &str| if n == 1 { format!("1 {w}") } else { format!("{n} {w}s") };
+    let plural = |n: usize, w: &str| {
+        if n == 1 {
+            format!("1 {w}")
+        } else {
+            format!("{n} {w}s")
+        }
+    };
     let resume = if agents > 0 && mode != ResumeMode::Off {
         format!(" and resume {}", plural(agents, "agent"))
     } else {
@@ -344,7 +350,10 @@ fn offer_text(saved: &SavedSet, mode: ResumeMode) -> (String, String) {
         }
     }
     (
-        format!("Restore {} from last session{resume}?", plural(panes.len(), "terminal")),
+        format!(
+            "Restore {} from last session{resume}?",
+            plural(panes.len(), "terminal")
+        ),
         folders.join(", "),
     )
 }
@@ -614,9 +623,11 @@ impl TerminalPanel {
         let (title, folders) = offer_text(&saved, resume_mode(cx));
         self.offers.insert(root.to_path_buf(), saved);
         let (weak, at) = (cx.weak_entity(), root.to_path_buf());
-        let toast = Toast::info(folders).title(title).action("Restore", move |window, cx| {
-            let _ = weak.update(cx, |p, cx| p.accept_restore(&at, window, cx));
-        });
+        let toast = Toast::info(folders)
+            .title(title)
+            .action("Restore", move |window, cx| {
+                let _ = weak.update(cx, |p, cx| p.accept_restore(&at, window, cx));
+            });
         if let Some(ws) = self.workspace() {
             ws.update(cx, |ws, cx| ws.toast(toast, cx));
         }
@@ -793,18 +804,38 @@ mod tests {
     #[test]
     fn the_offer_says_how_many_and_where() {
         let dir = std::env::temp_dir().to_string_lossy().into_owned();
-        let agent = serde_json::json!({"name": "Claude Code", "command": "claude --resume a", "cwd": dir});
-        let pane = |cwd: &str, agent: Option<Value>| SavedPane { cwd: cwd.into(), agent, ..Default::default() };
+        let agent =
+            serde_json::json!({"name": "Claude Code", "command": "claude --resume a", "cwd": dir});
+        let pane = |cwd: &str, agent: Option<Value>| SavedPane {
+            cwd: cwd.into(),
+            agent,
+            ..Default::default()
+        };
         let set = SavedSet {
             groups: vec![
-                SavedGroup { panes: vec![pane(&dir, Some(agent)), pane(&dir, None)], ..Default::default() },
-                SavedGroup { panes: vec![pane("/w/api", None)], ..Default::default() },
+                SavedGroup {
+                    panes: vec![pane(&dir, Some(agent)), pane(&dir, None)],
+                    ..Default::default()
+                },
+                SavedGroup {
+                    panes: vec![pane("/w/api", None)],
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         };
         let here = folder_name(Path::new(&dir));
-        assert_eq!(offer_text(&set, ResumeMode::Type), ("Restore 3 terminals from last session and resume 1 agent?".into(), format!("{here}, api")));
-        assert_eq!(offer_text(&set, ResumeMode::Off).0, "Restore 3 terminals from last session?");
+        assert_eq!(
+            offer_text(&set, ResumeMode::Type),
+            (
+                "Restore 3 terminals from last session and resume 1 agent?".into(),
+                format!("{here}, api")
+            )
+        );
+        assert_eq!(
+            offer_text(&set, ResumeMode::Off).0,
+            "Restore 3 terminals from last session?"
+        );
     }
 
     #[test]
