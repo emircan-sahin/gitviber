@@ -1,0 +1,293 @@
+{
+  "_license": "Sizes, pixel ratios, user agents, safe areas and cutouts from Chrome DevTools, front_end/models/emulation/EmulatedDevices.ts: Copyright 2014 The Chromium Authors, BSD-3-Clause (https://chromium.googlesource.com/devtools/devtools-frontend/+/main/LICENSE). A device's _approx names the fields DevTools doesn't give, from public figures, rounded: screen corner radii, bezels, and the rest listed.",
+  "_chrome": "Android user agents name a fixed Chrome version where DevTools fills in the running one.",
+  "devices": [
+    {
+      "name": "iPhone SE",
+      "w": 375,
+      "h": 667,
+      "dpr": 2,
+      "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1",
+      "radius": 0,
+      "safe": {
+        "top": 20,
+        "right": 0,
+        "bottom": 0,
+        "left": 0
+      },
+      "cutout": null,
+      "bezel": 16,
+      "platform": "ios",
+      "_approx": [
+        "radius",
+        "bezel"
+      ]
+    },
+    {
+      "name": "iPhone 15",
+      "w": 393,
+      "h": 852,
+      "dpr": 3,
+      "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1",
+      "radius": 55,
+      "safe": {
+        "top": 59,
+        "right": 0,
+        "bottom": 34,
+        "left": 0
+      },
+      "cutout": {
+        "type": "island",
+        "x": 134,
+        "y": 11,
+        "w": 125,
+        "h": 37,
+        "r": 19
+      },
+      "bezel": 12,
+      "platform": "ios",
+      "_approx": [
+        "radius",
+        "bezel"
+      ]
+    },
+    {
+      "name": "iPhone 16",
+      "w": 393,
+      "h": 852,
+      "dpr": 3,
+      "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1",
+      "radius": 55,
+      "safe": {
+        "top": 59,
+        "right": 0,
+        "bottom": 34,
+        "left": 0
+      },
+      "cutout": {
+        "type": "island",
+        "x": 134,
+        "y": 11,
+        "w": 125,
+        "h": 37,
+        "r": 19
+      },
+      "bezel": 12,
+      "platform": "ios",
+      "_approx": [
+        "radius",
+        "bezel"
+      ]
+    },
+    {
+      "name": "iPhone 16 Pro",
+      "w": 402,
+      "h": 874,
+      "dpr": 3,
+      "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1",
+      "radius": 62,
+      "safe": {
+        "top": 62,
+        "right": 0,
+        "bottom": 34,
+        "left": 0
+      },
+      "cutout": {
+        "type": "island",
+        "x": 139,
+        "y": 14,
+        "w": 125,
+        "h": 37,
+        "r": 19
+      },
+      "bezel": 10,
+      "platform": "ios",
+      "_approx": [
+        "radius",
+        "bezel"
+      ]
+    },
+    {
+      "name": "iPhone 16 Pro Max",
+      "w": 440,
+      "h": 956,
+      "dpr": 3,
+      "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1",
+      "radius": 62,
+      "safe": {
+        "top": 62,
+        "right": 0,
+        "bottom": 34,
+        "left": 0
+      },
+      "cutout": {
+        "type": "island",
+        "x": 158,
+        "y": 14,
+        "w": 125,
+        "h": 37,
+        "r": 19
+      },
+      "bezel": 10,
+      "platform": "ios",
+      "_approx": [
+        "radius",
+        "bezel"
+      ]
+    },
+    {
+      "name": "Pixel 8",
+      "w": 412,
+      "h": 915,
+      "dpr": 2.625,
+      "ua": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
+      "radius": 32,
+      "safe": {
+        "top": 50,
+        "right": 0,
+        "bottom": 0,
+        "left": 0
+      },
+      "cutout": {
+        "type": "punch",
+        "x": 192,
+        "y": 11,
+        "w": 28,
+        "h": 28,
+        "r": 14
+      },
+      "bezel": 12,
+      "platform": "android",
+      "_approx": [
+        "radius",
+        "bezel"
+      ]
+    },
+    {
+      "name": "Pixel 9",
+      "w": 412,
+      "h": 924,
+      "dpr": 2.625,
+      "ua": "Mozilla/5.0 (Linux; Android 14; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
+      "radius": 34,
+      "safe": {
+        "top": 58,
+        "right": 0,
+        "bottom": 0,
+        "left": 0
+      },
+      "cutout": {
+        "type": "punch",
+        "x": 192,
+        "y": 15,
+        "w": 28,
+        "h": 28,
+        "r": 14
+      },
+      "bezel": 12,
+      "platform": "android",
+      "_approx": [
+        "radius",
+        "bezel"
+      ]
+    },
+    {
+      "name": "Samsung Galaxy S20 Ultra",
+      "w": 412,
+      "h": 915,
+      "dpr": 3.5,
+      "ua": "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
+      "radius": 28,
+      "safe": {
+        "top": 32,
+        "right": 0,
+        "bottom": 0,
+        "left": 0
+      },
+      "cutout": {
+        "type": "punch",
+        "x": 196,
+        "y": 12,
+        "w": 20,
+        "h": 20,
+        "r": 10
+      },
+      "bezel": 10,
+      "platform": "android",
+      "_approx": [
+        "radius",
+        "bezel",
+        "safe",
+        "cutout"
+      ]
+    },
+    {
+      "name": "iPad Mini",
+      "w": 768,
+      "h": 1024,
+      "dpr": 2,
+      "ua": "Mozilla/5.0 (iPad; CPU OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1",
+      "radius": 22,
+      "safe": {
+        "top": 20,
+        "right": 0,
+        "bottom": 0,
+        "left": 0
+      },
+      "cutout": null,
+      "bezel": 22,
+      "platform": "ipados",
+      "_approx": [
+        "radius",
+        "bezel",
+        "safe"
+      ]
+    },
+    {
+      "name": "iPad Pro 11",
+      "w": 834,
+      "h": 1210,
+      "dpr": 2,
+      "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15",
+      "radius": 18,
+      "safe": {
+        "top": 24,
+        "right": 0,
+        "bottom": 20,
+        "left": 0
+      },
+      "cutout": null,
+      "bezel": 20,
+      "platform": "ipados",
+      "_approx": [
+        "w",
+        "h",
+        "radius",
+        "bezel",
+        "safe"
+      ]
+    },
+    {
+      "name": "iPad Pro 13",
+      "w": 1032,
+      "h": 1376,
+      "dpr": 2,
+      "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15",
+      "radius": 18,
+      "safe": {
+        "top": 24,
+        "right": 0,
+        "bottom": 20,
+        "left": 0
+      },
+      "cutout": null,
+      "bezel": 20,
+      "platform": "ipados",
+      "_approx": [
+        "radius",
+        "bezel",
+        "safe"
+      ]
+    }
+  ]
+}
