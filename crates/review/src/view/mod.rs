@@ -289,6 +289,8 @@ impl GuideView {
                     .map(Rc::new);
                 self.placed = None;
                 self.md.borrow_mut().clear();
+                // Its sections may be others now: a box open on one is gone.
+                self.asking = None;
             }
             self.saved = saved;
             self.load_files(cx);
@@ -859,15 +861,13 @@ impl GuideView {
             .unwrap_or_default()
     }
 
-    fn about_section(&self, i: usize) -> About {
-        let g = self.guide.as_ref();
-        About::Section {
-            section: g
-                .map(|g| g.sections[i].clone())
-                .unwrap_or_else(Section::other),
+    /// Section `i` as asked about; None once a guide written again has no such section.
+    fn about_section(&self, i: usize) -> Option<About> {
+        Some(About::Section {
+            section: self.guide.as_ref()?.sections.get(i)?.clone(),
             n: i + 1,
             total: self.total(),
-        }
+        })
     }
 
     fn ask(&mut self, at: AskAt, question: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -876,7 +876,10 @@ impl GuideView {
         };
         let about = match at {
             AskAt::Whole => About::Whole,
-            AskAt::Section(i) => self.about_section(i),
+            AskAt::Section(i) => match self.about_section(i) {
+                Some(about) => about,
+                None => return,
+            },
         };
         let input = self.handoff(about, &saved.run, cx);
         let worktrees = self.worktrees(cx);
@@ -942,7 +945,10 @@ impl GuideView {
         };
         let about = match at {
             AskAt::Whole => About::Whole,
-            AskAt::Section(i) => self.about_section(i),
+            AskAt::Section(i) => match self.about_section(i) {
+                Some(about) => about,
+                None => return,
+            },
         };
         let input = self.handoff(about, &saved.run, cx);
         self.hand(how, input, window, cx);

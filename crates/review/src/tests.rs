@@ -399,3 +399,142 @@ fn the_guided_review_command_opens_the_uncommitted_changes_guide(cx: &mut TestAp
     assert!(view.read_with(cx, |v, _| v.guide().is_some()));
     assert_eq!(calls(&agent), 0, "a kept guide isn't asked for");
 }
+
+#[gpui_kit::test]
+fn closing_the_window_stops_its_run(cx: &mut TestAppContext) {
+    let (repo, agent) = setup("window");
+    boot(cx, &agent);
+    let (host, vcx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+    let ws = host.read_with(vcx, |h, _| h.0.clone());
+    open_project(&ws, &repo, vcx);
+    let of = head_commit(vcx);
+    let id = crate::store::guide_id(&repo.to_string_lossy(), &of, Some("main"));
+    vcx.update(|window, cx| crate::open_guide(of, window, cx));
+    // The window closes before the run gets going: its workspace goes, and the run with it.
+    drop(ws);
+    drop(host);
+    vcx.update(|window, _| window.remove_window());
+    cx.update(|_| {});
+    cx.run_until_parked();
+    assert_eq!(calls(&agent), 0, "the agent never started");
+    assert_eq!(
+        cx.update(|cx| Guides::run(cx, RunKind::Guide, &id)),
+        Some(Run::Stopped)
+    );
+}
+
+/// A stand-in `claude` on PATH, first of every `claude` the run's PATH would find, or the test
+/// stops before anything runs: it must never reach the real one.
+fn fake_claude(bin: &Path) -> PathBuf {
+    let fake = bin.join("claude");
+    std::fs::write(
+        &fake,
+        "#!/bin/sh\nhere=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\ncat >/dev/null\n{ for a in \"$@\"; do printf '%s\\n' \"$a\"; done; echo --END--; } >> \"$here/claude-calls\"\nif [ -f \"$here/old\" ]; then for a in \"$@\"; do [ \"$a\" = --strict-mcp-config ] && { echo \"error: unknown option '--strict-mcp-config'\" >&2; exit 1; }; done; fi\ncat \"$here/guide.json\"\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    // SAFETY: each test runs in its own process (nextest), before any thread reads it.
+    unsafe { std::env::set_var("PATH", &path) };
+    // As core searches: the login shell's PATH (never read in a test), Homebrew's, then ours.
+    let first = ["/opt/homebrew/bin", "/usr/local/bin"]
+        .into_iter()
+        .map(PathBuf::from)
+        .chain(std::env::split_paths(&path))
+        .map(|d| d.join("claude"))
+        .find(|p| p.exists());
+    assert_eq!(
+        first.as_deref(),
+        Some(fake.as_path()),
+        "a real claude would run"
+    );
+    fake
+}
+
+/// The calls the stand-in got, each one's arguments.
+fn claude_calls(bin: &Path) -> Vec<Vec<String>> {
+    let text = std::fs::read_to_string(bin.join("claude-calls")).unwrap_or_default();
+    text.split("--END--\n")
+        .filter(|c| !c.is_empty())
+        .map(|c| c.lines().map(str::to_string).collect())
+        .collect()
+}
+
+#[gpui_kit::test]
+fn the_claude_preset_runs_lean_with_its_schema_and_retries_an_old_claude_without(
+    cx: &mut TestAppContext,
+) {
+    let (repo, agent) = setup("claude");
+    let bin = agent.parent().unwrap().to_path_buf();
+    fake_claude(&bin);
+    // A lockfile is generated: the whole patch goes in a file, which Claude Code is let read.
+    std::fs::write(repo.join("package-lock.json"), "{\"lockfileVersion\": 3}\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "Lock"]);
+    boot(cx, &agent);
+    cx.update(|cx| Settings::update(cx, |s| s.review_command = Some("claude -p".into())));
+    let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+    let ws = host.read_with(cx, |h, _| h.0.clone());
+    open_project(&ws, &repo, cx);
+    let of = head_commit(cx);
+    let sel = Selection::Guide { of: of.clone() };
+    cx.update(|window, cx| crate::open_guide(of, window, cx));
+    cx.run_until_parked();
+    let view = view_of(&ws, &sel, cx).expect("the guide's tab");
+    assert!(view.read_with(cx, |v, _| v.guide().is_some()), "written");
+    let calls = claude_calls(&bin);
+    assert_eq!(calls.len(), 1);
+    let args = &calls[0];
+    let has = |a: &str| args.iter().any(|x| x == a);
+    for flag in [
+        "-p",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        "--disable-slash-commands",
+        "--tools",
+        "Read,Grep,Glob",
+        "--model",
+        "sonnet",
+        "--effort",
+        "medium",
+        "--json-schema",
+    ] {
+        assert!(has(flag), "{flag} in {args:?}");
+    }
+    let schema = &args[args.iter().position(|a| a == "--json-schema").unwrap() + 1];
+    assert!(
+        serde_json::from_str::<serde_json::Value>(schema)
+            .is_ok_and(|v| v["required"][0] == "title")
+    );
+    assert!(args.iter().any(|a| a.starts_with("--add-dir=")), "{args:?}");
+
+    // A Claude Code too old for the lean flags: once more without them (and the schema), the
+    // model and effort kept.
+    std::fs::write(bin.join("old"), "").unwrap();
+    view.update(cx, |v, cx| v.generate(cx));
+    cx.run_until_parked();
+    let calls = claude_calls(&bin);
+    assert_eq!(
+        calls.len(),
+        3,
+        "a failed try and the one without the lean flags"
+    );
+    let retry = &calls[2];
+    let has = |a: &str| retry.iter().any(|x| x == a);
+    assert!(
+        !has("--strict-mcp-config") && !has("--json-schema") && !has("--tools"),
+        "{retry:?}"
+    );
+    assert!(
+        has("--model") && has("sonnet") && has("--effort") && has("medium"),
+        "{retry:?}"
+    );
+    assert!(retry.iter().any(|a| a.starts_with("--add-dir=")));
+    let id = crate::store::guide_id(&repo.to_string_lossy(), &head_commit(cx), Some("main"));
+    assert_eq!(
+        cx.update(|_, cx| Guides::run(cx, RunKind::Guide, &id)),
+        None,
+        "no failure left"
+    );
+}

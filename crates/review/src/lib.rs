@@ -62,6 +62,12 @@ pub fn init(cx: &mut App) {
     });
     cx.on_action(|_: &review::CopyNotes, cx| in_front(cx, notes_ui::copy_pending));
     cx.on_action(|_: &review::SendNotes, cx| in_front(cx, notes_ui::send_pending));
+    // The agent CLIs' own loops end with the app: what's still running is killed as it quits.
+    cx.on_app_quit(|_| {
+        gitviber_core::suggest::kill_all();
+        async {}
+    })
+    .detach();
 }
 
 fn in_front(cx: &mut App, f: impl FnOnce(&mut Window, &mut App) + 'static) {

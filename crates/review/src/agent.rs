@@ -186,18 +186,7 @@ pub fn paste_to_running_agent(
             cx,
         );
     };
-    // The worktree's panes, the one in front first.
-    let front = panel.read(cx).active_pane().map(|p| p.entity_id());
-    let mut panes: Vec<(u32, WeakEntity<TerminalPane>)> = panel
-        .read(cx)
-        .panes()
-        .filter(|p| {
-            let p = p.read(cx);
-            !p.has_exited() && p.cwd() == root
-        })
-        .filter_map(|p| Some((p.read(cx).pty_id()?, p.downgrade())))
-        .collect();
-    panes.sort_by_key(|(_, p)| Some(p.entity_id()) != front);
+    let panes = panes_in(&panel, &root, cx);
     let ids: Vec<u32> = panes.iter().map(|(id, _)| *id).collect();
     let core = gitviber_ui::core(cx);
     window
@@ -247,36 +236,68 @@ pub fn paste_to_running_agent(
         .detach();
 }
 
-/// `text` pasted into a terminal of `root` (the one in front, if it's there), Enter left to the
-/// user; false when the worktree has none.
-pub fn paste_to_terminal(root: &Path, text: String, window: &mut Window, cx: &mut App) -> bool {
-    let Some(panel) = terminal(window, cx) else {
-        return false;
-    };
-    let front = panel.read(cx).active_pane();
-    let pane = front
+/// `root`'s terminal panes, the one in front first, with their pty ids.
+fn panes_in(
+    panel: &Entity<TerminalPanel>,
+    root: &Path,
+    cx: &App,
+) -> Vec<(u32, WeakEntity<TerminalPane>)> {
+    let front = panel.read(cx).active_pane().map(|p| p.entity_id());
+    let mut panes: Vec<(u32, WeakEntity<TerminalPane>)> = panel
+        .read(cx)
+        .panes()
         .filter(|p| {
             let p = p.read(cx);
             !p.has_exited() && p.cwd() == root
         })
-        .or_else(|| {
-            panel
-                .read(cx)
-                .panes()
-                .find(|p| {
-                    let p = p.read(cx);
-                    !p.has_exited() && p.cwd() == root
-                })
-                .cloned()
-        });
-    let Some(pane) = pane else {
+        .filter_map(|p| Some((p.read(cx).pty_id()?, p.downgrade())))
+        .collect();
+    panes.sort_by_key(|(_, p)| Some(p.entity_id()) != front);
+    panes
+}
+
+/// `text` pasted into `root`'s terminal, Enter left to the user: into the pane its agent runs
+/// in, else the one in front of the worktree's. False when it has none.
+pub fn paste_to_terminal(root: &Path, text: String, window: &mut Window, cx: &mut App) -> bool {
+    let Some(panel) = terminal(window, cx) else {
         return false;
     };
-    pane.update(cx, |p, cx| {
-        p.paste_text(text, window, cx);
-        p.focus(window, cx);
-    });
+    let panes = panes_in(&panel, root, cx);
+    if panes.is_empty() {
+        return false;
+    }
+    let ids: Vec<u32> = panes.iter().map(|(id, _)| *id).collect();
+    let core = gitviber_ui::core(cx);
+    window
+        .spawn(cx, async move |cx| {
+            let agents = cx
+                .background_spawn(
+                    async move { api::app::pty_agents(&core, ids).unwrap_or_default() },
+                )
+                .await;
+            let _ = cx.update(|window, cx| {
+                // A shell would run what's pasted line by line as soon as Enter is pressed.
+                let pane =
+                    pick_pane(&panes, |id| agents.contains_key(&id)).and_then(|p| p.upgrade());
+                if let Some(pane) = pane {
+                    pane.update(cx, |p, cx| {
+                        p.paste_text(text, window, cx);
+                        p.focus(window, cx);
+                    });
+                }
+            });
+        })
+        .detach();
     true
+}
+
+/// The pane with an agent in it, else the first (the one in front).
+fn pick_pane<T>(panes: &[(u32, T)], has_agent: impl Fn(u32) -> bool) -> Option<&T> {
+    panes
+        .iter()
+        .find(|(id, _)| has_agent(*id))
+        .or(panes.first())
+        .map(|(_, p)| p)
 }
 
 /// The part asked about, as the agent would get it, on the clipboard.
@@ -288,4 +309,17 @@ pub fn copy_as_prompt(a: &HandoffInput, window: &mut Window, cx: &mut App) {
         window,
         cx,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notes_go_to_the_agents_pane_before_a_shell_in_front() {
+        let panes = [(1, "zsh in front"), (2, "claude"), (3, "another zsh")];
+        assert_eq!(pick_pane(&panes, |id| id == 2), Some(&"claude"));
+        assert_eq!(pick_pane(&panes, |_| false), Some(&"zsh in front"));
+        assert_eq!(pick_pane::<&str>(&[], |_| true), None);
+    }
 }

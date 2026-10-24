@@ -219,8 +219,9 @@ struct Active {
     label: String,
     token: u64,
     _task: Task<()>,
-    /// The workspace's tabs, to stop it when its tab closes.
+    /// The workspace's tabs, to stop it when its tab closes, and the workspace itself.
     _tabs: Option<Subscription>,
+    _window: Option<Subscription>,
 }
 
 pub struct Guides {
@@ -439,6 +440,11 @@ impl Guides {
             g.next += 1;
             g.next
         };
+        // The one running stops now: the new run may fail before core would stop it (a pull
+        // request's commits not fetched), and it would run to its timeout.
+        if cx.global::<Guides>().active.contains_key(&kind) {
+            api::changes::suggest_cancel(&core, kind.core());
+        }
         let stopped = cx
             .global::<Guides>()
             .active
@@ -461,6 +467,13 @@ impl Guides {
                 tail: tail.clone(),
             },
         );
+        // Its window closed: the workspace goes, and no tab of it is left to tell.
+        let window = tab.as_ref().map(|(ws, _)| {
+            let id = id.clone();
+            cx.observe_release(ws, move |_, cx| {
+                cx.defer(move |cx| Guides::cancel(cx, kind, &id));
+            })
+        });
         let tabs = tab.map(|(ws, sel)| {
             let id = id.clone();
             cx.subscribe(&ws, move |ws, e: &WorkspaceEvent, cx| {
@@ -488,6 +501,7 @@ impl Guides {
                 token,
                 _task: task,
                 _tabs: tabs,
+                _window: window,
             },
         );
         stopped.map(|(_, label)| label)
