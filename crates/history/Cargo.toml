@@ -1,0 +1,32 @@
+[package]
+name = "gitviber-history"
+description = "GitViber's History: the commit graph, search, commit menus and rewrites, a commit's tab, and the Compare screen."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "gitviber_history"
+
+[dependencies]
+gitviber-core = { path = "../core" }
+gitviber-ui = { path = "../ui" }
+gitviber-diff = { path = "../diff" }
+gitviber-refs = { path = "../refs" }
+gpui-kit.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# Off-screen pictures of the demo (dev::run with GITVIBER_SNAPSHOT).
+gitviber-ui = { path = "../ui", features = ["snapshot"] }
+# Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.
+gpui-test = { package = "gpui-pre", version = "=0.3.9", features = ["test-support", "leak-detection"] }
+
+# Every crate's example shares target/debug/examples/: a plain "demo" would be overwritten.
+[[example]]
+name = "history-demo"
+path = "examples/demo.rs"
