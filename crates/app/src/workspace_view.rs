@@ -9,21 +9,24 @@ use gitviber_ui::keymap::ROOT_CONTEXT;
 use gitviber_ui::memory::{self, Live};
 use gitviber_ui::state::PanelSizes;
 use gitviber_ui::widgets::CountBadge;
-use gitviber_ui::workspace::{PanelContext, Registry, Slot, TabGroup, Toast, Workspace};
+use gitviber_ui::workspace::{
+    PanelContext, ProjectEvent, Registry, Slot, TabGroup, Toast, Workspace, WorkspaceEvent,
+};
 use gitviber_ui::{ActiveAppTheme, Settings, UiState, theme, windows};
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::resizable::HandleEdge;
 use gpui_kit::component::resize_handle;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Axis, Context, DragMoveEvent, Empty, Entity, FocusHandle,
-    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, prelude::*, px,
-    size,
+    AnyElement, AnyWindowHandle, App, AppContext as _, Axis, Context, DragMoveEvent, Empty, Entity,
+    FocusHandle, Global, InteractiveElement as _, IntoElement, KeyDownEvent, ModifiersChangedEvent,
+    ParentElement as _, PathPromptOptions, Render, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Task, WeakEntity, Window, div, prelude::*, px, size,
 };
 
 use crate::layout::{self, LEFT, RIGHT};
 use crate::menus::{ClearRecent, OpenRecent};
+use crate::overlay::ShortcutOverlay;
 use crate::palette::{Mode, Palette};
 use crate::status_bar::{STATUS_BAR_HEIGHT, status_bar};
 use crate::tab_strip::tab_strip;
@@ -54,6 +57,7 @@ drag_preview!(ResizeLeft, ResizeRight, ResizeBottom);
 
 pub struct WorkspaceView {
     workspace: Entity<Workspace>,
+    overlay: Entity<ShortcutOverlay>,
     focus: FocusHandle,
     sizes: PanelSizes,
     /// A frame was drawn: GPUI can tell which commands apply only from one.
@@ -61,8 +65,29 @@ pub struct WorkspaceView {
     /// Repaints the memory readout now and then, while it shows.
     _memory_tick: Option<Task<()>>,
     _open_recent: Option<Task<()>>,
+    /// The open project's events: a repo opened asks for a git identity when there is none.
+    _project: Option<Subscription>,
     _live: Live,
     _subscriptions: Vec<Subscription>,
+}
+
+/// The main window and its workspace, for the other windows and the app's own commands
+/// (Settings reads its project, a quit asks there, `gitviber <path>` opens there).
+struct MainWindow {
+    window: AnyWindowHandle,
+    workspace: WeakEntity<Workspace>,
+}
+
+impl Global for MainWindow {}
+
+pub fn main_workspace(cx: &App) -> Option<Entity<Workspace>> {
+    cx.try_global::<MainWindow>()?.workspace.upgrade()
+}
+
+pub fn main_window(cx: &App) -> Option<AnyWindowHandle> {
+    let main = cx.try_global::<MainWindow>()?;
+    main.workspace.upgrade()?;
+    Some(main.window)
 }
 
 /// Opens the main window on `project`, or on none.
@@ -92,6 +117,15 @@ pub(crate) fn main_view(
 ) -> Entity<WorkspaceView> {
     let workspace = cx.new(Workspace::new);
     Workspace::register_window(&workspace, window, cx);
+    cx.set_global(MainWindow {
+        window: window.window_handle(),
+        workspace: workspace.downgrade(),
+    });
+    // Closing it is quitting, which asks first while something runs.
+    window.on_window_should_close(cx, |_, cx| {
+        crate::quit::request(cx);
+        false
+    });
     if let Some(root) = project {
         workspace.update(cx, |ws, cx| ws.open_project(root, window, cx));
     }
@@ -107,6 +141,33 @@ impl WorkspaceView {
             let geometry = windows::geometry(window.window_bounds());
             UiState::update_later(cx, |s| s.window = Some(geometry));
         }));
+        // ⌘Tab leaves without a keyup: a held overlay goes too. Back in front, a folder moved
+        // meanwhile shows in the projects list.
+        subs.push(cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                crate::projects::refresh(true, cx);
+            } else {
+                this.overlay.update(cx, |o, cx| o.hide(cx));
+            }
+        }));
+        subs.push(cx.observe_global::<UiState>(|_, cx| crate::projects::refresh(false, cx)));
+        subs.push(cx.subscribe_in(
+            &workspace,
+            window,
+            |this, ws, e: &WorkspaceEvent, window, cx| {
+                if *e == WorkspaceEvent::ProjectChanged {
+                    let project = ws.read(cx).project().cloned();
+                    this._project = project.map(|p| {
+                        cx.subscribe_in(&p, window, |_, _, e: &ProjectEvent, window, cx| {
+                            if matches!(e, ProjectEvent::Opened) {
+                                crate::dialogs::identity::check(window, cx);
+                            }
+                        })
+                    });
+                }
+            },
+        ));
+        let overlay = cx.new(|_| ShortcutOverlay::new(workspace.clone()));
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let memory_tick = memory::readout_enabled().then(|| {
@@ -123,11 +184,13 @@ impl WorkspaceView {
         });
         Self {
             workspace,
+            overlay,
             focus,
             sizes: UiState::get(cx).panels.clone(),
             drawn: false,
             _memory_tick: memory_tick,
             _open_recent: None,
+            _project: None,
             _live: Live::new("WorkspaceView"),
             _subscriptions: subs,
         }
@@ -343,6 +406,33 @@ impl WorkspaceView {
             .w(px(width))
             .h_full()
             .bg(t.chrome(t.sidebar))
+            .when(
+                slot == Slot::Left && Settings::get(cx).sidebar_projects,
+                |d| {
+                    let main = self.workspace.read(cx).project().and_then(|p| {
+                        p.read(cx)
+                            .main_worktree()
+                            .map(|m| m.to_string_lossy().into_owned())
+                    });
+                    // About five rows show, the rest scroll.
+                    d.child(
+                        div()
+                            .id("sidebar-projects")
+                            .flex_none()
+                            .max_h(px(148.))
+                            .overflow_y_scroll()
+                            .p_1()
+                            .border_b_1()
+                            .border_color(t.border)
+                            .child(crate::projects::list(
+                                "sidebar-projects-list",
+                                main,
+                                true,
+                                cx,
+                            )),
+                    )
+                },
+            )
             .when(slot == Slot::Left, |d| d.border_r_1())
             .when(slot == Slot::Right, |d| d.border_l_1())
             .border_color(t.border)
@@ -444,7 +534,10 @@ impl Render for WorkspaceView {
             )
         };
         let body: AnyElement = if !ws_has_project {
-            welcome::no_project(cx)
+            match crate::dialogs::needs_git::missing(cx) {
+                Some(info) => crate::dialogs::needs_git::screen(info, cx),
+                None => welcome::no_project(cx),
+            }
         } else if maximized {
             self.bottom(None, window, cx)
         } else {
@@ -525,6 +618,24 @@ impl Render for WorkspaceView {
             .font_family(t.fonts.ui.clone())
             .font_weight(t.fonts.ui_weight)
             .text_size(t.ui_text())
+            .on_modifiers_changed(cx.listener(|this, e: &ModifiersChangedEvent, window, cx| {
+                this.overlay
+                    .update(cx, |o, cx| o.modifiers_changed(e, window, cx))
+            }))
+            .capture_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
+                if this.overlay.update(cx, |o, cx| o.key_down(e, cx)) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_any_mouse_down(
+                cx.listener(|this, _, _, cx| this.overlay.update(cx, |o, _| o.pointer())),
+            )
+            .on_mouse_move(
+                cx.listener(|this, _, _, cx| this.overlay.update(cx, |o, _| o.pointer())),
+            )
+            .on_action(cx.listener(|this, _: &workbench::ShortcutOverlay, _, cx| {
+                this.overlay.update(cx, |o, cx| o.toggle(cx))
+            }))
             .on_action(
                 cx.listener(|this, _: &workbench::ShowCommands, window, cx| {
                     Palette::open(Mode::Commands, &this.workspace, window, cx)
@@ -533,6 +644,19 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(|this, _: &workbench::QuickOpen, window, cx| {
                 Palette::open(Mode::Files, &this.workspace, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &terminal::NewInProject, window, cx| {
+                Palette::open(Mode::Projects, &this.workspace, window, cx)
+            }))
+            .when(ws_has_project, |d| {
+                d.on_action(cx.listener(|this, _: &workbench::OpenChange, window, cx| {
+                    Palette::open(Mode::Changes, &this.workspace, window, cx)
+                }))
+                .on_action(cx.listener(
+                    |this, _: &terminal::ResumeConversation, window, cx| {
+                        Palette::open(Mode::Conversations, &this.workspace, window, cx)
+                    },
+                ))
+            })
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::open_recent))
             .on_action(cx.listener(|_, _: &ClearRecent, _, cx| {
@@ -576,6 +700,7 @@ impl Render for WorkspaceView {
             .child(top)
             .child(body)
             .child(status)
+            .child(self.overlay.clone())
     }
 }
 
@@ -630,6 +755,28 @@ impl WorkspaceView {
             }))
     }
 
+    /// ⌘1–⌘8 by the tabs the strip shows; None: the last of them.
+    fn go_to_shown(&mut self, nth: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        let shown = crate::tab_strip::visible_tabs(self.workspace.read(cx), cx);
+        let target = match nth {
+            Some(n) => shown.get(n).copied(),
+            None => shown.last().copied(),
+        };
+        if let Some(i) = target {
+            self.workspace
+                .update(cx, |ws, cx| ws.go_to_tab(i, window, cx));
+        }
+    }
+
+    fn step_shown(&mut self, dir: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let ws = self.workspace.read(cx);
+        let shown = crate::tab_strip::visible_tabs(ws, cx);
+        if let Some(i) = crate::tab_strip::stepped(&shown, ws.tabs().active_index(), dir) {
+            self.workspace
+                .update(cx, |ws, cx| ws.go_to_tab(i, window, cx));
+        }
+    }
+
     /// The tab commands, while there are tabs to act on.
     fn tab_actions(
         &self,
@@ -643,7 +790,7 @@ impl WorkspaceView {
         let goto = |d: gpui_kit::Stateful<gpui_kit::Div>, cx: &mut Context<Self>| {
             macro_rules! go {
                 ($d:expr, $($a:ident => $i:expr),*) => {
-                    $d$(.on_action(cx.listener(|this, _: &tab::$a, w, cx| this.workspace.update(cx, |ws, cx| ws.go_to_tab($i, w, cx)))))*
+                    $d$(.on_action(cx.listener(|this, _: &tab::$a, w, cx| this.go_to_shown(Some($i), w, cx))))*
                 };
             }
             go!(d, Goto1 => 0, Goto2 => 1, Goto3 => 2, Goto4 => 3, Goto5 => 4, Goto6 => 5, Goto7 => 6, Goto8 => 7)
@@ -675,15 +822,9 @@ impl WorkspaceView {
                     this.workspace
                         .update(cx, |ws, cx| ws.close_group(TabGroup::All, cx))
                 }))
-                .on_action(cx.listener(|this, _: &tab::Last, w, cx| {
-                    this.workspace.update(cx, |ws, cx| ws.go_to_last_tab(w, cx))
-                }))
-                .on_action(cx.listener(|this, _: &tab::Next, w, cx| {
-                    this.workspace.update(cx, |ws, cx| ws.step_tab(1, w, cx))
-                }))
-                .on_action(cx.listener(|this, _: &tab::Prev, w, cx| {
-                    this.workspace.update(cx, |ws, cx| ws.step_tab(-1, w, cx))
-                }))
+                .on_action(cx.listener(|this, _: &tab::Last, w, cx| this.go_to_shown(None, w, cx)))
+                .on_action(cx.listener(|this, _: &tab::Next, w, cx| this.step_shown(1, w, cx)))
+                .on_action(cx.listener(|this, _: &tab::Prev, w, cx| this.step_shown(-1, w, cx)))
                 .on_action(cx.listener(|this, _: &tab::MoveLeft, _, cx| {
                     this.workspace
                         .update(cx, |ws, cx| ws.move_active_tab(-1, cx))

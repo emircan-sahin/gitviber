@@ -52,16 +52,54 @@ fn icon(icon: TabIcon, t: &AppTheme) -> Option<AnyElement> {
     }
 }
 
+/// The tabs the strip shows, by index: an agent's browser page while Show agents' tabs is off
+/// keeps running out of it. A tab with no view yet has nothing to hide.
+pub fn visible_tabs(ws: &Workspace, cx: &App) -> Vec<usize> {
+    ws.tabs()
+        .tabs()
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| !e.item.handle().is_some_and(|h| h.hidden(cx)))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// The shown tab `dir` steps from `active`, round the ends; None with fewer than two.
+pub fn stepped(visible: &[usize], active: Option<usize>, dir: isize) -> Option<usize> {
+    if visible.len() < 2 {
+        return None;
+    }
+    let n = visible.len() as isize;
+    let at = match active.and_then(|a| visible.iter().position(|i| *i == a)) {
+        Some(at) => at as isize,
+        // From a hidden tab: the next shown one past it, or the last before it.
+        None => {
+            let a = active.unwrap_or(0);
+            let after = visible.iter().position(|i| *i > a).unwrap_or(visible.len());
+            if dir > 0 {
+                after as isize - 1
+            } else {
+                after as isize
+            }
+        }
+    };
+    Some(visible[(at + dir).rem_euclid(n) as usize])
+}
+
 pub fn tab_strip(workspace: &Entity<Workspace>, _window: &mut Window, cx: &mut App) -> AnyElement {
     let t = cx.app_theme().clone();
     let ws = workspace.read(cx);
     let active = ws.tabs().active_index();
+    let shown = visible_tabs(ws, cx);
     let entries: Vec<_> = ws
         .tabs()
         .tabs()
         .iter()
-        .map(|e| {
+        .enumerate()
+        .filter(|(i, _)| shown.contains(i))
+        .map(|(i, e)| {
             (
+                i,
                 e.key.clone(),
                 e.preview,
                 e.item.title(cx),
@@ -73,8 +111,8 @@ pub fn tab_strip(workspace: &Entity<Workspace>, _window: &mut Window, cx: &mut A
             )
         })
         .collect();
-    let tabs = entries.into_iter().enumerate().map(
-        |(i, (key, preview, title, detail, tab_icon, tooltip, closable, dirty))| {
+    let tabs = entries.into_iter().map(
+        |(i, key, preview, title, detail, tab_icon, tooltip, closable, dirty)| {
             let is_active = active == Some(i);
             let ws_click = workspace.clone();
             let ws_close = workspace.clone();
@@ -221,4 +259,21 @@ pub fn tab_strip(workspace: &Entity<Workspace>, _window: &mut Window, cx: &mut A
         .overflow_x_scroll()
         .children(tabs)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stepped;
+
+    #[test]
+    fn stepping_skips_hidden_tabs() {
+        let shown = [0, 2, 3];
+        assert_eq!(stepped(&shown, Some(0), 1), Some(2));
+        assert_eq!(stepped(&shown, Some(3), 1), Some(0));
+        assert_eq!(stepped(&shown, Some(0), -1), Some(3));
+        // From the hidden tab 1: on to 2, or back to 0.
+        assert_eq!(stepped(&shown, Some(1), 1), Some(2));
+        assert_eq!(stepped(&shown, Some(1), -1), Some(0));
+        assert_eq!(stepped(&[4], Some(4), 1), None);
+    }
 }

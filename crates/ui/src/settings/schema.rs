@@ -229,6 +229,160 @@ pub const SUGGEST_PRESETS: &[(&str, &[&str])] = &[
     ("llm", &[]),
 ];
 
+/// A known agent CLI as Settings shows it: what picking it types, how it takes a model and an
+/// effort, and where its current model ids are listed. New models come out every few months, so
+/// `model` is only the default and any id is taken.
+#[derive(Debug)]
+pub struct AgentPreset {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub command: &'static str,
+    pub model_flag: &'static str,
+    pub model: &'static str,
+    /// The page that lists its models: label, url.
+    pub models: (&'static str, &'static str),
+    /// The flag (a trailing `=` takes the level joined), its levels, and the level until one is
+    /// picked ("" is the CLI's own).
+    pub effort: Option<(&'static str, &'static [&'static str], &'static str)>,
+    /// Flags every run gets, for a faster start; "" for none.
+    pub lean: &'static str,
+    /// Listed under Others, to keep the picker narrow.
+    pub other: bool,
+}
+
+/// As SUGGEST_PRESETS, with what the settings page says about each.
+pub const AGENT_PRESETS: &[AgentPreset] = &[
+    AgentPreset {
+        key: "claude",
+        label: "Claude Code",
+        command: "claude -p",
+        model_flag: "--model",
+        model: "sonnet",
+        models: (
+            "Anthropic's model list",
+            "https://platform.claude.com/docs/en/about-claude/models/overview",
+        ),
+        effort: Some(("--effort", SUGGEST_PRESETS[0].1, "medium")),
+        lean: "--strict-mcp-config --no-session-persistence --disable-slash-commands --tools \"\"",
+        other: false,
+    },
+    AgentPreset {
+        key: "codex",
+        label: "Codex",
+        command: "codex exec",
+        model_flag: "-m",
+        model: "gpt-6-luna",
+        models: (
+            "OpenAI's Codex models",
+            "https://developers.openai.com/codex/models",
+        ),
+        effort: Some(("-c model_reasoning_effort=", SUGGEST_PRESETS[1].1, "medium")),
+        lean: "",
+        other: false,
+    },
+    AgentPreset {
+        key: "opencode",
+        label: "opencode",
+        command: "opencode run --agent plan",
+        model_flag: "-m",
+        model: "anthropic/claude-sonnet-5",
+        models: ("models.dev", "https://models.dev"),
+        effort: Some(("--variant", SUGGEST_PRESETS[2].1, "")),
+        lean: "",
+        other: true,
+    },
+    AgentPreset {
+        key: "pi",
+        label: "pi",
+        command: "pi -p --no-tools --no-session",
+        model_flag: "--model",
+        model: "anthropic/claude-sonnet-5",
+        models: ("pi's model list", "https://pi.dev/models"),
+        effort: Some(("--thinking", SUGGEST_PRESETS[3].1, "medium")),
+        lean: "",
+        other: true,
+    },
+    AgentPreset {
+        key: "llm",
+        label: "llm",
+        command: "llm",
+        model_flag: "-m",
+        model: "gpt-6-luna",
+        models: (
+            "llm models",
+            "https://llm.datasette.io/en/stable/usage.html#listing-available-models",
+        ),
+        effort: None,
+        lean: "",
+        other: true,
+    },
+];
+
+/// Every provider's current model ids on one page, for a custom command.
+pub const ALL_MODELS: (&str, &str) = ("models.dev", "https://models.dev");
+
+impl AgentPreset {
+    /// The preset a command is, typed exactly as picking it types it.
+    pub fn of(command: &str) -> Option<&'static AgentPreset> {
+        AGENT_PRESETS.iter().find(|p| p.command == command.trim())
+    }
+
+    /// The model it runs with: the user's id, or the default until they type one.
+    pub fn model_in(&self, models: &BTreeMap<String, String>) -> String {
+        models
+            .get(self.key)
+            .map_or(self.model, String::as_str)
+            .trim()
+            .to_string()
+    }
+
+    /// The effort it runs with: the user's, or its default until they pick one.
+    pub fn effort_in(&self, efforts: &BTreeMap<String, String>) -> String {
+        match self.effort {
+            Some((_, _, default)) => efforts.get(self.key).map_or(default, String::as_str).into(),
+            None => String::new(),
+        }
+    }
+
+    /// `--effort <level>`, or `-c model_reasoning_effort=<level>` for a flag taking it joined.
+    pub fn effort_arg(&self, level: &str) -> String {
+        let flag = self.effort.map_or("", |e| e.0);
+        if flag.ends_with('=') {
+            format!("{flag}{level}")
+        } else {
+            format!("{flag} {level}")
+        }
+    }
+}
+
+/// The program a command runs, by name ("claude" from "~/.local/bin/claude -p").
+pub fn program_of(command: &str) -> &str {
+    command
+        .split_whitespace()
+        .next()
+        .and_then(|w| w.rsplit('/').next())
+        .unwrap_or("")
+}
+
+/// Guided reviews' languages by the name the prompt gives, each shown in its own.
+pub const REVIEW_LANGUAGES: &[(&str, &str)] = &[
+    ("English", "English"),
+    ("Turkish", "Türkçe"),
+    ("German", "Deutsch"),
+    ("French", "Français"),
+    ("Spanish", "Español"),
+    ("Portuguese", "Português"),
+    ("Italian", "Italiano"),
+    ("Japanese", "日本語"),
+    ("Chinese", "中文"),
+    ("Korean", "한국어"),
+    ("Russian", "Русский"),
+];
+
+/// The code view's line heights, named.
+pub const LINE_HEIGHTS: &[(f32, &str)] =
+    &[(1.4, "Compact"), (1.6, "Comfortable"), (1.8, "Relaxed")];
+
 /// A user's own "Open in" entry: a command with {path}, {file} and {line}, run without a shell.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomApp {
@@ -666,4 +820,34 @@ fn clamp_half(v: f32, min: f32, max: f32, fallback: f32) -> f32 {
         return fallback;
     }
     ((v * 2.0).round() / 2.0).clamp(min, max)
+}
+
+#[cfg(test)]
+mod preset_tests {
+    use super::*;
+
+    #[test]
+    fn agent_presets_follow_suggest_presets() {
+        assert_eq!(AGENT_PRESETS.len(), SUGGEST_PRESETS.len());
+        for (p, (name, levels)) in AGENT_PRESETS.iter().zip(SUGGEST_PRESETS) {
+            assert_eq!(p.key, *name);
+            assert_eq!(p.effort.map_or(&[][..], |e| e.1), *levels);
+            if let Some((_, levels, default)) = p.effort {
+                assert!(default.is_empty() || levels.contains(&default), "{}", p.key);
+            }
+        }
+        let codex = AgentPreset::of(" codex exec ").unwrap();
+        assert_eq!(codex.effort_arg("high"), "-c model_reasoning_effort=high");
+        assert_eq!(
+            AgentPreset::of("claude -p").unwrap().effort_arg("max"),
+            "--effort max"
+        );
+        assert!(AgentPreset::of("claude -p --model opus").is_none());
+        let mut models = BTreeMap::new();
+        assert_eq!(codex.model_in(&models), "gpt-6-luna");
+        models.insert("codex".into(), " o5 ".into());
+        assert_eq!(codex.model_in(&models), "o5");
+        assert_eq!(codex.effort_in(&BTreeMap::new()), "medium");
+        assert_eq!(program_of("~/.local/bin/claude -p"), "claude");
+    }
 }

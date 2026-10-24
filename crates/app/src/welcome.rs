@@ -1,20 +1,17 @@
 //! What the center shows with nothing in it: with no project, a way to open one; with no tab,
 //! the keys to get going.
 
-use gitviber_ui::actions::{file, workbench};
+use gitviber_ui::actions::file;
 use gitviber_ui::assets::LOGO;
 use gitviber_ui::widgets::KeyHint;
 use gitviber_ui::{ActiveAppTheme, UiState};
-use gpui_kit::component::Sizable as _;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _, div, img, px, rems,
+    AnyElement, App, IntoElement, ParentElement as _, Styled as _, div, img,
+    prelude::FluentBuilder as _, px, rems,
 };
-
-use crate::menus::OpenRecent;
-
-const RECENT_SHOWN: usize = 8;
 
 fn hint_row(label: &'static str, id: &'static str, cx: &App) -> AnyElement {
     let t = cx.app_theme();
@@ -46,100 +43,103 @@ pub fn empty_center(cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// The window with no project open.
+/// The window with no project open: open or clone one, or pick a saved one.
 pub fn no_project(cx: &App) -> AnyElement {
     let t = cx.app_theme().clone();
-    let recent: Vec<String> = UiState::get(cx)
-        .recent_projects
-        .iter()
-        .take(RECENT_SHOWN)
-        .cloned()
-        .collect();
-    let rows = recent.into_iter().enumerate().map(|(i, path)| {
-        let name = path.rsplit('/').next().unwrap_or(&path).to_string();
-        let open = OpenRecent {
-            path: SharedString::from(path.clone()),
-        };
-        div()
-            .id(("recent", i))
-            .flex()
-            .items_baseline()
-            .gap_2()
-            .w_full()
-            .px_2()
-            .py_1()
-            .rounded(px(4.))
-            .cursor_pointer()
-            .hover(|s| s.bg(t.hover))
-            .child(div().flex_none().text_color(t.foreground).child(name))
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(t.subtle)
-                    .text_size(rems(0.6875))
-                    .child(path),
-            )
-            .on_click(move |_, window, cx| window.dispatch_action(Box::new(open.clone()), cx))
-    });
+    let has_recent = !UiState::get(cx).recent_projects.is_empty();
+    let open_key = gitviber_ui::keymap::shortcut_label("file.openRepo", cx);
     div()
         .size_full()
         .flex()
-        .flex_col()
         .items_center()
         .justify_center()
         .bg(t.code(t.background))
         .child(
             div()
-                .w(px(420.))
+                .w(px(400.))
                 .flex()
                 .flex_col()
-                .items_center()
-                .gap_3()
-                .child(img(LOGO).size(px(64.)))
-                .child(
-                    div()
-                        .text_size(rems(1.25))
-                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                        .child("GitViber"),
-                )
-                .child(
-                    div()
-                        .text_color(t.muted_foreground)
-                        .child("Open a repository to see what your agents wrote."),
-                )
                 .child(
                     div()
                         .flex()
-                        .gap_2()
-                        .mt_2()
+                        .items_center()
+                        .gap_3()
+                        .child(img(LOGO).size(px(44.)))
                         .child(
-                            Button::new("open-folder")
-                                .primary()
-                                .small()
-                                .label("Open Folder…")
-                                .on_click(|_, window, cx| {
-                                    window.dispatch_action(Box::new(file::OpenRepo), cx)
-                                }),
-                        )
-                        .child(
-                            Button::new("palette")
-                                .small()
-                                .label("Command Palette")
-                                .on_click(|_, window, cx| {
-                                    window.dispatch_action(Box::new(workbench::ShowCommands), cx)
-                                }),
+                            div()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_size(rems(1.25))
+                                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                                        .child("GitViber"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(rems(0.75))
+                                        .text_color(t.muted_foreground)
+                                        .child("Review what your agent wrote. Plain git, no workspace."),
+                                ),
                         ),
                 )
                 .child(
-                    div()
-                        .mt_4()
+                    Button::new("welcome-open")
+                        .primary()
+                        .mt_6()
                         .w_full()
-                        .flex()
-                        .flex_col()
-                        .gap_px()
-                        .children(rows),
-                ),
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .w_full()
+                                .child(Icon::new(IconName::FolderOpen).small())
+                                .child("Open repository")
+                                .child(
+                                    div()
+                                        .ml_auto()
+                                        .font_family(t.fonts.code.clone())
+                                        .text_size(rems(0.6875))
+                                        .opacity(0.7)
+                                        .child(open_key.unwrap_or_default()),
+                                ),
+                        )
+                        .on_click(|_, window, cx| window.dispatch_action(Box::new(file::OpenRepo), cx)),
+                )
+                .child(
+                    Button::new("welcome-clone")
+                        .mt_2()
+                        .w_full()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .w_full()
+                                .child(Icon::new(IconName::FolderDown).small())
+                                .child("Clone repository"),
+                        )
+                        .on_click(|_, window, cx| window.dispatch_action(Box::new(file::CloneRepo), cx)),
+                )
+                .when(has_recent, |d| {
+                    d.child(
+                        div()
+                            .mt_6()
+                            .pt_3()
+                            .border_t_1()
+                            .border_color(t.border)
+                            .child(
+                                div()
+                                    .mb_1p5()
+                                    .text_size(rems(0.65625))
+                                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                                    .text_color(t.subtle)
+                                    .child("RECENT"),
+                            )
+                            .child(crate::projects::list("welcome-projects", None, false, cx)),
+                    )
+                }),
         )
         .into_any_element()
 }

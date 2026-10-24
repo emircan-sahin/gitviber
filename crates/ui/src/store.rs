@@ -151,6 +151,9 @@ struct FileState {
     last: Map<String, Value>,
     waiting: Option<Pending>,
     writing: bool,
+    /// The writer took `waiting` and is writing it now. Only this is waited for on a flush: a
+    /// writer still queued may never run (a headless executor), so its work is done inline.
+    in_flight: bool,
 }
 
 type Files = (Mutex<HashMap<PathBuf, FileState>>, Condvar);
@@ -241,6 +244,7 @@ fn spawn_writer(cx: &mut App, path: PathBuf) {
                 let mut map = lock.lock().unwrap();
                 let file = map.entry(path.clone()).or_default();
                 let next = file.waiting.take();
+                file.in_flight = next.is_some();
                 if next.is_none() {
                     file.writing = false;
                     done.notify_all();
@@ -249,6 +253,10 @@ fn spawn_writer(cx: &mut App, path: PathBuf) {
             };
             let Some(pending) = next else { break };
             write_pending(&path, pending);
+            if let Some(file) = lock.lock().unwrap().get_mut(&path) {
+                file.in_flight = false;
+            }
+            done.notify_all();
         }
     })
     .detach();
@@ -259,7 +267,7 @@ fn spawn_writer(cx: &mut App, path: PathBuf) {
 pub fn flush(_: &mut App) {
     let (lock, done) = files();
     let mut map = lock.lock().unwrap();
-    while map.values().any(|f| f.writing) {
+    while map.values().any(|f| f.in_flight) {
         map = done.wait(map).unwrap();
     }
     let waiting: Vec<(PathBuf, Pending)> = map
@@ -323,6 +331,26 @@ mod tests {
             Value::Object(merged),
             serde_json::json!({ "a": 10, "b": 2, "c": 3, "theirs": true })
         );
+    }
+
+    /// A headless executor runs a queued writer only when it's driven: a flush mustn't wait on it.
+    #[gpui_kit::test]
+    fn a_flush_writes_what_a_writer_never_started(cx: &mut gpui_kit::TestAppContext) {
+        let path = temp("flush").join("state.json");
+        let ours = serde_json::json!({ "a": 1 }).as_object().cloned().unwrap();
+        cx.update(|cx| {
+            save_object(cx, path.clone(), ours);
+            flush(cx);
+        });
+        let back: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(back, serde_json::json!({ "a": 1 }));
+        // The queued writer finds nothing left, and a later save still goes out.
+        cx.run_until_parked();
+        let ours = serde_json::json!({ "a": 2 }).as_object().cloned().unwrap();
+        cx.update(|cx| save_object(cx, path.clone(), ours));
+        cx.run_until_parked();
+        let back: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(back, serde_json::json!({ "a": 2 }));
     }
 
     #[test]

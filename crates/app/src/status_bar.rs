@@ -1,7 +1,7 @@
 //! The status bar: features' items on the left (ahead/behind, the changes' counts), theirs and
 //! the app's on the right (code colors, font, diff layout, wrap, version).
 
-use gitviber_ui::actions::{diff, editor};
+use gitviber_ui::actions::{app, diff, editor};
 use gitviber_ui::memory;
 use gitviber_ui::settings::{LIGHT_SYNTAX_THEMES, SYNTAX_THEMES};
 use gitviber_ui::workspace::{BarSlot, PanelContext, Registry};
@@ -123,10 +123,17 @@ pub fn status_bar(ctx: &PanelContext, window: &mut Window, cx: &mut App) -> AnyE
                             }),
                     )
                 })
-                .child(
-                    item("status-version", cx)
-                        .child(format!("v{} · {os}", env!("CARGO_PKG_VERSION"))),
-                ),
+                .map(|d| match crate::updates::status_button(cx) {
+                    // Once a newer release is out, the version turns into its button.
+                    Some(button) => d.child(button),
+                    None => d.child(
+                        item("status-version", cx)
+                            .child(format!("v{} · {os}", env!("CARGO_PKG_VERSION")))
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(app::About), cx)
+                            }),
+                    ),
+                }),
         )
         .into_any_element()
 }

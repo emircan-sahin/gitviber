@@ -32,7 +32,7 @@ fn main_window(cx: &mut App) -> Option<gpui_kit::AnyWindowHandle> {
 
 async fn round(projects: &[PathBuf], i: usize, cx: &mut AsyncApp) {
     let pause = Duration::from_millis(120);
-    cx.update(open_settings);
+    cx.update(|cx| open_settings(None, cx));
     cx.background_executor().timer(pause).await;
     cx.update(|cx| {
         // The settings window is the newest.
@@ -65,10 +65,36 @@ async fn round(projects: &[PathBuf], i: usize, cx: &mut AsyncApp) {
         });
     });
     cx.background_executor().timer(pause).await;
+    // About with its licenses over it, Clone, and the shortcut overlay, shown and gone.
     cx.update(|cx| {
         let Some(main) = main_window(cx) else { return };
         let _ = main.update(cx, |_, window, cx| {
             window.close_dialog(cx);
+            gitviber_app::open_dialog("about", window, cx);
+            gitviber_app::open_dialog("licenses", window, cx);
+            window.dispatch_action(
+                Box::new(gitviber_ui::actions::workbench::ShortcutOverlay),
+                cx,
+            );
+        });
+    });
+    cx.background_executor().timer(pause).await;
+    cx.update(|cx| {
+        let Some(main) = main_window(cx) else { return };
+        let _ = main.update(cx, |_, window, cx| {
+            window.close_all_dialogs(cx);
+            window.dispatch_action(
+                Box::new(gitviber_ui::actions::workbench::ShortcutOverlay),
+                cx,
+            );
+            gitviber_app::open_dialog("clone", window, cx);
+        });
+    });
+    cx.background_executor().timer(pause).await;
+    cx.update(|cx| {
+        let Some(main) = main_window(cx) else { return };
+        let _ = main.update(cx, |_, window, cx| {
+            window.close_all_dialogs(cx);
             if let (Some(ws), Some(root)) = (
                 Workspace::for_window(window, cx),
                 projects.get(i % projects.len().max(1)),
@@ -92,11 +118,17 @@ fn main() {
             report("before");
             round(&projects, 0, cx).await;
             report("after 1 round");
-            for i in 1..ROUNDS {
+            // GITVIBER_CYCLES rounds, the footprint every ten: it should level off, not climb.
+            let rounds = std::env::var("GITVIBER_CYCLES")
+                .ok()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(ROUNDS);
+            for i in 1..rounds {
                 round(&projects, i, cx).await;
+                if (i + 1) % 10 == 0 {
+                    report(&format!("after {} rounds", i + 1));
+                }
             }
-            cx.background_executor().timer(Duration::from_secs(1)).await;
-            report(&format!("after {ROUNDS} rounds"));
         })
         .detach();
     });

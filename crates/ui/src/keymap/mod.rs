@@ -4,6 +4,7 @@
 
 pub mod chord;
 mod commands;
+pub mod edit;
 
 use std::collections::BTreeMap;
 
@@ -13,6 +14,13 @@ pub use chord::{IS_MAC, canonical, chord_keys, format_chord};
 pub use commands::*;
 
 use crate::settings::Settings;
+
+/// What a feature crate asks of the app, which it can't call: dispatch one from a window.
+pub mod requests {
+    // AskGitIdentity: git refused a commit for want of a name or email; the app asks for them,
+    // even after the user closed that ask once.
+    gpui_kit::actions!(requests, [AskGitIdentity]);
+}
 
 /// The key context every GitViber window root sets; global commands are bound under it.
 pub const ROOT_CONTEXT: &str = "GitViber";

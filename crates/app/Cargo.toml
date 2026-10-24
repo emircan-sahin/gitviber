@@ -22,9 +22,21 @@ gitviber-diff = { path = "../diff" }
 gitviber-changes = { path = "../changes" }
 gitviber-terminal = { path = "../terminal" }
 gitviber-files = { path = "../files" }
+gitviber-obsidian = { path = "../obsidian" }
+gitviber-browser = { path = "../browser" }
 gitviber-history = { path = "../history" }
 gitviber-refs = { path = "../refs" }
 gitviber-github = { path = "../github" }
+gitviber-review = { path = "../review" }
+# Already in the tree through gpui-kit and the ui crate.
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+# Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.
+gpui-test.workspace = true
 
 [features]
 # GITVIBER_SNAPSHOT=out.png draws the main window off screen into a PNG and exits (gitviber-ui's

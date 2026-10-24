@@ -8,7 +8,9 @@ use gitviber_ui::actions::{
 };
 use gitviber_ui::{Settings, UiState};
 use gpui_kit::component::input as text;
-use gpui_kit::{Action, App, Menu, MenuItem, OsAction, SharedString, SystemMenuType};
+use gpui_kit::{
+    Action, App, AppContext as _, Menu, MenuItem, OsAction, SharedString, SystemMenuType,
+};
 
 /// File → Open Recent's items.
 #[derive(Clone, PartialEq, Debug, gpui_kit::Action)]
@@ -55,17 +57,63 @@ fn recent_menu(recent: &[String]) -> Menu {
             )
         })
         .collect();
-    if !items.is_empty() {
+    let empty = items.is_empty();
+    if !empty {
         items.push(sep());
     }
-    items.push(item(ClearRecent, "Clear Recent"));
+    items.push(item(ClearRecent, "Clear Menu").disabled(empty));
     Menu::new("Open Recent").items(items)
 }
 
-fn reveal_label() -> &'static str {
+pub fn reveal_label() -> &'static str {
     cmds::command("file.reveal")
         .map(|c| c.title)
         .unwrap_or("Reveal")
+}
+
+/// "Open in Zed" once an app is the default; the list until then.
+fn open_in_label(s: &Settings, cx: &App) -> String {
+    let custom = s
+        .open_in_custom
+        .iter()
+        .find(|a| a.id == s.open_in_app && !a.name.trim().is_empty())
+        .map(|a| a.name.clone());
+    match custom {
+        Some(name) => format!("Open in {name}"),
+        None if !s.open_in_app.is_empty() => {
+            format!("Open in {}", builtin_name(&s.open_in_app, cx))
+        }
+        None => "Open in…".into(),
+    }
+}
+
+/// The apps Open in found, by id and name: asked once at launch, off the UI thread.
+#[derive(Default)]
+pub struct OpenInApps(pub Vec<(String, String)>);
+impl gpui_kit::Global for OpenInApps {}
+
+/// The editors, terminals and git clients found here, as id and name. Blocking.
+pub fn installed_apps(core: &gitviber_core::Core) -> Vec<(String, String)> {
+    let list = gitviber_core::api::files::open_in_apps(core).unwrap_or_default();
+    // Installed keeps its fields to itself; its JSON is what the old app read.
+    serde_json::to_value(list)
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|a| {
+            Some((
+                a.get("id")?.as_str()?.to_string(),
+                a.get("name")?.as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+fn builtin_name(id: &str, cx: &App) -> String {
+    cx.try_global::<OpenInApps>()
+        .and_then(|a| a.0.iter().find(|(i, _)| i == id).map(|(_, n)| n.clone()))
+        .unwrap_or_else(|| id.to_string())
 }
 
 pub fn build(cx: &App) -> Vec<Menu> {
@@ -106,7 +154,7 @@ pub fn build(cx: &App) -> Vec<Menu> {
         item(tab::ReopenClosed, "Reopen Closed Tab"),
         sep(),
         item(file::Reveal, reveal_label()),
-        item(file::OpenIn, "Open in…"),
+        item(file::OpenIn, &open_in_label(s, cx)),
     ];
     // The app menu and Window are macOS's; elsewhere Settings goes under File, About under Help.
     if !MAC {
@@ -249,7 +297,14 @@ pub fn build(cx: &App) -> Vec<Menu> {
 
 /// What the menu shows that can change: rebuilt only when it does, as each rebuild goes
 /// through AppKit item by item.
-fn inputs(cx: &App) -> (Vec<bool>, gitviber_ui::keymap::Overrides, Vec<String>) {
+fn inputs(
+    cx: &App,
+) -> (
+    Vec<bool>,
+    gitviber_ui::keymap::Overrides,
+    Vec<String>,
+    String,
+) {
     let s = Settings::get(cx);
     (
         vec![
@@ -261,6 +316,7 @@ fn inputs(cx: &App) -> (Vec<bool>, gitviber_ui::keymap::Overrides, Vec<String>) 
         ],
         s.keybindings.clone(),
         UiState::get(cx).recent_projects.clone(),
+        open_in_label(s, cx),
     )
 }
 
@@ -277,5 +333,18 @@ pub fn install(cx: &mut App) {
     let mut again = rebuild.clone();
     cx.observe_global::<Settings>(move |cx| rebuild(cx))
         .detach();
+    let mut found = again.clone();
     cx.observe_global::<UiState>(move |cx| again(cx)).detach();
+    if gitviber_ui::has_core(cx) {
+        let core = gitviber_ui::core(cx);
+        let apps = cx.background_spawn(async move { installed_apps(&core) });
+        cx.spawn(async move |cx| {
+            let apps = apps.await;
+            cx.update(|cx| {
+                cx.set_global(OpenInApps(apps));
+                found(cx);
+            });
+        })
+        .detach();
+    }
 }
