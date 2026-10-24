@@ -9,8 +9,8 @@ use gitviber_core::suggest::Kind;
 use gitviber_ui::Settings;
 use gitviber_ui::workspace::{GuideOf, Selection, TabGroup, Workspace, selection_key};
 use gpui_kit::{
-    AppContext as _, Context, Entity, IntoElement, Render, TestAppContext, VisualTestContext,
-    Window, div,
+    AnyView, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
+    Styled as _, TestAppContext, VisualTestContext, Window, div, px, size,
 };
 
 use crate::store::{Guides, Run, RunKind};
@@ -20,6 +20,73 @@ struct Host(Entity<Workspace>);
 impl Render for Host {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
+    }
+}
+
+/// Draws the tab it's given, as the app's window would.
+struct Drawn(Entity<Workspace>, Option<AnyView>);
+impl Render for Drawn {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().children(self.1.clone())
+    }
+}
+
+fn draw(cx: &mut VisualTestContext) {
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+}
+
+/// A window drawing `of`'s guide tab, opened with the project.
+fn drawn_guide<'a>(
+    cx: &'a mut TestAppContext,
+    repo: &Path,
+    of: impl FnOnce(&mut VisualTestContext) -> GuideOf,
+) -> (
+    Entity<Drawn>,
+    Entity<Workspace>,
+    Entity<GuideView>,
+    &'a mut VisualTestContext,
+) {
+    let (host, cx) = cx.add_window_view(|_, cx| Drawn(cx.new(Workspace::new), None));
+    let ws = host.read_with(cx, |h, _| h.0.clone());
+    open_project(&ws, repo, cx);
+    let of = of(cx);
+    let sel = Selection::Guide { of: of.clone() };
+    cx.update(|window, cx| crate::open_guide(of, window, cx));
+    cx.run_until_parked();
+    let view = view_of(&ws, &sel, cx).expect("the guide's tab");
+    host.update(cx, |h, cx| {
+        h.1 = Some(view.clone().into());
+        cx.notify();
+    });
+    draw(cx);
+    (host, ws, view, cx)
+}
+
+fn script(at: &Path, body: &str) {
+    std::fs::write(at, format!("#!/bin/sh\ncat >/dev/null\n{body}\n")).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(at, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+fn rev(dir: &Path, r: &str) -> String {
+    let out = Command::new("git")
+        .args(["rev-parse", r])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+fn kept(text: &str, base: String, head: String) -> crate::SavedRun {
+    crate::SavedRun {
+        text: text.into(),
+        base,
+        head,
+        stamp: None,
+        program: "fake-agent".into(),
+        details: vec![],
+        at: 0,
     }
 }
 
@@ -593,4 +660,316 @@ fn the_ask_box_starts_claude_code_with_the_model_last_picked(cx: &mut TestAppCon
     cx.run_until_parked();
     let kept = std::fs::read_to_string(dir.join("guides.json")).unwrap();
     assert!(kept.contains("\"ask_model\":\"haiku\""), "{kept}");
+}
+
+#[gpui_kit::test]
+fn a_note_on_a_commit_guides_diffs_is_kept_and_drawn_until_resolved(cx: &mut TestAppContext) {
+    use gitviber_diff::{LineRange, Side, StackedEvent};
+    let (repo, agent) = setup("guide-notes");
+    boot(cx, &agent);
+    let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+    let ws = host.read_with(cx, |h, _| h.0.clone());
+    open_project(&ws, &repo, cx);
+    let of = head_commit(cx);
+    let GuideOf::Commit { commit } = &of else {
+        unreachable!()
+    };
+    let at = format!("commit {}", commit.short_sha);
+    let sel = Selection::Guide { of: of.clone() };
+    cx.update(|window, cx| crate::open_guide(of.clone(), window, cx));
+    cx.run_until_parked();
+    let view = view_of(&ws, &sel, cx).expect("the guide's tab");
+    let stacked = view.read_with(cx, |v, _| v.stacked().clone());
+    let source = stacked.read_with(cx, |s, _| {
+        s.files()
+            .find(|f| f.source.path == "src/retry.ts")
+            .map(|f| f.source.clone())
+            .expect("its diff")
+    });
+    // C on the commit's first line: the composer opens once the file's sides are read.
+    let range = LineRange {
+        side: Side::New,
+        start: 1,
+        end: 1,
+    };
+    stacked.update(cx, |_, cx| cx.emit(StackedEvent::AddNote { source, range }));
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |v, _| v.has_note_draft()), "C opened it");
+    assert_eq!(
+        view.update(cx, |v, cx| v.drawn_notes("src/retry.ts", cx)),
+        ["note-draft"]
+    );
+    view.update_in(cx, |v, window, cx| v.write_note("Why 3?", window, cx));
+    cx.run_until_parked();
+    let root = repo.to_string_lossy().into_owned();
+    let notes = cx.update(|_, cx| crate::ReviewNotes::get(cx, &root));
+    assert_eq!(notes.len(), 1);
+    let n = &notes[0];
+    assert_eq!(
+        (
+            n.path.as_str(),
+            n.anchor.start,
+            n.at.as_deref(),
+            n.body.as_str()
+        ),
+        ("src/retry.ts", 1, Some(at.as_str()), "Why 3?")
+    );
+    assert_eq!(n.anchor.code, ["export const tries = 3;"]);
+    let id = format!("note-{}", n.id);
+    assert_eq!(
+        view.update(cx, |v, cx| v.drawn_notes("src/retry.ts", cx)),
+        [id],
+        "drawn under its line, the composer gone"
+    );
+    // Resolved, it leaves the diffs.
+    let note = n.id.clone();
+    cx.update(|_, cx| crate::ReviewNotes::update(cx, &root, &note, |n| n.resolved = true));
+    cx.run_until_parked();
+    assert!(
+        view.update(cx, |v, cx| v.drawn_notes("src/retry.ts", cx))
+            .is_empty()
+    );
+}
+
+#[gpui_kit::test]
+fn a_failed_run_says_so_in_its_window_with_open_settings(cx: &mut TestAppContext) {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let (repo, agent) = setup("failed");
+    let failing = agent.with_file_name("failing-agent");
+    script(&failing, "echo 'Out of credits.' >&2\nexit 3");
+    let silent = agent.with_file_name("silent-agent");
+    script(&silent, "exit 0");
+    boot(cx, &agent);
+    let command = failing.to_string_lossy().into_owned();
+    cx.update(|cx| Settings::update(cx, |s| s.review_command = Some(command)));
+    let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+    let ws = host.read_with(cx, |h, _| h.0.clone());
+    open_project(&ws, &repo, cx);
+    let of = head_commit(cx);
+    let sel = Selection::Guide { of: of.clone() };
+    cx.update(|window, cx| crate::open_guide(of, window, cx));
+    cx.run_until_parked();
+    let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+    let failed = toasts
+        .iter()
+        .find(|t| t.title.as_deref() == Some("Couldn't write a guided review"))
+        .unwrap_or_else(|| panic!("{toasts:?}"));
+    assert!(matches!(
+        failed.kind,
+        gitviber_ui::workspace::ToastKind::Error
+    ));
+    assert!(failed.message.contains("Out of credits."), "{failed:?}");
+    let action = failed.action.clone().expect("a button");
+    assert_eq!(action.label.as_ref(), "Open Settings");
+    // Its button opens Settings, where the agent is picked.
+    let opened = Rc::new(Cell::new(false));
+    let seen = opened.clone();
+    cx.update(|_, cx| {
+        cx.on_action(move |_: &gitviber_ui::actions::workbench::OpenSettings, _| seen.set(true));
+    });
+    draw(cx);
+    cx.update(|window, cx| (action.run)(window, cx));
+    cx.run_until_parked();
+    assert!(opened.get(), "Open Settings dispatched");
+
+    // An agent that prints nothing: told too.
+    let command = silent.to_string_lossy().into_owned();
+    cx.update(|_, cx| Settings::update(cx, |s| s.review_command = Some(command)));
+    let view = view_of(&ws, &sel, cx).expect("the guide's tab");
+    view.update(cx, |v, cx| v.generate(cx));
+    cx.run_until_parked();
+    let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+    let empty = toasts
+        .iter()
+        .find(|t| t.title.as_deref() == Some("No guided review written"))
+        .unwrap_or_else(|| panic!("{toasts:?}"));
+    assert!(empty.message.contains("printed nothing"), "{empty:?}");
+    assert!(empty.action.is_some());
+}
+
+#[gpui_kit::test]
+fn the_ask_box_asks_on_enter_and_takes_shift_enter_as_a_new_line(cx: &mut TestAppContext) {
+    let (repo, agent) = setup("ask-box");
+    boot(cx, &agent);
+    let (_host, ws, view, cx) = drawn_guide(cx, &repo, head_commit);
+    let input = view.update_in(cx, |v, window, cx| v.open_ask_box(window, cx));
+    draw(cx);
+    // Nothing typed: Enter asks nothing.
+    cx.simulate_keystrokes("enter");
+    assert!(view.read_with(cx, |v, _| v.asking()), "still open");
+    cx.simulate_input("Why retry");
+    cx.simulate_keystrokes("shift-enter");
+    cx.simulate_input("three times?");
+    assert_eq!(
+        input.read_with(cx, |i, _| i.value().to_string()),
+        "Why retry\nthree times?"
+    );
+    assert!(view.read_with(cx, |v, _| v.asking()));
+    // Enter asks: the stand-in agent isn't Claude Code, so the question goes to the clipboard.
+    cx.simulate_keystrokes("enter");
+    assert!(!view.read_with(cx, |v, _| v.asking()), "asked, closed");
+    let copied = cx
+        .read_from_clipboard()
+        .and_then(|c| c.text())
+        .unwrap_or_default();
+    assert!(copied.contains("Why retry\nthree times?"), "{copied}");
+    let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+    assert!(
+        toasts
+            .iter()
+            .any(|t| t.title.as_deref() == Some("Review copied for the agent")),
+        "{toasts:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn the_navigator_lists_the_sections_shown_beside_the_guide_or_over_it(cx: &mut TestAppContext) {
+    let (repo, agent) = setup("nav");
+    boot(cx, &agent);
+    let (_host, _ws, view, cx) = drawn_guide(cx, &repo, head_commit);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.nav()),
+        [
+            (1, vec!["src/retry.ts".to_string()]),
+            (2, vec!["README.md".to_string()])
+        ]
+    );
+    // Wide: a rail beside the guide, once the tab's width is known; narrow: chips over it.
+    cx.simulate_resize(size(px(1600.), px(900.)));
+    draw(cx);
+    draw(cx);
+    assert!(view.read_with(cx, |v, _| v.nav_rail_shown()));
+    cx.simulate_resize(size(px(900.), px(900.)));
+    draw(cx);
+    draw(cx);
+    assert!(!view.read_with(cx, |v, _| v.nav_rail_shown()));
+    // A reviewed section lists no files, as its diffs fold.
+    view.update(cx, |v, cx| v.mark_section(0, true, cx));
+    cx.run_until_parked();
+    draw(cx);
+    assert_eq!(
+        view.read_with(cx, |v, _| v.nav()),
+        [(1, vec![]), (2, vec!["README.md".to_string()])]
+    );
+}
+
+const OLD_GUIDE: &str = r#"{"title": "Retry uploads", "overview": "Uploads retry.",
+ "diagram": "graph TD\n  upload --> retry",
+ "sections": [{"title": "Retry", "category": "core", "summary": "Backoff.", "files": ["src/retry.ts"]}]}"#;
+
+#[gpui_kit::test]
+fn an_older_guides_mermaid_is_drawn_and_goes_with_its_tab(cx: &mut TestAppContext) {
+    let (repo, agent) = setup("mermaid");
+    boot(cx, &agent);
+    let root = repo.to_string_lossy().into_owned();
+    let (host, ws, view, cx) = drawn_guide(cx, &repo, |cx| {
+        let of = head_commit(cx);
+        let id = crate::store::guide_id(&root, &of, Some("main"));
+        let run = kept(OLD_GUIDE, rev(&repo, "HEAD~1"), rev(&repo, "HEAD"));
+        cx.update(|_, cx| Guides::keep(cx, RunKind::Guide, &id, run));
+        of
+    });
+    assert_eq!(calls(&agent), 0, "the kept guide shows");
+    let drawn = view
+        .read_with(cx, |v, _| v.legacy_diagram().cloned())
+        .expect("its diagram, as Markdown draws Mermaid");
+    draw(cx);
+    // Closed, the diagram's view goes with the tab.
+    let weak = drawn.downgrade();
+    drop(drawn);
+    host.update(cx, |h, cx| {
+        h.1 = None;
+        cx.notify();
+    });
+    ws.update(cx, |ws, cx| ws.close_group(TabGroup::All, cx));
+    drop(view);
+    draw(cx);
+    assert!(weak.upgrade().is_none(), "the diagram's view is released");
+}
+
+#[gpui_kit::test]
+fn a_branch_guide_shares_viewed_marks_with_branch_review(cx: &mut TestAppContext) {
+    use gitviber_diff::StackedEvent;
+    let (repo, agent) = setup("shared-marks");
+    // HEAD's branch since `old`: the commit with both files; src/retry.ts is edited since.
+    git(&repo, &["branch", "old", "HEAD~1"]);
+    let (base, head) = (rev(&repo, "HEAD~1"), rev(&repo, "HEAD"));
+    boot(cx, &agent);
+    let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+    let ws = host.read_with(cx, |h, _| h.0.clone());
+    open_project(&ws, &repo, cx);
+    let of = GuideOf::Branch {
+        base: "refs/heads/old".into(),
+        label: "old".into(),
+    };
+    let id = crate::store::guide_id(&repo.to_string_lossy(), &of, Some("main"));
+    let run = kept(GUIDE, base.clone(), head);
+    cx.update(|_, cx| Guides::keep(cx, RunKind::Guide, &id, run));
+    let sel = Selection::Guide { of: of.clone() };
+    cx.update(|window, cx| crate::open_guide(of, window, cx));
+    cx.run_until_parked();
+    let view = view_of(&ws, &sel, cx).expect("the branch's guide");
+    assert_eq!(
+        view.read_with(cx, |v, _| v.diff_files()),
+        ["src/retry.ts", "README.md"]
+    );
+    // README.md as Branch Review has it, marked there.
+    let review = cx
+        .update(|_, cx| {
+            api::changes::branch_review(&gitviber_ui::core(cx), "refs/heads/old".into())
+        })
+        .unwrap();
+    assert_eq!(review.base, base);
+    let row = review.files.iter().find(|f| f.path == "README.md").unwrap();
+    let key = format!("branch:{base}:README.md");
+    let sig = crate::view::file_sig(row);
+    ws.update(cx, |ws, cx| {
+        ws.set_viewed(key.clone(), Some(sig.clone()), cx)
+    });
+    cx.run_until_parked();
+    let stacked = view.read_with(cx, |v, _| v.stacked().clone());
+    let viewed = |cx: &mut VisualTestContext, path: &str| {
+        stacked.read_with(cx, |s, _| {
+            s.files().find(|f| f.source.path == path).map(|f| f.viewed)
+        })
+    };
+    assert_eq!(view.read_with(cx, |v, _| v.viewed_count()), 1);
+    assert_eq!(viewed(cx, "README.md"), Some(true), "viewed here too");
+    let source = |cx: &mut VisualTestContext, path: &str| {
+        stacked.read_with(cx, |s, _| {
+            s.files()
+                .find(|f| f.source.path == path)
+                .map(|f| f.source.clone())
+                .unwrap()
+        })
+    };
+    // Unmarked here: unmarked in Branch Review.
+    let readme = source(cx, "README.md");
+    stacked.update(cx, |_, cx| cx.emit(StackedEvent::ToggleViewed(readme)));
+    cx.run_until_parked();
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.viewed(&key).map(str::to_string)),
+        None
+    );
+    let readme = source(cx, "README.md");
+    stacked.update(cx, |_, cx| cx.emit(StackedEvent::ToggleViewed(readme)));
+    cx.run_until_parked();
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.viewed(&key).map(str::to_string)),
+        Some(sig)
+    );
+    // A file edited since shows another diff there: it keeps the guide's own mark.
+    let retry = source(cx, "src/retry.ts");
+    stacked.update(cx, |_, cx| cx.emit(StackedEvent::ToggleViewed(retry)));
+    cx.run_until_parked();
+    let marks: Vec<String> = ws.read_with(cx, |ws, _| ws.viewed_marks().keys().cloned().collect());
+    assert!(
+        marks
+            .iter()
+            .any(|k| k.starts_with("pr-file:") && k.ends_with(":src/retry.ts")),
+        "{marks:?}"
+    );
+    assert!(!marks.contains(&format!("branch:{base}:src/retry.ts")));
+    assert_eq!(view.read_with(cx, |v, _| v.viewed_count()), 2);
 }

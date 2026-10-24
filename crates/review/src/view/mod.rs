@@ -5,10 +5,11 @@
 //! the section they're of.
 
 mod diagram;
+mod nav;
 mod notes;
 mod parts;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -21,6 +22,7 @@ use gitviber_diff::{
     Annotation, Compare, DiffSource, LinePos, NoticeLevel, Side, StackedDiff, StackedEvent,
     StackedFile,
 };
+use gitviber_markdown::{MarkdownBase, MarkdownView};
 use gitviber_refs::{RepoEvent, RepoState};
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{now_unix, relative_time};
@@ -38,9 +40,9 @@ use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
-    prelude::FluentBuilder as _, px, rems,
+    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, ScrollHandle,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity,
+    Window, div, prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::model::agent::{ReviewAgent, agent_name};
@@ -128,6 +130,17 @@ pub struct GuideView {
     notes: notes::GuideNotes,
     /// How many of the change's files are marked viewed.
     viewed: usize,
+    /// A branch guide's files as Branch Review has them, from the same commit: path → the key
+    /// and signature of its viewed mark there.
+    shared: HashMap<String, (String, String)>,
+    _shared: Option<Task<()>>,
+    _shared_wait: Option<Task<()>>,
+    /// The sections whose files the navigator folds, by title: kept as the filter hides them.
+    nav_folded: HashSet<String>,
+    /// The tab's width at its last frame: the navigator's rail needs room.
+    width: Rc<Cell<Pixels>>,
+    /// An older guide's Mermaid diagram, drawn; made at the first frame that shows it.
+    legacy: Option<Entity<MarkdownView>>,
     filter: Filter,
     asking: Option<Asking>,
     /// Summaries shown whole.
@@ -148,7 +161,7 @@ fn short(s: &str) -> &str {
 }
 
 /// What a viewed mark remembers of a file: a new edit changes it, and the mark lapses.
-fn file_sig(f: &FileChange) -> String {
+pub(crate) fn file_sig(f: &FileChange) -> String {
     match &f.oid {
         Some(oid) => format!("{}:{oid}", f.status),
         None => format!(
@@ -201,6 +214,12 @@ impl GuideView {
             current: None,
             notes: notes::GuideNotes::default(),
             viewed: 0,
+            shared: HashMap::new(),
+            _shared: None,
+            _shared_wait: None,
+            nav_folded: HashSet::new(),
+            width: Rc::default(),
+            legacy: None,
             filter: Filter::default(),
             asking: None,
             open: HashSet::new(),
@@ -228,6 +247,7 @@ impl GuideView {
             .push(cx.subscribe(&repo, |this, _, e: &RepoEvent, cx| {
                 if matches!(e, RepoEvent::Changed) {
                     this.sync(cx);
+                    this.read_shared(STAMP_WAIT, cx);
                     cx.notify();
                 }
             }));
@@ -299,11 +319,17 @@ impl GuideView {
                     .map(Rc::new);
                 self.placed = None;
                 self.md.borrow_mut().clear();
+                self.legacy = None;
                 // Its sections may be others now: a box open on one is gone.
                 self.asking = None;
             }
+            let from = |s: &Option<SavedGuide>| s.as_ref().map(|s| s.run.base.clone());
+            let read_again = from(&saved) != from(&self.saved);
             self.saved = saved;
             self.load_files(cx);
+            if read_again {
+                self.read_shared(Duration::ZERO, cx);
+            }
             self.place(cx);
         }
         let found = Guides::risks(cx, &id);
@@ -511,12 +537,90 @@ impl GuideView {
         })
     }
 
-    /// Viewed, under the key its own tab marks it by; a commit's or a range's file never changes.
-    fn is_viewed(&self, f: &FileChange, cx: &App) -> bool {
-        let (Some(ws), Some(sel)) = (self.workspace.upgrade(), self.file_selection(f)) else {
+    /// Branch Review's rows for a branch guide's files; after the repo changes (a file edited or
+    /// reverted since), read again a moment later. A wait doesn't stop a read under way.
+    fn read_shared(&mut self, wait: Duration, cx: &mut Context<Self>) {
+        let (GuideOf::Branch { base, .. }, Some(saved)) = (&self.of, &self.saved) else {
+            self.shared.clear();
+            self._shared = None;
+            self._shared_wait = None;
+            return;
+        };
+        if !wait.is_zero() {
+            self._shared_wait = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                let _ = this.update(cx, |this, cx| this.read_shared(Duration::ZERO, cx));
+            }));
+            return;
+        }
+        let (core, base, from) = (gitviber_ui::core(cx), base.clone(), saved.run.base.clone());
+        self._shared = Some(cx.spawn(async move |this, cx| {
+            let review = cx
+                .background_spawn(async move { api::changes::branch_review(&core, base) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.shared = match review {
+                    // From the commit the guide read from: a file with no uncommitted change has
+                    // the same diff in both.
+                    Ok(r) if r.base == from => r
+                        .files
+                        .iter()
+                        .map(|f| {
+                            let key = format!("branch:{}:{}", r.base, f.path);
+                            (f.path.clone(), (key, file_sig(f)))
+                        })
+                        .collect(),
+                    _ => HashMap::new(),
+                };
+                this.fill_diff(cx);
+            });
+        }));
+    }
+
+    /// The files with uncommitted changes, while Branch Review's rows are shared: theirs differ.
+    fn dirty(&self, cx: &App) -> HashSet<String> {
+        let status = self.repo.as_ref().and_then(|r| r.read(cx).status.clone());
+        match status {
+            Some(s) if !self.shared.is_empty() => s
+                .staged
+                .iter()
+                .chain(&s.unstaged)
+                .map(|f| f.path.clone())
+                .collect(),
+            _ => HashSet::new(),
+        }
+    }
+
+    /// The key a file's viewed mark is kept under and what it remembers of the file: its own
+    /// tab's, or Branch Review's row where that shows the same diff (no uncommitted change, HEAD
+    /// where the guide read it), so one mark counts in both.
+    fn mark_of(
+        &self,
+        f: &FileChange,
+        dirty: &HashSet<String>,
+        cx: &App,
+    ) -> Option<(String, String)> {
+        let moved = || {
+            self.saved
+                .as_ref()
+                .is_none_or(|s| self.moved_from(&s.run.head, s.run.stamp.as_deref(), cx))
+        };
+        if let Some(mark) = self.shared.get(&f.path)
+            && !dirty.contains(&f.path)
+            && !moved()
+        {
+            return Some(mark.clone());
+        }
+        Some((selection_key(&self.file_selection(f)?), file_sig(f)))
+    }
+
+    /// Viewed, under the key its mark is kept by; a commit's or a range's file never changes.
+    fn is_viewed(&self, f: &FileChange, dirty: &HashSet<String>, cx: &App) -> bool {
+        let (Some(ws), Some((key, sig))) = (self.workspace.upgrade(), self.mark_of(f, dirty, cx))
+        else {
             return false;
         };
-        ws.read(cx).viewed(&selection_key(&sel)) == Some(file_sig(f).as_str())
+        ws.read(cx).viewed(&key) == Some(sig.as_str())
     }
 
     /// The stacked diff's files: each shown section's in reading order, then those no section
@@ -529,7 +633,11 @@ impl GuideView {
             self.stacked.update(cx, |s, cx| s.set_files(vec![], cx));
             return;
         };
-        self.viewed = list.iter().filter(|f| self.is_viewed(f, cx)).count();
+        let dirty = self.dirty(cx);
+        self.viewed = list
+            .iter()
+            .filter(|f| self.is_viewed(f, &dirty, cx))
+            .count();
         let guide = self.guide.clone();
         let filtered = self.active_filter() != Filter::default();
         let mut order: Vec<(String, usize)> = vec![];
@@ -555,7 +663,7 @@ impl GuideView {
                 additions: f.additions,
                 deletions: f.deletions,
                 sig: file_sig(f),
-                viewed: self.is_viewed(f, cx),
+                viewed: self.is_viewed(f, &dirty, cx),
             });
         }
         self.stacked.update(cx, |s, cx| s.set_files(files, cx));
@@ -759,13 +867,14 @@ impl GuideView {
                 let Some(f) = list.iter().find(|f| f.path == source.path) else {
                     return;
                 };
-                let (Some(ws), Some(sel)) = (self.workspace.upgrade(), self.file_selection(f))
+                let dirty = self.dirty(cx);
+                let (Some(ws), Some((key, sig))) =
+                    (self.workspace.upgrade(), self.mark_of(f, &dirty, cx))
                 else {
                     return;
                 };
-                let on = !self.is_viewed(f, cx);
-                let sig = on.then(|| file_sig(f));
-                ws.update(cx, |ws, cx| ws.set_viewed(selection_key(&sel), sig, cx));
+                let on = !self.is_viewed(f, &dirty, cx);
+                ws.update(cx, |ws, cx| ws.set_viewed(key, on.then_some(sig), cx));
                 self.fill_diff(cx);
             }
             StackedEvent::OpenFile(source) => {
@@ -1011,6 +1120,49 @@ impl GuideView {
     #[doc(hidden)]
     pub fn mark_section(&mut self, i: usize, done: bool, cx: &mut Context<Self>) {
         self.mark_done(i, done, cx);
+    }
+
+    /// The navigator's sections (from 1) and the files each lists; none when it isn't shown.
+    #[doc(hidden)]
+    pub fn nav(&self) -> Vec<(usize, Vec<String>)> {
+        let items = self.nav_items();
+        if items.len() < 2 {
+            return vec![];
+        }
+        items.into_iter().map(|i| (i.n, i.files)).collect()
+    }
+
+    #[doc(hidden)]
+    pub fn nav_rail_shown(&self) -> bool {
+        self.width.get() >= nav::RAIL_FROM && self.nav_items().len() > 1
+    }
+
+    #[doc(hidden)]
+    pub fn legacy_diagram(&self) -> Option<&Entity<MarkdownView>> {
+        self.legacy.as_ref()
+    }
+
+    #[doc(hidden)]
+    pub fn viewed_count(&self) -> usize {
+        self.viewed
+    }
+
+    /// The Ask Agent box about the whole review, open, and its text.
+    #[doc(hidden)]
+    pub fn open_ask_box(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<TextareaState> {
+        if self.asking.as_ref().is_none_or(|a| a.at != AskAt::Whole) {
+            self.open_ask(AskAt::Whole, window, cx);
+        }
+        self.asking.as_ref().map(|a| a.input.clone()).expect("open")
+    }
+
+    #[doc(hidden)]
+    pub fn asking(&self) -> bool {
+        self.asking.is_some()
     }
 }
 

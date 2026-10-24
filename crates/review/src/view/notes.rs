@@ -150,6 +150,34 @@ impl GuideView {
         self.annotate(cx);
     }
 
+    #[doc(hidden)]
+    pub fn has_note_draft(&self) -> bool {
+        self.notes.draft.is_some()
+    }
+
+    /// Writes `text` in the open composer and adds it, as ⌘↵ does.
+    #[doc(hidden)]
+    pub fn write_note(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(d) = &self.notes.draft {
+            d.input
+                .update(cx, |i, cx| i.set_value(text.to_string(), window, cx));
+        }
+        self.add_note(cx);
+    }
+
+    /// The ids of what's drawn under `path`'s lines of the user's: their notes and the composer.
+    #[doc(hidden)]
+    pub fn drawn_notes(&mut self, path: &str, cx: &mut Context<Self>) -> Vec<String> {
+        let source = self.compare().zip(self.file_list()).and_then(|(c, l)| {
+            let f = l.iter().find(|f| f.path == path)?;
+            Some(DiffSource::from_change(c, f))
+        });
+        self.note_annotations(path, source.as_ref(), cx)
+            .into_iter()
+            .map(|a| a.id.to_string())
+            .collect()
+    }
+
     fn cancel_note(&mut self, cx: &mut Context<Self>) {
         self.notes.draft = None;
         self.annotate(cx);

@@ -326,12 +326,12 @@ fn flow_view(fi: usize, flow: &Flow, t: &AppTheme, go: &OnSection) -> AnyElement
         .into_any_element()
 }
 
-/// The data cards, then the flows; a guide from before structured diagrams shows its Mermaid
-/// source, as there's no Mermaid to draw it.
+/// The data cards, then the flows; a guide from before structured diagrams has its Mermaid
+/// drawn (`legacy`, a Markdown view).
 pub fn diagram(
     models: &[Model],
     flows: &[Flow],
-    legacy: &str,
+    legacy: Option<AnyElement>,
     t: &AppTheme,
     go: &OnSection,
 ) -> AnyElement {
@@ -362,20 +362,5 @@ pub fn diagram(
     for (i, f) in flows.iter().enumerate() {
         col = col.child(flow_view(i, f, t, go));
     }
-    if !legacy.is_empty() {
-        col = col.child(
-            div()
-                .id("legacy-diagram")
-                .overflow_x_scroll()
-                .p(px(10.))
-                .rounded(px(6.))
-                .bg(t.panel)
-                .font_family(t.fonts.code.clone())
-                .text_size(rems(0.72))
-                .text_color(t.muted_foreground)
-                .whitespace_nowrap()
-                .children(legacy.lines().map(|l| div().child(l.to_string()))),
-        );
-    }
-    col.into_any_element()
+    col.children(legacy).into_any_element()
 }

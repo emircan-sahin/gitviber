@@ -31,7 +31,7 @@ fn printed(tail: &crate::store::Tail, t: &AppTheme) -> Option<AnyElement> {
     })
 }
 
-fn title_text(s: &Section) -> String {
+pub(super) fn title_text(s: &Section) -> String {
     if s.title.is_empty() {
         "Untitled".into()
     } else {
@@ -293,9 +293,15 @@ impl GuideView {
         Some(
             div()
                 .on_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, _, cx| {
-                    if e.keystroke.key == "escape" {
-                        this.asking = None;
-                        cx.notify();
+                    match e.keystroke.key.as_str() {
+                        "escape" => {
+                            this.asking = None;
+                            cx.notify();
+                        }
+                        // The box's ↵ asked: where an unhandled key is typed as text (Linux),
+                        // it would add a line to the box too.
+                        "enter" if !e.keystroke.modifiers.shift => cx.stop_propagation(),
+                        _ => {}
                     }
                 }))
                 .mt(px(8.))
@@ -856,7 +862,7 @@ impl GuideView {
     }
 
     /// A file's diff at the top, where the guide shows it; else its own tab.
-    fn go_to_file(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn go_to_file(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(list) = self.file_list() else { return };
         let all: HashSet<&str> = list.iter().map(|f| f.path.as_str()).collect();
         let Some(path) = match_path(path, &all).map(str::to_string) else {
@@ -1250,7 +1256,7 @@ impl GuideView {
                     .child(diagram::diagram(
                         &guide.models,
                         &guide.flows,
-                        &guide.diagram,
+                        self.legacy.clone().map(|v| v.into_any_element()),
                         &t,
                         &go,
                     ))
@@ -1375,8 +1381,16 @@ impl GuideView {
 }
 
 impl Render for GuideView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.app_theme().clone();
+        if self.legacy.is_none()
+            && let Some(g) = self.guide.as_ref().filter(|g| !g.diagram.is_empty())
+        {
+            let source = format!("```mermaid\n{}\n```\n", g.diagram);
+            self.legacy = Some(
+                cx.new(|cx| MarkdownView::inline(&source, MarkdownBase::default(), window, cx)),
+            );
+        }
         let id = self.id.clone().unwrap_or_default();
         let run = Guides::run(cx, RunKind::Guide, &id);
         let risks_run = Guides::run(cx, RunKind::Risks, &id);
@@ -1428,23 +1442,59 @@ impl Render for GuideView {
                 ))
                 .child(self.markdown("guide-raw-text", &saved.run.text, None, cx))
                 .into_any_element(),
-            (Some(_), Some(guide)) => div()
-                .flex()
-                .size_full()
-                .min_h_0()
-                .child(
-                    div()
-                        .w(gpui_kit::relative(0.4))
-                        .min_w(px(340.))
-                        .max_w(px(580.))
-                        .h_full()
-                        .flex_none()
-                        .border_r_1()
-                        .border_color(t.border)
-                        .child(self.guide_column(&guide, cx)),
+            (Some(_), Some(guide)) => {
+                let items = self.nav_items();
+                let nav = items.len() > 1;
+                // The first frame goes by the window's width.
+                let width = match self.width.get() {
+                    w if w > Pixels::ZERO => w,
+                    _ => window.viewport_size().width,
+                };
+                let rail = nav && width >= nav::RAIL_FROM;
+                let (seen, me) = (self.width.clone(), cx.entity_id());
+                let measure = gpui_kit::canvas(
+                    move |bounds, _, cx| {
+                        let was = seen.replace(bounds.size.width);
+                        if (was >= nav::RAIL_FROM) != (bounds.size.width >= nav::RAIL_FROM) {
+                            // Past the frame: a view told during one isn't drawn again.
+                            cx.defer(move |cx| cx.notify(me));
+                        }
+                    },
+                    |_, _, _, _| {},
                 )
-                .child(div().flex_1().min_w_0().h_full().child(self.diffs(cx)))
-                .into_any_element(),
+                .absolute()
+                .size_full();
+                div()
+                    .relative()
+                    .flex()
+                    .size_full()
+                    .min_h_0()
+                    .child(measure)
+                    .when(rail, |d| d.child(self.nav_rail(&items, &guide, cx)))
+                    .child(
+                        div()
+                            .w(gpui_kit::relative(0.4))
+                            .min_w(px(340.))
+                            .max_w(px(580.))
+                            .h_full()
+                            .flex_none()
+                            .flex()
+                            .flex_col()
+                            .border_r_1()
+                            .border_color(t.border)
+                            .when(nav && !rail, |d| {
+                                d.child(self.nav_chips(&items, &guide, cx))
+                            })
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .child(self.guide_column(&guide, cx)),
+                            ),
+                    )
+                    .child(div().flex_1().min_w_0().h_full().child(self.diffs(cx)))
+                    .into_any_element()
+            }
         };
         div()
             .size_full()
