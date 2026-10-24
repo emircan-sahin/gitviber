@@ -77,6 +77,12 @@ pub fn init(cx: &mut App) {
             .collect()
     }));
     store::load(cx);
+    // A closed pane's tabs are the user's from then on (agent.rs), told on the main thread.
+    core.ptys.on_killed(Box::new(|id| {
+        if let Some(handle) = crate::installed() {
+            let _ = handle.run_on_main_thread(move || crate::agent_pane_closed(id));
+        }
+    }));
     register_opener(cx, "browser", open);
     cx.on_action(|_: &act::Open, cx| {
         if let Some(w) = cx.active_window() {

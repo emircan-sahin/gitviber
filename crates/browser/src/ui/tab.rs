@@ -240,6 +240,8 @@ impl BrowserTab {
         let mut subscriptions = vec![
             cx.subscribe_in(&address, window, Self::on_address),
             cx.on_release(|this, cx| this.released(cx)),
+            // Show agents' tabs switched: the strip asks `hidden` again.
+            cx.observe_global::<gitviber_ui::Settings>(|_, cx| cx.notify()),
         ];
         if let Some(hub) = &hub {
             subscriptions.push(cx.subscribe_in(hub, window, Self::on_hub));
@@ -531,14 +533,10 @@ impl BrowserTab {
             return;
         }
         let selection = self.saved.selection();
-        let key = self.key();
-        window.defer(cx, move |window, cx| {
-            ws.update(cx, |ws, cx| {
-                // Only the shown tab takes it: opening another would bring it forward.
-                if ws.tabs().active_key().map(|k| k.as_ref()) == Some(key.as_str()) {
-                    ws.open(selection, false, window, cx);
-                }
-            });
+        let key: SharedString = self.key().into();
+        // After this update: the workspace reads the tab's view as it saves.
+        window.defer(cx, move |_, cx| {
+            ws.update(cx, |ws, cx| ws.set_selection(&key, selection, cx));
         });
         cx.notify();
     }

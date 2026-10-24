@@ -102,6 +102,15 @@ impl TabItem for BrowserTab {
         })
     }
 
+    /// An agent's page while Settings → Browser → Show agents' tabs is off, unless the user took
+    /// it or its pane closed: it keeps running out of the strip.
+    fn hidden(&self, cx: &App) -> bool {
+        !Settings::get(cx).browser_show_agent_tabs
+            && self
+                .page_info(cx)
+                .is_some_and(|p| p.agent.is_some() && !p.taken && !p.released)
+    }
+
     /// A page an agent opened can't come back as it was.
     fn reopenable(&self, cx: &App) -> bool {
         self.page_info(cx)

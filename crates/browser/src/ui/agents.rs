@@ -267,9 +267,6 @@ fn open_agent_tab(id: String, url: String, root: String, show: bool, cx: &mut Ap
         zoom: None,
         scheme: None,
     };
-    if !show && !Settings::get(cx).browser_show_agent_tabs {
-        return;
-    }
     let _ = w.update(cx, |_, window, cx| {
         if show {
             ws.update(cx, |ws, cx| ws.open(selection, false, window, cx));
@@ -313,12 +310,11 @@ fn open_popup(id: String, opener: String, url: String, cx: &mut App) {
     });
 }
 
-/// What the browser keeps of the app while it runs: its settings sent as they change, the panes
-/// with agents' tabs watched for closing, agents finishing, worktrees removed.
+/// What the browser keeps of the app while it runs: its settings sent as they change, agents
+/// finishing, worktrees removed.
 pub(super) struct Watch {
     _settings: Subscription,
     _core: Option<Subscription>,
-    _panes: Task<()>,
 }
 
 impl Global for Watch {}
@@ -401,26 +397,9 @@ pub(super) fn watch(cx: &mut App) {
             },
         )
     });
-    // A closed pane's tabs are the user's from then on (agent.rs `agent_pane_closed`): looked
-    // for while any pane has agents' tabs.
-    let panes = cx.spawn(async move |cx| loop {
-        cx.background_executor().timer(Duration::from_secs(2)).await;
-        cx.update(|cx| {
-            if !gitviber_ui::has_core(cx) {
-                return;
-            }
-            let core = gitviber_ui::core(cx);
-            for pty in crate::agent_ptys() {
-                if core.ptys.pane(pty).is_none() {
-                    crate::agent_pane_closed(pty);
-                }
-            }
-        });
-    });
     cx.set_global(Watch {
         _settings: settings,
         _core: core,
-        _panes: panes,
     });
 }
 
