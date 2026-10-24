@@ -30,7 +30,7 @@ use crate::logic::narrow::{Filter, ListKind, Narrow, compact_count, empty_text};
 use crate::model::{Account, Counts, PullItem, PullState, Target, is_not_connected};
 use crate::requests::{GithubRequest, request};
 use crate::ui::common::{ago, ci_badge, empty_note, list_error, pull_icon, signed_in_as, theme};
-use crate::ui::connect::ConnectView;
+use crate::ui::connect::{ConnectView, gate_view};
 use crate::ui::labels::LabelPicker;
 use crate::ui::list::{
     ListControls, ListPanel, filter_tabs, find_box, narrow_bar, selected_labels,
@@ -901,19 +901,22 @@ impl Render for PullsPanel {
         let acct = crate::account::current_account(cx);
         let (own, own_pages, own_loading, own_error) = self.rows("origin", self.pages[0], cx);
         let failure = acct.error.clone().or(own_error.clone());
-        if failure.as_deref().is_some_and(is_not_connected) {
-            let connect = self
-                .connect
-                .get_or_insert_with(|| cx.new(|_| ConnectView::new("pull requests")))
-                .clone();
+        if let Some(gate) = gate_view(
+            &mut self.connect,
+            "pull requests",
+            &acct,
+            own_error.as_deref(),
+            self.ctx.workspace.clone(),
+            &t,
+            cx,
+        ) {
             return div()
                 .id("pulls-panel")
                 .track_focus(&self.focus)
                 .size_full()
-                .child(connect)
+                .child(gate)
                 .into_any_element();
         }
-        self.connect = None;
         let up = upstream.as_ref().map(|u| self.rows(u, self.pages[1], cx));
         let open_heads = |rows: Option<&Arc<Vec<PullItem>>>| -> Vec<String> {
             rows.map(|r| {
@@ -972,7 +975,7 @@ impl Render for PullsPanel {
             if acct.error.as_deref().is_some_and(is_not_connected) {
                 "Sign in to GitHub to filter by you"
             } else {
-                "Your GitHub account couldn't be read"
+                "Filters by you need your GitHub account, which couldn't be read"
             }
         });
 

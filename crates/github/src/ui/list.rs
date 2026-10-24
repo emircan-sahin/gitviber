@@ -405,6 +405,16 @@ pub fn narrow_bar<P: ListPanel>(
         .border_b_1()
         .border_color(t.border)
         .children(chips)
+        // The dimmed chips' reason, said where it's seen rather than only on hover.
+        .when_some(me_off, |d, why| {
+            d.child(
+                div()
+                    .w_full()
+                    .text_size(rems(0.69))
+                    .text_color(t.subtle)
+                    .child(format!("{why}.")),
+            )
+        })
 }
 
 /// A filter the list is narrowed by, with × to take it off.

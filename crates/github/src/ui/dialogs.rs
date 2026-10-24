@@ -1,5 +1,5 @@
 //! The GitHub dialogs: asking before a write, a review, a new pull request (with the agent's
-//! suggestion for its title and description) and a new issue.
+//! suggestion for its title and description), a new issue, and adding the 'origin' remote.
 
 use std::rc::Rc;
 
@@ -902,6 +902,132 @@ impl Render for CreateIssueDialog {
                         .primary()
                         .small()
                         .label(if self.busy { "Creating…" } else { "Create" })
+                        .disabled(self.busy || empty)
+                        .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
+                ),
+            )
+    }
+}
+
+/// Adds the 'origin' remote, which the PR and issue lists read from GitHub. Only git's config
+/// changes; nothing is sent anywhere.
+pub struct AddRemoteDialog {
+    ws: WeakEntity<Workspace>,
+    url: Entity<InputState>,
+    busy: bool,
+    error: Option<String>,
+    _sub: Subscription,
+    _live: Live,
+}
+
+impl AddRemoteDialog {
+    pub fn open(ws: WeakEntity<Workspace>, window: &mut Window, cx: &mut App) {
+        let view = cx.new(|cx| {
+            let url = cx.new(|cx| {
+                InputState::new(window, cx).placeholder("https://github.com/owner/name.git")
+            });
+            let sub = cx.subscribe_in(
+                &url,
+                window,
+                |this: &mut Self, _, ev, window, cx| match ev {
+                    InputEvent::PressEnter { .. } => this.submit(window, cx),
+                    _ => cx.notify(),
+                },
+            );
+            AddRemoteDialog {
+                ws,
+                url,
+                busy: false,
+                error: None,
+                _sub: sub,
+                _live: Live::new("AddRemoteDialog"),
+            }
+        });
+        let first = std::cell::Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            if first.replace(false) {
+                let url = view.read(cx).url.clone();
+                url.update(cx, |t, cx| t.focus(window, cx));
+            }
+            dialog.title("Add remote").w(px(440.)).child(view.clone())
+        });
+    }
+
+    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let url = self.url.read(cx).value().trim().to_string();
+        if url.is_empty() || self.busy {
+            return;
+        }
+        self.busy = true;
+        self.error = None;
+        let core = crate::core(cx);
+        let (ws, me) = (self.ws.clone(), cx.weak_entity());
+        window
+            .spawn(cx, async move |cx| {
+                let added = cx
+                    .background_spawn(async move {
+                        api::repo::remote_edit(&core, "add".into(), "origin".into(), Some(url))
+                    })
+                    .await;
+                cx.update(|window, cx| {
+                    let open = me.update(cx, |this, cx| {
+                        this.busy = false;
+                        this.error = added.as_ref().err().cloned();
+                        cx.notify();
+                    });
+                    if let Err(e) = added {
+                        // Closed meanwhile: the error has nowhere else to show.
+                        if open.is_err() {
+                            toast_in(&ws, Toast::error(e).title("Couldn't add the remote"), cx);
+                        }
+                        return;
+                    }
+                    if open.is_ok() {
+                        window.close_dialog(cx);
+                    }
+                    // The top bar's Publish and these lists read the new remote at once.
+                    Cache::refetch_all(cx);
+                    let project = ws.upgrade().and_then(|w| w.read(cx).project().cloned());
+                    if let Some(project) = project {
+                        project.update(cx, |p, cx| p.repo_changed(cx));
+                    }
+                    toast_in(&ws, Toast::success("Added origin"), cx);
+                })
+                .ok();
+            })
+            .detach();
+        cx.notify();
+    }
+}
+
+impl Render for AddRemoteDialog {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme(cx);
+        let empty = self.url.read(cx).value().trim().is_empty();
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(
+                div()
+                    .text_size(rems(0.75))
+                    .text_color(t.muted_foreground)
+                    .child(
+                        "Pull requests and issues come from the 'origin' remote's repository on \
+                         GitHub. Paste its URL (HTTPS or SSH).",
+                    ),
+            )
+            .child(field_label("URL for 'origin'"))
+            .child(Input::new(&self.url))
+            .when_some(self.error.clone(), |d, e| {
+                d.child(div().text_size(rems(0.72)).text_color(t.removed).child(e))
+            })
+            .child(
+                div().flex().justify_end().child(
+                    Button::new("add-remote")
+                        .primary()
+                        .small()
+                        .label(if self.busy { "Adding…" } else { "Add" })
                         .disabled(self.busy || empty)
                         .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
                 ),

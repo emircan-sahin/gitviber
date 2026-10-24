@@ -9,7 +9,7 @@ use gitviber_core::api;
 use gitviber_ui::actions::editor;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::CountBadge;
-use gitviber_ui::workspace::{Panel, PanelContext};
+use gitviber_ui::workspace::{Panel, PanelContext, ProjectEvent};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -18,15 +18,15 @@ use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
     IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, WeakEntity, Window, div, prelude::FluentBuilder as _, px, rems,
-    uniform_list,
+    Styled as _, Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
+    rems, uniform_list,
 };
 
 use crate::cache::{Cache, MIN_AGE, Wakes};
 use crate::logic::narrow::{Filter, ListKind, Narrow, compact_count, empty_text};
 use crate::model::{Account, Counts, IssueItem, LabelItem, Target, is_not_connected};
 use crate::ui::common::{ago, empty_note, issue_icon, label_dot, list_error, signed_in_as, theme};
-use crate::ui::connect::ConnectView;
+use crate::ui::connect::{ConnectView, gate_view};
 use crate::ui::dialogs::CreateIssueDialog;
 use crate::ui::labels::LabelPicker;
 use crate::ui::list::{
@@ -45,6 +45,7 @@ pub struct IssuesPanel {
     focus: FocusHandle,
     /// Each pane's rows and their keyboard: origin's, and a fork's original's.
     rows: [Rows; 2],
+    _origin: Task<()>,
     _subs: Vec<Subscription>,
     _live: Live,
 }
@@ -79,7 +80,7 @@ impl IssuesPanel {
             .unwrap_or_default();
         use_project(&root, cx);
         let controls = ListControls::new(ListKind::Issues, main_of(&root), window, cx);
-        let subs = vec![
+        let mut subs = vec![
             cx.observe_global::<Cache>(|this: &mut Self, cx| {
                 let stamp = this.stamp_now(cx);
                 if stamp != this.stamp || this.asked.as_ref().map(|a| a.1) != Some(Cache::wakes(cx))
@@ -94,7 +95,16 @@ impl IssuesPanel {
                 }
             }),
         ];
-        IssuesPanel {
+        if let Some(project) = &ctx.project {
+            subs.push(
+                cx.subscribe(project, |this: &mut Self, _, ev: &ProjectEvent, cx| {
+                    if matches!(ev, ProjectEvent::RepoChanged(c) if c.git) {
+                        this.read_origin(cx);
+                    }
+                }),
+            );
+        }
+        let mut panel = IssuesPanel {
             ctx: ctx.clone(),
             _root: root,
             controls,
@@ -103,9 +113,27 @@ impl IssuesPanel {
             connect: None,
             focus: cx.focus_handle(),
             rows: [Rows::new(cx), Rows::new(cx)],
+            _origin: Task::ready(()),
             _subs: subs,
             _live: Live::new("IssuesPanel"),
-        }
+        };
+        panel.read_origin(cx);
+        panel
+    }
+
+    /// Origin's URL, as the PRs panel reads it with the status: a new one is another repository
+    /// (its lists read again), and the sign-in screen names it. One `git remote -v`.
+    fn read_origin(&mut self, cx: &mut Context<Self>) {
+        let root = self._root.clone();
+        self._origin = cx.spawn(async move |_, cx| {
+            let remotes = cx
+                .background_spawn(async move { gitviber_core::git::remote_urls(&root) })
+                .await;
+            // Git couldn't say: that isn't "no origin".
+            let Ok(remotes) = remotes else { return };
+            let origin = remotes.into_iter().find(|(n, _)| n == "origin");
+            cx.update(|cx| Cache::set_origin(cx, origin.and_then(|(_, url)| url)));
+        });
     }
 
     fn account(&self, cx: &App) -> Option<Arc<Account>> {
@@ -634,19 +662,22 @@ impl Render for IssuesPanel {
             &Self::list_key("origin", self.controls.filter, &narrow),
         );
         let failure = acct.error.clone().or(own.error.clone());
-        if failure.as_deref().is_some_and(is_not_connected) {
-            let connect = self
-                .connect
-                .get_or_insert_with(|| cx.new(|_| ConnectView::new("issues")))
-                .clone();
+        if let Some(gate) = gate_view(
+            &mut self.connect,
+            "issues",
+            &acct,
+            own.error.as_deref(),
+            self.ctx.workspace.clone(),
+            &t,
+            cx,
+        ) {
             return div()
                 .id("issues-panel")
                 .track_focus(&self.focus)
                 .size_full()
-                .child(connect)
+                .child(gate)
                 .into_any_element();
         }
-        self.connect = None;
         let loading = acct.loading || own.loading;
         let origin = account.as_ref().and_then(|a| a.origin.clone());
         let counts = |name: &str, cx: &App| {
@@ -675,7 +706,7 @@ impl Render for IssuesPanel {
             if acct.error.as_deref().is_some_and(is_not_connected) {
                 "Sign in to GitHub to filter by you"
             } else {
-                "Your GitHub account couldn't be read"
+                "Filters by you need your GitHub account, which couldn't be read"
             }
         });
         let origin_name = origin.as_ref().map(|o| o.full_name()).unwrap_or_default();
