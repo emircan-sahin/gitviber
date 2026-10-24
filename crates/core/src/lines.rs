@@ -210,7 +210,11 @@ pub fn run(repo: &Path, req: &Request) -> Result<(), String> {
 }
 
 fn text(f: &FileText) -> &str {
-    if f.exists { &f.text } else { "" }
+    if f.exists {
+        &f.text
+    } else {
+        ""
+    }
 }
 
 /// Puts `text` in the index as `path`'s content (through its clean filters, as `git add` would),
