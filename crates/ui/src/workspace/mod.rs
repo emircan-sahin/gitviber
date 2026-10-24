@@ -342,7 +342,9 @@ impl Workspace {
 
     /// The switch guard's reason to stay, toasted; false when the repo may change.
     fn switch_refused(&mut self, cx: &mut Context<Self>) -> bool {
-        let guard = cx.try_global::<SwitchGuardGlobal>().and_then(|g| g.0.clone());
+        let guard = cx
+            .try_global::<SwitchGuardGlobal>()
+            .and_then(|g| g.0.clone());
         let why = match (&self.project, guard) {
             (Some(project), Some(guard)) => guard(project, cx),
             _ => None,
@@ -1441,7 +1443,11 @@ mod tests {
         let a = PathBuf::from("/tmp/gitviber-project-guard-a");
         let b = PathBuf::from("/tmp/gitviber-project-guard-b");
         let root = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
-            cx.update(|_, cx| ws.read(cx).project().map(|p| p.read(cx).root().to_path_buf()))
+            cx.update(|_, cx| {
+                ws.read(cx)
+                    .project()
+                    .map(|p| p.read(cx).root().to_path_buf())
+            })
         };
         // Nothing open yet: nothing to keep.
         cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(a.clone(), window, cx)));
