@@ -1,8 +1,6 @@
 //! Open All over many files holds only the files near the screen, and gives everything back
 //! when it closes.
 
-extern crate gpui_kit as gpui;
-
 use gitviber_diff::{Compare, DiffSource, StackedDiff, StackedFile};
 use gpui_kit::{
     AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _,

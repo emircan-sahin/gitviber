@@ -1,8 +1,6 @@
 //! What a review of the diff found, kept fixed: saving over an outside write, a list reordered
 //! while its files load, line actions on a diff that ignores whitespace.
 
-extern crate gpui_kit as gpui;
-
 use gitviber_diff::{
     Compare, DiffEvent, DiffOptions, DiffSource, DiffView, LineAction, LineRange, Side,
     StackedDiff, StackedFile, Whitespace,

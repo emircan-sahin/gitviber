@@ -1,7 +1,5 @@
 //! Opening and closing a diff gives everything back: no entity of it outlives its tab.
 
-extern crate gpui_kit as gpui;
-
 use gitviber_diff::{Compare, DiffData, DiffOptions, DiffSource, DiffView, Layout};
 use gpui_kit::{
     AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _,

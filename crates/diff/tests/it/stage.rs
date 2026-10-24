@@ -1,7 +1,5 @@
 //! Staging and unstaging picked lines through the view, in a throwaway repo.
 
-extern crate gpui_kit as gpui;
-
 use gitviber_diff::{Compare, DiffSource, DiffView, LineAction, LineRange, Side};
 use gpui_kit::{AppContext as _, Entity, TestAppContext};
 use std::path::{Path, PathBuf};

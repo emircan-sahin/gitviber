@@ -1,8 +1,6 @@
 //! Blocks between lines: they open the fold they'd be hidden in, take the room they declare and
 //! then the room they measure, and go with their view.
 
-extern crate gpui_kit as gpui;
-
 use gitviber_diff::{
     Annotation, Compare, DiffData, DiffOptions, DiffSource, DiffView, LinePos, Side,
 };
