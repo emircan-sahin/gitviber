@@ -8,7 +8,7 @@ use gitviber_markdown::BoundedImageCache;
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::keymap::media;
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::FileIcon;
+use gitviber_ui::widgets::{FileIcon, Toggle as _};
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::{
@@ -234,7 +234,7 @@ impl MediaView {
                             .ghost()
                             .xsmall()
                             .label("Fit")
-                            .toggled(self.zoom.is_none())
+                            .toggle(self.zoom.is_none(), cx)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.zoom = None;
                                 cx.notify();

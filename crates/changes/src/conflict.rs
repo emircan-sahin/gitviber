@@ -15,7 +15,7 @@ use gitviber_core::git::Side as GitSide;
 use gitviber_diff::DiffStyle;
 use gitviber_terminal::agent::{Handoff, handoff_to};
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::{FileIcon, PathLabel};
+use gitviber_ui::widgets::{FileIcon, PathLabel, Toggle as _};
 use gitviber_ui::workspace::{Toast, Workspace};
 use gitviber_ui::{ActiveAppTheme as _, AppTheme};
 use gpui_kit::assets::IconName as Lucide;
@@ -1035,7 +1035,7 @@ impl Render for ConflictView {
                         el.child(
                             small("preview", "Preview result".into())
                                 .icon(Lucide::Eye)
-                                .toggled(self.preview)
+                                .toggle(self.preview, cx)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.preview = !this.preview;
                                     cx.notify();

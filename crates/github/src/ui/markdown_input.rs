@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use gitviber_core::api;
 use gitviber_markdown::{Callouts, MarkdownBase, MarkdownView};
 use gitviber_ui::memory::Live;
+use gitviber_ui::widgets::{Toggle as _, segmented};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Textarea, TextareaState};
@@ -203,7 +204,7 @@ impl Render for MarkdownInput {
                 .xsmall()
                 .icon(Icon::new(icon))
                 .label(label)
-                .toggled(on == preview)
+                .toggle(on == preview, cx)
                 .on_click(cx.listener(move |this, _, window, cx| {
                     if preview {
                         this.preview(true, window, cx)
@@ -212,11 +213,13 @@ impl Render for MarkdownInput {
                     }
                 }))
         };
-        let tabs = div()
-            .flex()
-            .gap_0p5()
-            .child(tab("md-write", IconName::Pencil, "Write", false))
-            .child(tab("md-preview", IconName::Eye, "Preview", true));
+        let tabs = segmented(
+            [
+                tab("md-write", IconName::Pencil, "Write", false),
+                tab("md-preview", IconName::Eye, "Preview", true),
+            ],
+            cx,
+        );
         let body = if on {
             let height = self.height.get();
             div()

@@ -15,6 +15,7 @@ use std::time::Duration;
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::keymap::media;
 use gitviber_ui::memory::Live;
+use gitviber_ui::widgets::{Toggle as _, segmented};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Icon, Sizable as _};
@@ -722,37 +723,38 @@ impl Render for SvgPreview {
                     .children(natural.map(|(w, h)| format!("{} × {}", w.round(), h.round())))
                     .child(div().flex_1())
                     .child(div().min_w(px(40.)).text_center().child(label))
-                    .child(
-                        Button::new("svg-fit")
-                            .ghost()
-                            .xsmall()
-                            .label("Fit")
-                            .tooltip("Scroll to zoom, drag to pan, double-click to fit")
-                            .toggled(self.zoom.scale.is_none())
-                            .on_click(cx.listener(|this, _, _, cx| this.set_zoom(FIT, cx))),
-                    )
-                    .child(
-                        Button::new("svg-actual")
-                            .ghost()
-                            .xsmall()
-                            .label("1:1")
-                            .tooltip("Scroll to zoom, drag to pan, double-click to fit")
-                            .toggled(actual)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                let zoom = Zoom {
-                                    scale: Some(1.),
-                                    ..FIT
-                                };
-                                this.set_zoom(zoom, cx)
-                            })),
-                    )
+                    .child(segmented(
+                        [
+                            Button::new("svg-fit")
+                                .ghost()
+                                .xsmall()
+                                .label("Fit")
+                                .tooltip("Scroll to zoom, drag to pan, double-click to fit")
+                                .toggle(self.zoom.scale.is_none(), cx)
+                                .on_click(cx.listener(|this, _, _, cx| this.set_zoom(FIT, cx))),
+                            Button::new("svg-actual")
+                                .ghost()
+                                .xsmall()
+                                .label("1:1")
+                                .tooltip("Scroll to zoom, drag to pan, double-click to fit")
+                                .toggle(actual, cx)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    let zoom = Zoom {
+                                        scale: Some(1.),
+                                        ..FIT
+                                    };
+                                    this.set_zoom(zoom, cx)
+                                })),
+                        ],
+                        cx,
+                    ))
                     .child(
                         Button::new("svg-contrast")
                             .ghost()
                             .xsmall()
                             .icon(Icon::new(IconName::Contrast))
                             .tooltip(contrast_tip)
-                            .toggled(self.contrast)
+                            .toggle(self.contrast, cx)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.contrast = !this.contrast;
                                 cx.notify();

@@ -16,9 +16,11 @@ use gitviber_markdown::{
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::keymap::{editor, file};
 use gitviber_ui::memory::Live;
+use gitviber_ui::widgets::{Toggle as _, segmented};
 use gitviber_ui::workspace::{
     Project, ProjectEvent, Selection, TabIcon, TabItem, Toast, Workspace,
 };
+use gpui_kit::assets::IconName;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::{
@@ -812,7 +814,7 @@ impl FileView {
                             .ghost()
                             .xsmall()
                             .label("Blame")
-                            .toggled(on)
+                            .toggle(on, cx)
                             .on_click(|_, _, cx| {
                                 gitviber_ui::Settings::update(cx, |s| s.blame = !s.blame)
                             }),
@@ -822,26 +824,27 @@ impl FileView {
             .when(
                 self.previewable() && matches!(self.content, Content::Text { .. }) || svg,
                 |d| {
-                    d.child(
+                    let modes = [
                         Button::new("mode-code")
                             .ghost()
                             .xsmall()
+                            .icon(IconName::FileCode)
                             .label("Code")
-                            .toggled(self.mode == Mode::Code)
+                            .toggle(self.mode == Mode::Code, cx)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.set_mode(Mode::Code, window, cx)
                             })),
-                    )
-                    .child(
                         Button::new("mode-preview")
                             .ghost()
                             .xsmall()
+                            .icon(IconName::Eye)
                             .label("Preview")
-                            .toggled(self.mode == Mode::Preview)
+                            .toggle(self.mode == Mode::Preview, cx)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.set_mode(Mode::Preview, window, cx)
                             })),
-                    )
+                    ];
+                    d.child(segmented(modes, cx))
                 },
             )
     }

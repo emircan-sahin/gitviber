@@ -32,6 +32,7 @@ use crate::pane::{FindResult, LinkCtx, PaneEvent, TerminalPane, new_pane};
 use crate::{CloseFind, FindNext, FindPrev, PANEL_CONTEXT};
 use gitviber_ui::actions::{editor, tab, terminal};
 use gitviber_ui::settings::{OptionKey, TerminalCursor};
+use gitviber_ui::widgets::Toggle as _;
 use gitviber_ui::workspace::{
     PanelContext, PanelSpec, Project, ProjectEvent, Slot, Workspace, WorkspaceEvent,
 };
@@ -2617,7 +2618,7 @@ impl TerminalPanel {
                 .xsmall()
                 .icon(Icon::new(icon))
                 .tooltip(tip)
-                .toggled(on)
+                .toggle(on, cx)
                 .on_click(cx.listener(move |this, _, _, cx| this.toggle_find_option(which, cx)))
         };
         Some(

@@ -19,6 +19,7 @@ use crate::source::{Compare, DiffSource};
 use crate::style::{DiffOptions, DiffStyle};
 use crate::view::Notice;
 use gitviber_core::Core;
+use gitviber_ui::widgets::Toggle as _;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::scroll::Scrollbar;
@@ -1151,9 +1152,13 @@ impl StackedDiff {
             .child(
                 Button::new(("viewed", f))
                     .xsmall()
-                    .icon(Lucide::Check)
+                    .icon(if file.viewed {
+                        Lucide::SquareCheck
+                    } else {
+                        Lucide::Square
+                    })
                     .label("Viewed")
-                    .toggled(file.viewed)
+                    .toggle(file.viewed, cx)
                     .tooltip(if staged {
                         "Unstage"
                     } else if file.viewed {

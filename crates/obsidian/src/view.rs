@@ -12,6 +12,7 @@ use gitviber_files::media::{MediaKind, media_kind};
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::keymap::{editor, file};
 use gitviber_ui::memory::Live;
+use gitviber_ui::widgets::{Toggle as _, segmented};
 use gitviber_ui::workspace::{TabIcon, TabItem, Toast, Workspace, save_signal};
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -474,28 +475,28 @@ impl VaultTab {
                     .on_click(cx.listener(|this, _, _, cx| this.open_in_obsidian(cx))),
             )
             .when(switch, |d| {
-                d.child(
-                    Button::new("mode-code")
-                        .ghost()
-                        .xsmall()
-                        .label("Code")
-                        .toggled(self.mode == Mode::Code)
-                        .on_click(
-                            cx.listener(|this, _, window, cx| {
+                let modes =
+                    [
+                        Button::new("mode-code")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::FileCode)
+                            .label("Code")
+                            .toggle(self.mode == Mode::Code, cx)
+                            .on_click(cx.listener(|this, _, window, cx| {
                                 this.set_mode(Mode::Code, window, cx)
-                            }),
-                        ),
-                )
-                .child(
-                    Button::new("mode-preview")
-                        .ghost()
-                        .xsmall()
-                        .label("Preview")
-                        .toggled(self.mode == Mode::Preview)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.set_mode(Mode::Preview, window, cx)
-                        })),
-                )
+                            })),
+                        Button::new("mode-preview")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::Eye)
+                            .label("Preview")
+                            .toggle(self.mode == Mode::Preview, cx)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.set_mode(Mode::Preview, window, cx)
+                            })),
+                    ];
+                d.child(segmented(modes, cx))
             })
     }
 

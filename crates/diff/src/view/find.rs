@@ -263,8 +263,8 @@ impl DiffView {
                         } else {
                             "Match case (Alt+C)"
                         },
-                        f.options.match_case,
                     )
+                    .toggle(f.options.match_case, cx)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.toggle_find_option(|o| &mut o.match_case, cx)
                     })),
@@ -278,8 +278,8 @@ impl DiffView {
                         } else {
                             "Match whole word (Alt+W)"
                         },
-                        f.options.whole_word,
                     )
+                    .toggle(f.options.whole_word, cx)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.toggle_find_option(|o| &mut o.whole_word, cx)
                     })),
@@ -293,8 +293,8 @@ impl DiffView {
                         } else {
                             "Use regular expression (Alt+R)"
                         },
-                        f.options.regex,
                     )
+                    .toggle(f.options.regex, cx)
                     .on_click(
                         cx.listener(|this, _, _, cx| this.toggle_find_option(|o| &mut o.regex, cx)),
                     ),
@@ -309,15 +309,15 @@ impl DiffView {
                         .child(count),
                 )
                 .child(
-                    icon_button("find-prev", Lucide::ArrowUp, "Previous match (⇧↵)", false)
+                    icon_button("find-prev", Lucide::ArrowUp, "Previous match (⇧↵)")
                         .on_click(cx.listener(|this, _, _, cx| this.find_step(false, cx))),
                 )
                 .child(
-                    icon_button("find-next", Lucide::ArrowDown, "Next match (↵)", false)
+                    icon_button("find-next", Lucide::ArrowDown, "Next match (↵)")
                         .on_click(cx.listener(|this, _, _, cx| this.find_step(true, cx))),
                 )
                 .child(
-                    icon_button("find-close", Lucide::Close, "Close (esc)", false)
+                    icon_button("find-close", Lucide::Close, "Close (esc)")
                         .on_click(cx.listener(|this, _, window, cx| this.close_find(window, cx))),
                 )
                 .into_any_element(),

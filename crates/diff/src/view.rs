@@ -20,6 +20,7 @@ use crate::source::{Compare, DiffSource};
 use crate::style::{DiffOptions, DiffStyle, ImageMode, Layout, Whitespace};
 use gitviber_core::Core;
 use gitviber_ui::keymap::editor;
+use gitviber_ui::widgets::{Toggle as _, segmented};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::input::Rope;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -1960,27 +1961,30 @@ impl DiffView {
         // An SVG's two versions stack or sit side by side as its lines would, unless laid over.
         let svg_layout = svg.is_some_and(|both| !both || o.image == ImageMode::Side);
         let layout_toggle = |cx: &mut Context<Self>| {
-            [
-                Button::new("unified")
-                    .ghost()
-                    .xsmall()
-                    .icon(Lucide::Rows2)
-                    .label("Unified")
-                    .toggled(o.layout == Layout::Unified)
-                    .on_click(cx.listener(|_, _, _, cx| {
-                        DiffOptions::update(cx, |o| o.layout = Layout::Unified)
-                    })),
-                Button::new("split")
-                    .ghost()
-                    .xsmall()
-                    .icon(Lucide::Columns2)
-                    .label("Split")
-                    .toggled(o.layout == Layout::Split)
-                    .tooltip("Unified / split (⌥S)")
-                    .on_click(cx.listener(|_, _, _, cx| {
-                        DiffOptions::update(cx, |o| o.layout = Layout::Split)
-                    })),
-            ]
+            segmented(
+                [
+                    Button::new("unified")
+                        .ghost()
+                        .xsmall()
+                        .icon(Lucide::Rows2)
+                        .label("Unified")
+                        .toggle(o.layout == Layout::Unified, cx)
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            DiffOptions::update(cx, |o| o.layout = Layout::Unified)
+                        })),
+                    Button::new("split")
+                        .ghost()
+                        .xsmall()
+                        .icon(Lucide::Columns2)
+                        .label("Split")
+                        .toggle(o.layout == Layout::Split, cx)
+                        .tooltip("Unified / split (⌥S)")
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            DiffOptions::update(cx, |o| o.layout = Layout::Split)
+                        })),
+                ],
+                cx,
+            )
         };
         let svg_controls = self.svg_controls(style, cx);
         let preview_switch = self.preview_switch(cx);
@@ -1998,7 +2002,7 @@ impl DiffView {
             .text_color(c.foreground)
             .child(paint::path_label(&self.source.path, style))
             .child(
-                icon_button("copy-path", Lucide::Copy, "Copy path", false)
+                icon_button("copy-path", Lucide::Copy, "Copy path")
                     .on_click(cx.listener(|this, _, window, cx| this.copy_path(window, cx))),
             )
             .when_some(self.source.old_path.clone(), |el, old| {
@@ -2025,46 +2029,37 @@ impl DiffView {
             )
             .when(text_diff, |el| {
                 el.child(
-                    icon_button(
-                        "prev-change",
-                        Lucide::ArrowUp,
-                        "Previous change (⇧F7)",
-                        false,
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| this.prev_change(cx))),
+                    icon_button("prev-change", Lucide::ArrowUp, "Previous change (⇧F7)")
+                        .on_click(cx.listener(|this, _, _, cx| this.prev_change(cx))),
                 )
                 .child(
-                    icon_button("next-change", Lucide::ArrowDown, "Next change (F7)", false)
+                    icon_button("next-change", Lucide::ArrowDown, "Next change (F7)")
                         .on_click(cx.listener(|this, _, _, cx| this.next_change(cx))),
                 )
-                .children(layout_toggle(cx))
+                .child(layout_toggle(cx))
                 .child(
                     icon_button(
                         "collapse",
                         Lucide::FoldVertical,
                         "Collapse unchanged lines (⌥C)",
-                        o.collapse,
                     )
+                    .toggle(o.collapse, cx)
                     .on_click(cx.listener(|_, _, _, cx| {
                         DiffOptions::update(cx, |o| o.collapse = !o.collapse)
                     })),
                 )
                 .child(
-                    icon_button(
-                        "whitespace",
-                        Lucide::Space,
-                        "Ignore whitespace changes",
-                        o.whitespace != Whitespace::Exact,
-                    )
-                    .on_click(cx.listener(|_, _, _, cx| {
-                        DiffOptions::update(cx, |o| {
-                            o.whitespace = if o.whitespace == Whitespace::Exact {
-                                Whitespace::Amount
-                            } else {
-                                Whitespace::Exact
-                            }
-                        })
-                    })),
+                    icon_button("whitespace", Lucide::Space, "Ignore whitespace changes")
+                        .toggle(o.whitespace != Whitespace::Exact, cx)
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            DiffOptions::update(cx, |o| {
+                                o.whitespace = if o.whitespace == Whitespace::Exact {
+                                    Whitespace::Amount
+                                } else {
+                                    Whitespace::Exact
+                                }
+                            })
+                        })),
                 )
             })
             .when(self.is_editable() && !self.previewing(), |el| {
@@ -2074,31 +2069,30 @@ impl DiffView {
                         .xsmall()
                         .icon(Lucide::Pencil)
                         .label("Edit")
-                        .toggled(self.edit.is_some())
+                        .toggle(self.edit.is_some(), cx)
                         .tooltip("Edit the new side; ⌘S saves")
                         .on_click(cx.listener(|this, _, window, cx| this.toggle_edit(window, cx))),
                 )
             })
             .when(image, |el| {
-                el.children(
-                    [
-                        (ImageMode::Side, "2-up"),
-                        (ImageMode::Swipe, "Swipe"),
-                        (ImageMode::Onion, "Onion skin"),
-                    ]
-                    .map(|(mode, label)| {
-                        Button::new(label)
-                            .ghost()
-                            .xsmall()
-                            .label(label)
-                            .toggled(o.image == mode)
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                DiffOptions::update(cx, |o| o.image = mode)
-                            }))
-                    }),
-                )
+                let modes = [
+                    (ImageMode::Side, "2-up"),
+                    (ImageMode::Swipe, "Swipe"),
+                    (ImageMode::Onion, "Onion skin"),
+                ]
+                .map(|(mode, label)| {
+                    Button::new(label)
+                        .ghost()
+                        .xsmall()
+                        .label(label)
+                        .toggle(o.image == mode, cx)
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            DiffOptions::update(cx, |o| o.image = mode)
+                        }))
+                });
+                el.child(segmented(modes, cx))
             })
-            .when(svg_layout, |el| el.children(layout_toggle(cx)))
+            .when(svg_layout, |el| el.child(layout_toggle(cx)))
             .children(svg_controls)
             .when(open_file && self.source.file.status != "D", |el| {
                 el.child(
@@ -2115,9 +2109,13 @@ impl DiffView {
                 el.child(
                     Button::new("viewed")
                         .xsmall()
-                        .icon(Lucide::Check)
+                        .icon(if viewed {
+                            Lucide::SquareCheck
+                        } else {
+                            Lucide::Square
+                        })
                         .label("Viewed")
-                        .toggled(viewed)
+                        .toggle(viewed, cx)
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(DiffEvent::ToggleViewed))),
                 )
             })
@@ -2139,13 +2137,8 @@ impl DiffView {
     }
 }
 
-fn icon_button(id: &'static str, icon: Lucide, tip: &'static str, on: bool) -> Button {
-    Button::new(id)
-        .ghost()
-        .xsmall()
-        .icon(icon)
-        .tooltip(tip)
-        .toggled(on)
+fn icon_button(id: &'static str, icon: Lucide, tip: &'static str) -> Button {
+    Button::new(id).ghost().xsmall().icon(icon).tooltip(tip)
 }
 
 impl Render for DiffView {

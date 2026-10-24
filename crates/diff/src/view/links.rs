@@ -586,11 +586,12 @@ impl DiffView {
                             el.child("Click the code to open it")
                         })
                         .child(
-                            icon_button("places-close", Lucide::Close, "Close (esc)", false)
-                                .on_click(cx.listener(|this, _, _, cx| {
+                            icon_button("places-close", Lucide::Close, "Close (esc)").on_click(
+                                cx.listener(|this, _, _, cx| {
                                     this.places = None;
                                     cx.notify();
-                                })),
+                                }),
+                            ),
                         ),
                 )
                 .when(list, |el| {

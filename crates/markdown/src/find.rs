@@ -5,6 +5,7 @@
 use std::ops::Range;
 
 use gitviber_ui::ActiveAppTheme as _;
+use gitviber_ui::widgets::Toggle as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Enter, Escape, Input, InputEvent, InputState};
@@ -209,7 +210,7 @@ impl Render for FindBar {
                 .xsmall()
                 .icon(Icon::new(icon))
                 .tooltip(tip)
-                .toggled(on)
+                .toggle(on, cx)
                 .on_click(cx.listener(move |this, _, _, cx| this.flip(which, cx)))
         };
         let arrow = |id: &'static str, icon: IconName, tip: &'static str, dir: isize| {

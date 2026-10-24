@@ -224,11 +224,10 @@ impl DiffView {
                 .xsmall()
                 .label(label)
                 .tooltip("Scroll to zoom, drag to pan, double-click to fit")
-                .toggled(zoom.scale == to.scale)
+                .toggle(zoom.scale == to.scale, cx)
                 .on_click(move |_, _, cx| {
                     view.update(cx, |v, cx| v.set_zoom(to, cx)).ok();
                 })
-                .into_any_element()
         };
         let tip = match (backdrop, dark) {
             (Backdrop::Theme, true) => "Light background",
@@ -237,26 +236,28 @@ impl DiffView {
         };
         let back = view.downgrade();
         vec![
-            zoom_button("svg-fit", "Fit", FIT),
-            zoom_button("svg-actual", "1:1", ACTUAL),
-            icon_button(
-                "svg-contrast",
-                Lucide::Contrast,
-                tip,
-                backdrop != Backdrop::Theme,
+            segmented(
+                [
+                    zoom_button("svg-fit", "Fit", FIT),
+                    zoom_button("svg-actual", "1:1", ACTUAL),
+                ],
+                cx,
             )
-            .on_click(move |_, _, cx| {
-                back.update(cx, |v, cx| {
-                    let next = if v.backdrop() == Backdrop::Theme {
-                        contrast
-                    } else {
-                        Backdrop::Theme
-                    };
-                    v.set_backdrop(next, cx)
-                })
-                .ok();
-            })
             .into_any_element(),
+            icon_button("svg-contrast", Lucide::Contrast, tip)
+                .toggle(backdrop != Backdrop::Theme, cx)
+                .on_click(move |_, _, cx| {
+                    back.update(cx, |v, cx| {
+                        let next = if v.backdrop() == Backdrop::Theme {
+                            contrast
+                        } else {
+                            Backdrop::Theme
+                        };
+                        v.set_backdrop(next, cx)
+                    })
+                    .ok();
+                })
+                .into_any_element(),
         ]
     }
 
@@ -264,29 +265,22 @@ impl DiffView {
     pub(super) fn preview_switch(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         self.preview_kind()?;
         let on = self.previewing();
-        Some(
-            h_flex()
-                .flex_none()
-                .ml_1()
-                .child(
-                    Button::new("show-diff")
-                        .ghost()
-                        .xsmall()
-                        .icon(Lucide::GitCompareArrows)
-                        .label("Diff")
-                        .toggled(!on)
-                        .on_click(cx.listener(|this, _, _, cx| this.set_preview(false, cx))),
-                )
-                .child(
-                    Button::new("show-preview")
-                        .ghost()
-                        .xsmall()
-                        .icon(Lucide::Eye)
-                        .label("Preview")
-                        .toggled(on)
-                        .on_click(cx.listener(|this, _, _, cx| this.set_preview(true, cx))),
-                )
-                .into_any_element(),
-        )
+        let segments = [
+            Button::new("show-diff")
+                .ghost()
+                .xsmall()
+                .icon(Lucide::GitCompareArrows)
+                .label("Diff")
+                .toggle(!on, cx)
+                .on_click(cx.listener(|this, _, _, cx| this.set_preview(false, cx))),
+            Button::new("show-preview")
+                .ghost()
+                .xsmall()
+                .icon(Lucide::Eye)
+                .label("Preview")
+                .toggle(on, cx)
+                .on_click(cx.listener(|this, _, _, cx| this.set_preview(true, cx))),
+        ];
+        Some(segmented(segments, cx).ml_1().into_any_element())
     }
 }

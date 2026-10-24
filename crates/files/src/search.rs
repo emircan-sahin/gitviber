@@ -11,7 +11,7 @@ use gitviber_core::{Core, api};
 use gitviber_markdown::FindQuery;
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::FileIcon;
+use gitviber_ui::widgets::{FileIcon, Toggle as _};
 use gitviber_ui::workspace::{Panel, PanelContext, Workspace};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -397,7 +397,7 @@ impl SearchPanel {
             .xsmall()
             .icon(icon)
             .tooltip(tip)
-            .toggled(on)
+            .toggle(on, cx)
             .on_click(cx.listener(move |this, _, _, cx| {
                 flip(this);
                 this.schedule(Duration::ZERO, cx);
@@ -612,6 +612,11 @@ impl Render for SearchPanel {
             }
         });
         let count = self.items.len();
+        // An empty panel says what it searches rather than nothing at all.
+        let idle = self.found.is_none()
+            && self.error.is_none()
+            && !self.pending
+            && self.input.read(cx).value().is_empty();
         div()
             .id("search")
             .key_context("SearchPanel")
@@ -678,7 +683,7 @@ impl Render for SearchPanel {
                                     .xsmall()
                                     .icon(IconName::Ellipsis)
                                     .tooltip("Toggle search details")
-                                    .toggled(globs)
+                                    .toggle(globs, cx)
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.globs = !this.globs;
                                         cx.notify();
@@ -785,6 +790,22 @@ impl Render for SearchPanel {
                     .min_h_0()
                     .flex()
                     .flex_col()
+                    .when(idle, |d| {
+                        d.child(
+                            div()
+                                .px_3()
+                                .py_2()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .text_size(px(11.5))
+                                .text_color(t.muted_foreground)
+                                .child("Type to search the text of the repo's files.")
+                                .child(div().text_color(t.subtle).child(
+                                    "Ignored files are left out; ⋯ narrows the search to some paths.",
+                                )),
+                        )
+                    })
                     .child(
                         uniform_list(
                             "search-results",
