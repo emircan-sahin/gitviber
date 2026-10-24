@@ -8,6 +8,7 @@ use gitviber_core::Event;
 use gitviber_core::obsidian::VaultChanged;
 use gitviber_ui::workspace::{PanelContext, Workspace};
 use gitviber_ui::{CoreEvents, memory};
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::{
     AnyView, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
     Styled as _, TestAppContext, VisualTestContext, WeakEntity, Window, div,
@@ -252,4 +253,171 @@ fn the_panel_lists_the_vault_as_obsidian_does(cx: &mut TestAppContext) {
     drop(panel);
     show(&host, None, cx);
     assert_eq!(live("VaultPanel"), 0);
+}
+
+/// A window whose root is gpui-kit's (it draws dialogs) showing a code view of `note`.
+fn code_view<'a>(
+    vault: &str,
+    note: &str,
+    cx: &'a mut TestAppContext,
+) -> (Entity<VaultTab>, &'a mut VisualTestContext) {
+    let mut view = None;
+    let handle = cx.add_window(|window, cx| {
+        let v = tab(vault, note, window, cx);
+        view = Some(v.clone());
+        gpui_kit::base::Root::new(v, window, cx)
+    });
+    let cx = VisualTestContext::from_window(*handle, cx).into_mut();
+    let view = view.unwrap();
+    cx.run_until_parked();
+    cx.update(|window, cx| view.update(cx, |t, cx| t.set_mode(Mode::Code, window, cx)));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    (view, cx)
+}
+
+/// Types over the whole text, as the keyboard would.
+fn type_all(view: &Entity<VaultTab>, text: &str, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        let focus = view
+            .read(cx)
+            .editor()
+            .expect("the code view")
+            .read(cx)
+            .editor_focus(cx);
+        window.focus(&focus, cx);
+    });
+    cx.simulate_keystrokes("cmd-a");
+    cx.simulate_input(text);
+}
+
+fn dirty(view: &Entity<VaultTab>, cx: &mut VisualTestContext) -> bool {
+    cx.update(|_, cx| gitviber_ui::workspace::TabItem::is_dirty(view.read(cx), cx))
+}
+
+fn save(view: &Entity<VaultTab>, cx: &mut VisualTestContext) {
+    let editor = cx.update(|_, cx| view.read(cx).editor().unwrap());
+    cx.update(|window, cx| editor.update(cx, |e, cx| e.save(window, cx)));
+}
+
+#[gpui_kit::test]
+fn a_lossy_note_stays_read_only_whichever_way_it_gets_to_code(cx: &mut TestAppContext) {
+    let vault = setup("lossy", cx);
+    let file = Path::new(&vault).join("Latin.md");
+    // Latin-1: not UTF-8, so what's shown isn't the file's own bytes.
+    std::fs::write(&file, b"caf\xe9 au lait\n").unwrap();
+    let (view, cx) = code_view(&vault, "Latin.md", cx);
+    let readonly = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| view.read(cx).editor().unwrap().read(cx).is_readonly())
+    };
+    assert!(readonly(cx));
+    // Preview, then Code again: the editor is made again from the rendered note's text.
+    for mode in [Mode::Preview, Mode::Code] {
+        cx.update(|window, cx| view.update(cx, |t, cx| t.set_mode(mode, window, cx)));
+        cx.run_until_parked();
+    }
+    assert!(readonly(cx));
+    type_all(&view, "mine\n", cx);
+    save(&view, cx);
+    cx.run_until_parked();
+    assert_eq!(std::fs::read(&file).unwrap(), b"caf\xe9 au lait\n");
+    // The tab can't save it, so the ask before closing offers only to drop it.
+    assert!(cx.update(|window, cx| view.update(cx, |t, cx| {
+        gitviber_ui::workspace::TabItem::save(t, window, cx).is_none()
+    })));
+}
+
+#[gpui_kit::test]
+fn saving_over_a_change_made_on_disk_asks_first(cx: &mut TestAppContext) {
+    let vault = setup("outside", cx);
+    let file = Path::new(&vault).join("Plan.md");
+    let (view, cx) = code_view(&vault, "Plan.md", cx);
+    type_all(&view, "mine\n", cx);
+    // Obsidian (or a sync) writes the note meanwhile; no watcher tells this window.
+    std::fs::write(&file, "theirs\n").unwrap();
+    save(&view, cx);
+    cx.run_until_parked();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "theirs\n");
+    assert!(
+        cx.update(|window, cx| window.has_active_dialog(cx)),
+        "it asks before overwriting"
+    );
+    assert!(dirty(&view, cx));
+}
+
+#[gpui_kit::test]
+fn typing_undone_is_clean_and_a_second_save_waits_for_the_first(cx: &mut TestAppContext) {
+    let vault = setup("undo", cx);
+    let file = Path::new(&vault).join("Plan.md");
+    let (view, cx) = code_view(&vault, "Plan.md", cx);
+    type_all(&view, &format!("{PLAN}x"), cx);
+    assert!(dirty(&view, cx));
+    cx.simulate_keystrokes("backspace");
+    assert!(!dirty(&view, cx), "back to the file's text is no edit");
+    // ⌘S, typing and ⌘S again before the first write lands: the second waits, so the older text
+    // can't be written last.
+    let editor = cx.update(|_, cx| view.read(cx).editor().unwrap());
+    cx.update(|window, cx| {
+        editor.update(cx, |e, cx| {
+            e.type_now("first\n", window, cx);
+            e.save(window, cx);
+            e.type_now("second\n", window, cx);
+            e.save(window, cx);
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "first\n");
+    assert!(
+        dirty(&view, cx),
+        "what was typed during the write is still unsaved"
+    );
+    save(&view, cx);
+    cx.run_until_parked();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "second\n");
+    assert!(!dirty(&view, cx));
+}
+
+#[gpui_kit::test]
+fn unsaved_typing_outlives_its_tab(cx: &mut TestAppContext) {
+    let vault = setup("keep", cx);
+    let file = Path::new(&vault).join("Plan.md");
+    let edits_file = gitviber_ui::store::config_dir().join("vault-edits.json");
+    let (host, cx) = cx.add_window_view(|_, _| Host(None));
+    let view = cx.update(|window, cx| tab(&vault, "Plan.md", window, cx));
+    show(&host, Some(view.clone().into()), cx);
+    cx.update(|window, cx| view.update(cx, |t, cx| t.set_mode(Mode::Code, window, cx)));
+    show(&host, Some(view.clone().into()), cx);
+    type_all(&view, "kept\n", cx);
+    // The tab goes (closed, a repo switch, a quit): its view with it.
+    drop(view);
+    show(&host, None, cx);
+    assert_eq!(live("NoteEditor"), 0);
+    cx.update(|_, cx| gitviber_ui::store::flush(cx));
+    let stored = std::fs::read_to_string(&edits_file).unwrap();
+    assert!(stored.contains("kept"), "{stored}");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        PLAN,
+        "nothing was written to the note"
+    );
+    // Opened again (in Code, as the last note was left): dirty, the typing back in the editor
+    // and in the rendered note.
+    let view = cx.update(|window, cx| tab(&vault, "Plan.md", window, cx));
+    show(&host, Some(view.clone().into()), cx);
+    assert!(dirty(&view, cx));
+    let typed = cx.update(|_, cx| view.read(cx).editor().unwrap().read(cx).content(cx));
+    assert_eq!(typed, "kept\n");
+    cx.update(|window, cx| view.update(cx, |t, cx| t.set_mode(Mode::Preview, window, cx)));
+    show(&host, Some(view.clone().into()), cx);
+    let shown = cx.update(|_, cx| view.read(cx).note().unwrap().read(cx).source().to_string());
+    assert_eq!(shown, "kept\n");
+    assert!(dirty(&view, cx), "the typing stays in Preview");
+    // Don't Save drops it for good.
+    cx.update(|_, cx| view.update(cx, gitviber_ui::workspace::TabItem::discard));
+    assert!(!dirty(&view, cx));
+    drop(view);
+    show(&host, None, cx);
+    cx.update(|_, cx| gitviber_ui::store::flush(cx));
+    let stored = std::fs::read_to_string(&edits_file).unwrap();
+    assert!(!stored.contains("kept"), "{stored}");
 }

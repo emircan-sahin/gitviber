@@ -2,13 +2,12 @@
 
 use std::collections::HashMap;
 
-/// A name as links compare it: without regard to case or Unicode form ("Cafe\u{301}" is "Café").
-/// Canonical decomposition of Latin, Greek, Cyrillic and Hangul, then lowercase: both sides of a
-/// comparison go through it, so it needn't be NFC.
+/// A name as links compare it: without regard to case or Unicode form ("Cafe\u{301}" is "Café",
+/// a decomposed "か\u{3099}" is "が"). Both sides go through it: canonical decomposition with the
+/// combining marks in canonical order (NFD), then lowercase, which compares as NFC would.
 pub fn norm(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+    let mut chars: Vec<char> = Vec::with_capacity(s.len());
     for c in s.chars() {
-        let push = |c: char, out: &mut String| out.extend(c.to_lowercase());
         let cp = c as u32;
         // Hangul syllables decompose by arithmetic (Unicode §3.12).
         if (0xAC00..0xAC00 + 11172).contains(&cp) {
@@ -16,15 +15,37 @@ pub fn norm(s: &str) -> String {
             let jamo = [0x1100 + s / 588, 0x1161 + (s % 588) / 28, 0x11A7 + s % 28];
             for (i, j) in jamo.into_iter().enumerate() {
                 if i < 2 || j != 0x11A7 {
-                    out.extend(char::from_u32(j));
+                    chars.extend(char::from_u32(j));
                 }
             }
             continue;
         }
         match crate::nfd::NFD.binary_search_by_key(&cp, |(k, _)| *k) {
-            Ok(i) => crate::nfd::NFD[i].1.chars().for_each(|d| push(d, &mut out)),
-            Err(_) => push(c, &mut out),
+            Ok(i) => chars.extend(crate::nfd::NFD[i].1.chars()),
+            Err(_) => chars.push(c),
         }
+    }
+    // Marks typed in another order are the same text: each run of them sorted by class, stably.
+    let class = |c: char| {
+        crate::nfd::CCC
+            .binary_search_by_key(&(c as u32), |(k, _)| *k)
+            .map_or(0, |i| crate::nfd::CCC[i].1)
+    };
+    let mut i = 0;
+    while i < chars.len() {
+        if class(chars[i]) == 0 {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && class(chars[i]) != 0 {
+            i += 1;
+        }
+        chars[start..i].sort_by_key(|c| class(*c));
+    }
+    let mut out = String::with_capacity(s.len());
+    for c in chars {
+        out.extend(c.to_lowercase());
     }
     out
 }
@@ -273,6 +294,25 @@ mod tests {
         );
         let hangul_nfd = "\u{1112}\u{1161}\u{11ab}\u{1100}\u{1173}\u{11af}";
         assert_eq!(r(&nfd, hangul_nfd, "Home.md").as_deref(), Some("한글.md"));
+        // Kana, composed or with its voicing mark apart; marks in either order.
+        let kana = index(&[
+            "\u{304b}\u{3099}\u{3063}\u{3053}\u{3046}.md",
+            "q\u{323}\u{307}.md",
+        ]);
+        assert_eq!(
+            r(&kana, "がっこう", "Home.md").as_deref(),
+            Some("\u{304b}\u{3099}\u{3063}\u{3053}\u{3046}.md")
+        );
+        assert_eq!(
+            norm("がっこう"),
+            norm("\u{304b}\u{3099}\u{3063}\u{3053}\u{3046}")
+        );
+        assert_eq!(
+            r(&kana, "q\u{307}\u{323}", "Home.md").as_deref(),
+            Some("q\u{323}\u{307}.md")
+        );
+        // The ohm sign is the Greek letter.
+        assert_eq!(norm("\u{2126}"), norm("\u{3a9}"));
     }
 
     #[test]

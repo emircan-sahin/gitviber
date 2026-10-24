@@ -12,7 +12,7 @@ use gitviber_files::media::{MediaKind, media_kind};
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::keymap::file;
 use gitviber_ui::memory::Live;
-use gitviber_ui::workspace::{TabIcon, TabItem, Toast, Workspace};
+use gitviber_ui::workspace::{TabIcon, TabItem, Toast, Workspace, save_signal};
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::{
@@ -23,6 +23,7 @@ use gpui_kit::{
 
 use crate::canvas_view::CanvasView;
 use crate::editor::{EditorEvent, NoteEditor};
+use crate::edits;
 use crate::note::NoteView;
 use crate::vaults::{Vaults, VaultsEvent, hold_for};
 
@@ -91,6 +92,8 @@ pub struct VaultTab {
     content: Content,
     /// The code view: while in Code, and while it has typing to keep.
     editor: Option<(Entity<NoteEditor>, Subscription)>,
+    /// The last read wasn't the file's own bytes: a code view of it is never written back.
+    lossy: bool,
     /// A #heading or #^block to show once the note is drawn.
     pending: Option<String>,
     focus: FocusHandle,
@@ -131,6 +134,7 @@ impl VaultTab {
             mode,
             content: Content::Loading,
             editor: None,
+            lossy: false,
             pending: None,
             focus: cx.focus_handle(),
             _load: Task::ready(()),
@@ -227,8 +231,15 @@ impl VaultTab {
         if file.binary {
             return self.notice("Binary file", "It has no text to show.", cx);
         }
+        self.lossy = file.lossy;
         if let Some((editor, _)) = &self.editor {
-            editor.update(cx, |e, cx| e.file_changed(&file.text, window, cx));
+            editor.update(cx, |e, cx| {
+                e.file_changed(&file.text, file.lossy, window, cx)
+            });
+        } else if !file.lossy && edits::get(&self.vault, &self.path, cx).is_some() {
+            // Typing kept from before: its code view comes back with it, so the tab is dirty
+            // and the rendered view shows it.
+            self.ensure_editor(file.text.clone(), window, cx);
         }
         // Typing not saved yet is what the rendered view shows.
         let typed = self
@@ -237,34 +248,36 @@ impl VaultTab {
             .filter(|(e, _)| e.read(cx).is_dirty())
             .map(|(e, _)| e.read(cx).content(cx));
         match self.mode {
-            Mode::Code => self.show_code(file.text, file.lossy, window, cx),
+            Mode::Code => self.show_code(file.text, window, cx),
             Mode::Preview => self.show_preview(typed.unwrap_or(file.text), window, cx),
         }
         cx.notify();
     }
 
-    fn show_code(
-        &mut self,
-        text: String,
-        lossy: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.editor.is_none() {
-            let (ws, vault, path) = (
-                self.workspace.clone(),
-                self.vault.clone(),
-                self.path.clone(),
-            );
-            let editor = cx.new(|cx| NoteEditor::new(ws, vault, path, text, lossy, window, cx));
-            let sub = cx.subscribe(&editor, |this, _, e: &EditorEvent, cx| match e {
-                EditorEvent::DirtyChanged => cx.notify(),
-                // A vault no watcher covers wouldn't be read again.
-                EditorEvent::Saved(text) => this.text_saved(text, cx),
-            });
-            self.editor = Some((editor, sub));
-        }
+    fn show_code(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_editor(text, window, cx);
         self.content = Content::Code;
+    }
+
+    /// The code view, made from `text` (the file as last read) if there's none; read-only when
+    /// that read was lossy, whichever way the tab got to Code.
+    fn ensure_editor(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editor.is_some() {
+            return;
+        }
+        let (ws, vault, path, lossy) = (
+            self.workspace.clone(),
+            self.vault.clone(),
+            self.path.clone(),
+            self.lossy,
+        );
+        let editor = cx.new(|cx| NoteEditor::new(ws, vault, path, text, lossy, window, cx));
+        let sub = cx.subscribe(&editor, |this, _, e: &EditorEvent, cx| match e {
+            EditorEvent::DirtyChanged => cx.notify(),
+            // A vault no watcher covers wouldn't be read again.
+            EditorEvent::Saved(text) => this.text_saved(text, cx),
+        });
+        self.editor = Some((editor, sub));
     }
 
     fn show_preview(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -299,7 +312,7 @@ impl VaultTab {
                 self.content =
                     Content::Media(cx.new(|cx| MediaView::new(abs, MediaKind::Image, window, cx)));
             }
-            _ => self.show_code(text, false, window, cx),
+            _ => self.show_code(text, window, cx),
         }
     }
 
@@ -358,7 +371,7 @@ impl VaultTab {
                 // The rendered copy goes; the code keeps the text.
                 self.content = Content::Loading;
                 match text {
-                    Some(text) => self.show_code(text, false, window, cx),
+                    Some(text) => self.show_code(text, window, cx),
                     None => self.load(window, cx),
                 }
             }
@@ -527,6 +540,27 @@ impl TabItem for VaultTab {
         self.editor
             .as_ref()
             .is_some_and(|(e, _)| e.read(cx).is_dirty())
+    }
+
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<Task<bool>> {
+        let (editor, _) = self.editor.as_ref()?;
+        if editor.read(cx).is_readonly() {
+            return None;
+        }
+        let (done, task) = save_signal(cx);
+        editor.update(cx, |e, cx| e.save_then(Some(done), window, cx));
+        Some(task)
+    }
+
+    fn discard(&mut self, cx: &mut Context<Self>) {
+        if let Some((editor, _)) = &self.editor {
+            editor.update(cx, |e, cx| e.forget(cx));
+        }
+    }
+
+    /// Unsaved typing is kept in the vault edits store when the tab goes.
+    fn keeps_edits(&self, _: &App) -> bool {
+        true
     }
 
     fn tab_focus(&self, cx: &App) -> Option<FocusHandle> {

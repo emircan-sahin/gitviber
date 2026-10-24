@@ -17,6 +17,7 @@ gitviber-markdown = { path = "../markdown" }
 # The tree model, the media view, the editor's languages and line-ending rules.
 gitviber-files = { path = "../files" }
 gpui-kit.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

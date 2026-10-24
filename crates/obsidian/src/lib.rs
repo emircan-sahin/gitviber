@@ -11,6 +11,7 @@ extern crate gpui_kit as gpui;
 pub mod canvas;
 mod canvas_view;
 mod editor;
+mod edits;
 pub mod links;
 pub mod markup;
 mod nfd;
@@ -33,9 +34,10 @@ pub use vaults::{Vaults, VaultsEvent};
 pub use view::{Mode, VaultTab};
 
 /// Registers the Obsidian panel (after Explorer and Search) and the opener of "vault" tabs; on
-/// the first launch, takes the old app's picked vault.
+/// the first launch, takes the old app's picked vault and unsaved note typing.
 pub fn init(cx: &mut App) {
     vaults::import_legacy();
+    edits::import_legacy();
     register_panel(
         cx,
         PanelSpec::new(PANEL_ID, Slot::Right, "Obsidian", |ctx, window, cx| {
