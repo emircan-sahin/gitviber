@@ -18,6 +18,8 @@ pub struct Saved {
     pub worktree_dirs: BTreeMap<String, String>,
     /// By main worktree: the command its last new worktree's terminal ran.
     pub worktree_run: BTreeMap<String, String>,
+    /// By main worktree: the same, for a worktree started from an issue (`claude "Fix #{issue}"`).
+    pub issue_run: BTreeMap<String, String>,
     /// By worktree path: a hue name, or "none".
     pub worktree_colors: BTreeMap<String, String>,
 }
@@ -80,6 +82,7 @@ fn from_legacy(value: impl Fn(&str) -> Option<Value>) -> Saved {
         pinned_branches,
         worktree_dirs: strings("gitviber.worktreeDirs"),
         worktree_run: strings("gitviber.worktreeRun"),
+        issue_run: strings("gitviber.issueRun"),
         worktree_colors: strings("gitviber.worktreeColors"),
     }
 }
@@ -143,6 +146,23 @@ pub fn set_worktree_dir(main: &str, dir: Option<String>, cx: &mut App) {
 
 pub fn worktree_run(main: &str, cx: &mut App) -> String {
     get(cx).worktree_run.get(main).cloned().unwrap_or_default()
+}
+
+/// An issue's worktree runs what the last one did, else what a plain one runs.
+pub fn issue_run(main: &str, cx: &mut App) -> String {
+    let s = get(cx);
+    s.issue_run.get(main).or_else(|| s.worktree_run.get(main)).cloned().unwrap_or_default()
+}
+
+pub fn set_issue_run(main: &str, run: &str, cx: &mut App) {
+    let (main, run) = (main.to_string(), run.to_string());
+    update(cx, |s| {
+        if run.is_empty() {
+            s.issue_run.remove(&main);
+        } else {
+            s.issue_run.insert(main, run);
+        }
+    });
 }
 
 pub fn set_worktree_run(main: &str, run: &str, cx: &mut App) {

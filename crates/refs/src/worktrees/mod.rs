@@ -5,7 +5,7 @@
 mod dialogs;
 mod picker;
 
-pub use dialogs::{open_clean_up, open_lock, open_new_worktree, open_rename};
+pub use dialogs::{IssueAsk, PullAsk, Remember, open_clean_up, open_lock, open_new_worktree, open_rename, open_worktree_for_issue, open_worktree_for_pull, with_issue};
 pub use picker::{WorktreePicker, pull_chip as picker_pull_chip, worktree_chip};
 
 use std::collections::{BTreeMap, HashMap};
@@ -450,6 +450,13 @@ pub fn hue_color(hue: Hue, l: f32, c: f32, alpha: f32) -> Hsla {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_issues_number_fills_in_its_command() {
+        assert_eq!(with_issue("claude \"Fix #{issue}\"", 12), "claude \"Fix #12\"");
+        assert_eq!(with_issue("claude", 12), "claude");
+        assert_eq!(with_issue("{issue} {issue}", 7), "7 7");
+    }
 
     fn wt(path: &str, branch: Option<&str>) -> Worktree {
         Worktree {

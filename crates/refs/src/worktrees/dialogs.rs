@@ -45,8 +45,47 @@ fn is_commit(base: &str) -> bool {
 
 // MARK: New worktree
 
+/// A pull request to check out in a new worktree, as GitHub's views name it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PullAsk {
+    /// owner/name of the repository the PR is on.
+    pub target: String,
+    pub number: u64,
+    pub head_ref: String,
+    /// The PR's branch lives on origin: checked out under its own name.
+    pub same_repo: bool,
+    /// The local branch it lands on.
+    pub branch: String,
+}
+
+/// Remembers a branch as an issue's once its worktree is made: a PR from it then closes it.
+pub type Remember = Rc<dyn Fn(&str, &mut App)>;
+
+/// An issue to start work on: the branch is named after it, and a PR from it closes it.
+#[derive(Clone)]
+pub struct IssueAsk {
+    pub number: u64,
+    pub title: String,
+    /// The branch it proposes (`12-short-title`), which can be changed.
+    pub branch: String,
+    pub remember: Option<Remember>,
+}
+
+#[derive(Clone)]
+enum Source {
+    Plain,
+    Pull(PullAsk),
+    Issue(IssueAsk),
+}
+
+/// The Run command with `{issue}` as the issue's number: `claude "Fix #{issue}"`.
+pub fn with_issue(command: &str, number: u64) -> String {
+    command.replace("{issue}", &number.to_string())
+}
+
 pub struct NewWorktree {
     state: Entity<RepoState>,
+    source: Source,
     main: String,
     beside: String,
     fallback: String,
@@ -63,26 +102,51 @@ pub struct NewWorktree {
     pending: bool,
     includes: usize,
     tags: Rc<Vec<String>>,
+    /// A pull request's form has nothing to type: Enter is the form's own.
+    focus: gpui_kit::FocusHandle,
     _read: Task<()>,
     _pick: Option<Task<()>>,
     _subs: Vec<Subscription>,
     _live: Live,
 }
 
-/// The New worktree dialog, from `base` (a full ref or a commit's id; None: the default).
-pub fn open_new_worktree(base: Option<String>, window: &mut Window, cx: &mut App) {
+fn open_with(source: Source, base: Option<String>, window: &mut Window, cx: &mut App) {
     let Some(state) = state_of(window, cx) else {
         return;
     };
-    let form = cx.new(|cx| NewWorktree::new(state, base, window, cx));
-    let focus = form.read(cx).name.focus_handle(cx);
-    open_form("New worktree", 480., form, Some(focus), window, cx);
+    let title = match &source {
+        Source::Pull(p) => format!("Check out #{} in a new worktree", p.number),
+        Source::Issue(i) => format!("Start #{} in a new worktree", i.number),
+        Source::Plain => "New worktree".into(),
+    };
+    let pull = matches!(source, Source::Pull(_));
+    let form = cx.new(|cx| NewWorktree::new(state, base, source, window, cx));
+    let focus = if pull { form.read(cx).focus.clone() } else { form.read(cx).name.focus_handle(cx) };
+    open_form(title, 480., form, Some(focus), window, cx);
+}
+
+/// The New worktree dialog, from `base` (a full ref or a commit's id; None: the default).
+pub fn open_new_worktree(base: Option<String>, window: &mut Window, cx: &mut App) {
+    open_with(Source::Plain, base, window, cx);
+}
+
+/// A pull request's branch in a worktree of its own (GitHub's "Check out in new worktree…"):
+/// the folder, a terminal and its command, and whether to switch, asked first.
+pub fn open_worktree_for_pull(pull: PullAsk, window: &mut Window, cx: &mut App) {
+    open_with(Source::Pull(pull), None, window, cx);
+}
+
+/// A new branch for an issue, in a worktree of its own (GitHub's "Start in a worktree…"): its
+/// name proposed and editable, `{issue}` in the command its number.
+pub fn open_worktree_for_issue(issue: IssueAsk, window: &mut Window, cx: &mut App) {
+    open_with(Source::Issue(issue), None, window, cx);
 }
 
 impl NewWorktree {
     fn new(
         state: Entity<RepoState>,
         base: Option<String>,
+        source: Source,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -95,25 +159,34 @@ impl NewWorktree {
         let fallback = shared.unwrap_or_else(|| beside.clone());
         let dir = crate::store::worktree_dir(&main, cx).unwrap_or_else(|| fallback.clone());
         let from = base.unwrap_or_else(|| worktree_base(&state.read(cx).branches));
-        let run = crate::store::worktree_run(&main, cx);
-        let name = cx.new(|cx| InputState::new(window, cx).placeholder("Branch name"));
+        let issue = matches!(source, Source::Issue(_));
+        let run = if issue { crate::store::issue_run(&main, cx) } else { crate::store::worktree_run(&main, cx) };
+        let proposed = match &source {
+            Source::Issue(i) => i.branch.clone(),
+            _ => String::new(),
+        };
+        let name = cx.new(|cx| InputState::new(window, cx).placeholder("Branch name").default_value(proposed));
         let command = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("and run… (e.g. claude)")
+                .placeholder(if issue { "and run… (e.g. claude \"Fix #{issue}\")" } else { "and run… (e.g. claude)" })
                 .default_value(run)
         });
-        let subs = vec![cx.subscribe_in(
-            &name,
-            window,
-            |this: &mut Self, _, e: &InputEvent, window, cx| match e {
+        let subs = vec![
+            cx.subscribe_in(&name, window, |this: &mut Self, _, e: &InputEvent, window, cx| match e {
                 InputEvent::Change => {
                     this.warned = false;
                     cx.notify();
                 }
                 InputEvent::PressEnter { .. } => this.submit(window, cx),
                 _ => {}
-            },
-        )];
+            }),
+            // The hint under the command follows what's typed in it.
+            cx.subscribe(&command, |_, _, e: &InputEvent, cx| {
+                if let InputEvent::Change = e {
+                    cx.notify();
+                }
+            }),
+        ];
         let core = gitviber_ui::core(cx);
         let read = cx.background_spawn(async move {
             (
@@ -132,6 +205,7 @@ impl NewWorktree {
         NewWorktree {
             head_option: from == "HEAD",
             state,
+            source,
             main,
             beside,
             fallback,
@@ -145,6 +219,7 @@ impl NewWorktree {
             pending: false,
             includes: 0,
             tags: Rc::default(),
+            focus: cx.focus_handle(),
             _read: read,
             _pick: None,
             _subs: subs,
@@ -156,7 +231,27 @@ impl NewWorktree {
         self.name.read(cx).value().to_string()
     }
 
+    fn pull(&self) -> Option<&PullAsk> {
+        match &self.source {
+            Source::Pull(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    fn issue(&self) -> Option<&IssueAsk> {
+        match &self.source {
+            Source::Issue(i) => Some(i),
+            _ => None,
+        }
+    }
+
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending {
+            return;
+        }
+        if let Some(pull) = self.pull().cloned() {
+            return self.check_out(pull, window, cx);
+        }
         let branches = self.state.read(cx).branches.clone();
         let picked = worktree_branch(&self.typed(cx), &branches, FOLD_CASE);
         let existing = picked.base != WorktreeBase::Picked;
@@ -165,7 +260,7 @@ impl NewWorktree {
         // to switch to it anywhere else, the main folder included.
         let guarded =
             existing && !picked.taken && Some(n.as_str()) == default_branch(&branches).as_deref();
-        if self.pending || n.is_empty() || picked.taken {
+        if n.is_empty() || picked.taken {
             return;
         }
         if guarded && !self.warned {
@@ -174,6 +269,30 @@ impl NewWorktree {
             return;
         }
         self.create(picked, window, cx);
+    }
+
+    /// What runs after the worktree is made, in it: the command, `{issue}` filled in.
+    fn command_to_run(&self, cx: &App) -> Option<String> {
+        let typed = self.command.read(cx).value().trim().to_string();
+        self.terminal.then(|| match self.issue() {
+            Some(i) => with_issue(&typed, i.number),
+            None => typed,
+        })
+    }
+
+    /// What the dialog remembers and asks for once the worktree is there, without the form,
+    /// which may be gone by then (a pull request's closes as its fetch starts).
+    fn after(&self, branch: String, cx: &App) -> After {
+        After {
+            main: self.main.clone(),
+            dir: self.dir.clone(),
+            fallback: self.fallback.clone(),
+            typed: self.terminal.then(|| self.command.read(cx).value().trim().to_string()),
+            command: self.command_to_run(cx),
+            issue: self.issue().is_some(),
+            remember: self.issue().and_then(|i| i.remember.clone()).map(|r| (r, branch)),
+            switch_to: self.switch_to,
+        }
     }
 
     fn create(
@@ -202,6 +321,7 @@ impl NewWorktree {
         } else {
             format!("Created worktree {n}")
         };
+        let after = self.after(n.clone(), cx);
         self.pending = true;
         cx.notify();
         let rx = self.state.update(cx, |s, cx| {
@@ -216,11 +336,6 @@ impl NewWorktree {
                 cx,
             )
         });
-        let (main, dir, fallback) = (self.main.clone(), self.dir.clone(), self.fallback.clone());
-        let command = self
-            .terminal
-            .then(|| self.command.read(cx).value().trim().to_string());
-        let switch_to = self.switch_to;
         let handle = window.window_handle();
         self._pick = Some(cx.spawn(async move |this, cx| {
             let ok = rx.await.unwrap_or(false);
@@ -233,24 +348,53 @@ impl NewWorktree {
                     });
                     return;
                 };
-                // Remembered for the project once it worked, so its next worktree goes there too.
-                crate::store::set_worktree_dir(&main, (dir != fallback).then_some(dir), cx);
-                if let Some(c) = &command {
-                    crate::store::set_worktree_run(&main, c, cx);
-                }
-                WorktreeEvents::emit(
-                    WorktreeEvent::Created {
-                        path: path.clone(),
-                        command: command.map(|c| c.to_string()),
-                    },
-                    cx,
-                );
                 crate::askpass::close_form(window, cx);
-                if switch_to {
-                    open_worktree(path, window, cx);
-                }
+                after.made(path, window, cx);
             });
         }));
+    }
+
+    /// A pull request's branch: nothing typed to keep, and the fetch's Cancel is in the top bar
+    /// behind this dialog, so the dialog goes as it starts.
+    fn check_out(&mut self, pull: PullAsk, window: &mut Window, cx: &mut Context<Self>) {
+        let where_ = (self.dir != self.beside).then(|| self.dir.clone());
+        let made = Arc::new(Mutex::new(None::<String>));
+        let slot = made.clone();
+        let after = self.after(pull.branch.clone(), cx);
+        let done = format!("Checked out #{} in worktree {}", pull.number, folder_for_branch(&pull.branch));
+        self.pending = true;
+        let rx = self.state.update(cx, |s, cx| {
+            s.run(
+                GitAction::new("Check out PR").net().untracked().done(done),
+                move |core, op| {
+                    let path = api::github::pr_checkout_worktree(
+                        core,
+                        Some(pull.target),
+                        pull.number,
+                        pull.head_ref,
+                        pull.same_repo,
+                        where_,
+                        op.id.clone(),
+                        op.progress(),
+                    )?;
+                    *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
+                    Ok(false)
+                },
+                window,
+                cx,
+            )
+        });
+        crate::askpass::close_form(window, cx);
+        // Holds no view: the form is gone with its dialog.
+        let handle = window.window_handle();
+        cx.spawn(async move |_, cx| {
+            let ok = rx.await.unwrap_or(false);
+            let path = made.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(path) = path.filter(|_| ok) {
+                let _ = handle.update(cx, |_, window, cx| after.made(path, window, cx));
+            }
+        })
+        .detach();
     }
 
     fn choose_folder(&mut self, cx: &mut Context<Self>) {
@@ -288,19 +432,70 @@ impl NewWorktree {
     }
 }
 
+/// What follows a new worktree: its folder (and its command) remembered for the project, an
+/// issue's branch remembered as the issue's, a terminal running the command, and the switch.
+struct After {
+    main: String,
+    dir: String,
+    fallback: String,
+    /// The command as typed, to offer again; None: no terminal asked for.
+    typed: Option<String>,
+    /// What the terminal runs: `{issue}` filled in.
+    command: Option<String>,
+    issue: bool,
+    remember: Option<(Remember, String)>,
+    switch_to: bool,
+}
+
+impl After {
+    fn made(self, path: String, window: &mut Window, cx: &mut App) {
+        // Remembered for the project once it worked, so its next worktree goes there too.
+        crate::store::set_worktree_dir(&self.main, (self.dir != self.fallback).then_some(self.dir.clone()), cx);
+        if let Some(c) = &self.typed {
+            if self.issue {
+                crate::store::set_issue_run(&self.main, c, cx);
+            } else {
+                crate::store::set_worktree_run(&self.main, c, cx);
+            }
+        }
+        if let Some((remember, branch)) = &self.remember {
+            remember(branch, cx);
+        }
+        WorktreeEvents::emit(WorktreeEvent::Created { path: path.clone(), command: self.command }, cx);
+        if self.switch_to {
+            open_worktree(path, window, cx);
+        }
+    }
+}
+
 impl Render for NewWorktree {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.app_theme().clone();
         let branches = self.state.read(cx).branches.clone();
         let typed = self.typed(cx);
+        let pull = self.pull().cloned();
+        let issue = self.issue().cloned();
         let picked = worktree_branch(&typed, &branches, FOLD_CASE);
-        let existing = picked.base != WorktreeBase::Picked;
-        let n = picked.name.clone();
-        let guarded =
-            existing && !picked.taken && Some(n.as_str()) == default_branch(&branches).as_deref();
+        // A pull request's branch is the PR's: nothing to check or pick a base for.
+        let existing = pull.is_some() || picked.base != WorktreeBase::Picked;
+        let n = pull.as_ref().map_or(picked.name.clone(), |p| p.branch.clone());
+        let guarded = pull.is_none()
+            && existing
+            && !picked.taken
+            && Some(n.as_str()) == default_branch(&branches).as_deref();
         let warning = self.warned && guarded;
-        let ready = !n.is_empty() && !picked.taken && !self.pending && !warning;
+        let ready = !n.is_empty() && (pull.is_some() || !picked.taken) && !self.pending && !warning;
         let weak = cx.weak_entity();
+        let about = match (&pull, &issue) {
+            (Some(p), _) => format!("The pull request's branch, {}, in its own folder; this one stays as it is.", p.branch),
+            (None, Some(i)) => format!("A new branch for “{}”, in its own folder; its pull request will close #{}.", i.title, i.number),
+            _ => "A new branch, checked out in its own folder, side by side with this one.".into(),
+        };
+        let command_typed = self.command.read(cx).value().to_string();
+        let issue_hint = (self.terminal && (issue.is_some() || command_typed.contains("{issue}"))).then(|| match &issue {
+            Some(i) => format!("{{issue}} in the command becomes {}, the issue's number.", i.number),
+            None => "{issue} is filled in only when starting from an issue.".to_string(),
+        });
         let base: Option<gpui_kit::AnyElement> = if existing {
             None
         } else if is_commit(&self.from) {
@@ -369,9 +564,19 @@ impl Render for NewWorktree {
             .flex()
             .flex_col()
             .text_size(rems(0.75))
-            .child(note("A new branch, checked out in its own folder, side by side with this one.", cx))
-            .child(div().mt_3().child(Input::new(&self.name)))
-            .children(hint(picked.hint.as_deref(), picked.taken, cx))
+            .track_focus(&self.focus)
+            .when(pull.is_some(), |d| {
+                d.on_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
+                    if e.keystroke.key == "enter" {
+                        cx.stop_propagation();
+                        this.submit(window, cx);
+                    }
+                }))
+            })
+            .child(note(about, cx))
+            .when(pull.is_none(), |d| {
+                d.child(div().mt_3().child(Input::new(&self.name))).children(hint(picked.hint.as_deref(), picked.taken, cx))
+            })
             .children(base)
             .child(
                 div()
@@ -408,6 +613,7 @@ impl Render for NewWorktree {
                     })))
                     .child(div().flex_1().child(Input::new(&self.command).disabled(!self.terminal))),
             )
+            .children(issue_hint.map(|h| note(h, cx).mt_1p5()))
             .when(warning, |d| {
                 d.child(
                     div()
@@ -444,7 +650,7 @@ impl Render for NewWorktree {
                         cx.notify();
                     })))
                     .child(div().flex_1())
-                    .child(Button::new("wt-create").primary().label("Create").disabled(!ready).on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))),
+                    .child(Button::new("wt-create").primary().label(if pull.is_some() { "Check out" } else { "Create" }).disabled(!ready).on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))),
             )
     }
 }

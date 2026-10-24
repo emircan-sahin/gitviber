@@ -220,6 +220,16 @@ impl Render for WorktreeChip {
 }
 
 /// A branch's PR: its state, number and checks; opens it in the app.
+/// A pull request's state as its icon.
+fn pull_icon(state: PullState) -> IconName {
+    match state {
+        PullState::Open => IconName::GitPullRequest,
+        PullState::Draft => IconName::GitPullRequestDraft,
+        PullState::Closed => IconName::GitPullRequestClosed,
+        PullState::Merged => IconName::GitMerge,
+    }
+}
+
 pub fn pull_chip(p: &BranchPull, hot: bool, cx: &App) -> AnyElement {
     let t = cx.app_theme();
     let (icon, color) = match p.state {
@@ -276,6 +286,8 @@ pub struct WorktreePicker {
     list: Vec<Worktree>,
     states: HashMap<String, State>,
     index: Option<usize>,
+    /// The list's: ↑/↓ keep the highlighted row in view, ⇧F10 finds it for its menu.
+    scroll: gpui_kit::ScrollHandle,
     focus: FocusHandle,
     _read: Task<()>,
     _subs: Vec<Subscription>,
@@ -358,6 +370,7 @@ impl WorktreePicker {
             list,
             states: HashMap::new(),
             index,
+            scroll: gpui_kit::ScrollHandle::new(),
             focus: cx.focus_handle(),
             _read: read,
             _subs: subs,
@@ -443,6 +456,13 @@ impl WorktreePicker {
 
     fn on_key(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let k = &e.keystroke;
+        if crate::ui::is_menu_key(k) {
+            if let Some(row) = self.index.and_then(|i| self.scroll.bounds_for_item(i)) {
+                crate::ui::open_row_menu(row, window, cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
         if k.modifiers.platform || k.modifiers.control || k.modifiers.alt {
             return;
         }
@@ -457,6 +477,11 @@ impl WorktreePicker {
             }
             "escape" => self.close(cx),
             _ => return,
+        }
+        if matches!(k.key.as_str(), "up" | "down")
+            && let Some(i) = self.index
+        {
+            self.scroll.scroll_to_item(i);
         }
         cx.stop_propagation();
         cx.notify();
@@ -524,6 +549,7 @@ impl WorktreePicker {
         };
         let w2 = w.clone();
         let menu_w = w.clone();
+        let menu_pull = pull.clone();
         let menu_hue = hue;
         let weak = cx.weak_entity();
         let can_merge = self.can_merge(w);
@@ -650,6 +676,17 @@ impl WorktreePicker {
                             IconName::MessageCircleReply,
                             Act::Resume,
                         ));
+                }
+                if let Some(p) = &menu_pull {
+                    let (weak, url) = (weak.clone(), p.url.clone());
+                    menu = menu.item(
+                        PopupMenuItem::new(format!("Open pull request #{}", p.number))
+                            .icon(Icon::new(pull_icon(p.state)))
+                            .on_click(move |_, window, cx| {
+                                let _ = weak.update(cx, |this, cx| this.close(cx));
+                                hooks::open_pull(&url, window, cx);
+                            }),
+                    );
                 }
                 if can_merge {
                     menu = menu.item(item(
@@ -1002,6 +1039,7 @@ impl Render for WorktreePicker {
                     .id("worktree-list")
                     .max_h(px(360.))
                     .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
                     .p_1()
                     .child(div().px_2().pt_2().pb_1().text_size(rems(0.65625)).font_weight(FontWeight::SEMIBOLD).text_color(t.subtle).child("WORKTREES"))
                     .children(rows)

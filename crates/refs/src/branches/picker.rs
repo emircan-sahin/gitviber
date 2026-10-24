@@ -23,7 +23,7 @@ use gpui_kit::{
     WeakEntity, Window, div, prelude::FluentBuilder as _, px, rems,
 };
 
-use super::{create_name, groups, held_in};
+use super::{deletable, create_name, groups, held_in};
 use crate::names::{Branch, branch_tracking, folder_name};
 use crate::ops;
 use crate::points::branch_point;
@@ -192,7 +192,16 @@ pub struct BranchPicker {
     /// Squash- or rebase-merged upstream; None until known, so Clean up never counts from an older open.
     landed: Option<HashSet<String>>,
     collapsed: HashSet<String>,
+    /// GitHub-protected branches, as origin's remote branches ("origin/main"): GitHub refuses
+    /// their delete, so none is offered. Asked as it opens.
+    guarded: HashSet<String>,
+    /// Each remote's GitHub repository (owner/name), for whether the account may push there.
+    remote_repos: HashMap<String, Option<String>>,
     index: Option<usize>,
+    /// The list's: ↑/↓ keep the highlighted row in view, ⇧F10 finds it for its menu.
+    scroll: gpui_kit::ScrollHandle,
+    /// Each row's child in the list as last drawn, past the group headers between them.
+    child_of: Vec<usize>,
     _reads: Vec<Task<()>>,
     _subs: Vec<Subscription>,
     _live: Live,
@@ -238,7 +247,24 @@ impl BranchPicker {
             crate::store::set_pinned(&main, pins.clone(), cx);
         }
         let core = gitviber_ui::core(cx);
-        let reads = vec![cx.spawn(async move |this, cx| {
+        let c = core.clone();
+        // Where GitHub would refuse a delete anyway: a protected branch, a remote you can't push.
+        let rights = cx.spawn(async move |this, cx| {
+            let (protected, remotes) = cx
+                .background_spawn(async move {
+                    (
+                        api::github::gh_protected_branches(&c).unwrap_or_default(),
+                        api::github::gh_remotes(&c).unwrap_or_default(),
+                    )
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.guarded = protected.into_iter().map(|n| format!("origin/{n}")).collect();
+                this.remote_repos = remotes.into_iter().map(|r| (r.name, r.repo)).collect();
+                cx.notify();
+            });
+        });
+        let reads = vec![rights, cx.spawn(async move |this, cx| {
             let c = core.clone();
             let (visited, tracks) = cx
                 .background_spawn(async move {
@@ -284,7 +310,11 @@ impl BranchPicker {
             tracks: HashMap::new(),
             landed: None,
             collapsed: HashSet::new(),
+            guarded: HashSet::new(),
+            remote_repos: HashMap::new(),
             index: None,
+            scroll: gpui_kit::ScrollHandle::new(),
+            child_of: vec![],
             _reads: reads,
             _subs: subs,
             _live: Live::new("BranchPicker"),
@@ -428,6 +458,14 @@ impl BranchPicker {
 
     fn on_key(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let k = &e.keystroke;
+        let child = |this: &Self| this.index.and_then(|i| this.child_of.get(i).copied());
+        if crate::ui::is_menu_key(k) {
+            if let Some(row) = child(self).and_then(|c| self.scroll.bounds_for_item(c)) {
+                crate::ui::open_row_menu(row, window, cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
         if k.modifiers.platform || k.modifiers.control || k.modifiers.alt {
             return;
         }
@@ -438,6 +476,11 @@ impl BranchPicker {
             "escape" => self.close(cx),
             "enter" => self.choose(window, cx),
             _ => return,
+        }
+        if matches!(k.key.as_str(), "up" | "down")
+            && let Some(c) = child(self)
+        {
+            self.scroll.scroll_to_item(c);
         }
         cx.stop_propagation();
         cx.notify();
@@ -820,7 +863,11 @@ impl BranchPicker {
                 cx,
             );
         }
-        if !b.current && !held && !b.remote_default {
+        let push = |remote: &str| {
+            let repo = self.remote_repos.get(remote).cloned().flatten()?;
+            crate::hooks::push_access(&repo, cx)
+        };
+        if deletable(b, held, &self.guarded, push) {
             let tip = if b.remote {
                 "Delete from the remote…"
             } else if b.merged || upstream {
@@ -859,6 +906,7 @@ impl Render for BranchPicker {
         let t = cx.app_theme().clone();
         let groups = self.groups(cx);
         let mut rows: Vec<AnyElement> = vec![];
+        let mut child_of: Vec<usize> = vec![];
         let mut n = 0;
         let searching = !self.typed(cx).trim().is_empty();
         for (g, list) in &groups {
@@ -903,14 +951,17 @@ impl Render for BranchPicker {
             );
             if open {
                 for b in list {
+                    child_of.push(rows.len());
                     rows.push(self.row(n, &Row::Branch(b.clone()), cx));
                     n += 1;
                 }
             }
         }
         if let Some(name) = create_name(&self.state.read(cx).branches, &self.typed(cx)) {
+            child_of.push(rows.len());
             rows.push(self.row(n, &Row::Create(name), cx));
         }
+        self.child_of = child_of;
         let branches = self.state.read(cx).branches.clone();
         let current = self.state.read(cx).branch().map(str::to_string);
         // Merged and held by no worktree, this one included: deleting them loses nothing.
@@ -979,6 +1030,7 @@ impl Render for BranchPicker {
                     .id("branch-list")
                     .max_h(px(360.))
                     .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
                     .p_1()
                     .children(rows)
                     .when(groups.is_empty() && !searching, |d| {

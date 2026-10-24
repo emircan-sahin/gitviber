@@ -104,9 +104,47 @@ pub fn held_in(b: &Branch, branches: &[Branch]) -> Option<String> {
     b.worktree.clone()
 }
 
+/// Whether a branch's row offers Delete: not the one checked out or held by a worktree, not a
+/// remote's default, and not where GitHub would refuse it anyway: a protected branch (`guarded`,
+/// as "origin/main"), or a remote the account can't push to (`push`: by remote name).
+pub fn deletable(
+    b: &Branch,
+    held: bool,
+    guarded: &std::collections::HashSet<String>,
+    push: impl Fn(&str) -> Option<bool>,
+) -> bool {
+    let refused = b.remote && b.remote_name().is_some_and(|r| push(r) == Some(false));
+    !b.current && !held && !b.remote_default && !guarded.contains(&b.name) && !refused
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delete_is_offered_only_where_it_can_work() {
+        let guarded: std::collections::HashSet<String> = ["origin/main".to_string()].into();
+        let push = |r: &str| match r {
+            "origin" => Some(true),
+            "up" => Some(false),
+            _ => None,
+        };
+        assert!(deletable(&b("feat"), false, &guarded, push));
+        assert!(deletable(&b("origin/feat"), false, &guarded, push));
+        // Protected on GitHub; its local twin isn't.
+        assert!(!deletable(&b("origin/main"), false, &guarded, push));
+        assert!(deletable(&b("main"), false, &guarded, push));
+        // The original's branches, where the account can't push.
+        assert!(!deletable(&b("up/x"), false, &guarded, push));
+        // Checked out, held by another worktree, or the remote's default.
+        let mut cur = b("feat");
+        cur.current = true;
+        assert!(!deletable(&cur, false, &guarded, push));
+        assert!(!deletable(&b("feat"), true, &guarded, push));
+        let mut head = b("origin/dev");
+        head.remote_default = true;
+        assert!(!deletable(&head, false, &guarded, push));
+    }
 
     fn b(name: &str) -> Branch {
         Branch {

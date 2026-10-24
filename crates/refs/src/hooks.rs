@@ -99,10 +99,15 @@ pub type OpenPull = Rc<dyn Fn(&str, &mut Window, &mut App)>;
 /// asking, news not looked at.
 pub type AgentsIn = Rc<dyn Fn(&str, &App) -> Option<Look>>;
 
+/// Whether the signed-in account may push to a GitHub repository (owner/name); None when it's
+/// not one GitHub knows the account's rights in (neither origin nor its original).
+pub type PushAccess = Rc<dyn Fn(&str, &App) -> Option<bool>>;
+
 #[derive(Default)]
 struct Providers {
     terminals_in: Option<TerminalsIn>,
     agents_in: Option<AgentsIn>,
+    push_access: Option<PushAccess>,
     pull_of: Option<PullOf>,
     open_pull: Option<OpenPull>,
 }
@@ -117,6 +122,16 @@ pub fn terminals_in(path: &str, cx: &App) -> usize {
     cx.try_global::<Providers>()
         .and_then(|p| p.terminals_in.clone())
         .map_or(0, |f| f(path, cx))
+}
+
+pub fn set_push_access(cx: &mut App, f: PushAccess) {
+    cx.default_global::<Providers>().push_access = Some(f);
+}
+
+pub fn push_access(repo: &str, cx: &App) -> Option<bool> {
+    cx.try_global::<Providers>()
+        .and_then(|p| p.push_access.clone())
+        .and_then(|f| f(repo, cx))
 }
 
 pub fn set_agents_in(cx: &mut App, f: AgentsIn) {

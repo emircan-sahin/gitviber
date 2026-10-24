@@ -8,8 +8,9 @@ use gitviber_ui::ActiveAppTheme;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::{
-    AnyElement, App, Entity, FocusHandle, IntoElement as _, ParentElement as _, Render,
-    SharedString, Styled as _, Window, div, px, rems,
+    AnyElement, App, Bounds, Entity, FocusHandle, IntoElement as _, Modifiers, MouseButton,
+    MouseDownEvent, MouseUpEvent, ParentElement as _, Pixels, PlatformInput, Render, SharedString,
+    Styled as _, Window, div, px, rems,
 };
 
 use crate::names::Branch;
@@ -34,6 +35,24 @@ pub fn open_form<V: Render>(
         }
         dialog.title(title.clone()).w(px(width)).child(view.clone())
     });
+}
+
+/// ⇧F10: a row's right-click menu, asked for from the keyboard. The menus open on a right
+/// click, so it is one, on the row's middle, once this key's dispatch is over (a dispatch can't
+/// run inside another). `row`: the row's bounds, from the list's scroll handle.
+pub fn open_row_menu(row: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+    let at = row.center();
+    window.defer(cx, move |window, cx| {
+        let down = MouseDownEvent { button: MouseButton::Right, position: at, modifiers: Modifiers::default(), click_count: 1, first_mouse: false };
+        window.dispatch_event(PlatformInput::MouseDown(down), cx);
+        let up = MouseUpEvent { button: MouseButton::Right, position: at, modifiers: Modifiers::default(), click_count: 1 };
+        window.dispatch_event(PlatformInput::MouseUp(up), cx);
+    });
+}
+
+/// ⇧F10, as a list's key handler sees it.
+pub fn is_menu_key(k: &gpui_kit::Keystroke) -> bool {
+    k.key == "f10" && k.modifiers.shift && !k.modifiers.platform && !k.modifiers.control && !k.modifiers.alt
 }
 
 /// The line under a typed name: what it became, or that it's taken.

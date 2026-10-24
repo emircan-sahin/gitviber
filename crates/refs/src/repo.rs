@@ -329,6 +329,11 @@ impl RepoState {
                     a.update(cx, |a, cx| a.finish(&op_id, cx));
                 }
                 this.ended(run);
+                if action.net
+                    && let Some((title, body)) = net_note(&action.label, &result)
+                {
+                    notify_if_away(title, body, cx);
+                }
                 let ok = result.is_ok();
                 let mut deferred = None;
                 let note = match result {
@@ -502,6 +507,30 @@ impl RepoState {
             });
         }));
     }
+}
+
+/// What a network action that ended says, for a notification: done, or failed with git's words.
+/// None for one the user stopped.
+pub fn net_note(label: &str, result: &Res<bool>) -> Option<(String, String)> {
+    match result {
+        Err(e) if e == CANCELLED || e == git::CANCELLED_STASHED => None,
+        Err(e) => Some((format!("{label} failed"), e.clone())),
+        Ok(_) => Some((format!("{label} finished"), String::new())),
+    }
+}
+
+/// Tells the OS, when the user asked (Settings → Notifications: on, and "A git command ends")
+/// and isn't looking at the app. A build outside an app bundle can't post one: quietly nothing.
+fn notify_if_away(title: String, body: String, cx: &mut App) {
+    let s = gitviber_ui::Settings::get(cx);
+    if !s.notify || !s.notify_git || cx.active_window().is_some() {
+        return;
+    }
+    let core = gitviber_ui::core(cx);
+    cx.background_spawn(async move {
+        let _ = api::app::notification_send(&core, title, body, None);
+    })
+    .detach();
 }
 
 /// The Undo button of a success toast, for the entry the action recorded.
@@ -749,6 +778,15 @@ mod tests {
         state.update(cx, |s, _| s.root = scratch("button"));
         cx.update(|window, cx| (button.run)(window, cx));
         assert_eq!(ran.get(), 1);
+    }
+
+    #[test]
+    fn a_network_action_says_how_it_ended_unless_stopped() {
+        assert_eq!(net_note("Push", &Ok(false)), Some(("Push finished".into(), String::new())));
+        assert_eq!(net_note("Pull", &Ok(true)), Some(("Pull finished".into(), String::new())));
+        assert_eq!(net_note("Fetch", &Err("fatal: no route".into())), Some(("Fetch failed".into(), "fatal: no route".into())));
+        assert_eq!(net_note("Push", &Err(CANCELLED.into())), None);
+        assert_eq!(net_note("Pull", &Err(git::CANCELLED_STASHED.into())), None);
     }
 
     #[gpui_kit::test]
