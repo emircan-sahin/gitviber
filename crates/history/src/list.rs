@@ -429,7 +429,10 @@ impl CommitList {
             // HEAD read with the list, so what the menus act on is what's shown.
             let head = match (&source, &log) {
                 (Source::Head, Ok(log)) => log.first().map(|c| c.sha.clone()),
-                _ => api::history::log(&core, None, 0, 1, None, None).ok().and_then(|l| l.into_iter().next()).map(|c| c.sha),
+                _ => api::history::log(&core, None, 0, 1, None, None)
+                    .ok()
+                    .and_then(|l| l.into_iter().next())
+                    .map(|c| c.sha),
             };
             (log, source.found(&core), head)
         });
@@ -748,7 +751,13 @@ impl CommitList {
         self.commits.iter().position(|c| c.sha == sha)
     }
 
-    pub(crate) fn click_commit(&mut self, sha: &str, e: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn click_commit(
+        &mut self,
+        sha: &str,
+        e: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(i) = self.index_of(sha) else { return };
         let commit = self.commits[i].clone();
         self.cursor = Some(i);
@@ -814,7 +823,12 @@ impl CommitList {
             .collect()
     }
 
-    pub(crate) fn key_down(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn key_down(
+        &mut self,
+        e: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let rows: Vec<usize> = (0..self.commits.len()).collect();
         if rows.is_empty() {
             return;
@@ -1113,19 +1127,22 @@ impl CommitList {
             }))
             .on_click({
                 let sha = sha.clone();
-                cx.listener(move |this, e: &ClickEvent, window, cx| this.click_commit(&sha, e, window, cx))
+                cx.listener(move |this, e: &ClickEvent, window, cx| {
+                    this.click_commit(&sha, e, window, cx)
+                })
             })
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener({
                     let sha = sha.clone();
                     move |this, _, _, cx| {
-                    // A right-click off the picked commits lets them go: its menu is that commit's.
-                    if !this.picked.contains(&sha) {
-                        this.picked.clear();
-                        cx.notify();
+                        // A right-click off the picked commits lets them go: its menu is that commit's.
+                        if !this.picked.contains(&sha) {
+                            this.picked.clear();
+                            cx.notify();
+                        }
                     }
-                }}),
+                }),
             )
             .child(graph_lines(row.clone(), lit, &t))
             .child(dot)
@@ -1357,7 +1374,12 @@ impl CommitList {
 /// What the pointer says about a row during a drag: None when it's elsewhere (no say), Some(None)
 /// over a row it can't land on, else where on the row, by quarters: the top and bottom ones are
 /// the gaps around it.
-fn drop_over(pointer: Point<Pixels>, bounds: Bounds<Pixels>, inside: bool, droppable: bool) -> Option<Option<Where>> {
+fn drop_over(
+    pointer: Point<Pixels>,
+    bounds: Bounds<Pixels>,
+    inside: bool,
+    droppable: bool,
+) -> Option<Option<Where>> {
     if !inside {
         return None;
     }
@@ -1376,11 +1398,18 @@ fn drop_over(pointer: Point<Pixels>, bounds: Bounds<Pixels>, inside: bool, dropp
 
 /// The drop target after a row heard a move; None when it stays as it is. A row the pointer left
 /// takes back only its own target.
-fn next_drop(current: &Option<DropAt>, sha: &str, over: Option<Option<Where>>) -> Option<Option<DropAt>> {
+fn next_drop(
+    current: &Option<DropAt>,
+    sha: &str,
+    over: Option<Option<Where>>,
+) -> Option<Option<DropAt>> {
     let next = match over {
         None if current.as_ref().is_some_and(|d| d.sha == sha) => None,
         None => return None,
-        Some(at) => at.map(|at| DropAt { sha: sha.to_string(), at }),
+        Some(at) => at.map(|at| DropAt {
+            sha: sha.to_string(),
+            at,
+        }),
     };
     (next != *current).then_some(next)
 }
@@ -1588,19 +1617,38 @@ mod tests {
         let mut at: Option<DropAt> = None;
         for (sha, top) in [("a", 0.), ("b", 40.), ("c", 80.)] {
             let bounds = row(top);
-            if let Some(next) = next_drop(&at, sha, drop_over(pointer, bounds, bounds.contains(&pointer), true)) {
+            if let Some(next) = next_drop(
+                &at,
+                sha,
+                drop_over(pointer, bounds, bounds.contains(&pointer), true),
+            ) {
                 at = next;
             }
         }
-        assert_eq!(at, Some(DropAt { sha: "b".into(), at: Where::Onto }));
+        assert_eq!(
+            at,
+            Some(DropAt {
+                sha: "b".into(),
+                at: Where::Onto
+            })
+        );
         // Its gaps: the top and bottom quarters.
-        assert_eq!(drop_over(point(px(10.), px(42.)), row(40.), true, true), Some(Some(Where::Above)));
-        assert_eq!(drop_over(point(px(10.), px(78.)), row(40.), true, true), Some(Some(Where::Below)));
+        assert_eq!(
+            drop_over(point(px(10.), px(42.)), row(40.), true, true),
+            Some(Some(Where::Above))
+        );
+        assert_eq!(
+            drop_over(point(px(10.), px(78.)), row(40.), true, true),
+            Some(Some(Where::Below))
+        );
     }
 
     #[test]
     fn leaving_a_row_or_crossing_one_that_cant_take_it_drops_the_target() {
-        let b = Some(DropAt { sha: "b".into(), at: Where::Onto });
+        let b = Some(DropAt {
+            sha: "b".into(),
+            at: Where::Onto,
+        });
         // Off b: b lets go; other rows the pointer isn't on change nothing.
         assert_eq!(next_drop(&b, "c", None), None);
         assert_eq!(next_drop(&b, "b", None), Some(None));
