@@ -8,6 +8,7 @@ mod layout;
 #[cfg(test)]
 mod leaks;
 mod menus;
+mod native_updater;
 mod opened;
 mod overlay;
 mod palette;
@@ -85,7 +86,9 @@ pub fn init(cx: &mut App) {
     help::install(cx);
     dialogs::install(cx);
     quit::install(cx);
+    native_updater::install(cx);
     menus::install(cx);
+    palette::import_legacy();
     // Every store has taken its keys in its init.
     gitviber_ui::legacy::finish();
 }

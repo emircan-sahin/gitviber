@@ -28,6 +28,7 @@ gitviber-history = { path = "../history" }
 gitviber-refs = { path = "../refs" }
 gitviber-github = { path = "../github" }
 gitviber-review = { path = "../review" }
+gitviber-updater = { path = "../updater" }
 # Already in the tree through gpui-kit and the ui crate.
 serde.workspace = true
 serde_json.workspace = true
