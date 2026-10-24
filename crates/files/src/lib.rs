@@ -9,6 +9,7 @@ extern crate gpui_kit as gpui;
 
 mod backend;
 pub mod code;
+mod code_map;
 mod compare;
 pub mod explorer;
 pub mod file_view;

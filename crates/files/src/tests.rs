@@ -558,3 +558,117 @@ fn search_panel_keys_move_through_results_and_back(cx: &mut TestAppContext) {
     assert!(focused);
     _ = std::fs::remove_dir_all(&repo);
 }
+
+/// The scrollbar's map shows the whole file's bars and find matches on the first frame, with
+/// nothing scrolled, and again after soft wrap, an edit and a query: each time the same as every
+/// bar and match placed on its own from the display map.
+#[gpui_kit::test]
+fn the_code_map_marks_the_whole_file_without_scrolling(cx: &mut TestAppContext) {
+    use crate::code_map::tests::naive;
+    use crate::code_map::{EditorRows, Mark, MarkKind, track};
+
+    setup(cx);
+    let text: String = (0..3000)
+        .map(|i| format!("let v{i} = \"{}\";\n", "x".repeat(i % 7 * 90)))
+        .collect();
+    let mut bars = vec![Bar {
+        line: 1,
+        kind: BarKind::Added,
+    }];
+    bars.extend((1500..=1510).map(|line| Bar {
+        line,
+        kind: BarKind::Modified,
+    }));
+    bars.push(Bar {
+        line: 2999,
+        kind: BarKind::Deleted,
+    });
+    let (host, cx) = cx.add_window_view(|_, _| Host(None));
+    let view = cx.update(|window, cx| {
+        let source = CodeSource {
+            path: "src/lib.rs".into(),
+            root: None,
+        };
+        let view = cx.new(|cx| {
+            CodeView::new(
+                gpui_kit::WeakEntity::<Workspace>::new_invalid(),
+                source,
+                text,
+                None,
+                bars.clone(),
+                false,
+                window,
+                cx,
+            )
+        });
+        host.update(cx, |h, cx| {
+            h.0 = Some(view.clone().into());
+            cx.notify();
+        });
+        view
+    });
+    // One frame, then the map against the bars and matches placed one by one.
+    let check = |cx: &mut gpui_kit::VisualTestContext| -> (Vec<Mark>, u32, bool) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            let v = view.read(cx);
+            let s = v.state().read(cx);
+            assert_eq!(s.scroll_offset().y, gpui_kit::px(0.));
+            let (_, scale) = track(s).expect("laid out");
+            let rows = EditorRows {
+                map: s.display_map(),
+                text: s.text(),
+            };
+            let session = s.search_session();
+            let found = if session.is_active() {
+                session.matcher.matched_ranges().to_vec()
+            } else {
+                vec![]
+            };
+            let marks = v.code_map();
+            assert_eq!(marks, naive(&bars, &found, &rows, scale));
+            let wrapped = s.display_map().wrap_row_count() > s.display_map().buffer_line_count();
+            (marks, scale.height, wrapped)
+        })
+    };
+    let low = |marks: &[Mark], kind, height: u32| {
+        marks
+            .iter()
+            .any(|m| m.kind == kind && m.start > height * 9 / 10)
+    };
+
+    let (marks, height, wrapped) = check(cx);
+    assert!(!wrapped);
+    assert!(
+        marks
+            .iter()
+            .any(|m| m.kind == MarkKind::Added && m.start == 0)
+    );
+    assert!(marks.iter().any(|m| m.kind == MarkKind::Modified));
+    assert!(low(&marks, MarkKind::Deleted, height));
+
+    cx.update(|_, cx| gitviber_ui::Settings::update(cx, |s| s.word_wrap = true));
+    let (marks, height, wrapped) = check(cx);
+    assert!(wrapped);
+    assert!(low(&marks, MarkKind::Deleted, height));
+
+    cx.update(|window, cx| {
+        let state = view.read(cx).state().clone();
+        state.update(cx, |s, cx| s.insert("// a\n".repeat(5), window, cx));
+    });
+    check(cx);
+
+    cx.update(|_, cx| {
+        let state = view.read(cx).state().clone();
+        state.update(cx, |s, cx| s.set_search_query("let v29", false, cx));
+    });
+    let (marks, height, _) = check(cx);
+    assert!(low(&marks, MarkKind::Found, height));
+    assert!(
+        marks
+            .iter()
+            .any(|m| m.kind == MarkKind::Found && m.end < height / 5)
+    );
+    cx.update(|_, cx| gitviber_ui::Settings::update(cx, |s| s.word_wrap = false));
+}

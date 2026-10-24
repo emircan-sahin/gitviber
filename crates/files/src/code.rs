@@ -1,9 +1,12 @@
 //! A file's text in gpui-component's code editor: tree-sitter colors, line numbers, find (⌘F),
 //! go to line (⌃G), Go to Definition / References through core, the change bars against HEAD in
-//! the gutter, and ⌘S writing it back with its own line endings. Read-only for what can't be
-//! written back as it was (outside the repo, lossy text, mixed line endings).
+//! the gutter and the whole file's on the scrollbar (with find's matches), and ⌘S writing it back
+//! with its own line endings. Read-only for what can't be written back as it was (outside the
+//! repo, lossy text, mixed line endings).
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -76,6 +79,7 @@ pub struct CodeView {
     /// HEAD's text, for the bars once the file is typed into; None: no bars (new, outside).
     head: Option<Arc<String>>,
     bars: Arc<Vec<Bar>>,
+    map: Rc<RefCell<crate::code_map::CodeMap>>,
     dirty: bool,
     /// Bumped by each edit, so a save that raced typing leaves the file dirty.
     edits: u64,
@@ -369,6 +373,7 @@ impl CodeView {
             lang,
             head: head.map(Arc::new),
             bars: Arc::new(bars),
+            map: Rc::default(),
             dirty: false,
             edits: 0,
             goto: None,
@@ -477,6 +482,11 @@ impl CodeView {
                 .filter_map(|l| b.commit(l).map(|c| c.sha.clone()))
                 .collect(),
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn code_map(&self) -> Vec<crate::code_map::Mark> {
+        self.map.borrow().marks().to_vec()
     }
 
     #[cfg(test)]
@@ -923,6 +933,7 @@ impl Render for CodeView {
         let t = cx.app_theme();
         let state = self.state.clone();
         let bars = self.bars.clone();
+        let map = self.map.clone();
         let goto = self.goto.as_ref().map(|(input, _)| input.clone());
         let places = self.places.as_ref().map(|p| {
             let rows = p.places.iter().enumerate().map(|(i, place)| {
@@ -1104,7 +1115,10 @@ impl Render for CodeView {
                                             |window| {
                                                 CodeView::paint_bars(
                                                     &state, &bars, bounds, window, cx,
-                                                )
+                                                );
+                                                crate::code_map::paint(
+                                                    &map, &state, &bars, window, cx,
+                                                );
                                             },
                                         );
                                     },
