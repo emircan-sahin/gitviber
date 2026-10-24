@@ -247,9 +247,32 @@ pub fn describe_stash(message: &str) -> (String, Option<String>) {
     (text, Some(branch.to_string()))
 }
 
+/// GitHub reads a co-author only as "Name <email>".
+pub fn is_co_author(s: &str) -> bool {
+    let Some((name, email)) = s.strip_suffix('>').and_then(|r| r.split_once(" <")) else {
+        return false;
+    };
+    let at = email
+        .char_indices()
+        .any(|(i, c)| c == '@' && i > 0 && i + 1 < email.len());
+    !name.is_empty()
+        && !name.contains(['<', '>', '\n'])
+        && at
+        && !email.contains(|c: char| c == '<' || c == '>' || c.is_whitespace())
+}
+
+/// "Ada <ada@x.dev>" → "Ada"; the whole text when there's no name before the email.
+pub fn author_name(author: &str) -> &str {
+    let name = author
+        .strip_suffix('>')
+        .and_then(|r| r.rfind('<').filter(|i| !r[i + 1..].contains('>')))
+        .map_or(author, |i| author[..i].trim_end());
+    if name.is_empty() { author } else { name }
+}
+
 /// A multi-line paste into Summary split as git reads a message: its first line in at the caret
 /// (`from`..`to`), the rest starting the description, which it replaces while that's empty or
-/// still `start_body`. None for one line.
+/// still `start_body`; then where the caret goes. None for one line.
 pub fn paste_message(
     summary: &str,
     body: &str,
@@ -257,7 +280,7 @@ pub fn paste_message(
     text: &str,
     from: usize,
     to: usize,
-) -> Option<(String, String)> {
+) -> Option<(String, String, usize)> {
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
     if !normalized.contains('\n') {
         return None;
@@ -279,9 +302,11 @@ pub fn paste_message(
         format!("{more}\n\n{body}")
     };
     let (from, to) = (from.min(summary.len()), to.min(summary.len()));
+    let (from, to) = (from.min(to), from.max(to));
     Some((
         format!("{}{first}{}", &summary[..from], &summary[to..]),
         new_body,
+        from + first.len(),
     ))
 }
 
@@ -459,16 +484,43 @@ mod tests {
     fn pasted_messages() {
         assert_eq!(
             paste_message("", "", "", "feat: x\n\nwhy", 0, 0),
-            Some(("feat: x".into(), "why".into()))
+            Some(("feat: x".into(), "why".into(), 7))
         );
         assert_eq!(
             paste_message("ab", "mine", "", "X\nmore", 1, 1),
-            Some(("aXb".into(), "more\n\nmine".into()))
+            Some(("aXb".into(), "more\n\nmine".into(), 2))
         );
         assert_eq!(
-            paste_message("ab", "tmpl", "tmpl", "X\nmore", 2, 2),
-            Some(("abX".into(), "more".into()))
+            paste_message("ab", "tmpl", "tmpl", "X\r\nmore", 2, 2),
+            Some(("abX".into(), "more".into(), 3))
+        );
+        // Over a selection, which may have been made right to left.
+        assert_eq!(
+            paste_message("abcd", "", "", "\n\nX\nmore", 3, 1),
+            Some(("aXd".into(), "more".into(), 2))
         );
         assert_eq!(paste_message("ab", "", "", "one line", 0, 0), None);
+    }
+
+    // As GitHub reads them.
+    #[test]
+    fn co_authors() {
+        for ok in ["Ada Lovelace <ada@x.dev>", "a <b@c>", "Ada  <a@b@c>"] {
+            assert!(is_co_author(ok), "{ok}");
+        }
+        for bad in [
+            "Ada",
+            "<ada@x.dev>",
+            "Ada <ada>",
+            "Ada <@x>",
+            "Ada <a@>",
+            "Ada <a b@x>",
+            "A <b <c@d>",
+        ] {
+            assert!(!is_co_author(bad), "{bad}");
+        }
+        assert_eq!(author_name("Ada Lovelace <ada@x.dev>"), "Ada Lovelace");
+        assert_eq!(author_name("<ada@x.dev>"), "<ada@x.dev>");
+        assert_eq!(author_name("Ada"), "Ada");
     }
 }

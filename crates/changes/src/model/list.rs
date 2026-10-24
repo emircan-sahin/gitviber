@@ -312,6 +312,41 @@ pub fn viewed_key(kind: &str, path: &str) -> String {
     format!("{kind}:{path}")
 }
 
+/// The status bar's "N changed · +a −d · r/N reviewed".
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Totals {
+    pub files: usize,
+    pub add: u32,
+    pub del: u32,
+    pub reviewed: usize,
+}
+
+/// The uncommitted files' totals, nested repositories left out; `marked(key, sig)`: a viewed mark
+/// at that signature. Staged files count as reviewed, as everywhere.
+pub fn totals(
+    conflicted: &[FileChange],
+    staged: &[FileChange],
+    unstaged: &[FileChange],
+    marked: impl Fn(&str, &str) -> bool,
+) -> Totals {
+    let mut t = Totals::default();
+    for (kind, list) in [
+        (Kind::Conflict, conflicted),
+        (Kind::Staged, staged),
+        (Kind::Unstaged, unstaged),
+    ] {
+        for f in list.iter().filter(|f| f.nested.is_none()) {
+            t.files += 1;
+            t.add += f.additions.unwrap_or(0);
+            t.del += f.deletions.unwrap_or(0);
+            if kind == Kind::Staged || marked(&viewed_key(kind.name(), &f.path), &file_sig(f)) {
+                t.reviewed += 1;
+            }
+        }
+    }
+    t
+}
+
 /// The row now in the place of `from`, which left a list whose keys were `before`: the next
 /// one still there, else the one before it. None when the list has nothing left.
 pub fn row_in_place(before: &[String], after: impl Fn(&str) -> bool, from: &str) -> Option<String> {
@@ -321,6 +356,20 @@ pub fn row_in_place(before: &[String], after: impl Fn(&str) -> bool, from: &str)
         .find(|k| after(k))
         .or_else(|| before[..at].iter().rev().find(|k| after(k)))
         .cloned()
+}
+
+/// Where a change tab's file is now: its own list first, else wherever it moved (staged,
+/// resolved into Staged). None once it's gone: committed, discarded.
+pub fn relocate(lists: &Lists, kind: Kind, path: &str) -> Option<(Kind, Arc<FileChange>)> {
+    [kind, Kind::Conflict, Kind::Staged, Kind::Unstaged]
+        .into_iter()
+        .find_map(|k| {
+            lists
+                .list(k)
+                .iter()
+                .find(|f| f.path == path)
+                .map(|f| (k, f.clone()))
+        })
 }
 
 /// `picked` with `item` added, or taken out when it's in.
@@ -516,5 +565,60 @@ mod tests {
             stageable(&lists.unstaged),
             (vec!["u".to_string(), "s".to_string()], 0)
         );
+    }
+
+    #[test]
+    fn totals_count_lines_and_reviewed_files() {
+        let with = |path: &str, add: u32, del: u32| FileChange {
+            additions: Some(add),
+            deletions: Some(del),
+            ..(*file(path)).clone()
+        };
+        let a = with("a.ts", 3, 1);
+        let seen = viewed_key("unstaged", "a.ts");
+        let sig = file_sig(&a);
+        let mut nested = with("sub", 9, 9);
+        nested.nested = Some(gitviber_core::git::Nested {
+            path: "/x/sub".into(),
+        });
+        let t = totals(
+            &[with("c.ts", 0, 2)],
+            &[with("s.ts", 1, 0)],
+            &[a, with("b.ts", 2, 2), nested],
+            |key, s| key == seen && s == sig,
+        );
+        assert_eq!(
+            t,
+            Totals {
+                files: 4,
+                add: 6,
+                del: 5,
+                reviewed: 2
+            }
+        );
+    }
+
+    #[test]
+    fn a_tab_follows_its_file_to_another_list() {
+        let lists = Lists {
+            conflicted: vec![],
+            staged: vec![file("a.ts"), file("both.ts")],
+            unstaged: vec![file("b.ts"), file("both.ts")],
+        };
+        let at = |kind, path| relocate(&lists, kind, path).map(|(k, f)| (k, f.path.clone()));
+        assert_eq!(
+            at(Kind::Unstaged, "a.ts"),
+            Some((Kind::Staged, "a.ts".into()))
+        );
+        // Still in its own list: it stays there.
+        assert_eq!(
+            at(Kind::Unstaged, "both.ts"),
+            Some((Kind::Unstaged, "both.ts".into()))
+        );
+        assert_eq!(
+            at(Kind::Conflict, "b.ts"),
+            Some((Kind::Unstaged, "b.ts".into()))
+        );
+        assert_eq!(at(Kind::Staged, "gone.ts"), None);
     }
 }

@@ -17,6 +17,11 @@ gitviber-diff = { path = "../diff" }
 gitviber-terminal = { path = "../terminal" }
 # Review notes: on a local diff's lines, and the worktree's list.
 gitviber-review = { path = "../review" }
+# A branch review's default base; the status bar's counts read its repo state.
+gitviber-refs = { path = "../refs" }
+# Reveal in Explorer View, and Show History of a row's file.
+gitviber-files = { path = "../files" }
+gitviber-history = { path = "../history" }
 gpui-kit.workspace = true
 serde.workspace = true
 serde_json.workspace = true

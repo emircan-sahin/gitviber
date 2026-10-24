@@ -1,29 +1,41 @@
 //! The message being written and the commit: summary and description, Amend (which swaps in
 //! HEAD's message and keeps the draft aside), co-authors, sign-off, skipping hooks once, and ✦
-//! asking the user's own agent CLI for a message. Nothing staged commits everything.
+//! asking the user's own agent CLI for a message. Nothing staged commits everything. The commit
+//! runs as the top bar's activity, so hooks that lint or test for minutes can be cancelled.
 
+use crate::co_authors::CoAuthorPicker;
 use crate::model::commit::{Facts, SUMMARY_LIMIT, plan};
-use crate::model::list::{left_out, stageable};
-use crate::model::text::{SUGGEST_PROMPT, command_line, parse_suggestion, program_of};
+use crate::model::list::{files, left_out, stageable};
+use crate::model::text::{
+    SUGGEST_PROMPT, author_name, command_line, parse_suggestion, paste_message, program_of,
+};
 use crate::model::{Kind, Lists};
 use crate::store::{self, Draft};
 use gitviber_core::api;
-use gitviber_core::git::{Commit, CommitOptions};
+use gitviber_core::git::{CANCELLED_STASHED, Commit, CommitOptions};
+use gitviber_core::network::CANCELLED;
 use gitviber_core::suggest::{Kind as SuggestKind, Scope};
+use gitviber_refs::errors::GitFix;
+use gitviber_refs::net::NetActivity;
+use gitviber_refs::toast::{Action as ToastAction, git_failed};
 use gitviber_ui::actions::git;
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{Toast, Workspace};
 use gitviber_ui::{ActiveAppTheme as _, Settings};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::input::{
+    Enter, Input, InputEvent, InputState, Paste, Textarea, TextareaState,
+};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::popover::Popover;
 use gpui_kit::component::{Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
+    Anchor, App, AppContext as _, Context, Entity, Focusable as _, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// While amending: HEAD's message in the fields, the user's own draft aside.
@@ -45,6 +57,8 @@ pub struct RepoFacts {
     /// Set while git has left a message for the next commit (a squash merge, `cherry-pick -n`).
     pub prepared: Option<String>,
     pub pushed: bool,
+    /// What the list's filter leaves, while it has text.
+    pub shown: Option<Lists>,
 }
 
 pub struct CommitBox {
@@ -59,7 +73,8 @@ pub struct CommitBox {
     suggesting: bool,
     /// The description a new draft starts with (commit.template, a prepared message).
     start_body: String,
-    recent_authors: Vec<String>,
+    /// Add co-author's picker, while it's open.
+    co_author: Option<Entity<CoAuthorPicker>>,
     _subscriptions: Vec<Subscription>,
     _task: Task<()>,
     _suggest: Task<()>,
@@ -80,14 +95,10 @@ impl CommitBox {
                 .rows(2)
         });
         let subscriptions = vec![
-            cx.subscribe_in(&summary, window, |this, _, e: &InputEvent, window, cx| {
-                this.edited(e, window, cx)
-            }),
-            cx.subscribe_in(&body, window, |this, _, e: &InputEvent, window, cx| {
-                this.edited(e, window, cx)
-            }),
+            cx.subscribe(&summary, |this, _, e: &InputEvent, cx| this.edited(e, cx)),
+            cx.subscribe(&body, |this, _, e: &InputEvent, cx| this.edited(e, cx)),
         ];
-        let mut view = CommitBox {
+        CommitBox {
             workspace,
             facts: RepoFacts::default(),
             summary,
@@ -98,28 +109,19 @@ impl CommitBox {
             busy: false,
             suggesting: false,
             start_body: String::new(),
-            recent_authors: vec![],
+            co_author: None,
             _subscriptions: subscriptions,
             _task: Task::ready(()),
             _suggest: Task::ready(()),
             _template: Task::ready(()),
             _live: Live::new("CommitBox"),
-        };
-        view.load_authors(cx);
-        view
+        }
     }
 
-    fn edited(&mut self, e: &InputEvent, window: &mut Window, cx: &mut Context<Self>) {
-        match e {
-            InputEvent::Change => {
-                self.keep_draft(cx);
-                cx.notify();
-            }
-            // ⌘↵ in either field: the fields' own binding takes it before the box's.
-            InputEvent::PressEnter {
-                secondary: true, ..
-            } => self.commit(None, window, cx),
-            _ => {}
+    fn edited(&mut self, e: &InputEvent, cx: &mut Context<Self>) {
+        if matches!(e, InputEvent::Change) {
+            self.keep_draft(cx);
+            cx.notify();
         }
     }
 
@@ -228,16 +230,67 @@ impl CommitBox {
         });
     }
 
-    fn load_authors(&mut self, cx: &mut Context<Self>) {
-        let core = crate::core(cx);
-        self._task = cx.spawn(async move |this, cx| {
-            let authors = cx
-                .background_spawn(async move { api::changes::recent_authors(&core) })
-                .await
-                .unwrap_or_default();
-            this.update(cx, |this, _| this.recent_authors = authors)
-                .ok();
+    /// A multi-line paste into Summary: its first line there, the rest into the description,
+    /// as git reads a message. One line pastes as usual.
+    fn paste_summary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else {
+            return;
+        };
+        let range = self.summary.read(cx).selected_range();
+        let Some((summary, body, caret)) = paste_message(
+            &self.summary_text(cx),
+            &self.body_text(cx),
+            &self.start_body,
+            &text,
+            range.start,
+            range.end,
+        ) else {
+            return;
+        };
+        cx.stop_propagation();
+        self.set_fields(&summary, &body, window, cx);
+        self.summary
+            .update(cx, |s, cx| s.set_selected_range(caret..caret, cx));
+        cx.notify();
+    }
+
+    fn open_co_author(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let weak = cx.weak_entity();
+        let on_add: crate::co_authors::OnAdd = std::rc::Rc::new(move |author, _, cx| {
+            weak.update(cx, |this, cx| {
+                this.co_authors.push(author);
+                this.co_author = None;
+                this.keep_draft(cx);
+                cx.notify();
+            })
+            .ok();
         });
+        let taken = self.co_authors.clone();
+        self.co_author = Some(cx.new(|cx| CoAuthorPicker::new(taken, on_add, window, cx)));
+        cx.notify();
+    }
+
+    /// The files the commit takes that the list's filter hides.
+    pub(crate) fn hidden(&self) -> usize {
+        let Some(shown) = &self.facts.shown else {
+            return 0;
+        };
+        let lists = &self.facts.lists;
+        let committed: Vec<String> = if !lists.staged.is_empty() || self.amend.is_some() {
+            lists.staged.iter().map(|f| f.path.clone()).collect()
+        } else {
+            stageable(&lists.unstaged).0
+        };
+        let visible: HashSet<&str> = shown
+            .staged
+            .iter()
+            .chain(&shown.unstaged)
+            .map(|f| f.path.as_str())
+            .collect();
+        committed
+            .iter()
+            .filter(|p| !visible.contains(p.as_str()))
+            .count()
     }
 
     fn toggle_amend(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -313,6 +366,17 @@ impl CommitBox {
 
     /// `then`: push or sync right after, as the top bar's commands do.
     pub fn commit(&mut self, then: Option<Then>, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_with(then, false, window, cx);
+    }
+
+    /// `skip_hooks`: this once, from a failed commit's toast.
+    fn commit_with(
+        &mut self,
+        then: Option<Then>,
+        skip_hooks: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let plan = plan(self.facts_for_plan(cx));
         if plan.blocked.is_some() {
             return;
@@ -333,7 +397,7 @@ impl CommitBox {
         let options = CommitOptions {
             amend: self.amend.is_some(),
             sign_off: self.sign_off(cx),
-            no_verify: self.no_verify,
+            no_verify: self.no_verify || skip_hooks,
             co_authors: self.co_authors.clone(),
         };
         let (paths, skipped) = stageable(self.facts.lists.list(Kind::Unstaged));
@@ -355,24 +419,24 @@ impl CommitBox {
             let large = match checked {
                 Ok(large) => large,
                 Err(e) => {
-                    this.update(cx, |this, cx| this.failed("Commit failed", &e, cx)).ok();
+                    this.update(cx, |this, cx| this.failed(&e, then, cx)).ok();
                     return;
                 }
             };
             if !large.is_empty() {
-                let shown: Vec<String> = large.iter().take(10).map(|f| format!("{} ({})", f.path, f.size)).collect();
-                let text = format!(
-                    "{} over GitHub's 100 MB limit:\n\n{}\n\nA push with them is refused, and taking them out later means rewriting history.",
-                    if large.len() == 1 { "This file is" } else { "These files are" },
-                    shown.join("\n")
-                );
+                let text = large_files_text(&large, auto);
                 let weak = this.clone();
                 let (paths, message, options) = (paths.clone(), message.clone(), options);
                 this.update_in(cx, move |_, window, cx| {
                     let go = std::rc::Rc::new(std::cell::RefCell::new(Some((message, options))));
                     let (go_ok, weak_ok, weak_cancel) = (go.clone(), weak.clone(), weak.clone());
                     window.open_alert_dialog(cx, move |alert, _, _| {
-                        let (go_ok, weak_ok, weak_cancel, paths) = (go_ok.clone(), weak_ok.clone(), weak_cancel.clone(), paths.clone());
+                        let (go_ok, weak_ok, weak_cancel, paths) = (
+                            go_ok.clone(),
+                            weak_ok.clone(),
+                            weak_cancel.clone(),
+                            paths.clone(),
+                        );
                         alert
                             .ok_variant(gpui_kit::component::button::ButtonVariant::Danger)
                             .title("Large files")
@@ -381,7 +445,13 @@ impl CommitBox {
                             .show_cancel(true)
                             .on_ok(move |_, window, cx| {
                                 if let Some((message, options)) = go_ok.borrow_mut().take() {
-                                    weak_ok.update(cx, |this, cx| this.run_commit(message, options, then, skipped, window, cx)).ok();
+                                    weak_ok
+                                        .update(cx, |this, cx| {
+                                            this.run_commit(
+                                                message, options, then, skipped, window, cx,
+                                            )
+                                        })
+                                        .ok();
                                 }
                                 true
                             })
@@ -393,7 +463,10 @@ impl CommitBox {
                                         // Nothing was staged before, so unstaging what this staged puts the index back.
                                         if auto {
                                             let core = crate::core(cx);
-                                            cx.background_spawn(async move { api::changes::unstage(&core, paths) }).detach();
+                                            cx.background_spawn(async move {
+                                                api::changes::unstage(&core, paths)
+                                            })
+                                            .detach();
                                         }
                                         this.toast(Toast::info("Commit cancelled"), cx);
                                         this.refresh_project(cx);
@@ -407,7 +480,10 @@ impl CommitBox {
                 .ok();
                 return;
             }
-            this.update_in(cx, |this, window, cx| this.run_commit(message, options, then, skipped, window, cx)).ok();
+            this.update_in(cx, |this, window, cx| {
+                this.run_commit(message, options, then, skipped, window, cx)
+            })
+            .ok();
         });
     }
 
@@ -423,12 +499,18 @@ impl CommitBox {
         let core = crate::core(cx);
         let amended = options.amend;
         let summary = self.summary_text(cx);
-        self._task = cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_spawn(async move {
-                    api::changes::commit(&core, message, options, "commit".into(), |_| {})
-                })
-                .await;
+        // Hooks can lint or test for minutes: the top bar shows the commit, with Cancel.
+        let net = NetActivity::global(cx);
+        let op = net.update(cx, |a, cx| a.start("Commit".into(), cx));
+        let (id, progress) = (op.id.clone(), op.progress());
+        let work = cx.background_spawn(async move {
+            api::changes::commit(&core, message, options, id, progress)
+        });
+        // Detached, holding the box weakly: dropping it wouldn't stop git, only leave the top bar
+        // showing a commit that ended.
+        cx.spawn_in(window, async move |this, cx| {
+            let result = work.await;
+            net.update(cx, |a, cx| a.finish(&op.id, cx));
             this.update_in(cx, |this, window, cx| {
                 this.busy = false;
                 match result {
@@ -456,21 +538,56 @@ impl CommitBox {
                             None => {}
                         }
                     }
-                    Err(e) => this.failed("Commit failed", &e, cx),
+                    Err(e) => this.failed(&e, then, cx),
                 }
                 this.refresh_project(cx);
                 cx.notify();
             })
             .ok();
-        });
+        })
+        .detach();
     }
 
-    fn failed(&mut self, title: &str, e: &str, cx: &mut Context<Self>) {
+    /// A cancel is told as one; a hook that stopped it offers committing without hooks.
+    fn failed(&mut self, e: &str, then: Option<Then>, cx: &mut Context<Self>) {
         self.busy = false;
-        self.toast(Toast::error(e.to_string()).title(title.to_string()), cx);
-        // git has no name or email for the commit: the app asks for them, even after a "Not now".
-        if no_identity(e) {
-            cx.dispatch_action(&gitviber_ui::keymap::requests::AskGitIdentity);
+        match e {
+            CANCELLED => self.toast(Toast::info("Commit cancelled"), cx),
+            CANCELLED_STASHED => self.toast(
+                Toast::info(
+                    "Hooks may have left changes in a stash: check Stashes before you commit again.",
+                )
+                .title("Commit cancelled"),
+                cx,
+            ),
+            _ => {
+                // The toast outlives this commit: its button commits what the box holds then.
+                let (weak, root) = (cx.weak_entity(), self.facts.root.clone());
+                let without = ToastAction::new("Commit without hooks", move |window, cx| {
+                    weak.update(cx, |this, cx| {
+                        if this.facts.root == root {
+                            this.commit_with(then, true, window, cx);
+                        } else {
+                            this.toast(
+                                Toast::info("It was for the repository open before this one.")
+                                    .title("Commit without hooks not run"),
+                                cx,
+                            );
+                        }
+                    })
+                    .ok();
+                });
+                let note = git_failed("Commit failed", e, &vec![(GitFix::Hooks, without)]);
+                let mut toast = Toast::error(note.detail.unwrap_or_default()).title(note.title);
+                if let Some(a) = note.action {
+                    toast = toast.action(a.label, move |window, cx| (a.run)(window, cx));
+                }
+                self.toast(toast, cx);
+                // git has no name or email for the commit: the app asks for them, even after a "Not now".
+                if no_identity(e) {
+                    cx.dispatch_action(&gitviber_ui::keymap::requests::AskGitIdentity);
+                }
+            }
         }
         self.refresh_project(cx);
         cx.notify();
@@ -580,6 +697,20 @@ impl CommitBox {
         self.set_fields(summary, body, window, cx);
     }
 
+    /// The cursor into the description at `line`, `column` (tests).
+    #[cfg(test)]
+    pub(crate) fn put_cursor_in_body(
+        &self,
+        line: u32,
+        column: u32,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let at = gpui_kit::component::input::Position::new(line, column);
+        self.body
+            .update(cx, |s, cx| s.set_cursor_position(at, window, cx));
+    }
+
     #[cfg(test)]
     pub(crate) fn message_focused(&self, window: &Window, cx: &App) -> bool {
         use gpui_kit::Focusable as _;
@@ -609,39 +740,74 @@ impl Render for CommitBox {
         let program = program_of(&Settings::get(cx).suggest_command);
         let pushed = self.amend.is_some() && self.facts.pushed;
         let can = plan.blocked.is_none();
-        let tip: SharedString = plan
-            .blocked
-            .map(str::to_string)
-            .unwrap_or(plan.target.clone())
-            .into();
+        let hidden = self.hidden();
+        let skipped = plan.stages_all && stageable(&self.facts.lists.unstaged).1 > 0;
+        let tip: SharedString = match plan.blocked {
+            Some(b) => b.to_string(),
+            None => {
+                let mut parts = vec![plan.target.clone()];
+                if skipped {
+                    let n = stageable(&self.facts.lists.unstaged).1;
+                    parts.push(left_out(n).to_lowercase());
+                }
+                if hidden > 0 {
+                    parts.push(format!("including {} the filter hides", files(hidden)));
+                }
+                parts.join(", ")
+            }
+        }
+        .into();
+        let label: SharedString = if self.busy {
+            "Committing…".into()
+        } else if hidden > 0 {
+            format!("{} · {hidden} hidden", plan.label).into()
+        } else {
+            plan.label.into()
+        };
         let weak = cx.entity().downgrade();
-        let authors: Vec<String> = self
-            .recent_authors
-            .iter()
-            .filter(|a| !self.co_authors.contains(a))
-            .take(12)
-            .cloned()
-            .collect();
-        let chip = |label: String, tip: &'static str, on_remove: OnRemove| {
+        // A commit option that's on, shown so it isn't forgotten; × turns it off.
+        let chip = |id: SharedString,
+                    label: String,
+                    tip: SharedString,
+                    warn: bool,
+                    on_remove: OnRemove| {
             h_flex()
+                .id(id.clone())
                 .gap_1()
                 .px_1p5()
                 .rounded_sm()
-                .bg(t.elevated)
+                .bg(if warn {
+                    t.modified.opacity(0.15)
+                } else {
+                    t.elevated
+                })
                 .text_size(px(11.))
-                .text_color(t.muted_foreground)
+                .text_color(if warn { t.modified } else { t.muted_foreground })
+                .tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                })
                 .child(div().child(label))
                 .child(
                     div()
-                        .id(SharedString::from(format!("chip-{tip}")))
+                        .id(SharedString::from(format!("{id}-remove")))
                         .cursor_pointer()
                         .child("×")
                         .on_click(move |_, window, cx| on_remove(window, cx)),
                 )
         };
         let options_weak = weak.clone();
+        let picker = self.co_author.clone();
+        let co_weak = weak.clone();
         v_flex()
             .key_context("CommitMessage")
+            // ⌘↵ in either field commits. Taken before the field sees it: the description's own
+            // Enter would put a newline at the cursor first, into the message.
+            .capture_action(cx.listener(|this, e: &Enter, window, cx| {
+                if e.secondary {
+                    cx.stop_propagation();
+                    this.commit(None, window, cx);
+                }
+            }))
             .flex_none()
             .gap_1p5()
             .p_2()
@@ -651,6 +817,9 @@ impl Render for CommitBox {
             .child(
                 div()
                     .relative()
+                    .capture_action(
+                        cx.listener(|this, _: &Paste, window, cx| this.paste_summary(window, cx)),
+                    )
                     .child(Input::new(&self.summary).small())
                     .when(length > 50, |el| {
                         el.child(
@@ -680,8 +849,11 @@ impl Render for CommitBox {
                             .gap_1()
                             .when(self.no_verify, |el| {
                                 el.child(chip(
+                                    "chip-hooks".into(),
                                     "Skip hooks".into(),
-                                    "hooks",
+                                    "The pre-commit and commit-msg hooks won't run for this commit"
+                                        .into(),
+                                    true,
                                     Box::new(move |_, cx| {
                                         w1.update(cx, |this, cx| {
                                             this.no_verify = false;
@@ -693,19 +865,23 @@ impl Render for CommitBox {
                             })
                             .when(sign_off, |el| {
                                 el.child(chip(
+                                    "chip-signoff".into(),
                                     "Sign off".into(),
-                                    "signoff",
+                                    "Adds Signed-off-by with your name, on every commit in this repository"
+                                        .into(),
+                                    false,
                                     Box::new(move |_, cx| {
                                         w2.update(cx, |this, cx| this.set_sign_off(false, cx)).ok();
                                     }),
                                 ))
                             })
-                            .children(self.co_authors.iter().map(|a| {
+                            .children(self.co_authors.iter().enumerate().map(|(i, a)| {
                                 let (w, a2) = (weak.clone(), a.clone());
-                                let name = a.split(" <").next().unwrap_or(a).to_string();
                                 chip(
-                                    name,
-                                    "coauthor",
+                                    format!("chip-co-author-{i}").into(),
+                                    author_name(a).to_string(),
+                                    format!("Co-authored-by: {a}").into(),
+                                    false,
                                     Box::new(move |_, cx| {
                                         let a = a2.clone();
                                         w.update(cx, |this, cx| {
@@ -757,6 +933,38 @@ impl Render for CommitBox {
                         )
                     })
                     .child(
+                        // Above the button and over the panel's width: Changes sits at the left.
+                        Popover::new("co-author-picker")
+                            .anchor(Anchor::BottomLeft)
+                            .open(picker.is_some())
+                            .when_some(picker.as_ref(), |p, picker| {
+                                p.track_focus(&picker.focus_handle(cx))
+                            })
+                            .on_open_change(move |open: &bool, window, cx| {
+                                co_weak
+                                    .update(cx, |this, cx| {
+                                        if !*open {
+                                            this.co_author = None;
+                                            cx.notify();
+                                        } else if this.co_author.is_none() {
+                                            this.open_co_author(window, cx);
+                                        }
+                                    })
+                                    .ok();
+                            })
+                            .trigger(
+                                Button::new("co-author")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Lucide::UserPlus)
+                                    .tooltip("Add co-author"),
+                            )
+                            .content(move |_, _, _| match &picker {
+                                Some(p) => p.clone().into_any_element(),
+                                None => div().into_any_element(),
+                            }),
+                    )
+                    .child(
                         Button::new("commit-options")
                             .ghost()
                             .xsmall()
@@ -771,36 +979,21 @@ impl Render for CommitBox {
                                     let p = crate::model::commit::plan(b.facts_for_plan(cx));
                                     (p.label, p.blocked.is_none(), b.sign_off(cx), b.no_verify)
                                 };
-                                let mut menu = menu;
-                                for author in &authors {
-                                    let (w, a) = (options_weak.clone(), author.clone());
-                                    menu =
-                                        menu.item(
-                                            PopupMenuItem::new(format!(
-                                                "Co-author: {}",
-                                                author.split(" <").next().unwrap_or(author)
-                                            ))
-                                            .on_click(move |_, _, cx| {
-                                                let a = a.clone();
-                                                w.update(cx, |this, cx| {
-                                                    this.co_authors.push(a);
-                                                    this.keep_draft(cx);
-                                                    cx.notify();
-                                                })
-                                                .ok();
-                                            }),
-                                        );
-                                }
-                                if !authors.is_empty() {
-                                    menu = menu.separator();
-                                }
-                                let (w1, w2, w3, w4) = (
+                                let (w0, w1, w2, w3, w4) = (
+                                    options_weak.clone(),
                                     options_weak.clone(),
                                     options_weak.clone(),
                                     options_weak.clone(),
                                     options_weak.clone(),
                                 );
-                                menu.item(
+                                menu.item(PopupMenuItem::new("Add co-author…").on_click(
+                                    move |_, window, cx| {
+                                        w0.update(cx, |this, cx| this.open_co_author(window, cx))
+                                            .ok();
+                                    },
+                                ))
+                                .separator()
+                                .item(
                                     PopupMenuItem::new(format!("{label} & Push"))
                                         .disabled(!can)
                                         .on_click(move |_, window, cx| {
@@ -849,11 +1042,7 @@ impl Render for CommitBox {
                             .primary()
                             .small()
                             .flex_1()
-                            .label(if self.busy {
-                                "Committing…"
-                            } else {
-                                plan.label
-                            })
+                            .label(label)
                             .disabled(!can)
                             .tooltip(tip)
                             .on_click(
@@ -884,6 +1073,34 @@ impl Render for CommitBox {
                 cx.listener(|this, _: &git::SuggestMessage, window, cx| this.suggest(window, cx)),
             )
     }
+}
+
+/// The ask before committing files GitHub won't take: the push fails, and an agent's dump or
+/// build output committed by mistake then has to be cut out of history. `auto`: Commit all
+/// staged them, and Cancel unstages them again.
+fn large_files_text(large: &[gitviber_core::git::LargeFile], auto: bool) -> String {
+    let mut shown: Vec<String> = large
+        .iter()
+        .take(10)
+        .map(|f| format!("{} ({})", f.path, f.size))
+        .collect();
+    if large.len() > 10 {
+        shown.push(format!("…and {} more", large.len() - 10));
+    }
+    let (it, these) = if large.len() == 1 {
+        ("it", "This file is")
+    } else {
+        ("them", "These files are")
+    };
+    let out = if auto {
+        format!("Cancel unstages what Commit all staged, so you can add {it} to .gitignore")
+    } else {
+        format!("Unstage {it} and add {it} to .gitignore")
+    };
+    format!(
+        "{these} over GitHub's 100 MB limit:\n\n{}\n\nA push with {it} is refused, and taking {it} out later means rewriting history. {out}, or track {it} with Git LFS (git lfs track), before you commit.",
+        shown.join("\n")
+    )
 }
 
 /// git refused the commit for want of an author: "Author identity unknown … Please tell me who

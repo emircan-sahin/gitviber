@@ -13,9 +13,11 @@ use crate::model::text::{describe_stash, has_conflict_markers, ignore_pattern};
 use crate::model::tree::folders_of;
 use crate::store;
 use gitviber_core::api;
-use gitviber_core::git::{Commit, FileChange, Side as GitSide};
+use gitviber_core::git::{Commit, ExternalTools, FileChange, Side as GitSide};
+use gitviber_core::network::CANCELLED;
 use gitviber_diff::{Compare, DiffSource};
-use gitviber_ui::actions::{changes as changes_actions, git, review};
+use gitviber_refs::net::NetActivity;
+use gitviber_ui::actions::{git, review};
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{ChangeKind, FileIcon, LineCounts, PathLabel, StatusLetter};
 use gitviber_ui::workspace::{
@@ -29,23 +31,32 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, KeyBinding, Modifiers, ParentElement as _, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+    AnyElement, AnyWindowHandle, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, KeyBinding, Modifiers, ParentElement as _,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
     UniformListScrollHandle, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
     uniform_list,
 };
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
+
+mod follow;
+mod keys;
+mod menu;
+
+use keys::{Move, RowKey};
 
 const ROW: f32 = 26.;
 const CONTEXT: &str = "ChangesList";
 
 gpui_kit::actions!(
     changes_list,
-    [Up, Down, ExtendUp, ExtendDown, Open, Keep, Escape]
+    [
+        Up, Down, ExtendUp, ExtendDown, Home, End, PageUp, PageDown, Left, Right, Open, Keep,
+        Escape, Menu
+    ]
 );
 
 pub fn bind_keys(cx: &mut App) {
@@ -55,9 +66,16 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", Down, c),
         KeyBinding::new("shift-up", ExtendUp, c),
         KeyBinding::new("shift-down", ExtendDown, c),
+        KeyBinding::new("home", Home, c),
+        KeyBinding::new("end", End, c),
+        KeyBinding::new("pageup", PageUp, c),
+        KeyBinding::new("pagedown", PageDown, c),
+        KeyBinding::new("left", Left, c),
+        KeyBinding::new("right", Right, c),
         KeyBinding::new("space", Open, c),
         KeyBinding::new("enter", Keep, c),
         KeyBinding::new("escape", Escape, c),
+        KeyBinding::new("shift-f10", Menu, c),
     ]);
 }
 
@@ -222,7 +240,9 @@ enum Row {
     Nested(Arc<FileChange>, usize),
     Review(Arc<FileChange>),
     Stash(usize),
+    /// A file of stash `stash`; `sha`: the commit it's in, the untracked files' own for those.
     StashFile {
+        stash: usize,
         sha: String,
         file: Arc<FileChange>,
         untracked: bool,
@@ -241,6 +261,8 @@ struct Op {
 
 struct StashInfo {
     sha: String,
+    index: usize,
+    author: String,
     text: String,
     branch: Option<String>,
     timestamp: i64,
@@ -260,6 +282,8 @@ struct Review {
 
 pub struct ChangesPanel {
     ctx: PanelContext,
+    /// For work that ends outside a frame and opens a tab.
+    window: AnyWindowHandle,
     focus: FocusHandle,
     loaded: bool,
     error: Option<String>,
@@ -281,6 +305,9 @@ pub struct ChangesPanel {
     picked: Option<(Vec<String>, String)>,
     /// The key of the open tab's file, when it's one of ours.
     open_key: Option<String>,
+    /// The row the keys last landed on (a folder or a stash takes it without opening anything);
+    /// None: the open tab's row.
+    cursor: Option<String>,
     rows: Vec<Row>,
     keys: Vec<String>,
     scroll: UniformListScrollHandle,
@@ -293,6 +320,18 @@ pub struct ChangesPanel {
     /// The open stash's files: its sha, then each file with the commit it's in and whether untracked.
     stash_files: Option<(String, Vec<StashFile>)>,
     busy: bool,
+    updating_submodules: bool,
+    /// git's diff and merge tools, read once a project opens.
+    tools: Option<ExternalTools>,
+    /// The files open in one of them now, until it's closed.
+    in_tool: HashMap<String, Task<()>>,
+    /// Rows a git action is taking out of their list, until the next read.
+    leaving: HashSet<String>,
+    /// The row left and the one opened in its place, to go back to if the action fails.
+    back: Option<(Selection, String)>,
+    /// Counts the projects opened and worktrees switched to: a read from before doesn't move
+    /// the tabs, which are the other worktree's.
+    epoch: u64,
     /// What the commit box is told at the next frame.
     facts: Option<RepoFacts>,
     reading: bool,
@@ -330,14 +369,19 @@ impl ChangesPanel {
         let mut subscriptions = vec![cx.subscribe(&filter, |this, _, e: &InputEvent, cx| {
             if matches!(e, InputEvent::Change) {
                 this.rebuild(cx);
+                // The commit button says how many of its files the filter hides.
+                this.commit_facts(cx);
             }
         })];
         if let Some(project) = &ctx.project {
             subscriptions.push(
                 cx.subscribe(project, |this, _, e: &ProjectEvent, cx| match e {
-                    ProjectEvent::RepoChanged(_)
-                    | ProjectEvent::Opened
-                    | ProjectEvent::Switched { .. } => this.read(cx),
+                    ProjectEvent::RepoChanged(_) => this.read(cx),
+                    ProjectEvent::Opened | ProjectEvent::Switched { .. } => {
+                        this.tools = None;
+                        this.epoch += 1;
+                        this.read(cx);
+                    }
                     ProjectEvent::Failed(e) => {
                         this.error = Some(e.clone());
                         cx.notify();
@@ -354,6 +398,7 @@ impl ChangesPanel {
         }
         let mut panel = ChangesPanel {
             ctx: ctx.clone(),
+            window: window.window_handle(),
             focus: cx.focus_handle(),
             loaded: false,
             error: None,
@@ -379,6 +424,7 @@ impl ChangesPanel {
             filter,
             picked: None,
             open_key: None,
+            cursor: None,
             rows: vec![],
             keys: vec![],
             scroll: UniformListScrollHandle::new(),
@@ -389,6 +435,12 @@ impl ChangesPanel {
             expanded_stash: None,
             stash_files: None,
             busy: false,
+            updating_submodules: false,
+            tools: None,
+            in_tool: HashMap::new(),
+            leaving: HashSet::new(),
+            back: None,
+            epoch: 0,
             facts: None,
             reading: false,
             again: false,
@@ -438,6 +490,9 @@ impl ChangesPanel {
         let core = crate::core(cx);
         let recent = self.view.recent;
         let head_before = self.head.as_ref().map(|h| h.sha.clone());
+        // A git call of its own, and the config rarely changes: once a project.
+        let want_tools = self.tools.is_none();
+        let epoch = self.epoch;
         self._read = cx.spawn(async move |this, cx| {
             let read = cx
                 .background_spawn(async move {
@@ -468,14 +523,19 @@ impl ChangesPanel {
                             .map(Arc::new),
                         _ => None,
                     };
-                    Ok::<_, String>((status, stashes, submodules, mtimes, head))
+                    let tools =
+                        want_tools.then(|| api::changes::external_tools(&core).unwrap_or_default());
+                    Ok::<_, String>((status, stashes, submodules, mtimes, head, tools))
                 })
                 .await;
             this.update(cx, |this, cx| {
                 this.reading = false;
                 match read {
-                    Ok((status, stashes, submodules, mtimes, head)) => {
+                    Ok((status, stashes, submodules, mtimes, head, tools)) => {
                         this.loaded = true;
+                        if tools.is_some() {
+                            this.tools = tools;
+                        }
                         this.error = None;
                         this.root = status.root.clone();
                         this.branch = status.branch.clone();
@@ -502,6 +562,8 @@ impl ChangesPanel {
                                 let (text, branch) = describe_stash(&s.message);
                                 StashInfo {
                                     sha: s.sha,
+                                    index: s.index,
+                                    author: s.author,
                                     text,
                                     branch,
                                     timestamp: s.timestamp,
@@ -514,6 +576,10 @@ impl ChangesPanel {
                             .collect();
                         this.rebuild(cx);
                         this.commit_facts(cx);
+                        this.leaving.clear();
+                        if epoch == this.epoch {
+                            this.follow_git(cx);
+                        }
                     }
                     Err(e) => {
                         this.error = Some(e);
@@ -551,6 +617,7 @@ impl ChangesPanel {
             lists: self.lists.clone(),
             prepared: self.prepared.clone(),
             pushed: self.pushed,
+            shown: self.filtered_lists(cx),
         };
         // The box's fields take a window to change; the next frame has one.
         self.facts = Some(facts);
@@ -568,6 +635,8 @@ impl ChangesPanel {
             .map(selection_key);
         if key != self.open_key {
             self.open_key = key;
+            // Opened from elsewhere: the keys go on from there.
+            self.cursor = None;
             // In the tree, the folders around the file opened (J/K, a tab) open too.
             if self.view.tree
                 && let Some((kind, path)) =
@@ -595,19 +664,22 @@ impl ChangesPanel {
     // MARK: What shows
 
     fn shown_lists(&self, cx: &App) -> Lists {
-        let needle = self.filter.read(cx).value().to_lowercase();
-        let lists = if needle.trim().is_empty() {
-            self.lists.clone()
-        } else {
-            let needle = needle.trim().to_string();
+        self.filtered_lists(cx)
+            .unwrap_or_else(|| self.lists.clone())
+            .ordered(self.view, self.mtimes.as_ref())
+    }
+
+    /// What the filter leaves, while it has text.
+    fn filtered_lists(&self, cx: &App) -> Option<Lists> {
+        let needle = self.filter.read(cx).value().trim().to_lowercase();
+        (!needle.is_empty()).then(|| {
             self.lists.filtered(|f| {
                 f.path.to_lowercase().contains(&needle)
                     || f.old_path
                         .as_deref()
                         .is_some_and(|o| o.to_lowercase().contains(&needle))
             })
-        };
-        lists.ordered(self.view, self.mtimes.as_ref())
+        })
     }
 
     fn filtering(&self, cx: &App) -> bool {
@@ -675,6 +747,7 @@ impl ChangesPanel {
                         match &self.stash_files {
                             Some((sha, list)) if *sha == s.sha => {
                                 rows.extend(list.iter().map(|(sha, f, untracked)| Row::StashFile {
+                                    stash: i,
                                     sha: sha.clone(),
                                     file: f.clone(),
                                     untracked: *untracked,
@@ -829,32 +902,36 @@ impl ChangesPanel {
         }
     }
 
-    /// ↑ / ↓ along the files shown, ⇧ to pick the range.
-    fn step(&mut self, dir: isize, extend: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// `open` once the current update is over, from work that has no window at hand.
+    fn open_later(&self, sel: Selection, preview: bool, cx: &mut Context<Self>) {
+        let (handle, weak) = (self.window, cx.weak_entity());
+        cx.defer(move |cx| {
+            handle
+                .update(cx, |_, window, cx| {
+                    weak.update(cx, |this, cx| this.open(sel, preview, window, cx))
+                        .ok();
+                })
+                .ok();
+        });
+    }
+
+    /// J / K: the next or previous file after the one the keys are on, else the open one.
+    fn step(&mut self, dir: isize, window: &mut Window, cx: &mut Context<Self>) {
         let keys = self.file_keys();
         if keys.is_empty() {
             return;
         }
-        let at = self
-            .open_key
-            .as_ref()
-            .and_then(|k| keys.iter().position(|x| x == k));
+        let at = [self.cursor_ix(cx), self.open_ix(cx)]
+            .into_iter()
+            .flatten()
+            .find_map(|ix| keys.iter().position(|x| *x == self.keys[ix]));
         let to = match at {
             Some(i) => (i as isize + dir).clamp(0, keys.len() as isize - 1) as usize,
             None => 0,
         };
         let key = keys[to].clone();
-        if extend {
-            let anchor = self
-                .picked
-                .as_ref()
-                .map(|p| p.1.clone())
-                .or(self.open_key.clone())
-                .unwrap_or(key.clone());
-            self.picked = Some((range_of(&keys, &anchor, &key), anchor));
-        } else {
-            self.picked = None;
-        }
+        self.picked = None;
+        self.cursor = Some(key.clone());
         if let Some(sel) = self.selection_at(&key) {
             self.open(sel, true, window, cx);
         }
@@ -873,6 +950,15 @@ impl ChangesPanel {
             }
             Row::Review(f) => self.review_selection(f),
             _ => None,
+        }
+    }
+
+    /// A stash's file opens as a commit's: `sha`, against its first parent.
+    fn stash_file_selection(&self, stash: usize, sha: &str, file: Arc<FileChange>) -> Selection {
+        Selection::Commit {
+            commit: Arc::new(stash_commit(&self.stashes[stash], sha)),
+            file,
+            url: None,
         }
     }
 
@@ -899,10 +985,12 @@ impl ChangesPanel {
         let core = crate::core(cx);
         self.busy = true;
         cx.notify();
-        self._action = cx.spawn(async move |this, cx| {
+        // Short, and holding the panel weakly: one more S before git is done mustn't cancel it.
+        cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move { work(&core) }).await;
             this.update(cx, |this, cx| {
                 this.busy = false;
+                this.settle_leave(result.is_err(), cx);
                 match result {
                     Ok(()) => {
                         if let Some(done) = done {
@@ -915,7 +1003,8 @@ impl ChangesPanel {
                 cx.notify();
             })
             .ok();
-        });
+        })
+        .detach();
     }
 
     fn stage(&mut self, files: Vec<Arc<FileChange>>, cx: &mut Context<Self>) {
@@ -924,6 +1013,7 @@ impl ChangesPanel {
             self.toast(Toast::info(NESTED_EXPLAINED).title(left_out(nested)), cx);
         }
         if !paths.is_empty() {
+            self.leave(Kind::Unstaged, &files, cx);
             self.run(
                 "Stage failed",
                 None,
@@ -936,6 +1026,7 @@ impl ChangesPanel {
     fn unstage_files(&mut self, files: Vec<Arc<FileChange>>, cx: &mut Context<Self>) {
         let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
         if !paths.is_empty() {
+            self.leave(Kind::Staged, &files, cx);
             self.run(
                 "Unstage failed",
                 None,
@@ -1025,6 +1116,7 @@ impl ChangesPanel {
         };
         dialogs::confirm(window, cx, title, question, ok, move |_, cx| {
             weak.update(cx, |this, cx| {
+                this.leave(Kind::Unstaged, &list, cx);
                 this.discard_now(restorable, untracked, done, cx)
             })
             .ok();
@@ -1470,13 +1562,39 @@ impl ChangesPanel {
         );
     }
 
+    /// Sets the submodules up and brings them to the commits recorded, as the top bar's activity:
+    /// a clone of one can take minutes, and Cancel stops it.
     fn update_submodules(&mut self, cx: &mut Context<Self>) {
-        self.run(
-            "Could not update submodules",
-            Some("Submodules updated".into()),
-            |core| api::sync::submodule_update(core, "submodules".into(), |_| {}),
-            cx,
-        );
+        if self.updating_submodules {
+            return;
+        }
+        self.updating_submodules = true;
+        let net = NetActivity::global(cx);
+        let op = net.update(cx, |a, cx| a.start("Update submodules".into(), cx));
+        let (id, progress) = (op.id.clone(), op.progress());
+        let core = crate::core(cx);
+        let work =
+            cx.background_spawn(async move { api::sync::submodule_update(&core, id, progress) });
+        // Detached, holding the panel weakly: dropping it wouldn't stop git, only leave the top
+        // bar showing an update that ended.
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            net.update(cx, |a, cx| a.finish(&op.id, cx));
+            this.update(cx, |this, cx| {
+                this.updating_submodules = false;
+                let toast = match result {
+                    Ok(()) => Toast::success("Submodules updated"),
+                    Err(e) if e == CANCELLED => Toast::info("Submodule update cancelled"),
+                    Err(e) => Toast::error(e).title("Could not update submodules"),
+                };
+                this.toast(toast, cx);
+                this.refresh_project(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
     }
 
     fn operation(&mut self, which: &'static str, window: &mut Window, cx: &mut Context<Self>) {
@@ -1552,7 +1670,7 @@ impl ChangesPanel {
     }
 
     /// Apply Patch from Clipboard: what it would do, then Apply. The working tree only.
-    fn apply_patch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn apply_patch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let patch = cx
             .read_from_clipboard()
             .and_then(|c| c.text())
@@ -1602,10 +1720,13 @@ impl ChangesPanel {
     /// Changes in place of the uncommitted list: what the branch changed since it left
     /// `reference`, committed or not.
     pub fn start_review(&mut self, reference: String, cx: &mut Context<Self>) {
-        let label = reference
+        let mut label = reference
             .trim_start_matches("refs/heads/")
             .trim_start_matches("refs/remotes/")
             .to_string();
+        if label.is_empty() {
+            label = "a base branch".into();
+        }
         self.review = Some(Review {
             reference: reference.clone(),
             label,
@@ -1631,6 +1752,13 @@ impl ChangesPanel {
     }
 
     fn load_review(&mut self, reference: String, cx: &mut Context<Self>) {
+        // No main branch here: the bar's picker names one.
+        if reference.is_empty() {
+            if let Some(r) = self.review.as_mut() {
+                r.error = Some("Pick a branch to review against.".into());
+            }
+            return;
+        }
         let core = crate::core(cx);
         self._review = cx.spawn(async move |this, cx| {
             let r = reference.clone();
@@ -1646,6 +1774,7 @@ impl ChangesPanel {
                         state.base = Some(r.base);
                         state.files = r.files.into_iter().map(Arc::new).collect();
                         state.error = None;
+                        this.follow_review(cx);
                     }
                     Err(e) => state.error = Some(e),
                 }
@@ -1681,7 +1810,56 @@ impl ChangesPanel {
         .detach();
     }
 
-    fn open_all(&mut self, of: ChangesOf, window: &mut Window, cx: &mut Context<Self>) {
+    /// Review Branch Against Base: the review in progress, else one against origin's default
+    /// branch (or a local one of its name). `open_all`: then every file of it in one tab.
+    pub(crate) fn review_branch(&mut self, open_all: bool, cx: &mut Context<Self>) {
+        let all = Selection::Changes {
+            of: ChangesOf::Branch,
+        };
+        if self.review.is_some() {
+            if open_all {
+                self.open_later(all, false, cx);
+            }
+            return;
+        }
+        let core = crate::core(cx);
+        cx.spawn(async move |this, cx| {
+            let branches = cx
+                .background_spawn(async move { api::branches::branches(&core) })
+                .await
+                .unwrap_or_default();
+            let branches: Vec<gitviber_refs::names::Branch> =
+                branches.into_iter().map(Into::into).collect();
+            let base = gitviber_refs::names::review_base(&branches).unwrap_or_default();
+            this.update(cx, |this, cx| {
+                if this.review.is_none() {
+                    this.start_review(base, cx);
+                }
+                if open_all {
+                    this.open_later(all, false, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Open All (Staged) Changes: a list's files in one tab; an empty list says so instead.
+    pub(crate) fn open_all(&mut self, of: ChangesOf, window: &mut Window, cx: &mut Context<Self>) {
+        let empty = match of {
+            ChangesOf::Unstaged => self.lists.unstaged.is_empty(),
+            ChangesOf::Staged => self.lists.staged.is_empty(),
+            _ => false,
+        };
+        if self.loaded && empty {
+            let what = if matches!(of, ChangesOf::Staged) {
+                "Nothing is staged"
+            } else {
+                "No changes"
+            };
+            self.toast(Toast::info(format!("{what} to open.")), cx);
+            return;
+        }
         self.open(Selection::Changes { of }, false, window, cx);
     }
 }
@@ -1711,6 +1889,27 @@ fn change_kind(status: &str) -> ChangeKind {
     ChangeKind::from_letter(status.chars().next().unwrap_or('M'))
 }
 
+/// A stash as the commit its files' diffs are read from: `sha`, against its first parent.
+fn stash_commit(s: &StashInfo, sha: &str) -> Commit {
+    Commit {
+        sha: sha.to_string(),
+        short_sha: format!("stash@{{{}}}", s.index),
+        author_name: s.author.clone(),
+        author_email: String::new(),
+        timestamp: s.timestamp,
+        committer_name: s.author.clone(),
+        committed_at: s.timestamp,
+        parents: vec![],
+        refs: vec![],
+        subject: s.text.clone(),
+        body: String::new(),
+        unpushed: false,
+        on_origin: false,
+        not_in_head: false,
+        file: None,
+    }
+}
+
 // MARK: Drawing
 
 /// A row's small button, shown while the row is hovered.
@@ -1735,17 +1934,23 @@ impl ChangesPanel {
     fn render_rows(
         &mut self,
         range: std::ops::Range<usize>,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let t = cx.app_theme().clone();
         let ws = self.workspace();
+        // Where the keys are, while they're the list's.
+        let cursor = self
+            .focus
+            .is_focused(window)
+            .then(|| self.cursor_ix(cx))
+            .flatten();
         range
             .filter_map(|ix| {
                 self.rows
                     .get(ix)
                     .cloned()
-                    .map(|row| self.render_row(ix, row, &t, ws.as_ref(), cx))
+                    .map(|row| self.render_row(ix, row, &t, ws.as_ref(), cursor == Some(ix), cx))
             })
             .collect()
     }
@@ -1756,8 +1961,10 @@ impl ChangesPanel {
         row: Row,
         t: &AppTheme,
         ws: Option<&Entity<Workspace>>,
+        at_cursor: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let row_key = self.keys[ix].clone();
         let base = || {
             h_flex()
                 .id(("changes-row", ix))
@@ -1802,6 +2009,7 @@ impl ChangesPanel {
                     .pl(px(6. + depth as f32 * 12.))
                     .cursor_pointer()
                     .hover(|s| s.bg(t.hover))
+                    .when(at_cursor, |el| el.border_1().border_color(t.ring))
                     .child(
                         Icon::new(if open {
                             Lucide::ChevronDown
@@ -1826,7 +2034,9 @@ impl ChangesPanel {
                             .group_hover("row", |s| s.visible())
                             .children(self.actions_for(kind, rows.clone(), true, cx)),
                     )
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        window.focus(&this.focus, cx);
+                        this.cursor = Some(row_key.clone());
                         if !this.closed.remove(&key) {
                             this.closed.insert(key.clone());
                         }
@@ -1850,52 +2060,23 @@ impl ChangesPanel {
                     name,
                     t,
                     ws,
+                    at_cursor,
                     cx,
                 )
             }
             Row::Review(file) => match self.review_selection(&file) {
-                Some(sel) => self.file_row(ix, sel, Kind::Unstaged, file, 0, None, t, ws, cx),
+                Some(sel) => {
+                    self.file_row(ix, sel, Kind::Unstaged, file, 0, None, t, ws, at_cursor, cx)
+                }
                 None => base().into_any_element(),
             },
-            Row::Stash(i) => self.stash_row(ix, i, t, cx),
+            Row::Stash(i) => self.stash_row(ix, i, t, at_cursor, cx),
             Row::StashFile {
+                stash,
                 sha,
                 file,
                 untracked,
-            } => {
-                let (s, p) = (sha.clone(), file.path.clone());
-                base()
-                    .pl_8()
-                    .child(FileIcon::file(&file.path))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(PathLabel(file.path.clone().into())),
-                    )
-                    .child(
-                        div()
-                            .group_hover("row", |s| s.invisible())
-                            .child(LineCounts::new(file.additions, file.deletions)),
-                    )
-                    .child(
-                        h_flex()
-                            .invisible()
-                            .group_hover("row", |s| s.visible())
-                            .when(file.status != "D", |el| {
-                                el.child(row_button(
-                                    format!("take-{ix}"),
-                                    Lucide::FileDown,
-                                    "Take this file (replaces the working copy)",
-                                    cx.listener(move |this, _, _, cx| {
-                                        this.take_from_stash(s.clone(), p.clone(), untracked, cx)
-                                    }),
-                                ))
-                            }),
-                    )
-                    .child(StatusLetter(change_kind(&file.status)))
-                    .into_any_element()
-            }
+            } => self.stash_file_row(ix, stash, sha, file, untracked, t, ws, at_cursor, cx),
             Row::Submodule(i) => {
                 let (path, sha, state) = self.submodules[i].clone();
                 let (note, color) = match state.as_str() {
@@ -2093,6 +2274,7 @@ impl ChangesPanel {
             }
             Section::Submodules => buttons.push(
                 small("update-submodules", "Update".into())
+                    .disabled(self.updating_submodules)
                     .on_click(cx.listener(|this, _, _, cx| this.update_submodules(cx))),
             ),
         }
@@ -2148,6 +2330,7 @@ impl ChangesPanel {
         let all_viewed = ws.is_some_and(|ws| sels.iter().all(|s| is_viewed(ws.read(cx), s)));
         let can_stash = self.operation.is_none();
         let root = self.root.clone();
+        let workspace = self.ctx.workspace.clone();
         move |menu, _, _| {
             let n = rows.len();
             let act = |f: fn(
@@ -2237,7 +2420,11 @@ impl ChangesPanel {
                 path.clone(),
                 path.clone(),
             );
+            let (w, shown) = (workspace.clone(), path.clone());
             menu.separator()
+                .item(PopupMenuItem::new("Reveal in Explorer View").on_click(
+                    move |_, window, cx| gitviber_files::reveal_in_explorer(&w, &shown, window, cx),
+                ))
                 .item(PopupMenuItem::new(REVEAL_LABEL).on_click(move |_, _, cx| {
                     let (core, path) = (crate::core(cx), reveal.clone());
                     cx.background_spawn(async move { api::files::reveal_path(&core, path) })
@@ -2359,9 +2546,11 @@ impl ChangesPanel {
         name: Option<String>,
         t: &AppTheme,
         ws: Option<&Entity<Workspace>>,
+        at_cursor: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let key = selection_key(&sel);
+        let row_key = self.keys[ix].clone();
         let active = self.open_key.as_deref() == Some(key.as_str());
         let picked = self.picked.as_ref().is_some_and(|p| p.0.contains(&key));
         let viewed = ws.is_some_and(|ws| is_viewed(ws.read(cx), &sel));
@@ -2388,10 +2577,6 @@ impl ChangesPanel {
                 .collect()
         };
         let check_sels = picked_sels.clone();
-        let weak = cx.entity().downgrade();
-        let menu_targets = targets.clone();
-        let root = self.root.clone();
-        let can_stash = self.operation.is_none();
         h_flex()
             .id(("changes-row", ix))
             .relative()
@@ -2406,6 +2591,9 @@ impl ChangesPanel {
             .when(active, |el| el.bg(t.primary.opacity(0.15)))
             .when(picked && !active, |el| el.bg(t.active))
             .when(!active && !picked, |el| el.hover(|s| s.bg(t.hover)))
+            .when(at_cursor && !active, |el| {
+                el.border_1().border_color(t.ring)
+            })
             .when(active, |el| {
                 el.child(
                     div()
@@ -2480,6 +2668,7 @@ impl ChangesPanel {
             })
             .child(StatusLetter(change_kind(&file.status)))
             .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                this.cursor = Some(row_key.clone());
                 this.click_file(
                     sel_click.clone(),
                     e.modifiers(),
@@ -2488,162 +2677,19 @@ impl ChangesPanel {
                     cx,
                 )
             }))
-            .context_menu(move |menu, _, cx| {
-                let w = weak.clone();
-                let rows = menu_targets.clone();
-                let n = rows.len();
-                let path = rows.first().map(|f| f.path.clone()).unwrap_or_default();
-                let mut menu = menu;
-                let (w1, s1) = (w.clone(), sel_menu.clone());
-                menu = menu.item(PopupMenuItem::new("Open").on_click(move |_, window, cx| {
-                    w1.update(cx, |this, cx| this.open(s1.clone(), false, window, cx))
-                        .ok();
-                }));
-                let (w2, p2) = (w.clone(), path.clone());
-                menu = menu.item(
-                    PopupMenuItem::new("Open File").on_click(move |_, window, cx| {
-                        w2.update(cx, |this, cx| {
-                            this.open(Selection::File { path: p2.clone() }, false, window, cx)
-                        })
-                        .ok();
-                    }),
-                );
-                menu = menu.separator();
-                if is_review {
-                    return menu;
-                }
-                match kind {
-                    Kind::Unstaged => {
-                        let (w3, r3) = (w.clone(), rows.clone());
-                        menu = menu.item(
-                            PopupMenuItem::new(if n > 1 {
-                                format!("Stage {}", files(n))
-                            } else {
-                                "Stage".into()
-                            })
-                            .on_click(move |_, _, cx| {
-                                w3.update(cx, |this, cx| this.stage(r3.clone(), cx)).ok();
-                            }),
-                        );
-                        let (w4, r4) = (w.clone(), rows.clone());
-                        menu = menu.item(
-                            PopupMenuItem::new(if n > 1 {
-                                format!("Discard {}…", files(n))
-                            } else {
-                                "Discard Changes…".into()
-                            })
-                            .on_click(move |_, window, cx| {
-                                w4.update(cx, |this, cx| this.discard(r4.clone(), window, cx))
-                                    .ok();
-                            }),
-                        );
-                        if can_stash {
-                            let (w5, p5) = (
-                                w.clone(),
-                                rows.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
-                            );
-                            menu = menu.item(
-                                PopupMenuItem::new(if n > 1 {
-                                    format!("Stash {}…", files(n))
-                                } else {
-                                    "Stash This File…".into()
-                                })
-                                .on_click(move |_, window, cx| {
-                                    w5.update(cx, |this, cx| {
-                                        this.stash_dialog(p5.clone(), window, cx)
-                                    })
-                                    .ok();
-                                }),
-                            );
-                        }
-                        if rows.iter().all(|f| f.status == "?") {
-                            let (w6, r6) = (w.clone(), rows.clone());
-                            menu = menu.item(PopupMenuItem::new("Add to .gitignore").on_click(
-                                move |_, _, cx| {
-                                    w6.update(cx, |this, cx| this.ignore(r6.clone(), cx)).ok();
-                                },
-                            ));
-                        }
-                    }
-                    Kind::Staged => {
-                        let (w3, r3) = (w.clone(), rows.clone());
-                        menu = menu.item(
-                            PopupMenuItem::new(if n > 1 {
-                                format!("Unstage {}", files(n))
-                            } else {
-                                "Unstage".into()
-                            })
-                            .on_click(move |_, _, cx| {
-                                w3.update(cx, |this, cx| this.unstage_files(r3.clone(), cx))
-                                    .ok();
-                            }),
-                        );
-                        if can_stash {
-                            let (w5, p5) = (
-                                w.clone(),
-                                rows.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
-                            );
-                            menu = menu.item(
-                                PopupMenuItem::new(if n > 1 {
-                                    format!("Stash {}…", files(n))
-                                } else {
-                                    "Stash This File…".into()
-                                })
-                                .on_click(move |_, window, cx| {
-                                    w5.update(cx, |this, cx| {
-                                        this.stash_dialog(p5.clone(), window, cx)
-                                    })
-                                    .ok();
-                                }),
-                            );
-                        }
-                    }
-                    Kind::Conflict => {
-                        let (w3, r3) = (w.clone(), rows.clone());
-                        menu = menu.item(PopupMenuItem::new("Mark Resolved").on_click(
-                            move |_, window, cx| {
-                                w3.update(cx, |this, cx| {
-                                    this.mark_resolved(r3.clone(), window, cx)
-                                })
-                                .ok();
-                            },
-                        ));
-                        let (w4, r4) = (w.clone(), rows.clone());
-                        menu = menu.item(PopupMenuItem::new("Take Current Version").on_click(
-                            move |_, _, cx| {
-                                w4.update(cx, |this, cx| {
-                                    this.resolve(r4.clone(), GitSide::Ours, cx)
-                                })
-                                .ok();
-                            },
-                        ));
-                        let (w5, r5) = (w.clone(), rows.clone());
-                        menu = menu.item(PopupMenuItem::new("Take Incoming Version").on_click(
-                            move |_, _, cx| {
-                                w5.update(cx, |this, cx| {
-                                    this.resolve(r5.clone(), GitSide::Theirs, cx)
-                                })
-                                .ok();
-                            },
-                        ));
-                    }
-                }
-                let abs = format!("{}/{}", root.trim_end_matches('/'), path);
-                menu.separator()
-                    .item(PopupMenuItem::new("Copy Path").on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(abs.clone()))
-                    }))
-                    .item(
-                        PopupMenuItem::new("Copy Relative Path").on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(path.clone()))
-                        }),
-                    )
-                    .when(cx.has_global::<gitviber_ui::Settings>(), |m| m)
-            })
+            .context_menu(self.file_menu(sel_menu, kind, file.clone(), targets.clone(), viewed, cx))
             .into_any_element()
     }
 
-    fn stash_row(&self, ix: usize, i: usize, t: &AppTheme, cx: &mut Context<Self>) -> AnyElement {
+    fn stash_row(
+        &self,
+        ix: usize,
+        i: usize,
+        t: &AppTheme,
+        at_cursor: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let row_key = self.keys[ix].clone();
         let s = &self.stashes[i];
         let expanded = self.expanded_stash.as_deref() == Some(s.sha.as_str());
         let (sha, text) = (s.sha.clone(), s.text.clone());
@@ -2669,6 +2715,7 @@ impl ChangesPanel {
             .cursor_pointer()
             .when(expanded, |el| el.bg(t.active))
             .hover(|s| s.bg(t.hover))
+            .when(at_cursor, |el| el.border_1().border_color(t.ring))
             .child(
                 Icon::new(if expanded {
                     Lucide::ChevronDown
@@ -2717,7 +2764,11 @@ impl ChangesPanel {
                         }),
                     )),
             )
-            .on_click(cx.listener(move |this, _, _, cx| this.toggle_stash(toggle.clone(), cx)))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                window.focus(&this.focus, cx);
+                this.cursor = Some(row_key.clone());
+                this.toggle_stash(toggle.clone(), cx)
+            }))
             .context_menu(move |menu, _, _| {
                 let (w1, w2, w3, w4, w5, w6) = (
                     weak.clone(),
@@ -2800,6 +2851,109 @@ impl ChangesPanel {
                         })
                         .ok();
                     }),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// A stash's file: its diff opens as a commit's, Take This File puts it in the working tree.
+    #[allow(clippy::too_many_arguments)]
+    fn stash_file_row(
+        &self,
+        ix: usize,
+        stash: usize,
+        sha: String,
+        file: Arc<FileChange>,
+        untracked: bool,
+        t: &AppTheme,
+        ws: Option<&Entity<Workspace>>,
+        at_cursor: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let row_key = self.keys[ix].clone();
+        let s = &self.stashes[stash];
+        let sel = self.stash_file_selection(stash, &sha, file.clone());
+        let key = selection_key(&sel);
+        let active = ws.is_some_and(|ws| {
+            ws.read(cx).tabs().active_key().map(|k| k.as_ref()) == Some(key.as_str())
+        });
+        // The stash names it: git takes an untracked file from the stash's third parent.
+        let (stash_sha, path) = (s.sha.clone(), file.path.clone());
+        let can_take = !self.busy && file.status != "D";
+        let take = Rc::new(
+            move |this: &mut ChangesPanel, cx: &mut Context<ChangesPanel>| {
+                this.take_from_stash(stash_sha.clone(), path.clone(), untracked, cx)
+            },
+        );
+        let (take_button, take_menu) = (take.clone(), take);
+        let weak = cx.entity().downgrade();
+        h_flex()
+            .id(("changes-row", ix))
+            .relative()
+            .h(px(ROW))
+            .w_full()
+            .gap_1p5()
+            .pl_8()
+            .pr_2()
+            .text_size(px(12.))
+            .group("row")
+            .cursor_pointer()
+            .when(active, |el| {
+                el.bg(t.primary.opacity(0.15)).child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w(px(2.))
+                        .h_full()
+                        .bg(t.primary),
+                )
+            })
+            .when(!active, |el| el.hover(|s| s.bg(t.hover)))
+            .when(at_cursor && !active, |el| {
+                el.border_1().border_color(t.ring)
+            })
+            .child(FileIcon::file(&file.path))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(PathLabel(file.path.clone().into())),
+            )
+            .child(
+                div()
+                    .group_hover("row", |s| s.invisible())
+                    .child(LineCounts::new(file.additions, file.deletions)),
+            )
+            .child(
+                h_flex()
+                    .invisible()
+                    .group_hover("row", |s| s.visible())
+                    .child(
+                        row_button(
+                            format!("take-{ix}"),
+                            Lucide::FileDown,
+                            "Take this file (replaces the working copy)",
+                            cx.listener(move |this, _, _, cx| take_button(this, cx)),
+                        )
+                        .disabled(!can_take),
+                    ),
+            )
+            .child(StatusLetter(change_kind(&file.status)))
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                window.focus(&this.focus, cx);
+                this.cursor = Some(row_key.clone());
+                this.picked = None;
+                this.open(sel.clone(), e.click_count() < 2, window, cx);
+            }))
+            .context_menu(move |menu, _, _| {
+                let (w, take) = (weak.clone(), take_menu.clone());
+                menu.item(
+                    PopupMenuItem::new("Take This File")
+                        .disabled(!can_take)
+                        .on_click(move |_, _, cx| {
+                            w.update(cx, |this, cx| take(this, cx)).ok();
+                        }),
                 )
             })
             .into_any_element()
@@ -3217,18 +3371,68 @@ impl Render for ChangesPanel {
             } else {
                 self.commit.clone().into_any_element()
             })
-            .on_action(cx.listener(|this, _: &Up, window, cx| this.step(-1, false, window, cx)))
-            .on_action(cx.listener(|this, _: &Down, window, cx| this.step(1, false, window, cx)))
-            .on_action(
-                cx.listener(|this, _: &ExtendUp, window, cx| this.step(-1, true, window, cx)),
-            )
-            .on_action(
-                cx.listener(|this, _: &ExtendDown, window, cx| this.step(1, true, window, cx)),
-            )
+            .on_action(cx.listener(|this, _: &Up, window, cx| {
+                this.nav_move(Move::By(-1), false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &Down, window, cx| {
+                this.nav_move(Move::By(1), false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ExtendUp, window, cx| {
+                this.nav_move(Move::By(-1), true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ExtendDown, window, cx| {
+                this.nav_move(Move::By(1), true, window, cx)
+            }))
+            // The rest only on the list itself: the filter and the commit box have their own.
+            .on_action(cx.listener(|this, _: &Home, window, cx| {
+                this.list_key(window, cx, |this, window, cx| {
+                    this.nav_move(Move::Home, false, window, cx);
+                    true
+                })
+            }))
+            .on_action(cx.listener(|this, _: &End, window, cx| {
+                this.list_key(window, cx, |this, window, cx| {
+                    this.nav_move(Move::End, false, window, cx);
+                    true
+                })
+            }))
+            .on_action(cx.listener(|this, _: &PageUp, window, cx| {
+                this.list_key(window, cx, |this, window, cx| {
+                    this.nav_move(Move::PageUp, false, window, cx);
+                    true
+                })
+            }))
+            .on_action(cx.listener(|this, _: &PageDown, window, cx| {
+                this.list_key(window, cx, |this, window, cx| {
+                    this.nav_move(Move::PageDown, false, window, cx);
+                    true
+                })
+            }))
+            .on_action(cx.listener(|this, _: &Left, window, cx| {
+                this.list_key(window, cx, |this, window, cx| {
+                    this.row_key(RowKey::Left, window, cx)
+                })
+            }))
+            .on_action(cx.listener(|this, _: &Right, window, cx| {
+                this.list_key(window, cx, |this, window, cx| {
+                    this.row_key(RowKey::Right, window, cx)
+                })
+            }))
+            .on_action(cx.listener(|this, _: &Open, window, cx| {
+                this.list_key(window, cx, |this, window, cx| {
+                    this.row_key(RowKey::Space, window, cx)
+                })
+            }))
             .on_action(cx.listener(|this, _: &Keep, window, cx| {
-                if let Some(sel) = this.open_key.clone().and_then(|k| this.selection_at(&k)) {
-                    this.open(sel, false, window, cx);
-                }
+                this.list_key(window, cx, |this, window, cx| {
+                    this.row_key(RowKey::Enter, window, cx)
+                })
+            }))
+            .on_action(cx.listener(|this, _: &Menu, window, cx| {
+                this.list_key(window, cx, |this, window, cx| {
+                    this.open_row_menu(window, cx);
+                    true
+                })
             }))
             .on_action(cx.listener(|this, _: &Escape, _, cx| {
                 if this.picked.take().is_some() {
@@ -3238,13 +3442,11 @@ impl Render for ChangesPanel {
                 }
             }))
             .on_action(
-                cx.listener(|this, _: &review::NextFile, window, cx| {
-                    this.step(1, false, window, cx)
-                }),
+                cx.listener(|this, _: &review::NextFile, window, cx| this.step(1, window, cx)),
             )
-            .on_action(cx.listener(|this, _: &review::PrevFile, window, cx| {
-                this.step(-1, false, window, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &review::PrevFile, window, cx| this.step(-1, window, cx)),
+            )
             .on_action(cx.listener(|this, _: &review::ToggleViewed, _, cx| {
                 let Some(key) = this.open_key.clone() else {
                     return;
@@ -3298,31 +3500,6 @@ impl Render for ChangesPanel {
                     cx.notify();
                 }
             }))
-            .on_action(
-                cx.listener(|this, _: &git::ApplyPatch, window, cx| this.apply_patch(window, cx)),
-            )
-            .on_action(cx.listener(|this, _: &review::OpenAll, window, cx| {
-                this.open_all(ChangesOf::Unstaged, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &review::OpenAllStaged, window, cx| {
-                this.open_all(ChangesOf::Staged, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &review::OpenAllBranch, window, cx| {
-                this.open_all(ChangesOf::Branch, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &review::Branch, _, cx| {
-                let reference = this
-                    .review
-                    .as_ref()
-                    .map(|r| r.reference.clone())
-                    .unwrap_or_else(|| "refs/remotes/origin/main".into());
-                this.start_review(reference, cx);
-            }))
-            .on_action(
-                cx.listener(|this, _: &changes_actions::FocusMessage, window, cx| {
-                    this.focus_message(window, cx)
-                }),
-            )
     }
 }
 
@@ -3337,6 +3514,7 @@ pub fn reveal_folders(closed: &mut HashSet<String>, kind: Kind, path: &str) {
 mod tests {
     use super::*;
     use crate::tabs::ChangeTab;
+    use gitviber_ui::actions::changes as changes_actions;
     use gitviber_ui::workspace::{Workspace, selection_key};
     use gpui_kit::{TestAppContext, VisualTestContext};
     use std::path::{Path, PathBuf};
@@ -3506,6 +3684,37 @@ mod tests {
         cx.run_until_parked();
         assert!(!dir.join("c.txt").exists());
         assert_eq!(p.read_with(cx, |p, _| p.lists.total()), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn cmd_enter_commits_the_message_as_written(cx: &mut TestAppContext) {
+        let dir = repo("cmd-enter");
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let commit = panel(&host, cx).read_with(cx, |p, _| p.commit.clone());
+        let write = |summary: &'static str, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                commit.update(cx, |b, cx| {
+                    b.write_message(summary, "First\nSecond", window, cx);
+                    b.put_cursor_in_body(0, 3, window, cx);
+                })
+            });
+            cx.simulate_keystrokes("cmd-enter");
+            cx.run_until_parked();
+        };
+        // No summary: nothing commits, and the description is as it was, no newline at the cursor.
+        write("", cx);
+        assert_eq!(
+            commit.read_with(cx, |b, cx| b.body_text(cx)),
+            "First\nSecond"
+        );
+        assert_eq!(git(&dir, &["rev-list", "--count", "HEAD"]).trim(), "1");
+        write("Add things", cx);
+        assert_eq!(
+            git(&dir, &["log", "-1", "--format=%B"]).trim_end(),
+            "Add things\n\nFirst\nSecond"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3932,6 +4141,364 @@ mod tests {
             assert!(ws.read(cx).is_open(gitviber_ui::workspace::Slot::Left));
             assert!(panel.read(cx).commit.read(cx).message_focused(window, cx));
         });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn open_all_and_review_branch_work_from_outside_the_panel(cx: &mut TestAppContext) {
+        let dir = repo("global");
+        setup(cx);
+        let (ws, _host, cx) = open(cx, &dir);
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| ws.open_project(dir.clone(), window, cx));
+            window.blur(cx);
+            window.activate_window();
+        });
+        cx.run_until_parked();
+        cx.dispatch_action(review::OpenAll);
+        cx.run_until_parked();
+        let active = ws.read_with(cx, |ws, _| {
+            ws.tabs().active().and_then(|t| t.item.selection().cloned())
+        });
+        assert!(matches!(
+            active,
+            Some(Selection::Changes {
+                of: ChangesOf::Unstaged
+            })
+        ));
+        // No origin here: the review is against the local main.
+        cx.dispatch_action(review::Branch);
+        cx.run_until_parked();
+        assert_eq!(
+            ws.read_with(cx, |ws, _| ws.review_base().map(str::to_string)),
+            Some("refs/heads/main".to_string())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn tabs_follow_their_files_through_git(cx: &mut TestAppContext) {
+        let dir = repo("follow");
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        let keys = |cx: &mut VisualTestContext| {
+            ws.read_with(cx, |ws, _| {
+                let keys = ws.tabs().tabs().iter().map(|t| t.key.to_string());
+                (
+                    keys.collect::<Vec<_>>(),
+                    ws.tabs().active_key().map(|k| k.to_string()),
+                )
+            })
+        };
+        let reread = |cx: &mut VisualTestContext| {
+            p.update(cx, |p, cx| p.read(cx));
+            cx.run_until_parked();
+        };
+        // a.txt open in the preview tab: staging it opens b.txt in its place, before git is done.
+        cx.update(|window, cx| {
+            p.update(cx, |p, cx| {
+                let a = p.lists.unstaged[0].clone();
+                p.open(selection_of(Kind::Unstaged, a.clone()), true, window, cx);
+                p.stage(vec![a], cx);
+            })
+        });
+        cx.run_until_parked();
+        reread(cx);
+        let b = "unstaged::b.txt".to_string();
+        assert_eq!(keys(cx), (vec![b.clone()], Some(b.clone())));
+        // c.txt kept open beside it, then staged outside the panel: its tab follows it into
+        // Staged, in its place, and the tab in front stays in front.
+        cx.update(|window, cx| {
+            p.update(cx, |p, cx| {
+                let c = p.lists.unstaged.iter().find(|f| f.path == "c.txt").cloned();
+                p.open(selection_of(Kind::Unstaged, c.unwrap()), false, window, cx);
+            });
+            ws.update(cx, |ws, cx| ws.activate_tab(&b, window, cx));
+        });
+        git(&dir, &["add", "c.txt"]);
+        reread(cx);
+        assert_eq!(
+            keys(cx),
+            (vec![b.clone(), "staged::c.txt".into()], Some(b.clone()))
+        );
+        // Committed: its tab closes.
+        git(&dir, &["commit", "-q", "-m", "a and c"]);
+        reread(cx);
+        assert_eq!(keys(cx), (vec![b.clone()], Some(b)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_stashed_untracked_file_is_taken_by_the_stash(cx: &mut TestAppContext) {
+        let dir = repo("stash-file");
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        git(&dir, &["stash", "push", "-q", "-u", "-m", "all"]);
+        assert!(!dir.join("c.txt").exists());
+        p.update(cx, |p, cx| p.read(cx));
+        cx.run_until_parked();
+        let sha = p.read_with(cx, |p, _| p.stashes[0].sha.clone());
+        p.update(cx, |p, cx| p.toggle_stash(sha.clone(), cx));
+        cx.run_until_parked();
+        // The row's file is in the untracked files' own commit; git takes it by the stash's.
+        let (commit, untracked) = p.read_with(cx, |p, _| {
+            let (_, files) = p.stash_files.as_ref().unwrap();
+            let (commit, _, untracked) = files.iter().find(|f| f.1.path == "c.txt").unwrap();
+            (commit.clone(), *untracked)
+        });
+        assert!(untracked && commit != sha);
+        p.update(cx, |p, cx| p.take_from_stash(sha, "c.txt".into(), true, cx));
+        cx.run_until_parked();
+        assert_eq!(std::fs::read_to_string(dir.join("c.txt")).unwrap(), "new\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_pasted_message_splits_into_summary_and_description(cx: &mut TestAppContext) {
+        let dir = repo("paste");
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let commit = panel(&host, cx).read_with(cx, |p, _| p.commit.clone());
+        cx.update(|window, cx| commit.update(cx, |b, cx| b.focus_message(window, cx)));
+        let paste = |text: &str, cx: &mut VisualTestContext| {
+            let item = gpui_kit::ClipboardItem::new_string(text.to_string());
+            cx.update(|_, cx| cx.write_to_clipboard(item));
+            cx.simulate_keystrokes("cmd-v");
+            cx.run_until_parked();
+            commit.read_with(cx, |b, cx| (b.summary_text(cx), b.body_text(cx)))
+        };
+        assert_eq!(
+            paste("Fix the parser\r\n\r\nIt dropped the last line.\n", cx),
+            ("Fix the parser".into(), "It dropped the last line.".into())
+        );
+        // One line goes in at the caret, as the field pastes it.
+        assert_eq!(paste("!", cx).0, "Fix the parser!");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn the_commit_button_counts_the_files_the_filter_hides(cx: &mut TestAppContext) {
+        let dir = repo("hidden");
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        let commit = p.read_with(cx, |p, _| p.commit.clone());
+        assert_eq!(commit.read_with(cx, |b, _| b.hidden()), 0);
+        cx.update(|window, cx| {
+            let filter = p.read(cx).filter.focus_handle(cx);
+            filter.focus(window, cx)
+        });
+        cx.simulate_input("a.txt");
+        cx.run_until_parked();
+        // Commit all takes a.txt, b.txt and c.txt; only a.txt is shown.
+        assert_eq!(commit.read_with(cx, |b, _| b.hidden()), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_co_author_is_found_or_typed(cx: &mut TestAppContext) {
+        let dir = repo("co-author");
+        git(
+            &dir,
+            &["-c", "user.name=Ada Lovelace", "-c", "user.email=ada@x.dev"]
+                .into_iter()
+                .chain(["commit", "-q", "--allow-empty", "-m", "by Ada"])
+                .collect::<Vec<_>>(),
+        );
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let added = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let pick = |taken: Vec<String>, typed: &str, cx: &mut VisualTestContext| {
+            let a = added.clone();
+            cx.update(|window, cx| {
+                let on_add: crate::co_authors::OnAdd =
+                    Rc::new(move |author, _, _| a.borrow_mut().push(author));
+                let picker =
+                    cx.new(|cx| crate::co_authors::CoAuthorPicker::new(taken, on_add, window, cx));
+                picker.focus_handle(cx).focus(window, cx);
+                host.update(cx, |h, cx| {
+                    h.center = Some(picker.into());
+                    cx.notify();
+                });
+            });
+            cx.run_until_parked();
+            cx.simulate_input(typed);
+            cx.simulate_keystrokes("enter");
+            cx.run_until_parked();
+        };
+        let ada = "Ada Lovelace <ada@x.dev>".to_string();
+        pick(vec![], "lovelace", cx);
+        assert_eq!(*added.borrow(), vec![ada.clone()]);
+        // Taken already, and no "Name <email>" typed: nothing to add.
+        pick(vec![ada.clone()], "ada", cx);
+        assert_eq!(added.borrow().len(), 1);
+        pick(vec![ada.clone()], "Bob Ross <bob@x.io>", cx);
+        assert_eq!(added.borrow()[1], "Bob Ross <bob@x.io>");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_failing_hook_offers_committing_without_hooks(cx: &mut TestAppContext) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = repo("hooks");
+        let hook = dir.join(".git/hooks/pre-commit");
+        // Silent: a hook's output is progress, sent from core's reader thread, which the test
+        // scheduler refuses.
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let commit = panel(&host, cx).read_with(cx, |p, _| p.commit.clone());
+        cx.update(|window, cx| {
+            commit.update(cx, |b, cx| {
+                b.write_message("Add things", "", window, cx);
+                b.commit(None, window, cx);
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(git(&dir, &["rev-list", "--count", "HEAD"]).trim(), "1");
+        // The top bar's activity ended with it.
+        assert!(!cx.update(|_, cx| NetActivity::global(cx).read(cx).is_running()));
+        let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+        let failed = toasts
+            .iter()
+            .find(|t| t.title.as_deref() == Some("Commit failed"))
+            .expect("a failure toast");
+        assert!(failed.message.contains("A commit hook stopped the commit"));
+        let action = failed.action.clone().expect("a way out");
+        assert_eq!(action.label, "Commit without hooks");
+        cx.update(|window, cx| (action.run)(window, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            git(&dir, &["log", "-1", "--format=%s"]).trim(),
+            "Add things"
+        );
+        assert_eq!(git(&dir, &["rev-list", "--count", "HEAD"]).trim(), "2");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn the_keys_reach_folders_and_stashes(cx: &mut TestAppContext) {
+        let dir = repo("keys");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/x.txt"), "x\n").unwrap();
+        git(&dir, &["stash", "push", "-q", "-m", "saved", "--", "b.txt"]);
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        p.update(cx, |p, cx| {
+            p.set_view(
+                ChangesView {
+                    tree: true,
+                    recent: false,
+                },
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let focus = p.read(cx).focus.clone();
+            focus.focus(window, cx)
+        });
+        let at = |cx: &mut VisualTestContext| {
+            p.read_with(cx, |p, cx| {
+                p.cursor_ix(cx)
+                    .map(|ix| p.keys[ix].clone())
+                    .unwrap_or_default()
+            })
+        };
+        let tab = |cx: &mut VisualTestContext| {
+            ws.read_with(cx, |ws, _| ws.tabs().active_key().map(|k| k.to_string()))
+        };
+        let key = |k: &str, cx: &mut VisualTestContext| {
+            cx.simulate_keystrokes(k);
+            cx.run_until_parked();
+            at(cx)
+        };
+        let folder = "folder:unstaged:src".to_string();
+        // ↓ from the top stops on the folder, which takes the cursor and opens nothing.
+        let mut now = key("home", cx);
+        let mut before = tab(cx);
+        for _ in 0..6 {
+            if now == folder {
+                break;
+            }
+            before = tab(cx);
+            now = key("down", cx);
+        }
+        assert_eq!(now, folder);
+        assert_eq!(tab(cx), before);
+        // ← closes it, → opens it again, then → goes on to its file, which opens.
+        key("left", cx);
+        assert!(p.read_with(cx, |p, _| p.closed.contains("unstaged:src")));
+        key("right", cx);
+        assert!(!p.read_with(cx, |p, _| p.closed.contains("unstaged:src")));
+        assert_eq!(key("right", cx), "unstaged::src/x.txt");
+        assert_eq!(tab(cx).as_deref(), Some("unstaged::src/x.txt"));
+        // ← from the file: back up to its folder, the tab stays.
+        assert_eq!(key("left", cx), folder);
+        assert_eq!(tab(cx).as_deref(), Some("unstaged::src/x.txt"));
+        // End: the stash. Space opens it, → steps into its files, ← back out, ↵ closes it.
+        assert_eq!(key("end", cx), "stash:0");
+        key("space", cx);
+        assert!(p.read_with(cx, |p, _| p.expanded_stash.is_some()));
+        assert!(key("right", cx).starts_with("stashfile:"));
+        assert_eq!(key("left", cx), "stash:0");
+        key("enter", cx);
+        assert!(p.read_with(cx, |p, _| p.expanded_stash.is_none()));
+        // PgUp from the bottom goes up a page, never past the first row.
+        assert_ne!(key("pageup", cx), "stash:0");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn branch_review_tabs_follow_the_review(cx: &mut TestAppContext) {
+        let dir = repo("review-follow");
+        git(&dir, &["checkout", "-q", "-b", "feature"]);
+        git(&dir, &["commit", "-q", "-am", "feature work"]);
+        git(&dir, &["branch", "later"]);
+        std::fs::write(dir.join("b.txt"), "dos\n").unwrap();
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        let review = |reference: &str, cx: &mut VisualTestContext| {
+            p.update(cx, |p, cx| p.start_review(reference.into(), cx));
+            cx.run_until_parked();
+            p.read_with(cx, |p, _| p.review.as_ref().unwrap().base.clone().unwrap())
+        };
+        let main = review("refs/heads/main", cx);
+        for path in ["a.txt", "b.txt"] {
+            let sel = p.read_with(cx, |p, _| {
+                let r = p.review.as_ref().unwrap();
+                p.review_selection(r.files.iter().find(|f| f.path == path).unwrap())
+                    .unwrap()
+            });
+            cx.update(|window, cx| p.update(cx, |p, cx| p.open(sel, false, window, cx)));
+        }
+        cx.run_until_parked();
+        let tabs = |cx: &mut VisualTestContext| {
+            ws.read_with(cx, |ws, _| {
+                ws.tabs()
+                    .tabs()
+                    .iter()
+                    .map(|t| t.key.to_string())
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(
+            tabs(cx),
+            vec![
+                format!("branch:{main}:a.txt"),
+                format!("branch:{main}:b.txt")
+            ]
+        );
+        // Against `later`, a.txt's change is in the base already: its tab closes, and b.txt's
+        // moves onto the new base.
+        let later = review("refs/heads/later", cx);
+        assert_ne!(later, main);
+        assert_eq!(tabs(cx), vec![format!("branch:{later}:b.txt")]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
