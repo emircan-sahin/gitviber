@@ -1,7 +1,8 @@
 //! An image cache a view owns, so its images go with it: textures are dropped from the windows
 //! when the cache is released. Still images on disk are decoded off the main thread and scaled
 //! down to `max_side`, so a 6000px screenshot shown at 800px doesn't keep 140 MB of pixels.
-//! SVG, animated GIF/WebP and remote images take gpui's own loader.
+//! SVG, animated GIF/WebP and remote images take gpui's own loader, unless the bytes come from
+//! the view's own reader (a document at a revision, [`crate::MarkdownView::read_images`]).
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -10,8 +11,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use gpui_kit::{
-    App, AppContext as _, Entity, EntityId, ImageCache, ImageCacheError, ImageCacheItem,
-    RenderImage, Resource, Task, WeakEntity, Window,
+    App, AppContext as _, Entity, EntityId, Image, ImageCache, ImageCacheError, ImageCacheItem,
+    ImageFormat, RenderImage, Resource, SvgRenderer, Task, WeakEntity, Window,
 };
 
 /// Past this many images the oldest go: a long page scrolled through holds a bounded set.
@@ -19,9 +20,13 @@ const MAX_IMAGES: usize = 64;
 
 type Loaded = Result<Arc<RenderImage>, ImageCacheError>;
 
+/// Reads an image's file in place of the disk; called off the main thread.
+pub(crate) type ReadBytes = Arc<dyn Fn(&Path) -> Result<Vec<u8>, String> + Send + Sync>;
+
 enum Entry {
     Gpui(ImageCacheItem),
-    Scaled {
+    /// Decoded by us: a still image scaled down, or any file the reader gives.
+    Ours {
         result: Option<Loaded>,
         waiting: Vec<EntityId>,
         _task: Task<()>,
@@ -32,7 +37,7 @@ impl Entry {
     fn loaded(&self) -> Option<Loaded> {
         match self {
             Entry::Gpui(item) => item.get(),
-            Entry::Scaled { result, .. } => result.clone(),
+            Entry::Ours { result, .. } => result.clone(),
         }
     }
 }
@@ -43,6 +48,7 @@ pub struct BoundedImageCache {
     entries: HashMap<u64, Entry>,
     /// Load order, oldest first, for evicting.
     order: Vec<u64>,
+    read: Option<ReadBytes>,
     _live: gitviber_ui::memory::Live,
 }
 
@@ -54,6 +60,7 @@ impl BoundedImageCache {
             max_side: max_side.max(64),
             entries: HashMap::new(),
             order: Vec::new(),
+            read: None,
             _live: gitviber_ui::memory::Live::new("BoundedImageCache"),
         });
         cx.observe_release(&cache, |cache, cx| {
@@ -82,6 +89,14 @@ impl BoundedImageCache {
         self.entries.is_empty()
     }
 
+    #[cfg(test)]
+    pub(crate) fn loaded(&self) -> usize {
+        self.entries
+            .values()
+            .filter(|e| matches!(e.loaded(), Some(Ok(_))))
+            .count()
+    }
+
     /// Drops every image, as when the file shown changed.
     pub fn clear(&mut self, window: &mut Window, cx: &mut App) {
         self.order.clear();
@@ -90,6 +105,13 @@ impl BoundedImageCache {
                 cx.drop_image(image, Some(window));
             }
         }
+    }
+
+    /// Image files come from `read` instead of the disk (None: the disk again); what was
+    /// loaded before is dropped.
+    pub(crate) fn set_read(&mut self, read: Option<ReadBytes>, window: &mut Window, cx: &mut App) {
+        self.read = read;
+        self.clear(window, cx);
     }
 
     fn evict(&mut self, window: &mut Window, cx: &mut App) {
@@ -102,13 +124,16 @@ impl BoundedImageCache {
             }
         }
     }
+}
 
-    fn scaled(path: &Path) -> bool {
-        let ext = path
-            .extension()
-            .map(|e| e.to_string_lossy().to_ascii_lowercase())
-            .unwrap_or_default();
-        !matches!(ext.as_str(), "svg" | "gif" | "webp")
+/// The kinds gpui decodes itself (vector or animated); still images are scaled down by us.
+fn gpui_format(path: &Path) -> Option<ImageFormat> {
+    let ext = path.extension()?.to_string_lossy().to_ascii_lowercase();
+    match ext.as_str() {
+        "svg" => Some(ImageFormat::Svg),
+        "gif" => Some(ImageFormat::Gif),
+        "webp" => Some(ImageFormat::Webp),
+        _ => None,
     }
 }
 
@@ -116,6 +141,15 @@ fn key(resource: &Resource) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     resource.hash(&mut h);
     h.finish()
+}
+
+/// Decodes the file at `path`: a still image scaled to fit `max_side`, the rest as gpui does.
+fn decode(path: &Path, bytes: Vec<u8>, max_side: u32, svg: SvgRenderer) -> Loaded {
+    match gpui_format(path) {
+        None => decode_scaled(&bytes, max_side),
+        Some(ImageFormat::Svg) => Ok(svg.render_single_frame(&bytes, 1.0)?),
+        Some(format) => Ok(Image::from_bytes(format, bytes).to_image_data(svg)?),
+    }
 }
 
 /// Decodes `bytes` and scales it to fit `max_side`, as BGRA, which gpui draws.
@@ -147,11 +181,11 @@ impl ImageCache for BoundedImageCache {
         if let Some(entry) = self.entries.get_mut(&key) {
             return match entry {
                 Entry::Gpui(item) => item.use_image(window),
-                Entry::Scaled {
+                Entry::Ours {
                     result: Some(result),
                     ..
                 } => Some(result.clone()),
-                Entry::Scaled {
+                Entry::Ours {
                     result: None,
                     waiting,
                     ..
@@ -165,21 +199,26 @@ impl ImageCache for BoundedImageCache {
             };
         }
         let entry = match resource {
-            Resource::Path(path) if Self::scaled(path) => {
+            Resource::Path(path) if self.read.is_some() || gpui_format(path).is_none() => {
                 let path = path.clone();
                 let max_side = self.max_side;
+                let read = self.read.clone();
+                let svg = cx.svg_renderer();
                 let waiting = vec![window.current_view()];
                 let me = self.me.clone();
                 let task = cx.spawn(async move |cx| {
                     let decoded = cx
                         .background_spawn(async move {
-                            let bytes = std::fs::read(&path)?;
-                            decode_scaled(&bytes, max_side)
+                            let bytes = match read {
+                                Some(read) => read(&path).map_err(std::io::Error::other)?,
+                                None => std::fs::read(&path)?,
+                            };
+                            decode(&path, bytes, max_side, svg)
                         })
                         .await;
                     cx.update(|cx| {
                         let views = me.update(cx, |cache, _| match cache.entries.get_mut(&key) {
-                            Some(Entry::Scaled {
+                            Some(Entry::Ours {
                                 result, waiting, ..
                             }) => {
                                 *result = Some(decoded);
@@ -192,7 +231,7 @@ impl ImageCache for BoundedImageCache {
                         }
                     });
                 });
-                Entry::Scaled {
+                Entry::Ours {
                     result: None,
                     waiting,
                     _task: task,
@@ -202,7 +241,7 @@ impl ImageCache for BoundedImageCache {
         };
         let loaded = match &entry {
             Entry::Gpui(item) => item.use_image(window),
-            Entry::Scaled { .. } => None,
+            Entry::Ours { .. } => None,
         };
         self.entries.insert(key, entry);
         self.order.push(key);

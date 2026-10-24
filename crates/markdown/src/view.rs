@@ -67,6 +67,10 @@ impl MarkdownBase {
     }
 }
 
+/// An image's bytes for its repo-relative path, for a document that isn't the working tree's
+/// (a file at a revision), so its pictures come from the same version. Called off the main thread.
+pub type ReadImage = Arc<dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync>;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MarkdownEvent {
     /// A link to a file in the repo was followed: open it (at `line`).
@@ -173,6 +177,31 @@ impl MarkdownView {
 
     pub fn base(&self) -> &MarkdownBase {
         &self.base
+    }
+
+    /// Relative images come from `read` instead of from disk (None: from disk again); the
+    /// base's root and file still say which path an image is. Images already shown are dropped.
+    pub fn read_images(
+        &mut self,
+        read: Option<ReadImage>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // The cache sees paths under the root (MarkdownBase::image); the host wants them relative.
+        let read = read.zip(self.base.root.clone()).map(|(read, root)| {
+            Arc::new(move |path: &std::path::Path| {
+                let path = path.strip_prefix(&root).map_err(|e| e.to_string())?;
+                read(&path.to_string_lossy())
+            }) as crate::images::ReadBytes
+        });
+        self.images
+            .update(cx, |images, cx| images.set_read(read, window, cx));
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn images(&self) -> &Entity<BoundedImageCache> {
+        &self.images
     }
 
     /// Follows a link the way the old viewer did: anchors scroll, web links open in the browser,

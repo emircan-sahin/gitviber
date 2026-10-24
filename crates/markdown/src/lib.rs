@@ -1,6 +1,7 @@
 //! GitViber's markdown: GitHub-flavored markdown rendered natively, for files, pull requests
 //! and notes. [`MarkdownView`] shows a document; [`MarkdownBase`] says where it is, so relative
-//! links and images resolve against its folder. Links to files come back as
+//! links and images resolve against its folder ([`MarkdownView::read_images`]: images from a
+//! revision instead of the disk). Links to files come back as
 //! [`MarkdownEvent::OpenFile`]; anchors, web links and the rest are handled here.
 //!
 //! Mermaid diagrams and `$…$` / `$$…$$` math are drawn natively (diagrams.rs); a diagram or a
@@ -24,7 +25,7 @@ pub use blocks::{Callout, Callouts, DiagramKind};
 pub use find::{FindBar, FindBarEvent, FindQuery};
 pub use images::BoundedImageCache;
 pub use links::Link;
-pub use view::{FindChanged, MarkdownBase, MarkdownEvent, MarkdownView, is_markdown};
+pub use view::{FindChanged, MarkdownBase, MarkdownEvent, MarkdownView, ReadImage, is_markdown};
 
 #[cfg(test)]
 mod leak_tests;

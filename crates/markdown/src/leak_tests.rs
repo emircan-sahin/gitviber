@@ -69,6 +69,71 @@ fn closing_a_document_gives_its_entities_back(cx: &mut TestAppContext) {
     cx.update(|_, cx| cx.assert_no_new_leaks(&snapshot));
 }
 
+/// A host's reader gives a document's images (a file at a revision): nothing is read from disk,
+/// paths come relative to the repo, and the view still goes with its tab.
+#[gpui_kit::test]
+fn a_reader_gives_the_images_instead_of_the_disk(cx: &mut TestAppContext) {
+    let dir = std::env::temp_dir().join(format!("gitviber-markdown-test-{}", std::process::id()));
+    // SAFETY: the tests that read the config dir all point it at a temporary folder.
+    unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+    cx.update(gitviber_ui::init);
+    let (host, cx) = cx.add_window_view(|_, _| Host(None));
+    let snapshot = cx.update(|_, cx| cx.leak_detector_snapshot());
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let read: crate::ReadImage = {
+        let asked = asked.clone();
+        std::sync::Arc::new(move |path: &str| {
+            asked.lock().unwrap().push(path.to_string());
+            if path.ends_with(".svg") {
+                return Ok(
+                    br#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>"#.to_vec(),
+                );
+            }
+            let mut png = Vec::new();
+            image::DynamicImage::new_rgba8(4, 4)
+                .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .map_err(|e| e.to_string())?;
+            Ok(png)
+        })
+    };
+    cx.update(|window, cx| {
+        // A root with nothing on disk: only the reader can give these.
+        let base = MarkdownBase::file("/nonexistent-gitviber-root", "docs/notes.md");
+        let doc = "![a](img/a.png)\n\n![b](../b.svg)\n";
+        let view = cx.new(|cx| {
+            let mut view = MarkdownView::new(doc, base, window, cx);
+            view.read_images(Some(read), window, cx);
+            view
+        });
+        host.update(cx, |h, cx| {
+            h.0 = Some(view.into());
+            cx.notify();
+        });
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let view = host
+        .read_with(cx, |h, _| h.0.clone())
+        .and_then(|v| v.downcast::<MarkdownView>().ok())
+        .unwrap();
+    let loaded = view.read_with(cx, |v, cx| v.images().read(cx).loaded());
+    let mut paths = asked.lock().unwrap().clone();
+    paths.sort();
+    assert_eq!(paths, ["b.svg", "docs/img/a.png"]);
+    assert_eq!(loaded, 2);
+    drop(view);
+    cx.update(|window, cx| {
+        host.update(cx, |h, cx| {
+            h.0 = None;
+            cx.notify();
+        });
+        window.draw(cx).clear(cx);
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| cx.assert_no_new_leaks(&snapshot));
+}
+
 /// Bytes allocated and not freed, for the test below: the shaped text a closed document leaves in
 /// gpui-base's frame-to-frame table is invisible to the leak detector (no entity holds it).
 struct Counting;
