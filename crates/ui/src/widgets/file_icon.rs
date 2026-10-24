@@ -154,7 +154,12 @@ mod tests {
             file_icon_path("a/b/fuzzy.test.ts", None),
             "file-icons/test-ts.svg"
         );
-        assert_eq!(file_icon_path("README.md", None), "file-icons/readme.svg");
+        // The theme gives these an info and a check circle, which read as a status.
+        assert_eq!(file_icon_path("README.md", None), "file-icons/markdown.svg");
+        assert_eq!(
+            file_icon_path("docs/todo.md", None),
+            "file-icons/markdown.svg"
+        );
         assert_eq!(file_icon_path("weird.nothing", None), "file-icons/file.svg");
         assert_eq!(folder_icon_path("src", false), "file-icons/folder-src.svg");
         assert_eq!(

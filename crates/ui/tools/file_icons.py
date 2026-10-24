@@ -8,7 +8,10 @@ here = os.path.dirname(os.path.abspath(__file__))
 out_dir = os.path.join(here, "..", "assets", "file-icons")
 theme = json.load(open(os.path.join(pkg, "dist", "material-icons.json")))
 version = json.load(open(os.path.join(pkg, "package.json")))["version"]
-defs = theme["iconDefinitions"]
+# An info circle and a check circle read as a file's state, not its kind: those names fall back
+# to their extension's icon (README.md: markdown).
+status_like = {"readme", "todo"}
+defs = {k: v for k, v in theme["iconDefinitions"].items() if k not in status_like}
 tables = {k: theme[k] for k in ["fileNames", "fileExtensions", "folderNames", "folderNamesExpanded", "languageIds"]}
 used = {theme["file"], theme["folder"], theme["folderExpanded"]}
 for t in tables.values():
