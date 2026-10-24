@@ -894,6 +894,104 @@ fn md_link(image_link: bool, text: &str, link: &MdLink, cx: &Context) -> String 
     format!("[{text}]({}{title})", cx.link_href(&path, &anchor))
 }
 
+/// A part's text as it reads, roughly as it renders: what Find searches until gitviber-markdown
+/// can say what it drew. Links read as their text, embeds and markup characters go, code stays.
+pub fn plain(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut fences = Fences::default();
+    for line in source.lines() {
+        if fences.code(line) {
+            if fence_of(line).is_none() {
+                out.push_str(line);
+                out.push('\n');
+            }
+            continue;
+        }
+        let mut t = line.trim_start();
+        // Block markers: quotes, headings, list items and their checkboxes.
+        loop {
+            let before = t;
+            t = t.trim_start_matches('>').trim_start();
+            if let Some(rest) = t.strip_prefix(|c: char| c == '#') {
+                t = rest.trim_start_matches('#').trim_start();
+            }
+            if is_list_item(t) {
+                t = t
+                    .split_once([' ', '\t'])
+                    .map_or("", |(_, r)| r)
+                    .trim_start();
+            }
+            for box_ in ["[ ] ", "[x] ", "[X] "] {
+                t = t.strip_prefix(box_).unwrap_or(t);
+            }
+            if t == before {
+                break;
+            }
+        }
+        let t = match block_id(t) {
+            Some((len, _)) => &t[..len],
+            None => t,
+        };
+        plain_inline(t, &mut out);
+        out.push('\n');
+    }
+    out
+}
+
+fn plain_inline(line: &str, out: &mut String) {
+    let mut i = 0;
+    while i < line.len() {
+        let rest = &line[i..];
+        let c = rest.chars().next().unwrap_or(' ');
+        if rest.starts_with("![[") {
+            if let Some((_, n)) = wiki_inner(&rest[1..]) {
+                i += 1 + n;
+                continue;
+            }
+        } else if rest.starts_with("[[") {
+            if let Some((inner, n)) = wiki_inner(rest) {
+                out.push_str(&wikilink_label(&parse_wikilink(inner)));
+                i += n;
+                continue;
+            }
+        } else if c == '!' || c == '[' {
+            let at = usize::from(c == '!');
+            if let Some(link) = parse_link(rest, at) {
+                if c == '[' {
+                    plain_inline(&rest[1..1 + link.text_len], out);
+                }
+                i += link.end;
+                continue;
+            }
+        } else if c == '<' && rest[1..].starts_with(|c: char| c.is_ascii_alphabetic() || c == '/') {
+            i += rest.find('>').map_or(1, |e| e + 1);
+            continue;
+        } else if c == '\\' {
+            if let Some(next) = rest[1..].chars().next() {
+                out.push(next);
+                i += 1 + next.len_utf8();
+                continue;
+            }
+        } else if matches!(c, '*' | '`' | '~' | '=') {
+            i += 1;
+            continue;
+        } else if c == '_' {
+            // Emphasis, not the underscore inside a word.
+            let prev = line[..i]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_alphanumeric);
+            let next = rest[1..].chars().next().is_some_and(char::is_alphanumeric);
+            if !(prev && next) {
+                i += 1;
+                continue;
+            }
+        }
+        out.push(c);
+        i += c.len_utf8();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1167,6 +1265,15 @@ mod tests {
             "{out}"
         );
         assert!(!out.contains("](javascript:"), "{out}");
+    }
+
+    #[test]
+    fn find_reads_a_part_as_it_renders() {
+        let src = "## Goals ^g\n> [!tip] See [[Plan#Goals|the plan]] and [docs](x.md)\n- [x] **bold** ==mark== `code` snake_case\n![[pic.png]] ![alt](a.png) <b>x</b>\n```\n# kept *as is*\n```\n";
+        assert_eq!(
+            plain(src),
+            "Goals\n[!tip] See the plan and docs\nbold mark code snake_case\n  x\n# kept *as is*\n"
+        );
     }
 
     #[test]

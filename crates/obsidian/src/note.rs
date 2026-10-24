@@ -9,14 +9,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gitviber_core::api;
+use gitviber_files::MediaView;
 use gitviber_files::media::{MediaKind, media_kind};
 use gitviber_markdown::{BoundedImageCache, Callouts, MarkdownBase, MarkdownEvent, MarkdownView};
 use gitviber_ui::ActiveAppTheme as _;
+use gitviber_ui::keymap::editor;
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::FileIcon;
 use gitviber_ui::workspace::{Selection, Toast, Workspace};
+use gpui_kit::assets::IconName;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
     IntoElement, ListAlignment, ListOffset, ListState, ObjectFit, ParentElement as _, Render,
@@ -35,6 +38,12 @@ const MAX_DEPTH: usize = 4;
 const MAX_BUILT: usize = 48;
 /// An embedded note bigger than this shows a line saying so.
 const MAX_EMBED_BYTES: usize = 512 * 1024;
+/// Find counts this many matches at most, as the old find box did.
+const MAX_MATCHES: usize = 1000;
+/// A PDF embedded in a note is this tall, as the old app's; a video without a size, this.
+const PDF_HEIGHT: f32 = 640.;
+const VIDEO_HEIGHT: f32 = 360.;
+const AUDIO_HEIGHT: f32 = 56.;
 
 /// Where a note's links and embeds resolve from, for every view drawn for it.
 #[derive(Clone)]
@@ -382,6 +391,27 @@ impl Doc {
         }
     }
 
+    /// The parts `query` is found in, one entry per match (at most MAX_MATCHES), case aside.
+    pub fn search(&self, query: &str) -> Vec<usize> {
+        let query = query.to_lowercase();
+        if query.is_empty() {
+            return vec![];
+        }
+        let mut hits = Vec::new();
+        for (ix, part) in self.parts.iter().enumerate() {
+            let Part::Text { source, .. } = part else {
+                continue;
+            };
+            let text = markup::plain(source).to_lowercase();
+            let n = text.matches(&query).count().min(MAX_MATCHES - hits.len());
+            hits.extend(std::iter::repeat_n(ix, n));
+            if hits.len() >= MAX_MATCHES {
+                break;
+            }
+        }
+        hits
+    }
+
     /// Whether the part at `ix` starts with a heading: it keeps the heading's space above it.
     pub fn heading_at(&self, ix: usize) -> bool {
         matches!(
@@ -430,9 +460,18 @@ pub struct NoteView {
     images: Entity<BoundedImageCache>,
     /// A #heading or #^block to show once the vault's files are read.
     pending: Option<String>,
+    find: Option<Find>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
     _live: Live,
+}
+
+/// ⌘F's box: its query, the parts its matches are in (one entry per match), the one shown.
+struct Find {
+    input: Entity<InputState>,
+    hits: Vec<usize>,
+    current: usize,
+    _sub: Subscription,
 }
 
 impl NoteView {
@@ -478,6 +517,7 @@ impl NoteView {
             index,
             images: BoundedImageCache::new(BoundedImageCache::display_side(window), cx),
             pending: None,
+            find: None,
             focus: cx.focus_handle(),
             _subs: vec![sub],
             _live: Live::new("NoteView"),
@@ -498,7 +538,138 @@ impl NoteView {
         if old > 0 || new > 0 {
             self.list.splice(start..start + old, new);
         }
+        self.search(false, cx);
         cx.notify();
+    }
+
+    /// ⌘F: the find box, focused with its query selected.
+    pub fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.find.is_none() {
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder("Find"));
+            let sub = cx.subscribe_in(&input, window, |this, _, e: &InputEvent, _, cx| match e {
+                InputEvent::Change => this.search(true, cx),
+                InputEvent::PressEnter { shift, .. } => this.step(if *shift { -1 } else { 1 }, cx),
+                _ => {}
+            });
+            self.find = Some(Find {
+                input,
+                hits: vec![],
+                current: 0,
+                _sub: sub,
+            });
+        }
+        if let Some(f) = &self.find {
+            f.input.update(cx, |i, cx| {
+                i.focus(window, cx);
+                i.select_all(window, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.find = None;
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Looks for the query again (it changed, or the note did); `show` scrolls to the first.
+    fn search(&mut self, show: bool, cx: &mut Context<Self>) {
+        let Some(f) = &mut self.find else { return };
+        let query = f.input.read(cx).value().to_string();
+        f.hits = self.doc.search(&query);
+        f.current = f.current.min(f.hits.len().saturating_sub(1));
+        if show {
+            f.current = 0;
+            self.show_hit();
+        }
+        cx.notify();
+    }
+
+    /// The next (1) or the one before (-1), round.
+    fn step(&mut self, dir: isize, cx: &mut Context<Self>) {
+        let Some(f) = &mut self.find else { return };
+        if f.hits.is_empty() {
+            return;
+        }
+        let n = f.hits.len() as isize;
+        f.current = (f.current as isize + dir).rem_euclid(n) as usize;
+        self.show_hit();
+        cx.notify();
+    }
+
+    fn show_hit(&self) {
+        if let Some(ix) = self.find.as_ref().and_then(|f| f.hits.get(f.current)) {
+            self.list.scroll_to_reveal_item(*ix);
+        }
+    }
+
+    fn find_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let f = self.find.as_ref()?;
+        let t = cx.app_theme();
+        let query = !f.input.read(cx).value().is_empty();
+        let count: SharedString = match (query, f.hits.len()) {
+            (false, _) => "".into(),
+            (true, 0) => "No results".into(),
+            (true, n) if n >= MAX_MATCHES => format!("{} of {n}+", f.current + 1).into(),
+            (true, n) => format!("{} of {n}", f.current + 1).into(),
+        };
+        Some(
+            div()
+                .absolute()
+                .top_2()
+                .right_4()
+                .w(px(340.))
+                .flex()
+                .items_center()
+                .gap_1()
+                .p_1()
+                .rounded(px(6.))
+                .bg(t.elevated)
+                .border_1()
+                .border_color(t.border_strong)
+                .key_context("NoteFind")
+                .on_action(cx.listener(|this, _: &Escape, window, cx| this.close_find(window, cx)))
+                .child(div().flex_1().child(Input::new(&f.input).small()))
+                .child(
+                    div()
+                        .w(px(72.))
+                        .text_right()
+                        .text_size(px(11.))
+                        .text_color(t.subtle)
+                        .child(count),
+                )
+                .child(
+                    Button::new("find-prev")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::ChevronUp)
+                        .tooltip("Previous (⇧↵)")
+                        .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
+                )
+                .child(
+                    Button::new("find-next")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::ChevronDown)
+                        .tooltip("Next (↵)")
+                        .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
+                )
+                .child(
+                    Button::new("find-close")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Close)
+                        .tooltip("Close (esc)")
+                        .on_click(cx.listener(|this, _, window, cx| this.close_find(window, cx))),
+                )
+                .into_any_element(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn find_hits(&self) -> Option<(usize, usize)> {
+        self.find.as_ref().map(|f| (f.current, f.hits.len()))
     }
 
     /// Scrolls to the part a #heading or #^block names.
@@ -557,14 +728,17 @@ impl NoteView {
 
 impl Render for NoteView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.app_theme();
         self.doc.begin_frame();
         let empty = self.doc.len() == 0;
+        let find = self.find_bar(cx);
+        let t = cx.app_theme();
         div()
             .id("vault-note")
             .key_context("MarkdownView")
             .track_focus(&self.focus)
+            .relative()
             .size_full()
+            .on_action(cx.listener(|this, _: &editor::Find, window, cx| this.open_find(window, cx)))
             .bg(t.code(t.background))
             .when(empty, |d| {
                 d.flex()
@@ -587,6 +761,7 @@ impl Render for NoteView {
                     ),
                 )
             })
+            .children(find)
     }
 }
 
@@ -613,6 +788,8 @@ enum Shown {
     Media {
         file: String,
         kind: MediaKind,
+        /// The player or PDF viewer (native on macOS), made as it's first drawn.
+        view: Option<Entity<MediaView>>,
     },
 }
 
@@ -695,12 +872,20 @@ impl EmbedView {
             self.load(file, anchor, cx);
             return;
         }
+        // The same file found again (another file came or went): a playing video plays on.
+        if matches!(&self.shown, Shown::Media { file: f, .. } if *f == file) {
+            return;
+        }
         self.shown = match media_kind(&file) {
             Some(MediaKind::Image) => Shown::Image {
                 file,
                 size: sized(&self.alias),
             },
-            Some(kind) => Shown::Media { file, kind },
+            Some(kind) => Shown::Media {
+                file,
+                kind,
+                view: None,
+            },
             None => Shown::Link { file, anchor },
         };
         cx.notify();
@@ -806,6 +991,15 @@ fn sized(alias: &str) -> Option<(u32, Option<u32>)> {
 
 impl Render for EmbedView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Shown::Media {
+            file,
+            kind,
+            view: view @ None,
+        } = &mut self.shown
+        {
+            let (abs, kind) = (PathBuf::from(&self.note.vault).join(&*file), *kind);
+            *view = Some(cx.new(|cx| MediaView::new(abs, kind, window, cx)));
+        }
         let t = cx.app_theme().clone();
         let quiet = |text: SharedString| {
             div()
@@ -837,38 +1031,23 @@ impl Render for EmbedView {
                     .child(image)
                     .into_any_element()
             }
-            Shown::Media { file, kind } => {
-                let abs = self.abs(file);
-                let what = match kind {
-                    MediaKind::Audio => "Audio",
-                    MediaKind::Video => "Video",
-                    _ => "PDF",
-                };
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .p_3()
+            Shown::Media { kind, view, .. } => {
+                let size = sized(&self.alias);
+                let frame = div()
                     .rounded(px(6.))
+                    .overflow_hidden()
                     .border_1()
-                    .border_color(t.border)
-                    .child(FileIcon::file(file))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .child(file.rsplit('/').next().unwrap_or(file).to_string()),
-                    )
-                    .child(div().text_size(px(11.)).text_color(t.subtle).child(what))
-                    .child(
-                        Button::new("open-default")
-                            .xsmall()
-                            .ghost()
-                            .label("Open in Default App")
-                            .on_click(move |_, _, cx| cx.open_with_system(&abs)),
-                    )
-                    .into_any_element()
+                    .border_color(t.border);
+                let frame = match (self.bare, kind, size) {
+                    (true, _, _) => frame.size_full(),
+                    (_, MediaKind::Video, Some((w, h))) => frame
+                        .w(px(w as f32))
+                        .h(px(h.map_or(w as f32 * 9. / 16., |h| h as f32))),
+                    (_, MediaKind::Pdf, _) => frame.w_full().h(px(PDF_HEIGHT)),
+                    (_, MediaKind::Audio, _) => frame.w_full().h(px(AUDIO_HEIGHT)),
+                    _ => frame.w_full().h(px(VIDEO_HEIGHT)),
+                };
+                frame.children(view.clone()).into_any_element()
             }
             Shown::Note {
                 problem: Some(p), ..

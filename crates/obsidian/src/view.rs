@@ -25,6 +25,7 @@ use crate::canvas_view::CanvasView;
 use crate::editor::{EditorEvent, NoteEditor};
 use crate::edits;
 use crate::note::NoteView;
+use crate::svg::SvgPreview;
 use crate::vaults::{Vaults, VaultsEvent, hold_for};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +72,8 @@ enum Content {
     Note(Entity<NoteView>),
     Canvas(Entity<CanvasView>),
     Media(Entity<MediaView>),
+    /// An SVG drawn from its text: typing not saved yet shows.
+    Svg(Entity<SvgPreview>),
     Code,
 }
 
@@ -284,7 +287,7 @@ impl VaultTab {
         match (&self.content, self.kind) {
             (Content::Note(note), _) => note.update(cx, |n, cx| n.set_source(text, cx)),
             (Content::Canvas(canvas), _) => canvas.update(cx, |c, cx| c.set_source(text, cx)),
-            (Content::Media(_), Kind::Svg) => {}
+            (Content::Svg(svg), _) => svg.update(cx, |s, cx| s.set_source(text, cx)),
             (_, Kind::Note) => {
                 let (ws, vault, path) = (
                     self.workspace.clone(),
@@ -308,9 +311,7 @@ impl VaultTab {
                 );
             }
             (_, Kind::Svg) => {
-                let abs = PathBuf::from(&self.vault).join(&self.path);
-                self.content =
-                    Content::Media(cx.new(|cx| MediaView::new(abs, MediaKind::Image, window, cx)));
+                self.content = Content::Svg(cx.new(|cx| SvgPreview::new(text, window, cx)));
             }
             _ => self.show_code(text, window, cx),
         }
@@ -322,6 +323,7 @@ impl VaultTab {
             Content::Canvas(canvas) => {
                 canvas.update(cx, |c, cx| c.set_source(text.to_string(), cx))
             }
+            Content::Svg(svg) => svg.update(cx, |s, cx| s.set_source(text.to_string(), cx)),
             _ => {}
         }
         cx.notify();
@@ -335,6 +337,7 @@ impl VaultTab {
         match &self.content {
             Content::Note(n) => Some(n.read(cx).source().to_string()),
             Content::Canvas(c) => Some(c.read(cx).source().to_string()),
+            Content::Svg(s) => Some(s.read(cx).source().to_string()),
             _ => None,
         }
     }
@@ -505,6 +508,14 @@ impl VaultTab {
     }
 
     #[cfg(test)]
+    pub(crate) fn svg(&self) -> Option<Entity<SvgPreview>> {
+        match &self.content {
+            Content::Svg(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn canvas(&self) -> Option<Entity<CanvasView>> {
         match &self.content {
             Content::Canvas(c) => Some(c.clone()),
@@ -600,6 +611,7 @@ impl Render for VaultTab {
             Content::Note(n) => n.clone().into_any_element(),
             Content::Canvas(c) => c.clone().into_any_element(),
             Content::Media(m) => m.clone().into_any_element(),
+            Content::Svg(s) => s.clone().into_any_element(),
             Content::Code => match &self.editor {
                 Some((e, _)) => e.clone().into_any_element(),
                 None => div().into_any_element(),

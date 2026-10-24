@@ -421,3 +421,68 @@ fn unsaved_typing_outlives_its_tab(cx: &mut TestAppContext) {
     let stored = std::fs::read_to_string(&edits_file).unwrap();
     assert!(!stored.contains("kept"), "{stored}");
 }
+
+#[gpui_kit::test]
+fn find_in_a_rendered_note(cx: &mut TestAppContext) {
+    let vault = setup("find", cx);
+    let (host, cx) = cx.add_window_view(|_, _| Host(None));
+    let view = cx.update(|window, cx| tab(&vault, "Home.md", window, cx));
+    show(&host, Some(view.clone().into()), cx);
+    let note = cx.update(|_, cx| view.read(cx).note().expect("the note"));
+    let hits = |cx: &mut VisualTestContext| cx.update(|_, cx| note.read(cx).find_hits());
+    // ⌘F's action on the note, then the query typed into the box it opens.
+    cx.update(|window, cx| note.update(cx, |n, cx| n.open_find(window, cx)));
+    cx.run_until_parked();
+    assert_eq!(hits(cx), Some((0, 0)));
+    // As it reads: "[[Plan#Goals]]" shows "Plan > Goals", "## Later" shows "Later".
+    cx.simulate_input("goals");
+    assert_eq!(hits(cx), Some((0, 1)));
+    cx.simulate_keystrokes("cmd-a");
+    cx.simulate_input("e");
+    let (_, n) = hits(cx).unwrap();
+    assert!(n > 3, "{n}");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(hits(cx), Some((1, n)));
+    cx.simulate_keystrokes("shift-enter shift-enter");
+    assert_eq!(hits(cx), Some((n - 1, n)), "round to the last");
+    cx.simulate_keystrokes("escape");
+    assert_eq!(hits(cx), None);
+}
+
+#[gpui_kit::test]
+fn an_svgs_preview_shows_what_was_typed(cx: &mut TestAppContext) {
+    let vault = setup("svg", cx);
+    let on_disk = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>"#;
+    std::fs::write(Path::new(&vault).join("Pic.svg"), on_disk).unwrap();
+    let (view, cx) = code_view(&vault, "Pic.svg", cx);
+    let typed = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><circle r="5" cx="5" cy="5"/></svg>"#;
+    type_all(&view, typed, cx);
+    cx.update(|window, cx| view.update(cx, |t, cx| t.set_mode(Mode::Preview, window, cx)));
+    cx.run_until_parked();
+    let svg = cx.update(|_, cx| view.read(cx).svg().expect("the SVG preview"));
+    assert_eq!(cx.update(|_, cx| svg.read(cx).source().to_string()), typed);
+    assert!(dirty(&view, cx), "the typing is still unsaved");
+    assert_eq!(
+        std::fs::read_to_string(Path::new(&vault).join("Pic.svg")).unwrap(),
+        on_disk
+    );
+}
+
+#[gpui_kit::test]
+fn media_embedded_in_a_note_plays_in_place_and_goes_with_it(cx: &mut TestAppContext) {
+    let vault = setup("media", cx);
+    std::fs::write(Path::new(&vault).join("clip.mp4"), b"not really a video").unwrap();
+    std::fs::write(Path::new(&vault).join("doc.pdf"), b"%PDF-1.1\n").unwrap();
+    std::fs::write(
+        Path::new(&vault).join("Media.md"),
+        "# Media\n\n![[clip.mp4|320x180]]\n\n![[doc.pdf]]\n",
+    )
+    .unwrap();
+    let (host, cx) = cx.add_window_view(|_, _| Host(None));
+    let view = cx.update(|window, cx| tab(&vault, "Media.md", window, cx));
+    show(&host, Some(view.clone().into()), cx);
+    assert_eq!(live("MediaView"), 2, "{:?}", memory::live_counts());
+    drop(view);
+    show(&host, None, cx);
+    assert_eq!(live("MediaView"), 0);
+}

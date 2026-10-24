@@ -18,6 +18,7 @@ mod nfd;
 mod note;
 pub mod panel;
 pub mod properties;
+mod svg;
 pub mod vaults;
 mod view;
 
