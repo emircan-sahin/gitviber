@@ -97,23 +97,53 @@ pub fn edited_shas<N: Node>(edit: &Edit, about: &[N]) -> Vec<String> {
     }
 }
 
-/// HEAD's first-parent line among `commits`, which history edits can name: merged-in side
-/// branches' commits aren't on it.
-pub fn first_parent_line<N: Node>(commits: &[N], head: &str) -> HashSet<String> {
-    let by_sha: std::collections::HashMap<&str, &N> =
-        commits.iter().map(|c| (c.sha(), c)).collect();
-    let mut line = HashSet::new();
-    let mut at = by_sha.get(head).copied();
-    while let Some(c) = at {
-        if !line.insert(c.sha().to_string()) {
-            break;
+/// HEAD's first-parent line among commits listed newest first, which history edits can name:
+/// merged-in side branches' commits aren't on it. Pages come in one after another, so the walk
+/// goes on where the last page ran out rather than from HEAD again: a parent always comes after
+/// its children in the list (topo order).
+#[derive(Default)]
+pub struct FirstParentLine {
+    /// By index in the list.
+    on: Vec<bool>,
+    /// The next commit on the line, not listed yet.
+    next: Option<String>,
+}
+
+impl FirstParentLine {
+    pub fn new(head: Option<&str>) -> Self {
+        Self {
+            on: vec![],
+            next: head.map(str::to_string),
         }
-        at = c
-            .parents()
-            .first()
-            .and_then(|p| by_sha.get(p.as_str()).copied());
     }
-    line
+
+    /// Walks on into `commits[from..]`, the page just listed.
+    pub fn extend<N: Node>(&mut self, commits: &[N], from: usize) {
+        self.on.resize(commits.len(), false);
+        let Some(mut next) = self.next.take() else {
+            return;
+        };
+        let at: std::collections::HashMap<&str, usize> = commits
+            .iter()
+            .enumerate()
+            .skip(from)
+            .map(|(i, c)| (c.sha(), i))
+            .collect();
+        while let Some(&i) = at.get(next.as_str()) {
+            if std::mem::replace(&mut self.on[i], true) {
+                return;
+            }
+            let Some(parent) = commits[i].parents().first() else {
+                return;
+            };
+            next = parent.clone();
+        }
+        self.next = Some(next);
+    }
+
+    pub fn contains(&self, i: usize) -> bool {
+        self.on.get(i).copied().unwrap_or(false)
+    }
 }
 
 /// What the rewrite keeps as it is, for asking whether it drops pushed commits: the parent of the
@@ -376,9 +406,22 @@ mod tests {
             C("b".into(), v(&["a"])),
             C("a".into(), vec![]),
         ];
-        let mut l: Vec<String> = first_parent_line(&side, "m").into_iter().collect();
-        l.sort();
-        assert_eq!(l, v(&["a", "b", "c", "m"]));
-        assert!(first_parent_line(&side, "x").is_empty());
+        let on = |l: &FirstParentLine| {
+            (0..side.len())
+                .filter(|i| l.contains(*i))
+                .collect::<Vec<_>>()
+        };
+        let mut whole = FirstParentLine::new(Some("m"));
+        whole.extend(&side, 0);
+        assert_eq!(on(&whole), [0, 2, 3, 4]);
+        // Page by page, the walk goes on where it ran out.
+        let mut paged = FirstParentLine::new(Some("m"));
+        paged.extend(&side[..3], 0);
+        assert_eq!(on(&paged), [0, 2]);
+        paged.extend(&side, 3);
+        assert_eq!(on(&paged), [0, 2, 3, 4]);
+        let mut gone = FirstParentLine::new(Some("x"));
+        gone.extend(&side, 0);
+        assert!(on(&gone).is_empty());
     }
 }

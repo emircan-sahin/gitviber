@@ -28,7 +28,7 @@ use gpui_kit::{
 };
 
 use crate::commit::{Badge, Commit, GraphRefs, RefKind, group_refs};
-use crate::edits::{Where, first_parent_line};
+use crate::edits::{FirstParentLine, Where};
 use crate::graph::{GraphBuilder, GraphRow, Lane};
 use crate::query::Filter;
 
@@ -101,6 +101,12 @@ impl Source {
             _ => vec![],
         }
     }
+}
+
+/// HEAD's commit id.
+fn head_of(core: &gitviber_core::Core) -> Option<String> {
+    let log = api::history::log(core, None, 0, 1, None, None).ok()?;
+    log.into_iter().next().map(|c| c.sha)
 }
 
 /// What a list tells its owner.
@@ -195,6 +201,8 @@ pub struct CommitList {
     pub(crate) commits: Vec<Rc<Commit>>,
     rows: Vec<GraphRow>,
     builder: GraphBuilder,
+    /// What a drag can move: HEAD's own list's first-parent line, walked on as pages come in.
+    line: FirstParentLine,
     has_more: bool,
     loaded: bool,
     error: Option<SharedString>,
@@ -309,6 +317,7 @@ impl CommitList {
             commits: vec![],
             rows: vec![],
             builder: GraphBuilder::default(),
+            line: FirstParentLine::default(),
             has_more: false,
             loaded: false,
             error: None,
@@ -405,6 +414,7 @@ impl CommitList {
         self.options = options;
         self.commits.clear();
         self.rows.clear();
+        self.line = FirstParentLine::default();
         self.open = None;
         self.picked.clear();
         self.loaded = false;
@@ -452,20 +462,32 @@ impl CommitList {
         self.paging = None;
         self.again = false;
         self.tips = self.tips_now(cx);
-        let read = cx.background_spawn(async move {
-            let log = source.read(&core, 0, limit);
-            // HEAD read with the list, so what the menus act on is what's shown.
-            let head = match (&source, &log) {
-                (Source::Head, Ok(log)) => log.first().map(|c| c.sha.clone()),
-                _ => api::history::log(&core, None, 0, 1, None, None)
-                    .ok()
-                    .and_then(|l| l.into_iter().next())
-                    .map(|c| c.sha),
-            };
-            (log, source.found(&core), head)
+        // The list, the commits a search's SHAs name and HEAD are read at once: each is a log of
+        // its own, several git calls long.
+        let found = cx.background_spawn({
+            let (source, core) = (source.clone(), core.clone());
+            async move { source.found(&core) }
+        });
+        let head = (source != Source::Head).then(|| {
+            let core = core.clone();
+            cx.background_spawn(async move { head_of(&core) })
+        });
+        let read = cx.background_spawn({
+            let core = core.clone();
+            async move { source.read(&core, 0, limit) }
         });
         self.reading = Some(cx.spawn(async move |this, cx| {
-            let (log, found, head) = read.await;
+            let log = read.await;
+            // HEAD read with the list, so what the menus act on is what's shown.
+            let head = match (head, &log) {
+                (Some(head), _) => head.await,
+                (None, Ok(log)) => log.first().map(|c| c.sha.clone()),
+                (None, Err(_)) => {
+                    let read = async move { head_of(&core) };
+                    cx.background_executor().spawn(read).await
+                }
+            };
+            let found = found.await;
             let _ = this.update(cx, |this, cx| {
                 if this.seq != seq {
                     return;
@@ -549,6 +571,9 @@ impl CommitList {
                 .as_deref(),
         );
         self.rows.clear();
+        let head = self.head_sha.as_deref();
+        self.line = FirstParentLine::new(head.filter(|_| matches!(self.source, Source::Head)));
+        self.line.extend(&self.commits, 0);
         if self.source.graph() {
             let mut builder = std::mem::take(&mut self.builder);
             self.rows = self
@@ -646,6 +671,7 @@ impl CommitList {
             }
         }
         self.commits.extend(fresh);
+        self.line.extend(&self.commits, first);
         let mut tail: Vec<Item> = (first..self.commits.len()).map(Item::Commit).collect();
         if self.has_more {
             tail.push(Item::More);
@@ -1100,15 +1126,19 @@ impl CommitList {
         matches!(self.source, Source::Head) && !self.repo.read(cx).locked()
     }
 
-    fn line(&self, cx: &App) -> HashSet<String> {
-        first_parent_line(&self.commits, &self.head(cx))
-    }
-
-    fn drag_move(&mut self, sha: &str, e: &DragMoveEvent<Dragged>, cx: &mut Context<Self>) {
+    fn drag_move(
+        &mut self,
+        i: usize,
+        sha: &str,
+        e: &DragMoveEvent<Dragged>,
+        cx: &mut Context<Self>,
+    ) {
         // Every row hears every move of the drag: only the one under the pointer has a say.
         let inside = e.bounds.contains(&e.event.position);
         let dragged = e.drag(cx).0.clone();
-        let droppable = !dragged.iter().any(|d| d == sha) && self.line(cx).contains(sha);
+        let droppable = !dragged.iter().any(|d| d == sha)
+            && self.commits.get(i).is_some_and(|c| c.sha == sha)
+            && self.line.contains(i);
         let over = drop_over(e.event.position, e.bounds, inside, droppable);
         if let Some(next) = next_drop(&self.drop_at, sha, over) {
             // Onto a commit, that one is squashed too.
@@ -1139,11 +1169,12 @@ impl CommitList {
     fn render_item(
         &mut self,
         ix: usize,
+        remotes: &[String],
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match self.items.get(ix).copied() {
-            Some(Item::Commit(i)) => self.render_commit(i, window, cx),
+            Some(Item::Commit(i)) => self.render_commit(i, remotes, window, cx),
             Some(Item::Files) => self.render_files_header(cx),
             Some(Item::File(f)) => self.render_file(f, window, cx),
             Some(Item::FilesLoading) => {
@@ -1181,6 +1212,7 @@ impl CommitList {
     fn render_commit(
         &mut self,
         i: usize,
+        remotes: &[String],
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1264,11 +1296,7 @@ impl CommitList {
             .when_some(dot_tip, |d, tip| {
                 d.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             });
-        let badges = group_refs(
-            &commit.refs,
-            &self.remotes(cx),
-            self.options.show_refs.as_ref(),
-        );
+        let badges = group_refs(&commit.refs, remotes, self.options.show_refs.as_ref());
         let author: AnyElement = if self.options.filter_author && !commit.author.is_empty() {
             let (name, email) = (commit.author.to_string(), commit.email.to_string());
             div()
@@ -1326,7 +1354,7 @@ impl CommitList {
         } else {
             None
         };
-        let draggable = self.can_drag(cx) && self.line(cx).contains(&commit.sha);
+        let draggable = self.can_drag(cx) && self.line.contains(i);
         let sha = commit.sha.clone();
         let list = cx.weak_entity();
         let menu_commit = commit.clone();
@@ -1471,7 +1499,7 @@ impl CommitList {
                     label
                 })
                 .on_drag_move(cx.listener(move |this, e: &DragMoveEvent<Dragged>, _, cx| {
-                    this.drag_move(&row_sha, e, cx)
+                    this.drag_move(i, &row_sha, e, cx)
                 }))
                 .on_drop(cx.listener(|this, d: &Dragged, window, cx| this.drop(d, window, cx)));
         }
@@ -1851,7 +1879,11 @@ impl Render for CommitList {
                 .child(text)
                 .into_any_element();
         }
-        let render = cx.processor(|this, ix: usize, window, cx| this.render_item(ix, window, cx));
+        // Once a frame, not for each row: a big org's repo has thousands of remote branches.
+        let remotes: Rc<[String]> = self.remotes(cx).into();
+        let render = cx.processor(move |this, ix: usize, window, cx| {
+            this.render_item(ix, &remotes, window, cx)
+        });
         div()
             .id("commit-list")
             .relative()

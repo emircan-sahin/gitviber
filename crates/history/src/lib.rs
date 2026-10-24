@@ -138,10 +138,9 @@ pub fn init(cx: &mut App) {
     });
     cx.on_action(|_: &history_actions::Search, cx| {
         in_front(cx, |ws, _, window, cx| {
-            let panel = ws.update(cx, |ws, cx| {
-                ws.show_panel(PANEL, cx);
-                ws.panel(PANEL, window, cx)
-            });
+            ws.update(cx, |ws, cx| ws.show_panel(PANEL, cx));
+            // Built outside the workspace's update: the panel reads the workspace as it's made.
+            let panel = Workspace::ensure_panel(ws, PANEL, window, cx);
             if let Some(p) = panel.and_then(|p| p.view().downcast::<HistoryPanel>().ok()) {
                 p.update(cx, |p, cx| p.focus_search(window, cx));
             }
@@ -154,10 +153,8 @@ pub fn init(cx: &mut App) {
             let Some(ws) = Workspace::for_window(window, cx) else {
                 return;
             };
-            let panel = ws.update(cx, |ws, cx| {
-                ws.show_panel(PANEL, cx);
-                ws.panel(PANEL, window, cx)
-            });
+            ws.update(cx, |ws, cx| ws.show_panel(PANEL, cx));
+            let panel = Workspace::ensure_panel(&ws, PANEL, window, cx);
             if let Some(p) = panel.and_then(|p| p.view().downcast::<HistoryPanel>().ok()) {
                 p.update(cx, |p, cx| p.jump_to(sha, window, cx));
             }
