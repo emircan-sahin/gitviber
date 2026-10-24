@@ -1,5 +1,6 @@
 //! Where a diff's code goes: Copy GitHub Link / Open on GitHub for the picked lines (else the
-//! file), Go to Definition (⌘-click, F12) on either side, Copy path in the header.
+//! file), Go to Definition (⌘-click, F12), Peek (⌥F12) and References (⇧F12) on either side,
+//! Copy path in the header.
 
 use super::*;
 use crate::model::indent::Shown;
@@ -182,11 +183,32 @@ pub(crate) fn byte_at_column(line: &str, unit: usize, col: usize) -> usize {
         .unwrap_or(0)
 }
 
-/// Several places a name is defined: a list over the lines to pick from.
+/// What a lookup of the name at the caret is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LookUp {
+    Definition,
+    /// The definition shown over the lines, without leaving them.
+    Peek,
+    References,
+}
+
+/// Lines a peek shows on each side of the place.
+const PEEK_AROUND: u32 = 6;
+
+/// Places a name is defined or used: a list over the lines to pick from. A peek shows the lines
+/// around the one picked.
 pub(super) struct Places {
     title: SharedString,
     side: Side,
     places: Vec<Location>,
+    peek: Option<Peek>,
+}
+
+/// The lines around a peeked place (`at` of the list), the first one's number.
+struct Peek {
+    at: usize,
+    first: u32,
+    lines: Vec<SharedString>,
 }
 
 impl DiffView {
@@ -314,9 +336,10 @@ impl DiffView {
         Some((pos, byte_at_column(&text, data.unit, col)))
     }
 
-    /// Go to Definition of the name at the caret (the last click on code): one in this file
-    /// shows here, one elsewhere opens there, several list.
-    pub(super) fn go_to_definition(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Looks up the name at the caret (the last click on code). Go to Definition: one in this
+    /// file shows here, one elsewhere opens there, several list, and on the definition itself
+    /// its uses list. Peek shows the definition over the lines; References lists every use.
+    pub(super) fn look_up(&mut self, kind: LookUp, window: &mut Window, cx: &mut Context<Self>) {
         let (Some((pos, byte)), Some(data)) = (self.caret, &self.data) else {
             return cx.propagate();
         };
@@ -327,33 +350,152 @@ impl DiffView {
         let line = side_text.line(pos.line);
         let column = line[..byte.min(line.len())].encode_utf16().count() as u32;
         let (path, rev) = definition_side(&self.source, pos.side);
-        let request = definitions::Request {
-            path: path.clone(),
-            text: side_text.text(),
-            line: pos.line,
-            column,
-            rev,
-        };
-        let core = self.core.clone();
+        let (text, core) = (side_text.text(), self.core.clone());
+        let asked = path.clone();
         self._lookup = cx.spawn_in(window, async move |this, cx| {
             let found = cx
-                .background_spawn(async move { api::files::definitions(&core, request) })
+                .background_spawn(async move {
+                    let ask = |references: bool| {
+                        let request = definitions::Request {
+                            path: asked.clone(),
+                            text: text.clone(),
+                            line: pos.line,
+                            column,
+                            rev: rev.clone(),
+                        };
+                        if references {
+                            api::files::references(&core, request)
+                        } else {
+                            api::files::definitions(&core, request)
+                        }
+                    };
+                    match ask(kind == LookUp::References)? {
+                        p if kind == LookUp::Definition
+                            && p.len() == 1
+                            && p[0].path == asked
+                            && p[0].line == pos.line
+                            && (p[0].column..=p[0].end_column).contains(&column) =>
+                        {
+                            ask(true).map(|p| (LookUp::References, p))
+                        }
+                        p => Ok((kind, p)),
+                    }
+                })
                 .await;
             this.update_in(cx, |this, window, cx| match found {
                 Err(e) if e == definitions::CANCELLED => {}
                 Err(e) => Toast::error(e).show(window, cx),
-                Ok(places) if places.is_empty() => {
-                    Toast::info("No definition found.").show(window, cx)
-                }
-                Ok(mut places) if places.len() == 1 => {
-                    let place = places.remove(0);
-                    this.go_to(pos.side, &path, &place, window, cx)
-                }
-                Ok(places) => {
-                    this.places = Some(Places {
-                        title: format!("{} definitions", places.len()).into(),
-                        side: pos.side,
-                        places,
+                Ok((kind, places)) => this.show_places(kind, pos.side, &path, places, window, cx),
+            })
+            .ok();
+        });
+    }
+
+    /// A lookup by key, on lines; an image, a preview or the editor leaves the key to its host.
+    pub(super) fn look_up_if_code(
+        &mut self,
+        kind: LookUp,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.can_find() {
+            self.look_up(kind, window, cx)
+        } else {
+            cx.propagate()
+        }
+    }
+
+    fn show_places(
+        &mut self,
+        kind: LookUp,
+        side: Side,
+        path: &str,
+        mut places: Vec<Location>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let n = places.len();
+        if n == 0 {
+            let none = if kind == LookUp::References {
+                "No references found."
+            } else {
+                "No definition found."
+            };
+            return Toast::info(none).show(window, cx);
+        }
+        if kind == LookUp::Definition && n == 1 {
+            let place = places.remove(0);
+            return self.go_to(side, path, &place, window, cx);
+        }
+        let title = match (kind, n) {
+            (LookUp::References, 1) => "1 reference".to_string(),
+            (LookUp::References, n) => format!("{n} references"),
+            (_, 1) => "Definition".to_string(),
+            (_, n) => format!("{n} definitions"),
+        };
+        self.places = Some(Places {
+            title: title.into(),
+            side,
+            places,
+            peek: None,
+        });
+        if kind == LookUp::Peek {
+            self.peek_at(0, cx);
+        }
+        cx.notify();
+    }
+
+    /// Shows the lines around place `i` of the list: this side's own from the diff, another
+    /// file's read from the side's tree.
+    fn peek_at(&mut self, i: usize, cx: &mut Context<Self>) {
+        let Some(p) = &mut self.places else { return };
+        let Some(place) = p.places.get(i).map(copy) else {
+            return;
+        };
+        let (path, rev) = definition_side(&self.source, p.side);
+        let first = place.line.saturating_sub(PEEK_AROUND).max(1);
+        let count = (place.line + PEEK_AROUND + 1 - first) as usize;
+        if place.path == path
+            && let Some(data) = &self.data
+        {
+            let text = data.side(p.side);
+            let lines = (first..=text.lines)
+                .take(count)
+                .map(|l| peek_line(&text.line(l)))
+                .collect();
+            p.peek = Some(Peek {
+                at: i,
+                first,
+                lines,
+            });
+            return cx.notify();
+        }
+        let core = self.core.clone();
+        self._peek = cx.spawn(async move |this, cx| {
+            let lines = cx
+                .background_spawn(async move {
+                    let file = match rev {
+                        Some(rev) => api::files::text_at(&core, rev, place.path),
+                        None => api::files::read_file(&core, place.path),
+                    };
+                    match file {
+                        Ok(f) if f.exists && !f.binary && !f.too_large => f
+                            .text
+                            .lines()
+                            .skip(first as usize - 1)
+                            .take(count)
+                            .map(peek_line)
+                            .collect(),
+                        _ => vec![],
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if let Some(p) = &mut this.places {
+                    p.peek = Some(Peek {
+                        at: i,
+                        first,
+                        lines,
                     });
                     cx.notify();
                 }
@@ -390,6 +532,19 @@ impl DiffView {
         }
     }
 
+    /// Where a lookup looks from, as a click on code sets it (tests).
+    #[doc(hidden)]
+    pub fn set_caret(&mut self, pos: LinePos, byte: usize) {
+        self.caret = Some((pos, byte));
+    }
+
+    /// The listed places' title and the peeked lines (tests).
+    #[doc(hidden)]
+    pub fn places_state(&self) -> Option<(SharedString, Option<Vec<SharedString>>)> {
+        let p = self.places.as_ref()?;
+        Some((p.title.clone(), p.peek.as_ref().map(|k| k.lines.clone())))
+    }
+
     pub(super) fn places_list(
         &self,
         style: &DiffStyle,
@@ -398,6 +553,10 @@ impl DiffView {
         let p = self.places.as_ref()?;
         let c = &style.colors;
         let (path, _) = definition_side(&self.source, p.side);
+        let side = p.side;
+        let peeking = p.peek.as_ref().map(|k| k.at);
+        // A single peeked place needs no list.
+        let list = !(peeking.is_some() && p.places.len() == 1);
         Some(
             v_flex()
                 .id("diff-places")
@@ -405,8 +564,8 @@ impl DiffView {
                 .absolute()
                 .top_2()
                 .left_4()
-                .w(px(420.))
-                .max_h(px(280.))
+                .w(px(if peeking.is_some() { 640. } else { 420. }))
+                .max_h(px(if peeking.is_some() { 420. } else { 280. }))
                 .overflow_y_scroll()
                 .p_1()
                 .rounded(px(6.))
@@ -418,8 +577,12 @@ impl DiffView {
                     h_flex()
                         .px_2()
                         .h(px(24.))
+                        .gap_2()
                         .text_color(c.subtle)
-                        .child(div().flex_1().child(p.title.clone()))
+                        .child(div().flex_1().truncate().child(p.title.clone()))
+                        .when(peeking.is_some(), |el| {
+                            el.child("Click the code to open it")
+                        })
                         .child(
                             icon_button("places-close", Lucide::Close, "Close (esc)", false)
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -428,21 +591,76 @@ impl DiffView {
                                 })),
                         ),
                 )
-                .children(p.places.iter().enumerate().map(|(i, place)| {
-                    let label = format!("{}:{}", place.path, place.line);
+                .when(list, |el| {
+                    el.children(p.places.iter().enumerate().map(|(i, place)| {
+                        let label = format!("{}:{}", place.path, place.line);
+                        let path = path.clone();
+                        div()
+                            .id(("diff-place", i))
+                            .flex_none()
+                            .px_2()
+                            .h(px(22.))
+                            .rounded_sm()
+                            .truncate()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(c.hover))
+                            .when(peeking == Some(i), |el| el.bg(c.selection))
+                            .child(label)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if peeking.is_some() {
+                                    return this.peek_at(i, cx);
+                                }
+                                let Some(place) =
+                                    this.places.as_mut().map(|p| p.places.swap_remove(i))
+                                else {
+                                    return;
+                                };
+                                this.go_to(side, &path, &place, window, cx);
+                            }))
+                    }))
+                })
+                .children(p.peek.as_ref().map(|k| {
+                    let place = &p.places[k.at];
+                    let numbers = format!("{}", k.first as usize + k.lines.len()).len();
                     let path = path.clone();
-                    let side = p.side;
-                    div()
-                        .id(("diff-place", i))
-                        .px_2()
-                        .h(px(22.))
+                    v_flex()
+                        .id("diff-peek")
+                        .flex_none()
+                        .mt_1()
+                        .py_1()
                         .rounded_sm()
-                        .truncate()
+                        .bg(c.background)
                         .cursor_pointer()
-                        .hover(|s| s.bg(c.hover))
-                        .child(label)
+                        .font_family(style.font_family.clone())
+                        .text_size(style.font_size)
+                        .line_height(self.line)
+                        .when(k.lines.is_empty(), |el| {
+                            el.child(div().px_2().text_color(c.subtle).child(format!(
+                                "{}:{} can't be shown here.",
+                                place.path, place.line
+                            )))
+                        })
+                        .children(k.lines.iter().enumerate().map(|(j, text)| {
+                            let n = k.first + j as u32;
+                            h_flex()
+                                .px_2()
+                                .gap_3()
+                                .when(n == place.line, |el| el.bg(c.selection))
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .w(style.font_size * (numbers as f32 * 0.6 + 0.4))
+                                        .text_right()
+                                        .text_color(c.subtle)
+                                        .child(n.to_string()),
+                                )
+                                .child(div().whitespace_nowrap().child(text.clone()))
+                        }))
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            let Some(place) = this.places.as_mut().map(|p| p.places.swap_remove(i))
+                            let Some(place) = this
+                                .places
+                                .as_ref()
+                                .and_then(|p| p.places.get(p.peek.as_ref()?.at).map(copy))
                             else {
                                 return;
                             };
@@ -452,6 +670,23 @@ impl DiffView {
                 .into_any_element(),
         )
     }
+}
+
+/// core's Location isn't Clone.
+fn copy(l: &Location) -> Location {
+    Location {
+        path: l.path.clone(),
+        line: l.line,
+        column: l.column,
+        end_column: l.end_column,
+    }
+}
+
+/// A peeked line as drawn: tabs at four columns, no line end.
+fn peek_line(line: &str) -> SharedString {
+    line.trim_end_matches(['\r', '\n'])
+        .replace('\t', "    ")
+        .into()
 }
 
 #[cfg(test)]

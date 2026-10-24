@@ -1,19 +1,21 @@
 //! A changed image's two versions: side by side, as a swipe (a divider between them) or as an
 //! onion skin (after faded in over before). Both are decoded once off the main thread and held
 //! by this view only; closing it takes their textures out of every window's atlas. An SVG's
-//! Preview is drawn here too, from the texts its diff has, fitted or at 1:1, on the theme's
-//! background or a light or dark one.
+//! Preview is drawn here too, from the texts its diff has (see `svg`).
 
+mod svg;
+
+use crate::model::zoom::Zoom;
 use crate::source::DiffSource;
 use crate::style::{DiffOptions, DiffStyle, ImageMode, Layout};
 use gitviber_core::Core;
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::{
-    App, AppContext as _, Bounds, Context, DevicePixels, Hsla, Image, ImageFormat, ImageSource,
-    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit,
-    ParentElement as _, Pixels, Render, RenderImage, Rgba, StatefulInteractiveElement as _,
-    Styled as _, StyledImage as _, Subscription, SvgRenderer, SvgSize, Task, Window, canvas, div,
-    img, prelude::FluentBuilder as _, px, relative, size,
+    AnyElement, App, AppContext as _, Bounds, Context, DevicePixels, FocusHandle, Image,
+    ImageFormat, ImageSource, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, ObjectFit, ParentElement as _, Pixels, Point, Render, RenderImage, Styled as _,
+    StyledImage as _, Subscription, SvgRenderer, SvgSize, Task, Window, canvas, div, img, px,
+    relative, size,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -43,14 +45,6 @@ struct Version {
     natural: Option<(f32, f32)>,
 }
 
-/// How an SVG preview is sized.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Zoom {
-    #[default]
-    Fit,
-    Actual,
-}
-
 /// What an SVG preview is drawn on: art in the theme's own color vanishes on the theme's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Backdrop {
@@ -61,7 +55,8 @@ pub enum Backdrop {
 }
 
 /// An SVG's longer side is drawn this many device pixels long, whatever its own size: sharp
-/// when fitted to a pane, and two of them stay under ~45 MB.
+/// when fitted to a pane, and two of them stay under ~45 MB. Zoomed past it, only the part on
+/// screen is drawn again (`svg`).
 const SVG_MIN_SIDE: f32 = 1600.;
 const SVG_MAX_SIDE: f32 = 2400.;
 
@@ -118,36 +113,41 @@ pub struct ImageCompare {
     opacity: f32,
     dragging: bool,
     stage: Rc<Cell<Bounds<Pixels>>>,
-    /// Drawn from texts handed in (`set_svg_texts`), not read from git.
+    /// Drawn from texts handed in (`set_svg_texts`), not read from git; kept to draw a zoomed
+    /// part again.
     svg: bool,
+    texts: [Option<Arc<str>>; 2],
+    /// Both sides' zoom, so they stay lined up.
     zoom: Zoom,
     backdrop: Backdrop,
+    /// Where each SVG side was drawn last frame (one stage for both when laid over each other).
+    rooms: [Rc<Cell<Bounds<Pixels>>>; 2],
+    /// The part on screen of a zoomed side, drawn sharp, and what the last one asked for was.
+    crops: [Option<svg::Crop>; 2],
+    asked: [Option<svg::CropKey>; 2],
+    /// The pointer while a drag moves the drawing.
+    pan: Option<Point<Pixels>>,
+    /// Onion skin's fade track, where it was drawn.
+    fade: Rc<Cell<Bounds<Pixels>>>,
+    focus: FocusHandle,
     _load: Task<()>,
+    _crop: Task<()>,
     _release: Subscription,
 }
 
 impl ImageCompare {
     pub fn new(source: DiffSource, cx: &mut Context<Self>) -> Self {
-        let mut view = ImageCompare {
-            core: crate::core(cx),
-            source,
-            sides: [Side::Loading, Side::Loading],
-            divider: 0.5,
-            opacity: 0.5,
-            dragging: false,
-            stage: Rc::default(),
-            svg: false,
-            zoom: Zoom::Fit,
-            backdrop: Backdrop::Theme,
-            _load: Task::ready(()),
-            _release: cx.on_release(|this, cx| this.drop_images(cx)),
-        };
+        let mut view = ImageCompare::empty(source, false, cx);
         view.load(cx);
         view
     }
 
     /// An SVG's preview, drawn from the texts `set_svg_texts` gives it.
     pub fn svg(source: DiffSource, cx: &mut Context<Self>) -> Self {
+        ImageCompare::empty(source, true, cx)
+    }
+
+    fn empty(source: DiffSource, svg: bool, cx: &mut Context<Self>) -> Self {
         ImageCompare {
             core: crate::core(cx),
             source,
@@ -156,10 +156,18 @@ impl ImageCompare {
             opacity: 0.5,
             dragging: false,
             stage: Rc::default(),
-            svg: true,
-            zoom: Zoom::Fit,
+            svg,
+            texts: [None, None],
+            zoom: Zoom::default(),
             backdrop: Backdrop::Theme,
+            rooms: Default::default(),
+            crops: [None, None],
+            asked: [None, None],
+            pan: None,
+            fade: Rc::default(),
+            focus: cx.focus_handle(),
             _load: Task::ready(()),
+            _crop: Task::ready(()),
             _release: cx.on_release(|this, cx| this.drop_images(cx)),
         }
     }
@@ -173,6 +181,11 @@ impl ImageCompare {
 
     /// The SVG's text before and after (None: not on that side); the same text isn't drawn again.
     pub fn set_svg_texts(&mut self, texts: [Option<String>; 2], cx: &mut Context<Self>) {
+        let kept = texts.clone().map(|t| t.map(Arc::from));
+        if kept != self.texts {
+            self.texts = kept;
+            self.drop_crops(cx);
+        }
         let svg = cx.svg_renderer();
         let shown = [0, 1].map(|i| match &self.sides[i] {
             Side::Ready(v) => Some(v.hash),
@@ -237,6 +250,7 @@ impl ImageCompare {
                 cx.drop_image(v.image, None);
             }
         }
+        self.drop_crops(cx);
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
@@ -340,60 +354,33 @@ fn bytes(n: usize) -> String {
 
 fn picture(v: &Side) -> Option<gpui_kit::Img> {
     let Side::Ready(v) = v else { return None };
-    // A fitted SVG fills its place: its pixels were drawn for that.
-    let fit = if v.natural.is_some() {
-        ObjectFit::Contain
-    } else {
-        ObjectFit::ScaleDown
-    };
     Some(
         img(ImageSource::Render(v.image.clone()))
             .size_full()
-            .object_fit(fit),
+            .object_fit(ObjectFit::ScaleDown),
     )
 }
 
-fn natural(v: &Side) -> Option<(f32, f32)> {
-    match v {
-        Side::Ready(v) => v.natural,
-        _ => None,
-    }
-}
-
-fn backdrop_color(b: Backdrop) -> Option<Hsla> {
-    let rgb = |n: u32| -> Hsla {
-        Rgba {
-            r: (n >> 16) as f32 / 255.,
-            g: ((n >> 8) & 0xff) as f32 / 255.,
-            b: (n & 0xff) as f32 / 255.,
-            a: 1.,
-        }
-        .into()
-    };
-    match b {
-        Backdrop::Theme => None,
-        Backdrop::Light => Some(rgb(0xffffff)),
-        Backdrop::Dark => Some(rgb(0x181818)),
-    }
-}
-
-impl Render for ImageCompare {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let style = DiffStyle::get(cx).clone();
-        let c = &style.colors;
-        let both = matches!(self.sides, [Side::Ready(_), Side::Ready(_)]);
-        let mode = if both {
+impl ImageCompare {
+    /// 2-up until both versions are there to lay one over the other.
+    fn mode(&self, cx: &App) -> ImageMode {
+        if matches!(self.sides, [Side::Ready(_), Side::Ready(_)]) {
             DiffOptions::get(cx).image
         } else {
             ImageMode::Side
-        };
+        }
+    }
+
+    /// Before's and After's sizes, and `middle` between them.
+    fn bar(&self, style: &DiffStyle, middle: Option<impl IntoElement>) -> gpui_kit::Div {
+        let c = &style.colors;
         let label = |text: &'static str, color, d: String| {
             h_flex()
                 .gap_2()
                 .child(div().text_color(color).child(text))
                 .child(div().text_color(c.subtle).child(d))
         };
-        let bar = h_flex()
+        h_flex()
             .h(px(28.))
             .flex_none()
             .px_3()
@@ -408,14 +395,25 @@ impl Render for ImageCompare {
                     .flex()
                     .justify_center()
                     .text_color(c.subtle)
-                    .when(mode == ImageMode::Onion, |el| {
-                        el.child(format!(
-                            "After at {}% · drag to fade",
-                            (self.opacity * 100.).round()
-                        ))
-                    }),
+                    .children(middle),
             )
-            .child(label("After", c.added, details(&self.sides[1])));
+            .child(label("After", c.added, details(&self.sides[1])))
+    }
+}
+
+impl Render for ImageCompare {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.svg {
+            return self.render_svg(window, cx).into_any_element();
+        }
+        let style = DiffStyle::get(cx).clone();
+        let c = &style.colors;
+        let mode = self.mode(cx);
+        let bar = self.bar(
+            &style,
+            (mode == ImageMode::Onion)
+                .then(|| format!("After at {}% · drag to fade", (self.opacity * 100.).round())),
+        );
         let stage_bounds = self.stage.clone();
         let measure = canvas(
             move |bounds, _, _| stage_bounds.set(bounds),
@@ -423,72 +421,24 @@ impl Render for ImageCompare {
         )
         .absolute()
         .size_full();
-        let bg = if self.svg {
-            backdrop_color(self.backdrop)
-        } else {
-            None
-        };
-        let actual = self.svg && self.zoom == Zoom::Actual;
-        // At 1:1 the two lie in one frame, as large as the larger of them.
-        let frame = actual.then(|| {
-            let [a, b] = [&self.sides[0], &self.sides[1]].map(|s| natural(s).unwrap_or((0., 0.)));
-            (a.0.max(b.0), a.1.max(b.1))
-        });
-        let overlay = |el: gpui_kit::Div| match frame {
-            Some((w, h)) => div().flex_1().min_h_0().p_4().flex().child(
-                el.relative()
-                    .flex_none()
-                    .m_auto()
-                    .w(px(w))
-                    .h(px(h))
-                    .when_some(bg, |el, bg| el.bg(bg)),
-            ),
-            None => el
-                .relative()
-                .flex_1()
-                .min_h_0()
-                .m_4()
-                .when_some(bg, |el, bg| el.bg(bg)),
-        };
+        let overlay = |el: gpui_kit::Div| el.relative().flex_1().min_h_0().m_4();
         let stage = match mode {
             ImageMode::Side => {
-                // An SVG's two versions stack in the unified layout, as its diff's lines do.
-                let stacked = self.svg && DiffOptions::get(cx).layout == Layout::Unified;
-                (if stacked { v_flex() } else { h_flex() })
+                h_flex()
                     .flex_1()
                     .min_h_0()
                     .gap_4()
                     .p_4()
-                    .children(self.sides.iter().enumerate().map(|(i, s)| {
-                        let cell = div()
-                            .flex_1()
-                            .min_w_0()
-                            .min_h_0()
-                            .map(|el| if stacked { el.w_full() } else { el.h_full() });
-                        match (s, natural(s)) {
-                            (Side::Missing, _) => cell
+                    .children(self.sides.iter().map(|s| {
+                        let cell = div().flex_1().min_w_0().min_h_0().h_full();
+                        match s {
+                            Side::Missing => cell
                                 .flex()
                                 .items_center()
                                 .justify_center()
                                 .text_color(c.subtle)
                                 .child("Not on this side"),
-                            (_, Some((w, h))) if actual => cell.child(
-                                div()
-                                    .id(("svg-actual", i))
-                                    .size_full()
-                                    .overflow_scroll()
-                                    .flex()
-                                    .child(
-                                        div()
-                                            .m_auto()
-                                            .flex_none()
-                                            .w(px(w))
-                                            .h(px(h))
-                                            .when_some(bg, |el, bg| el.bg(bg))
-                                            .children(picture(s)),
-                                    ),
-                            ),
-                            _ => cell.when_some(bg, |el, bg| el.bg(bg)).children(picture(s)),
+                            _ => cell.children(picture(s)),
                         }
                     }))
             }
@@ -574,9 +524,6 @@ impl Render for ImageCompare {
             .child(
                 stage
                     .id("image-stage")
-                    .when(frame.is_some() && mode != ImageMode::Side, |el| {
-                        el.overflow_scroll()
-                    })
                     .cursor_ew_resize()
                     .on_mouse_down(
                         MouseButton::Left,
@@ -599,5 +546,6 @@ impl Render for ImageCompare {
                         cx.listener(|this, _, _, _| this.dragging = false),
                     ),
             )
+            .into_any_element()
     }
 }

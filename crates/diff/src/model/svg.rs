@@ -1,7 +1,10 @@
 //! An SVG's own size, from its root element, as the renderer works it out: width and height, a
 //! missing one from the viewBox's proportions, else the viewBox, else 100 × 100. The preview
 //! draws it at this size at 1:1 and rasterizes for it, so a wrong guess costs sharpness, never
-//! memory.
+//! memory. And the same drawing cropped to a part of it, for a zoomed preview to rasterize only
+//! what's on screen.
+
+use std::ops::Range;
 
 const DEFAULT: (f32, f32) = (100., 100.);
 
@@ -35,6 +38,11 @@ pub fn intrinsic_size(text: &str) -> Option<(f32, f32)> {
 
 /// The root element's start tag, attributes and all.
 fn root_tag(text: &str) -> Option<&str> {
+    root_range(text).map(|r| &text[r])
+}
+
+/// Where the root's start tag is: from its `<svg` to before its `>`.
+fn root_range(text: &str) -> Option<Range<usize>> {
     let mut from = 0;
     while let Some(at) = text[from..].find("<svg") {
         let start = from + at;
@@ -45,7 +53,7 @@ fn root_tag(text: &str) -> Option<&str> {
                 match (quote, c) {
                     (None, '"' | '\'') => quote = Some(c),
                     (Some(q), c) if c == q => quote = None,
-                    (None, '>') => return Some(&text[start..start + i]),
+                    (None, '>') => return Some(start..start + i),
                     _ => {}
                 }
             }
@@ -57,15 +65,19 @@ fn root_tag(text: &str) -> Option<&str> {
 }
 
 fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
-    let mut rest = tag;
-    while let Some(at) = rest.find(name) {
-        let before = rest[..at].chars().next_back();
-        let after = rest[at + name.len()..].trim_start();
-        rest = &rest[at + name.len()..];
-        if !before.is_some_and(char::is_whitespace) {
+    attribute_span(tag, name).map(|(_, value)| value)
+}
+
+/// Attribute `name` of `tag`: its span, from the space before it to its closing quote, and its
+/// value.
+fn attribute_span<'a>(tag: &'a str, name: &str) -> Option<(Range<usize>, &'a str)> {
+    let mut from = 0;
+    while let Some(at) = tag[from..].find(name).map(|a| a + from) {
+        from = at + name.len();
+        let Some(before) = tag[..at].chars().next_back().filter(|c| c.is_whitespace()) else {
             continue;
-        }
-        let Some(value) = after.strip_prefix('=') else {
+        };
+        let Some(value) = tag[from..].trim_start().strip_prefix('=') else {
             continue;
         };
         let value = value.trim_start();
@@ -73,10 +85,40 @@ fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
         if q != '"' && q != '\'' {
             continue;
         }
-        let end = value[1..].find(q)?;
-        return Some(&value[1..1 + end]);
+        let open = tag.len() - value.len();
+        let close = open + 1 + tag[open + 1..].find(q)?;
+        return Some((at - before.len_utf8()..close + 1, &tag[open + 1..close]));
     }
     None
+}
+
+/// `text` showing only `part` of its drawing (x, y, width, height in its own pixels) on
+/// `device` pixels. The root keeps its own viewBox and is sized to its natural size inside an
+/// outer one that crops, so percentages in the drawing still mean what they did.
+pub fn crop(text: &str, part: [f32; 4], device: (u32, u32)) -> Option<String> {
+    let range = root_range(text)?;
+    let (w, h) = intrinsic_size(text)?;
+    let mut root = text[range.clone()].to_string();
+    // A nested root would be moved by its x and y, which an outermost one ignores, and clipped
+    // to its size, which costs a mask the size of the crop: the outer one clips anyway.
+    for name in ["width", "height", "x", "y", "overflow"] {
+        while let Some((span, _)) = attribute_span(&root, name) {
+            root.replace_range(span, "");
+        }
+    }
+    root.insert_str(
+        4,
+        &format!(" width=\"{w}\" height=\"{h}\" overflow=\"visible\""),
+    );
+    let [x, y, pw, ph] = part;
+    Some(format!(
+        "{}<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\" \
+         viewBox=\"{x} {y} {pw} {ph}\" preserveAspectRatio=\"none\">{root}{}</svg>",
+        &text[..range.start],
+        device.0.max(1),
+        device.1.max(1),
+        &text[range.end..],
+    ))
 }
 
 /// A length in CSS pixels; None for a percentage, which leaves the size to the viewBox.
@@ -130,5 +172,18 @@ mod tests {
         );
         assert_eq!(s("<svgx width='1'>"), None);
         assert_eq!(s("plain text"), None);
+    }
+
+    #[test]
+    fn a_crop_wraps_the_root_at_its_own_size() {
+        let text = r#"<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" x="3" width="50%" stroke-width="2" viewBox="0 0 12 8"><rect width="100%"/></svg>"#;
+        let out = crop(text, [6., 0., 6., 8.], (60, 80)).unwrap();
+        assert_eq!(
+            out,
+            r#"<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="60" height="80" viewBox="6 0 6 8" preserveAspectRatio="none"><svg width="12" height="8" overflow="visible" xmlns="http://www.w3.org/2000/svg" stroke-width="2" viewBox="0 0 12 8"><rect width="100%"/></svg></svg>"#
+        );
+        assert_eq!(crop("no drawing", [0., 0., 1., 1.], (1, 1)), None);
     }
 }

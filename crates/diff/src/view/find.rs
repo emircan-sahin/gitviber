@@ -1,8 +1,8 @@
 //! ⌘F over a diff's lines, removed ones too: ↵ / ⇧↵ step through the matches (a folded one is
-//! opened), ⌥⌘C and ⌥⌘W toggle Match Case and Whole Word, Esc closes.
+//! opened), ⌥⌘C, ⌥⌘W and ⌥⌘R toggle Match Case, Whole Word and Regex, Esc closes.
 
 use super::*;
-use crate::model::find::{self, FindOptions};
+use crate::model::find::{FindOptions, Finder};
 use crate::model::row_pos;
 use gpui_kit::Hsla;
 use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
@@ -16,6 +16,10 @@ pub(super) struct Find {
     /// In row order: a row's text is the same in both columns of split, so a row is enough.
     hits: Vec<Hit>,
     current: usize,
+    /// The query is a regex that doesn't parse.
+    invalid: bool,
+    /// A match's wash and the current one's, from the theme at the last frame.
+    colors: (Hsla, Hsla),
     _sub: Subscription,
 }
 
@@ -52,6 +56,8 @@ impl DiffView {
                 options: FindOptions::default(),
                 hits: vec![],
                 current: 0,
+                invalid: false,
+                colors: (Hsla::default(), Hsla::default()),
                 _sub: sub,
             });
         }
@@ -66,6 +72,7 @@ impl DiffView {
 
     pub(super) fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.find = None;
+        self.overview = None;
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -74,13 +81,15 @@ impl DiffView {
     pub(super) fn search(&mut self, show: bool, cx: &mut Context<Self>) {
         let Some(f) = &self.find else { return };
         let query = f.input.read(cx).value().to_string();
-        let hits = match &self.data {
-            Some(data) if !query.is_empty() => {
+        let finder = (!query.is_empty()).then(|| Finder::new(&query, f.options));
+        let invalid = matches!(finder, Some(Err(_)));
+        let hits = match (&self.data, finder) {
+            (Some(data), Some(Ok(finder))) => {
                 let mut hits = vec![];
                 for (r, row) in data.rows.iter().enumerate() {
                     let pos = row_pos(row);
                     let line = data.side(pos.side).line(pos.line);
-                    for range in find::matches(&line, &query, f.options) {
+                    for range in finder.matches(&line) {
                         hits.push(Hit {
                             row: r as u32,
                             pos,
@@ -98,6 +107,8 @@ impl DiffView {
         };
         let Some(f) = &mut self.find else { return };
         f.hits = hits;
+        f.invalid = invalid;
+        self.overview = None;
         f.current = if show {
             0
         } else {
@@ -136,18 +147,27 @@ impl DiffView {
         }
     }
 
-    fn toggle_find_option(&mut self, whole_word: bool, cx: &mut Context<Self>) {
+    fn toggle_find_option(
+        &mut self,
+        option: fn(&mut FindOptions) -> &mut bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(f) = &mut self.find else { return };
-        if whole_word {
-            f.options.whole_word = !f.options.whole_word;
-        } else {
-            f.options.match_case = !f.options.match_case;
-        }
+        let on = option(&mut f.options);
+        *on = !*on;
         self.search(true, cx);
     }
 
+    /// The theme's find colors for this frame's matches.
+    pub(super) fn sync_find_colors(&mut self, cx: &App) {
+        if let Some(f) = &mut self.find {
+            let c = crate::style::find_colors(cx);
+            f.colors = (c.found, c.current);
+        }
+    }
+
     /// Row `r`'s matches, to draw over its code: the current one stronger.
-    pub(super) fn find_marks(&self, r: u32, style: &DiffStyle) -> Vec<(Range<usize>, Hsla)> {
+    pub(super) fn find_marks(&self, r: u32) -> Vec<(Range<usize>, Hsla)> {
         let Some(f) = &self.find else { return vec![] };
         let from = f.hits.partition_point(|h| h.row < r);
         f.hits[from..]
@@ -155,14 +175,25 @@ impl DiffView {
             .enumerate()
             .take_while(|(_, h)| h.row == r)
             .map(|(i, h)| {
-                let strong = from + i == f.current;
-                let color = style
-                    .colors
-                    .primary
-                    .opacity(if strong { 0.6 } else { 0.25 });
+                let color = if from + i == f.current {
+                    f.colors.1
+                } else {
+                    f.colors.0
+                };
                 (h.range.clone(), color)
             })
             .collect()
+    }
+
+    /// The rows with a match, ascending, for the overview.
+    pub(super) fn found_rows(&self) -> Vec<u32> {
+        let mut rows: Vec<u32> = self
+            .find
+            .iter()
+            .flat_map(|f| f.hits.iter().map(|h| h.row))
+            .collect();
+        rows.dedup();
+        rows
     }
 
     /// Where the box is: the match shown and how many (tests).
@@ -190,6 +221,7 @@ impl DiffView {
         let query = !f.input.read(cx).value().is_empty();
         let count: SharedString = match (query, f.hits.len()) {
             (false, _) => "".into(),
+            (true, _) if f.invalid => "Invalid regex".into(),
             (true, 0) => "No results".into(),
             (true, n) if n >= MAX_MATCHES => format!("{} of {n}+", f.current + 1).into(),
             (true, n) => format!("{} of {n}", f.current + 1).into(),
@@ -202,7 +234,7 @@ impl DiffView {
                 .absolute()
                 .top_2()
                 .right_4()
-                .w(px(360.))
+                .w(px(400.))
                 .gap_1()
                 .p_1()
                 .rounded(px(6.))
@@ -212,14 +244,15 @@ impl DiffView {
                 .text_size(style.ui_font_size)
                 .key_context(FIND_CONTEXT)
                 .on_action(cx.listener(|this, _: &Escape, window, cx| this.close_find(window, cx)))
-                .on_action(
-                    cx.listener(|this, _: &FindMatchCase, _, cx| {
-                        this.toggle_find_option(false, cx)
-                    }),
-                )
-                .on_action(
-                    cx.listener(|this, _: &FindWholeWord, _, cx| this.toggle_find_option(true, cx)),
-                )
+                .on_action(cx.listener(|this, _: &FindMatchCase, _, cx| {
+                    this.toggle_find_option(|o| &mut o.match_case, cx)
+                }))
+                .on_action(cx.listener(|this, _: &FindWholeWord, _, cx| {
+                    this.toggle_find_option(|o| &mut o.whole_word, cx)
+                }))
+                .on_action(cx.listener(|this, _: &FindRegex, _, cx| {
+                    this.toggle_find_option(|o| &mut o.regex, cx)
+                }))
                 .child(div().flex_1().child(Input::new(&f.input).xsmall()))
                 .child(
                     icon_button(
@@ -232,7 +265,9 @@ impl DiffView {
                         },
                         f.options.match_case,
                     )
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_find_option(false, cx))),
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toggle_find_option(|o| &mut o.match_case, cx)
+                    })),
                 )
                 .child(
                     icon_button(
@@ -245,14 +280,32 @@ impl DiffView {
                         },
                         f.options.whole_word,
                     )
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_find_option(true, cx))),
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toggle_find_option(|o| &mut o.whole_word, cx)
+                    })),
+                )
+                .child(
+                    icon_button(
+                        "find-regex",
+                        Lucide::Regex,
+                        if mac {
+                            "Use regular expression (⌥⌘R)"
+                        } else {
+                            "Use regular expression (Alt+R)"
+                        },
+                        f.options.regex,
+                    )
+                    .on_click(
+                        cx.listener(|this, _, _, cx| this.toggle_find_option(|o| &mut o.regex, cx)),
+                    ),
                 )
                 .child(
                     div()
-                        .w(px(64.))
+                        .w(px(76.))
                         .text_right()
+                        .truncate()
                         .text_size(style.ui_font_size - px(1.))
-                        .text_color(c.subtle)
+                        .text_color(if f.invalid { c.destructive } else { c.subtle })
                         .child(count),
                 )
                 .child(

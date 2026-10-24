@@ -97,6 +97,9 @@ fn holds_only_the_files_near_the_screen(cx: &mut TestAppContext) {
         })
         .unwrap();
     cx.run_until_parked();
+    // The overview has the files near the top from the first frame.
+    let added = |cx: &mut TestAppContext| view.read_with(cx, |v, _| v.overview_spans()[1].len());
+    assert!(added(cx) > 0);
     let mut most = 0;
     let mut seen_last = false;
     // Down the whole list a screen at a time; each step loads what came near.
@@ -110,6 +113,8 @@ fn holds_only_the_files_near_the_screen(cx: &mut TestAppContext) {
     }
     assert!(seen_last, "never got to the last file");
     assert!(most > 0 && most <= 32, "held {most} files at once");
+    // Every file's six changes stay on it, those given back too.
+    assert_eq!(added(cx), FILES * 6);
     window
         .update(cx, |host, _, cx| {
             host.view = None;

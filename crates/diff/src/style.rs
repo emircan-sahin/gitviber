@@ -98,6 +98,29 @@ impl DiffColors {
     }
 }
 
+/// Find's colors, the same in every theme: its mark on the overview, a match's wash, the current
+/// one's. The app's theme has them; a diff shown without it (tests, the demo) uses the defaults.
+pub(crate) struct FindColors {
+    pub mark: Hsla,
+    pub found: Hsla,
+    pub current: Hsla,
+}
+
+pub(crate) fn find_colors(cx: &App) -> FindColors {
+    match cx.try_global::<gitviber_ui::AppTheme>() {
+        Some(t) => FindColors {
+            mark: t.find_mark,
+            found: t.find_match,
+            current: t.find_current,
+        },
+        None => FindColors {
+            mark: hex("#d18616"),
+            found: hex("#ea5c0054"),
+            current: hex("#ea5c00a8"),
+        },
+    }
+}
+
 /// Colors and the code font.
 #[derive(Clone)]
 pub struct DiffStyle {

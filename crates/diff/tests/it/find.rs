@@ -1,5 +1,5 @@
-//! ⌘F finds in every line of a diff, removed ones and folded ones too; an SVG's Preview draws
-//! both versions and gives them back when its diff closes.
+//! ⌘F finds in every line of a diff, removed ones and folded ones too, as text or a regex; an
+//! SVG's Preview draws both versions and gives them back when its diff closes.
 
 use crate::review_fixes::{repo, setup, window_with};
 use gitviber_diff::{Compare, DiffData, DiffSource, DiffView, LinePos, Side};
@@ -84,6 +84,16 @@ fn find_goes_through_removed_and_folded_lines(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let (_, total, _) = view.read_with(cx, |v, _| v.find_state()).unwrap();
     assert_eq!(total, 1);
+    // ⌥⌘R: the query is a regex, case still matched.
+    cx.dispatch_action(gitviber_diff::actions::FindRegex);
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            v.set_find_query("[Nn]eedle (old|here)", window, cx)
+        })
+    });
+    cx.run_until_parked();
+    let (_, total, _) = view.read_with(cx, |v, _| v.find_state()).unwrap();
+    assert_eq!(total, 2);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

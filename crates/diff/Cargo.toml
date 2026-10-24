@@ -19,6 +19,8 @@ gitviber-core = { path = "../core" }
 gitviber-ui = { path = "../ui" }
 # A markdown file's Preview. Neither it nor gitviber-ui depends on the diff: no cycle.
 gitviber-markdown = { path = "../markdown" }
+# Find's Regex toggle; the version the markdown and files crates already build.
+regex = "=1.13.1"
 
 [dev-dependencies]
 # Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.

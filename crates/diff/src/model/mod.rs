@@ -6,9 +6,11 @@ pub mod emphasis;
 pub mod find;
 pub mod indent;
 pub mod notes;
+pub mod overview;
 pub mod staging;
 pub mod svg;
 pub mod text;
+pub mod zoom;
 
 pub use display::{Item, Shown};
 pub use staging::{Change, Picked};

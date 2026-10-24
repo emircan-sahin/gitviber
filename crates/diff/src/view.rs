@@ -10,8 +10,10 @@ use crate::highlight::{self, Highlighted};
 use crate::image::{ImageCompare, image_format};
 use crate::list::{Heights, Place, Scroll, vlist};
 use crate::model::display::{self, CONTEXT as CONTEXT_LINES, FOLD_MIN, Item};
+use crate::model::overview::item_marks;
 use crate::model::staging::{self, Change, Picked};
 use crate::model::{ADDED, LinePos, LineRange, REMOVED, Side, SideText};
+use crate::overview::{self, Marks};
 use crate::paint::{self, Metrics};
 use crate::source::{Compare, DiffSource};
 use crate::style::{DiffOptions, DiffStyle, ImageMode, Layout, Whitespace};
@@ -218,12 +220,15 @@ pub struct DiffView {
     web: Option<Option<String>>,
     /// Where the lines are drawn, for the column a click lands on.
     body_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// The overview's marks; None once the lines, their heights or find's matches change.
+    overview: Option<Rc<Marks>>,
     _edit: Option<Subscription>,
     _load: Task<()>,
     _highlight: Task<()>,
     _action: Task<()>,
     _copy: Task<()>,
     _lookup: Task<()>,
+    _peek: Task<()>,
     _link: Task<()>,
     _web: Task<()>,
 }
@@ -297,12 +302,14 @@ impl DiffView {
             preview_stale: true,
             web: None,
             body_bounds: Rc::default(),
+            overview: None,
             _edit: None,
             _load: Task::ready(()),
             _highlight: Task::ready(()),
             _action: Task::ready(()),
             _copy: Task::ready(()),
             _lookup: Task::ready(()),
+            _peek: Task::ready(()),
             _link: Task::ready(()),
             _web: Task::ready(()),
         }
@@ -790,6 +797,7 @@ impl DiffView {
 
     fn rebuild(&mut self, anchor: Option<Anchor>, cx: &mut Context<Self>) {
         self.line = DiffStyle::get(cx).line_px();
+        self.overview = None;
         let Some(data) = &self.data else {
             self.items.clear();
             self.heights = Rc::default();
@@ -869,6 +877,7 @@ impl DiffView {
         self.measured.insert(key, extra);
         let anchor = self.anchor();
         self.heights = Rc::new(self.item_heights());
+        self.overview = None;
         if let Some(a) = anchor
             && let Some(ix) = self.item_at_pos(a.pos)
         {
@@ -1051,7 +1060,7 @@ impl DiffView {
         window.focus(&self.focus, cx);
         self.caret = self.caret_at(ix, column, e.position.x, window, cx);
         if e.modifiers.secondary() && !e.modifiers.shift && self.caret.is_some() {
-            self.go_to_definition(window, cx);
+            self.look_up(links::LookUp::Definition, window, cx);
         }
         match self.sel.as_mut() {
             Some(s) if e.modifiers.shift && s.column == column => {
@@ -1503,6 +1512,40 @@ fn parse_all(ropes: [Option<Rope>; 2], language: &str) -> [Option<(SyntaxHighlig
     ropes.map(|r| r.and_then(|r| highlight::parse(language, &r).map(|h| (h, r))))
 }
 
+impl DiffView {
+    /// The overview's marks over every line, worked out again only after a change.
+    fn overview_marks(&mut self) -> Rc<Marks> {
+        if let Some(marks) = &self.overview {
+            return marks.clone();
+        }
+        let marks = Rc::new(match &self.data {
+            Some(data) => {
+                let found = self.found_rows();
+                let items = self.items.iter().enumerate();
+                Marks::of_items(
+                    &self.heights,
+                    items.map(|(ix, it)| (ix, item_marks(&data.rows, it, &found))),
+                )
+            }
+            None => Marks::default(),
+        });
+        self.overview = Some(marks.clone());
+        marks
+    }
+
+    /// The overview's marks as drawn: each kind's spans (tests).
+    #[doc(hidden)]
+    pub fn overview_spans(&mut self) -> [Vec<(Pixels, Pixels)>; 4] {
+        self.overview_marks().all_spans()
+    }
+
+    /// How far the lines are scrolled (tests).
+    #[doc(hidden)]
+    pub fn scroll_top(&self) -> Pixels {
+        self.scroll.top()
+    }
+}
+
 fn item_first_row(item: &Item) -> u32 {
     match *item {
         Item::Line(r) => r,
@@ -1520,7 +1563,7 @@ impl DiffView {
                 side,
                 &data.rows[r as usize],
                 style,
-                &self.find_marks(r, style),
+                &self.find_marks(r),
             ),
             None => StyledText::new(""),
         }
@@ -2104,6 +2147,7 @@ impl Render for DiffView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_options(cx);
         self.sync_preview(window, cx);
+        self.sync_find_colors(cx);
         if std::mem::take(&mut self.edit_stale)
             && let Some(edit) = self.edit.clone()
         {
@@ -2182,6 +2226,7 @@ impl Render for DiffView {
                 let view = cx.entity().downgrade();
                 let menu_view = view.clone();
                 let bounds = self.body_bounds.clone();
+                let marks = self.overview_marks();
                 div()
                     .id("diff-body")
                     .relative()
@@ -2191,30 +2236,64 @@ impl Render for DiffView {
                     .flex()
                     .bg(style.colors.background)
                     .child(
-                        canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {})
-                            .absolute()
-                            .size_full(),
+                        div()
+                            .id("diff-lines")
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .flex()
+                            .child(
+                                canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {})
+                                    .absolute()
+                                    .size_full(),
+                            )
+                            .child({
+                                let measure = view.clone();
+                                vlist(
+                                    "diff-rows",
+                                    &self.scroll,
+                                    self.heights.clone(),
+                                    cx.entity_id(),
+                                    move |range, window, cx| {
+                                        view.update(cx, |this, cx| {
+                                            this.render_items(range, window, cx)
+                                        })
+                                        .unwrap_or_default()
+                                    },
+                                )
+                                .on_measure(
+                                    move |ix, height, _, cx| {
+                                        measure
+                                            .update(cx, |this, cx| {
+                                                this.measured_item(ix, height, cx)
+                                            })
+                                            .ok();
+                                    },
+                                )
+                            })
+                            .child(Scrollbar::horizontal(&self.scroll))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                if !hovered && (this.hover.is_some() || this.hover_item.is_some()) {
+                                    this.hover = None;
+                                    this.hover_item = None;
+                                    cx.notify();
+                                }
+                            }))
+                            .context_menu(move |menu, _, cx| match menu_view.upgrade() {
+                                Some(v) => v.read(cx).line_menu(menu, menu_view.clone()),
+                                None => menu,
+                            }),
                     )
-                    .child({
-                        let measure = view.clone();
-                        vlist(
-                            "diff-rows",
-                            &self.scroll,
-                            self.heights.clone(),
-                            cx.entity_id(),
-                            move |range, window, cx| {
-                                view.update(cx, |this, cx| this.render_items(range, window, cx))
-                                    .unwrap_or_default()
-                            },
-                        )
-                        .on_measure(move |ix, height, _, cx| {
-                            measure
-                                .update(cx, |this, cx| this.measured_item(ix, height, cx))
-                                .ok();
-                        })
-                    })
-                    .child(Scrollbar::vertical(&self.scroll))
-                    .child(Scrollbar::horizontal(&self.scroll))
+                    // In place of a scrollbar: the whole file's changes and matches.
+                    .child(overview::overview(
+                        marks,
+                        self.heights.total(),
+                        &self.scroll,
+                        cx.entity_id(),
+                        &style,
+                        cx,
+                    ))
                     .children(self.find_bar(&style, cx))
                     .children(self.places_list(&style, cx))
                     .on_mouse_up(
@@ -2225,17 +2304,6 @@ impl Render for DiffView {
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| this.released(cx)),
                     )
-                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                        if !hovered && (this.hover.is_some() || this.hover_item.is_some()) {
-                            this.hover = None;
-                            this.hover_item = None;
-                            cx.notify();
-                        }
-                    }))
-                    .context_menu(move |menu, _, cx| match menu_view.upgrade() {
-                        Some(v) => v.read(cx).line_menu(menu, menu_view.clone()),
-                        None => menu,
-                    })
                     .into_any_element()
             }
         };
@@ -2322,11 +2390,13 @@ impl Render for DiffView {
                 this.github_link(true, window, cx)
             }))
             .on_action(cx.listener(|this, _: &editor::GoToDefinition, window, cx| {
-                if this.can_find() {
-                    this.go_to_definition(window, cx)
-                } else {
-                    cx.propagate()
-                }
+                this.look_up_if_code(links::LookUp::Definition, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &editor::PeekDefinition, window, cx| {
+                this.look_up_if_code(links::LookUp::Peek, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &editor::GoToReferences, window, cx| {
+                this.look_up_if_code(links::LookUp::References, window, cx)
             }))
             .map(|mut el| {
                 for (action, command) in crate::actions::answers(cx).iter() {

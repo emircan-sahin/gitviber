@@ -3,7 +3,8 @@
 //! diff; an SVG opens however the last one was left. A preview shows the file as typed.
 
 use super::*;
-use crate::image::{Backdrop, Zoom};
+use crate::image::Backdrop;
+use crate::model::zoom::{ACTUAL, FIT, Zoom};
 use gitviber_markdown::{MarkdownBase, MarkdownEvent, MarkdownView, is_markdown};
 use gitviber_ui::Settings;
 
@@ -108,6 +109,7 @@ impl DiffView {
             self.preview_stale = true;
             if want.is_some() {
                 self.find = None;
+                self.overview = None;
                 self.places = None;
             }
         }
@@ -181,7 +183,8 @@ impl DiffView {
                 .ghost()
                 .xsmall()
                 .label(label)
-                .toggled(zoom == to)
+                .tooltip("Scroll to zoom, drag to pan, double-click to fit")
+                .toggled(zoom.scale == to.scale)
                 .on_click(move |_, _, cx| {
                     view.update(cx, |v, cx| v.set_zoom(to, cx)).ok();
                 })
@@ -194,8 +197,8 @@ impl DiffView {
         };
         let back = view.downgrade();
         vec![
-            zoom_button("svg-fit", "Fit", Zoom::Fit),
-            zoom_button("svg-actual", "1:1", Zoom::Actual),
+            zoom_button("svg-fit", "Fit", FIT),
+            zoom_button("svg-actual", "1:1", ACTUAL),
             icon_button(
                 "svg-contrast",
                 Lucide::Contrast,

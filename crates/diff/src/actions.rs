@@ -38,6 +38,7 @@ gpui_kit::actions!(
         Save,
         FindMatchCase,
         FindWholeWord,
+        FindRegex,
     ]
 );
 
@@ -89,17 +90,18 @@ pub fn init_local(cx: &mut App) {
     bind_find(cx);
 }
 
-/// Match Case and Whole Word while typing in the find box, as the code view's box has them.
+/// Match Case, Whole Word and Regex while typing in the find box, as the code view's box has them.
 fn bind_find(cx: &mut App) {
     let f = Some(FIND_CONTEXT);
-    let (case, word) = if cfg!(target_os = "macos") {
-        ("alt-cmd-c", "alt-cmd-w")
+    let (case, word, regex) = if cfg!(target_os = "macos") {
+        ("alt-cmd-c", "alt-cmd-w", "alt-cmd-r")
     } else {
-        ("alt-c", "alt-w")
+        ("alt-c", "alt-w", "alt-r")
     };
     cx.bind_keys([
         KeyBinding::new(case, FindMatchCase, f),
         KeyBinding::new(word, FindWholeWord, f),
+        KeyBinding::new(regex, FindRegex, f),
     ]);
 }
 
@@ -133,6 +135,8 @@ pub fn init(cx: &mut App) {
         // The app's own commands, which its keymap binds where the app runs.
         KeyBinding::new("cmd-f", gitviber_ui::keymap::editor::Find, c),
         KeyBinding::new("f12", gitviber_ui::keymap::editor::GoToDefinition, c),
+        KeyBinding::new("alt-f12", gitviber_ui::keymap::editor::PeekDefinition, c),
+        KeyBinding::new("shift-f12", gitviber_ui::keymap::editor::GoToReferences, c),
     ]);
     bind_find(cx);
 }

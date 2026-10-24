@@ -10,7 +10,9 @@ use crate::data::DiffData;
 use crate::highlight::{self, Highlighted};
 use crate::list::{Heights, Place, Scroll, vlist};
 use crate::model::display::{self, CONTEXT as CONTEXT_LINES, FOLD_MIN, Item};
+use crate::model::overview::{Mark, item_marks};
 use crate::model::{LinePos, LineRange, REMOVED, Side};
+use crate::overview::{self, Marks};
 use crate::paint::{self, Metrics};
 use crate::source::{Compare, DiffSource};
 use crate::style::{DiffOptions, DiffStyle};
@@ -126,6 +128,9 @@ struct Slot {
     /// Blocks under its lines, and their rooms as measured.
     annotations: Vec<Annotation>,
     measured: HashMap<SharedString, Pixels>,
+    /// Its changes on the overview, from the top of its body as last laid out: they stay on it
+    /// while the file keeps only its height.
+    marks: Marks,
 }
 
 impl Slot {
@@ -180,6 +185,8 @@ pub struct StackedDiff {
     ids: u64,
     /// The rows with blocks under them: their file and its annotations' indexes.
     placed: HashMap<usize, (usize, Vec<usize>)>,
+    /// The overview's marks over every file read so far.
+    overview: Rc<Marks>,
 }
 
 impl EventEmitter<StackedEvent> for StackedDiff {}
@@ -208,6 +215,7 @@ impl StackedDiff {
             title: None,
             ids: 0,
             placed: HashMap::new(),
+            overview: Rc::default(),
         };
         view.set_files(files, cx);
         view
@@ -245,6 +253,7 @@ impl StackedDiff {
                     body: Body::Idle,
                     annotations: slot.annotations,
                     measured: slot.measured,
+                    marks: Marks::default(),
                 },
                 None => Slot {
                     id: self.next_id(),
@@ -256,6 +265,7 @@ impl StackedDiff {
                     body: Body::Idle,
                     annotations: vec![],
                     measured: HashMap::new(),
+                    marks: Marks::default(),
                 },
             };
             self.slots.push(slot);
@@ -364,6 +374,12 @@ impl StackedDiff {
     pub fn schedule_now(&mut self, cx: &mut Context<Self>) {
         self.rebuild_if_dirty(None);
         self.schedule(cx);
+    }
+
+    /// The overview's marks: each kind's spans, by `Mark as usize` (tests).
+    #[doc(hidden)]
+    pub fn overview_spans(&self) -> [Vec<(Pixels, Pixels)>; 4] {
+        self.overview.all_spans()
     }
 
     /// Files whose text is held now (the rest keep only their height).
@@ -739,25 +755,35 @@ impl StackedDiff {
         let collapse = self.options.collapse;
         let mut rows = Vec::new();
         let mut heights = Vec::new();
+        let mut marks = Marks::default();
+        // Where the next row starts.
+        let mut y = px(0.);
         self.starts.clear();
         self.placed.clear();
         for (f, slot) in self.slots.iter_mut().enumerate() {
             self.starts.push(rows.len());
             rows.push(Row::Header(f));
             heights.push(px(HEADER));
+            y += px(HEADER);
             if !slot.is_open() {
                 continue;
             }
-            let body_start = heights.len();
+            let (body_start, body_y) = (heights.len(), y);
             match &mut slot.body {
                 Body::Idle | Body::Loading { .. } => {
                     rows.push(Row::Room(f));
-                    heights.push(slot.height.unwrap_or_else(|| slot.estimate(line)));
+                    let room = slot.height.unwrap_or_else(|| slot.estimate(line));
+                    heights.push(room);
+                    if slot.height.is_some() {
+                        marks.extend(&slot.marks, y);
+                    }
+                    y += room;
                     continue;
                 }
                 Body::Failed(_) | Body::Held { .. } => {
                     rows.push(Row::Message(f));
                     heights.push(px(MESSAGE));
+                    slot.marks = Marks::default();
                 }
                 Body::Ready(l) => {
                     if l.items.is_empty()
@@ -767,6 +793,7 @@ impl StackedDiff {
                     {
                         rows.push(Row::Message(f));
                         heights.push(px(MESSAGE));
+                        slot.marks = Marks::default();
                     } else {
                         if collapse != l.collapse {
                             l.items =
@@ -776,31 +803,40 @@ impl StackedDiff {
                         if l.data.note.is_some() {
                             rows.push(Row::Note(f));
                             heights.push(px(NOTE));
+                            y += px(NOTE);
                         }
                         let placed = annotate::place(&l.data.rows, &l.items, &slot.annotations);
+                        let mut own = Marks::default();
                         for (i, it) in l.items.iter().enumerate() {
-                            match placed.get(&i) {
+                            let h = match placed.get(&i) {
                                 Some(p) => {
                                     self.placed.insert(rows.len(), (f, p.clone()));
-                                    heights.push(
-                                        line + annotate::extra(
-                                            &slot.annotations,
-                                            p,
-                                            &slot.measured,
-                                        ),
-                                    );
+                                    line + annotate::extra(&slot.annotations, p, &slot.measured)
                                 }
-                                None => heights.push(line),
-                            }
+                                None => line,
+                            };
+                            heights.push(h);
                             rows.push(Row::Line(f, *it));
+                            let m = item_marks(&l.data.rows, it, &[]);
+                            for mark in [Mark::Removed, Mark::Added] {
+                                if m[mark as usize] {
+                                    own.push(mark, y - body_y, y + h - body_y);
+                                }
+                            }
+                            y += h;
                         }
+                        marks.extend(&own, body_y);
+                        slot.marks = own;
                     }
                 }
             }
-            slot.height = Some(heights[body_start..].iter().fold(px(0.), |a, h| a + *h));
+            let body = heights[body_start..].iter().fold(px(0.), |a, h| a + *h);
+            slot.height = Some(body);
+            y = body_y + body;
         }
         self.rows = rows;
         self.heights = Rc::new(Heights::from_heights(heights));
+        self.overview = Rc::new(marks);
         // Its (file, row) is someone else's row now.
         self.hover = None;
         if let Some((f, offset)) = anchor
@@ -1230,12 +1266,12 @@ impl Render for StackedDiff {
             .top_file()
             .filter(|&f| self.heights.top(self.starts[f]) < self.scroll.top());
         let view = cx.entity().downgrade();
-        let body = div()
-            .id("stacked-body")
+        let lines = div()
+            .id("stacked-lines")
             .relative()
             .flex_1()
-            .min_h_0()
-            .w_full()
+            .min_w_0()
+            .h_full()
             .flex()
             .child({
                 let measure = view.clone();
@@ -1265,13 +1301,29 @@ impl Render for StackedDiff {
                         .child(self.header(f, &style, cx)),
                 )
             })
-            .child(Scrollbar::vertical(&self.scroll))
             .child(Scrollbar::horizontal(&self.scroll))
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 if !hovered && this.hover.take().is_some() {
                     cx.notify();
                 }
             }));
+        let body = div()
+            .id("stacked-body")
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .flex()
+            .child(lines)
+            // In place of a scrollbar: the changes of every file read so far.
+            .child(overview::overview(
+                self.overview.clone(),
+                self.heights.total(),
+                &self.scroll,
+                cx.entity_id(),
+                &style,
+                cx,
+            ));
         let empty = self.slots.is_empty();
         let bar = self.title.clone().map(|title| {
             let c = &style.colors;

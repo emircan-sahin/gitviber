@@ -2369,6 +2369,7 @@ dependencies = [
  "gitviber-ui",
  "gpui-kit",
  "gpui-pre",
+ "regex",
 ]
 
 [[package]]
