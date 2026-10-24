@@ -311,7 +311,8 @@ fn in_front(
             if show {
                 ws.update(cx, |ws, cx| ws.set_open(Slot::Bottom, true, cx));
             }
-            let panel = ws.update(cx, |ws, cx| ws.panel("terminal", window, cx));
+            // Built outside the workspace's update: the panel reads the workspace as it's made.
+            let panel = Workspace::ensure_panel(&ws, "terminal", window, cx);
             if let Some(p) = panel.and_then(|p| p.view().downcast::<TerminalPanel>().ok()) {
                 p.update(cx, |p, cx| f(p, window, cx));
             }
@@ -3111,6 +3112,79 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(cwds(&panel, cx), vec![b.clone()]);
         panel.update(cx, |p, cx| p.close_all(cx));
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// ⌘T (the menu's and the palette's New Terminal) on a hidden panel that was never built:
+    /// built outside the workspace's update (its constructor reads the workspace), shown, one
+    /// new terminal, last run's offered beside it. Hidden again it adds one; emptied, ⌘J starts one.
+    #[gpui::test]
+    fn new_terminal_opens_a_hidden_or_unbuilt_panel(cx: &mut TestAppContext) {
+        let base = std::env::temp_dir().join(format!("gitviber-term-new-{}", std::process::id()));
+        let (home, config) = (base.join("home"), base.join("config"));
+        for d in [&home, &config] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let saved = serde_json::json!({ home.to_string_lossy(): {
+            "savedAt": 1.0, "active": 0, "groups": [{"focused": 0, "panes": [{"cwd": home}]}]
+        }});
+        std::fs::write(config.join("terminals.json"), saved.to_string()).unwrap();
+        // SAFETY: nextest gives each test its own process; nothing else reads these meanwhile.
+        unsafe {
+            std::env::set_var("GITVIBER_CONFIG_DIR", &config);
+            std::env::set_var("HOME", &home);
+        }
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            gitviber_ui::install_core(cx);
+            crate::init(cx);
+        });
+        let (_, cx) = cx.add_window_view(|_, _| Host);
+        let ws = cx.update(|window, cx| {
+            let ws = cx.new(Workspace::new);
+            Workspace::register_window(&ws, window, cx);
+            window.activate_window();
+            ws
+        });
+        let shown = |cx: &mut VisualTestContext| ws.read_with(cx, |ws, _| ws.is_open(Slot::Bottom));
+        let panel = |cx: &mut VisualTestContext| {
+            ws.read_with(cx, |ws, _| ws.built_panel("terminal").cloned())
+                .and_then(|p| p.view().downcast::<TerminalPanel>().ok())
+        };
+        let count = |p: &Entity<TerminalPanel>, cx: &mut VisualTestContext| {
+            p.read_with(cx, |p, _| p.panes.len())
+        };
+        assert!(!shown(cx) && panel(cx).is_none());
+
+        cx.dispatch_action(terminal::New);
+        cx.run_until_parked();
+        let p = panel(cx).expect("built by ⌘T");
+        assert!(shown(cx));
+        assert_eq!(count(&p, cx), 1);
+        assert_eq!(ws.update(cx, |ws, _| ws.take_toasts()).len(), 1);
+        p.update_in(cx, |p, window, cx| p.accept_restore(&home, window, cx));
+        assert_eq!(count(&p, cx), 2);
+
+        ws.update(cx, |ws, cx| ws.set_open(Slot::Bottom, false, cx));
+        cx.dispatch_action(terminal::New);
+        cx.run_until_parked();
+        assert!(shown(cx));
+        assert_eq!(count(&p, cx), 3);
+
+        p.update_in(cx, |p, window, cx| {
+            while p.has_terminals() {
+                p.close_tab_at(0, window, cx);
+            }
+        });
+        cx.run_until_parked();
+        assert!(!shown(cx));
+        ws.update(cx, |ws, cx| ws.toggle(Slot::Bottom, cx));
+        cx.run_until_parked();
+        assert_eq!(count(&p, cx), 1);
+
+        p.update(cx, |p, cx| p.close_all(cx));
         cx.update(|window, _| window.remove_window());
         cx.run_until_parked();
         let _ = std::fs::remove_dir_all(&base);
