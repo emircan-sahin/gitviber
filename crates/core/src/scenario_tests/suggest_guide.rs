@@ -578,3 +578,38 @@ fn a_guides_output_streams_as_it_comes() {
         first.duration_since(start)
     );
 }
+
+/// Quitting kills what's still running, and what it started, though its loop never sees it.
+#[cfg(unix)]
+#[test]
+fn kill_all_stops_every_running_command_and_its_children() {
+    let sb = Sandbox::new("guide-kill-all");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "one\n", "root");
+    let head = rev(&r, "HEAD");
+    let marker = "sleep 42.3";
+    let run = std::thread::spawn(move || {
+        suggest::run_guide(
+            &r,
+            &format!("sh -c '{marker} & {marker}'"),
+            "P",
+            &of(head),
+            &Agent::default(),
+            &AtomicBool::new(false),
+        )
+    });
+    let t = Instant::now();
+    while !alive(marker) && t.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(alive(marker), "the command started");
+    suggest::kill_all();
+    let err = run.join().unwrap().unwrap_err();
+    assert!(err.contains("signal"), "{err}");
+    let t = Instant::now();
+    while alive(marker) && t.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!alive(marker), "its children went too");
+}

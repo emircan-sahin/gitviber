@@ -39,6 +39,48 @@ const DIFF_OPTS: [&str; 3] = ["--no-color", "--no-ext-diff", "-M"];
 const WITH_STAT: [&str; 3] = ["--patch-with-stat", "--stat=1000", "--stat-graph-width=20"];
 pub const CANCELLED: &str = "cancelled";
 
+/// The process groups of the commands running now: their own loops stop them on a cancel or a
+/// timeout, but those loops end with the app, and the commands would run on.
+static RUNNING: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+/// A running command's group in RUNNING while it's there.
+struct Registered(u32);
+
+impl Registered {
+    fn new(group: u32) -> Self {
+        RUNNING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(group);
+        Registered(group)
+    }
+}
+
+impl Drop for Registered {
+    fn drop(&mut self) {
+        RUNNING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|g| *g != self.0);
+    }
+}
+
+/// Kills every suggestion's command still running and everything each started, now: for
+/// quitting. Their runs end with "failed with a signal".
+pub fn kill_all() {
+    let groups = std::mem::take(&mut *RUNNING.lock().unwrap_or_else(|e| e.into_inner()));
+    #[cfg(unix)]
+    for group in groups {
+        let group = group as libc::pid_t;
+        // 0 is our own group, 1 init's; neither is ever a command's.
+        if group > 1 && group != unsafe { libc::getpgrp() } {
+            unsafe { libc::killpg(group, libc::SIGKILL) };
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = groups;
+}
+
 /// What the commit would contain, as the commit button decides it.
 #[derive(Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
@@ -775,6 +817,8 @@ fn ask(
         ),
         _ => format!("Couldn't run \"{}\": {e}", argv[0]),
     })?;
+    // Out of RUNNING as this returns, before anything else can take the group's id.
+    let _registered = Registered::new(child.id());
 
     // Written on a thread: a command that prints before it reads would block on a full pipe.
     // One that never reads stdin just gets a broken pipe, which is fine.
