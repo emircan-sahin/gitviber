@@ -118,12 +118,14 @@ fn new_id() -> String {
 }
 
 impl ReviewNotes {
-    /// Adds `note` (its id given here) to `root`'s.
-    pub fn add(cx: &mut App, root: &str, mut note: ReviewNote) {
+    /// Adds `note` to `root`'s, with the id it's given here.
+    pub fn add(cx: &mut App, root: &str, mut note: ReviewNote) -> String {
         note.id = new_id();
+        let id = note.id.clone();
         let mut notes = Self::get(cx, root);
         notes.push(note);
         Self::set(cx, root, notes);
+        id
     }
 
     /// Changes the note `id` of `root`'s, if it's there.
@@ -223,6 +225,25 @@ impl ReviewNotes {
                 }
             });
         })
+    }
+
+    /// `path`'s notes where typing took them, its text now saved as `lines` (`at`: each one's
+    /// last line now, by id; model::notes::follow_notes).
+    pub fn follow(
+        cx: &mut App,
+        root: &str,
+        path: &str,
+        lines: &[String],
+        at: &std::collections::HashMap<String, usize>,
+    ) {
+        // The file as the last check read it is older than these places: the next goes by them.
+        cx.default_global::<Seen>()
+            .0
+            .remove(&format!("{root}\0{path}"));
+        let notes = Self::get(cx, root);
+        if let Some(next) = crate::model::notes::follow_notes(&notes, path, lines, at) {
+            Self::set(cx, root, next);
+        }
     }
 }
 

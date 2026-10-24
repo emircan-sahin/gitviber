@@ -2483,6 +2483,7 @@ version = "0.1.17"
 dependencies = [
  "gitviber-core",
  "gitviber-diff",
+ "gitviber-files",
  "gitviber-markdown",
  "gitviber-refs",
  "gitviber-terminal",

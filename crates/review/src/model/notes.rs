@@ -124,6 +124,29 @@ pub struct Near {
     pub hi: usize,
 }
 
+/// Whether `a`'s own lines, as they were, start at line `s` of `lines` (what's around them aside).
+pub fn own_at(lines: &[String], a: &Anchor, s: usize) -> bool {
+    let size = a.end - a.start + 1;
+    let tail: &[String] = a.tail.as_deref().unwrap_or_default();
+    let same = |at: usize, want: &[String]| {
+        at >= 1
+            && want
+                .iter()
+                .enumerate()
+                .all(|(i, w)| lines.get(at - 1 + i) == Some(w))
+    };
+    !a.code.is_empty()
+        && s >= 1
+        && s + size - 1 <= lines.len()
+        && same(s, &a.code)
+        && (s + size)
+            .checked_sub(tail.len())
+            .is_some_and(|at| same(at, tail))
+        && a.hash
+            .as_ref()
+            .is_none_or(|h| hash(&lines[s - 1..s - 1 + size].join("\n")) == *h)
+}
+
 /// Where `a`'s lines are in `lines`, or None once they're gone; nearest to where it's expected if
 /// there are several. Its own lines must be there as they were, with the lines around them as
 /// they were too. Without that, only where it's expected: in the stretch `near` says the edits
@@ -133,7 +156,6 @@ pub fn find_note(lines: &[String], a: &Anchor, near: Option<Near>) -> Option<usi
         return None;
     }
     let size = a.end - a.start + 1;
-    let tail: &[String] = a.tail.as_deref().unwrap_or_default();
     let expect = near.map_or(a.start as f64, |n| n.expect);
     let same = |at: isize, want: &[String]| {
         at >= 1
@@ -142,15 +164,7 @@ pub fn find_note(lines: &[String], a: &Anchor, near: Option<Near>) -> Option<usi
                 .enumerate()
                 .all(|(i, w)| lines.get(at as usize - 1 + i) == Some(w))
     };
-    let own = |s: usize| {
-        s >= 1
-            && s + size - 1 <= lines.len()
-            && same(s as isize, &a.code)
-            && same((s + size) as isize - tail.len() as isize, tail)
-            && a.hash
-                .as_ref()
-                .is_none_or(|h| hash(&lines[s - 1..s - 1 + size].join("\n")) == *h)
-    };
+    let own = |s: usize| own_at(lines, a, s);
     let around = |s: usize| {
         a.before
             .as_ref()
@@ -270,6 +284,42 @@ pub fn check_notes(
                 return n.clone();
             }
             changed = true;
+            moved
+        })
+        .collect();
+    changed.then_some(next)
+}
+
+/// Live notes on `path` once its text, typed into, is saved as `lines`: `at` has the line each
+/// one's last line is on now, as the editor carried it through the typing. Each takes its lines
+/// there, with what's around them now, or turns outdated where they were rewritten. None when
+/// nothing changed.
+pub fn follow_notes(
+    notes: &[ReviewNote],
+    path: &str,
+    lines: &[String],
+    at: &HashMap<String, usize>,
+) -> Option<Vec<ReviewNote>> {
+    let mut changed = false;
+    let next: Vec<ReviewNote> = notes
+        .iter()
+        .map(|n| {
+            let Some(&end) = at.get(&n.id) else {
+                return n.clone();
+            };
+            if n.path != path || !is_live(n) || n.resolved {
+                return n.clone();
+            }
+            let size = n.anchor.end - n.anchor.start + 1;
+            let start = (end + 1).saturating_sub(size).max(1);
+            let mut moved = n.clone();
+            if own_at(lines, &n.anchor, start) {
+                moved.anchor = anchor_at(lines, start, start + size - 1);
+                moved.outdated = false;
+            } else {
+                moved.outdated = true;
+            }
+            changed |= moved != *n;
             moved
         })
         .collect();

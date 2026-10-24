@@ -155,15 +155,6 @@ impl DiffNotes {
         self.drawn
     }
 
-    #[doc(hidden)]
-    pub fn write_draft(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(d) = &self.draft {
-            d.input
-                .update(cx, |i, cx| i.set_value(text.to_string(), window, cx));
-        }
-        self.submit(cx);
-    }
-
     fn cancel(&mut self, cx: &mut Context<Self>) {
         self.draft = None;
         self.redraw(cx);
@@ -297,6 +288,7 @@ pub(crate) fn note_card(note: &ReviewNote, root: &str, t: &AppTheme) -> AnyEleme
         (root.to_string(), note.id.clone()),
     );
     div()
+        .debug_selector(|| format!("review-note-{}", note.id))
         .px(px(12.))
         .py(px(4.))
         .child(
@@ -372,8 +364,9 @@ pub(crate) fn composer(
     on_add: OnNote,
     t: &AppTheme,
 ) -> AnyElement {
-    let (cancel, add, escape) = (on_cancel.clone(), on_add, on_cancel);
+    let (cancel, add, escape, defined) = (on_cancel.clone(), on_add.clone(), on_cancel, on_add);
     div()
+        .debug_selector(|| "review-note-draft".into())
         .px(px(12.))
         .py(px(4.))
         .on_key_down(move |e: &gpui_kit::KeyDownEvent, _, cx| {
@@ -382,6 +375,9 @@ pub(crate) fn composer(
                 cx.stop_propagation();
             }
         })
+        // In a file's code ⌘↵ is Go to Definition, in a field drawn between its lines too, so
+        // the box's own ⌘↵ never comes: here it adds the note (F12 as well).
+        .on_action(move |_: &gitviber_ui::actions::editor::GoToDefinition, _, cx| defined(cx))
         .child(
             div()
                 .max_w(px(760.))
@@ -425,7 +421,7 @@ pub(crate) fn composer(
         .into_any_element()
 }
 
-fn toast(toast: Toast, window: &mut Window, cx: &mut App) {
+pub(crate) fn toast(toast: Toast, window: &mut Window, cx: &mut App) {
     match Workspace::for_window(window, cx) {
         Some(ws) => ws.update(cx, |ws, cx| ws.toast(toast, cx)),
         None => toast.show(window, cx),

@@ -9,6 +9,7 @@
 extern crate gpui_kit as gpui;
 
 pub mod agent;
+mod code_notes;
 pub mod model;
 pub mod note_store;
 mod notes_ui;
@@ -44,8 +45,8 @@ pub(crate) fn take_request(cx: &mut App, key: &str) -> bool {
         && cx.default_global::<Requested>().0.remove(key)
 }
 
-/// The `guide` tabs' opener, and on the first launch the old app's guides and review notes.
-/// Once at startup.
+/// The `guide` tabs' opener, review notes on a repo file's own view, and on the first launch
+/// the old app's guides and review notes. Once at startup.
 pub fn init(cx: &mut App) {
     store::import_legacy(cx);
     note_store::import_legacy(cx);
@@ -57,6 +58,8 @@ pub fn init(cx: &mut App) {
         _ => None,
     });
     // From anywhere in a window, on the window in front once the key's dispatch is over.
+    // A repo file's own view: its notes between its lines.
+    gitviber_files::set_code_attacher(cx, |code, cx| code_notes::attach(code, cx).map(Into::into));
     cx.on_action(|_: &review::GuideUncommitted, cx| {
         in_front(cx, |window, cx| open_guide(GuideOf::Changes, window, cx))
     });

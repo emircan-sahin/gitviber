@@ -427,3 +427,60 @@ fn the_hash_is_the_old_apps() {
     assert_eq!(hash(""), "ztntfp");
     assert_ne!(hash("a\nb"), hash("a\nc"));
 }
+
+#[test]
+fn typing_takes_a_note_where_the_editor_carried_its_line() {
+    let before = l(&["a", "b", "c", "d"]);
+    let n = on(&before, 3, 3);
+    // Two lines typed above it, and the line right above it edited: it's on line 5 now.
+    let after = l(&["new", "new", "a", "B", "c", "d"]);
+    let at = HashMap::from([("1".to_string(), 5)]);
+    let moved = follow_notes(std::slice::from_ref(&n), "src/a.ts", &after, &at).unwrap();
+    assert_eq!((moved[0].anchor.start, moved[0].outdated), (5, false));
+    assert_eq!(moved[0].anchor.before.as_deref(), Some(&l(&["a", "B"])[..]));
+    // What's around it now finds it without the editor's help.
+    assert_eq!(find_note(&after, &moved[0].anchor, None), Some(5));
+    // Its own line rewritten: outdated, where it was.
+    let rewritten = l(&["a", "b", "C", "d"]);
+    let at = HashMap::from([("1".to_string(), 3)]);
+    let out = follow_notes(std::slice::from_ref(&n), "src/a.ts", &rewritten, &at).unwrap();
+    assert_eq!((out[0].anchor.start, out[0].outdated), (3, true));
+    // Not moved, nothing to say; another file's or a commit's notes are left alone.
+    assert!(
+        follow_notes(
+            std::slice::from_ref(&n),
+            "src/a.ts",
+            &before,
+            &HashMap::from([("1".to_string(), 3)])
+        )
+        .is_none()
+    );
+    assert!(
+        follow_notes(
+            std::slice::from_ref(&n),
+            "src/b.ts",
+            &after,
+            &HashMap::from([("1".to_string(), 5)])
+        )
+        .is_none()
+    );
+    let commit = ReviewNote {
+        at: Some("commit 1a2b3c4".into()),
+        ..n.clone()
+    };
+    assert!(
+        follow_notes(
+            &[commit],
+            "src/a.ts",
+            &after,
+            &HashMap::from([("1".to_string(), 5)])
+        )
+        .is_none()
+    );
+    // An anchor whose tail is longer than the file: no match, no panic.
+    let odd = Anchor {
+        tail: Some(l(&["x"; 9])),
+        ..n.anchor.clone()
+    };
+    assert!(!own_at(&before, &odd, 1));
+}

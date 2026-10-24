@@ -18,6 +18,8 @@ gitviber-diff = { path = "../diff" }
 gitviber-refs = { path = "../refs" }
 # Ask Agent starts Claude Code in the worktree's terminal, or pastes into the one running there.
 gitviber-terminal = { path = "../terminal" }
+# Review notes between a repo file's lines in its own view.
+gitviber-files = { path = "../files" }
 # An older guide's Mermaid diagram, drawn as Markdown draws one.
 gitviber-markdown = { path = "../markdown" }
 gpui-kit.workspace = true

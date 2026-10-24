@@ -352,7 +352,7 @@ fn a_note_written_on_a_commits_lines_is_kept_and_drawn_until_resolved(cx: &mut T
     use gitviber_diff::{Compare, DiffEvent, DiffSource, DiffView, LineRange, Side};
     let (repo, agent) = setup("notes");
     boot(cx, &agent);
-    let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+    let (host, cx) = cx.add_window_view(|_, cx| Drawn(cx.new(Workspace::new), None));
     let ws = host.read_with(cx, |h, _| h.0.clone());
     open_project(&ws, &repo, cx);
     let GuideOf::Commit { commit } = head_commit(cx) else {
@@ -365,6 +365,10 @@ fn a_note_written_on_a_commits_lines_is_kept_and_drawn_until_resolved(cx: &mut T
         "src/retry.ts",
     );
     let diff = cx.update(|_, cx| cx.new(|cx| DiffView::new(source, cx)));
+    host.update(cx, |h, cx| {
+        h.1 = Some(diff.clone().into());
+        cx.notify();
+    });
     cx.run_until_parked();
     let notes = cx.update(|_, cx| crate::attach_notes(&diff, Some("commit 1a2b3c4".into()), cx));
     let range = LineRange {
@@ -378,7 +382,10 @@ fn a_note_written_on_a_commits_lines_is_kept_and_drawn_until_resolved(cx: &mut T
         notes.read_with(cx, |n, _| n.has_draft()),
         "C opened the composer"
     );
-    notes.update_in(cx, |n, window, cx| n.write_draft("Why 3?", window, cx));
+    // Typed into its box; ⌘↵ adds it, though the diff takes ⌘↵ for Go to Definition.
+    draw(cx);
+    cx.simulate_input("Why 3?");
+    cx.simulate_keystrokes("cmd-enter");
     cx.run_until_parked();
     let root = repo.to_string_lossy().into_owned();
     let kept = cx.update(|_, cx| crate::ReviewNotes::get(cx, &root));
