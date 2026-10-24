@@ -11,11 +11,12 @@ use crate::image::{ImageCompare, image_format};
 use crate::list::{Heights, Place, Scroll, vlist};
 use crate::model::display::{self, CONTEXT as CONTEXT_LINES, FOLD_MIN, Item};
 use crate::model::staging::{self, Change, Picked};
-use crate::model::{ADDED, LinePos, LineRange, REMOVED, Row, Side, SideText};
+use crate::model::{ADDED, LinePos, LineRange, REMOVED, Side, SideText};
 use crate::paint::{self, Metrics};
 use crate::source::{Compare, DiffSource};
 use crate::style::{DiffOptions, DiffStyle, ImageMode, Layout, Whitespace};
 use gitviber_core::Core;
+use gitviber_ui::keymap::editor;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::input::Rope;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -24,15 +25,23 @@ use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::scroll::Scrollbar;
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    StyledText, Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
+    AnyElement, App, AppContext as _, Bounds, ClipboardItem, Context, Entity, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, ParentElement as _, Pixels, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, StyledText, Subscription, Task, WeakEntity,
+    Window, canvas, div, prelude::FluentBuilder as _, px,
 };
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
+
+mod find;
+mod links;
+mod preview;
+
+pub use links::set_file_opener;
 
 /// What a diff tells its owner.
 #[derive(Clone, Debug)]
@@ -196,11 +205,27 @@ pub struct DiffView {
     /// Typing kept from before a restart, and the file's text it was typed over: the editor
     /// opens with it once the diff has loaded.
     restore: Option<(String, String)>,
+    find: Option<find::Find>,
+    /// The line and byte last clicked on code: where Go to Definition looks.
+    caret: Option<(LinePos, usize)>,
+    places: Option<links::Places>,
+    /// A markdown or SVG file shown rendered, and the switches that ask for it.
+    preview: Option<preview::Preview>,
+    markdown_preview: bool,
+    svg_preview: bool,
+    preview_stale: bool,
+    /// origin's page on GitHub, once asked: Some(None) off GitHub.
+    web: Option<Option<String>>,
+    /// Where the lines are drawn, for the column a click lands on.
+    body_bounds: Rc<Cell<Bounds<Pixels>>>,
     _edit: Option<Subscription>,
     _load: Task<()>,
     _highlight: Task<()>,
     _action: Task<()>,
     _copy: Task<()>,
+    _lookup: Task<()>,
+    _link: Task<()>,
+    _web: Task<()>,
 }
 
 impl EventEmitter<DiffEvent> for DiffView {}
@@ -263,11 +288,23 @@ impl DiffView {
             edit: None,
             edit_stale: false,
             restore: None,
+            find: None,
+            caret: None,
+            places: None,
+            preview: None,
+            markdown_preview: false,
+            svg_preview: false,
+            preview_stale: true,
+            web: None,
+            body_bounds: Rc::default(),
             _edit: None,
             _load: Task::ready(()),
             _highlight: Task::ready(()),
             _action: Task::ready(()),
             _copy: Task::ready(()),
+            _lookup: Task::ready(()),
+            _link: Task::ready(()),
+            _web: Task::ready(()),
         }
     }
 
@@ -294,9 +331,18 @@ impl DiffView {
             let source = source.clone();
             cx.new(|cx| ImageCompare::new(source, cx))
         });
+        if self.source.compare != source.compare {
+            self.web = None;
+        }
         self.source = source;
         self.edit = None;
         self._edit = None;
+        self.find = None;
+        self.caret = None;
+        self.places = None;
+        self.preview = None;
+        self.preview_stale = true;
+        self.markdown_preview = false;
         self.data = None;
         self.hl = [None, None];
         self.revealed.clear();
@@ -595,6 +641,7 @@ impl DiffView {
     // Loading
 
     fn load(&mut self, cx: &mut Context<Self>) {
+        self.fetch_web(cx);
         if let Some(image) = &self.image {
             image.update(cx, |i, cx| i.refresh(cx));
             return;
@@ -661,8 +708,10 @@ impl DiffView {
         self.data = Some(data);
         self.sel = None;
         self.hover = None;
+        self.preview_stale = true;
         self.rebuild(anchor, cx);
         self.highlight(cx);
+        self.search(false, cx);
         cx.emit(DiffEvent::Loaded {
             additions: counts.0,
             deletions: counts.1,
@@ -1000,6 +1049,10 @@ impl DiffView {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus, cx);
+        self.caret = self.caret_at(ix, column, e.position.x, window, cx);
+        if e.modifiers.secondary() && !e.modifiers.shift && self.caret.is_some() {
+            self.go_to_definition(window, cx);
+        }
         match self.sel.as_mut() {
             Some(s) if e.modifiers.shift && s.column == column => {
                 s.head = ix;
@@ -1077,6 +1130,23 @@ impl DiffView {
         }
         if any {
             menu = menu.separator();
+        }
+        if self.has_github_link() {
+            let (link, open) = (view.clone(), view.clone());
+            menu = menu
+                .item(
+                    PopupMenuItem::new("Copy GitHub Link").on_click(move |_, window, cx| {
+                        link.update(cx, |this, cx| this.github_link(false, window, cx))
+                            .ok();
+                    }),
+                )
+                .item(
+                    PopupMenuItem::new("Open on GitHub").on_click(move |_, window, cx| {
+                        open.update(cx, |this, cx| this.github_link(true, window, cx))
+                            .ok();
+                    }),
+                )
+                .separator();
         }
         let (copy, patch) = (view.clone(), view);
         menu.item(
@@ -1376,7 +1446,9 @@ impl DiffView {
 
     /// One of the app's commands, as `answer` named it; one a single diff can't do goes on.
     fn command(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
-        if self.edit.is_some() && command != Command::Save {
+        if (self.edit.is_some() || self.previewing())
+            && !matches!(command, Command::Save | Command::ToggleViewed)
+        {
             return cx.propagate();
         }
         match command {
@@ -1440,9 +1512,16 @@ fn item_first_row(item: &Item) -> u32 {
 }
 
 impl DiffView {
-    fn code(&self, side: Side, row: &Row, style: &DiffStyle) -> StyledText {
+    fn code(&self, side: Side, r: u32, style: &DiffStyle) -> StyledText {
         match &self.data {
-            Some(data) => paint::code(data, &self.hl, side, row, style),
+            Some(data) => paint::code(
+                data,
+                &self.hl,
+                side,
+                &data.rows[r as usize],
+                style,
+                &self.find_marks(r, style),
+            ),
             None => StyledText::new(""),
         }
     }
@@ -1576,7 +1655,7 @@ impl DiffView {
                 m,
             ))
             .child(paint::sign(&t, style, m))
-            .child(paint::code_cell(self.code(side, row, style), m))
+            .child(paint::code_cell(self.code(side, r, style), m))
             .when(selected, |el| el.child(paint::overlay(c.selection)))
             .when(note, |el| el.child(self.note_button(ix, style, cx)))
     }
@@ -1633,7 +1712,7 @@ impl DiffView {
             el.bg(t.line)
                 .child(paint::number(Some(n), t.gutter, num, m))
                 .child(paint::sign(&t, style, m))
-                .child(paint::code_cell(this.code(side, row, style), m))
+                .child(paint::code_cell(this.code(side, r, style), m))
                 .when(selected == Some(column), |el| {
                     el.child(paint::overlay(c.selection))
                 })
@@ -1822,9 +1901,41 @@ impl DiffView {
         let note = self.data.as_ref().and_then(|d| d.note.clone());
         let open_file =
             self.source.compare.new_side_on_disk() || self.source.compare == Compare::Staged;
-        let text_diff =
-            self.image.is_none() && self.data.as_ref().is_some_and(|d| d.placeholder.is_none());
-        let image = self.image.is_some();
+        let text_diff = self.image.is_none()
+            && !self.previewing()
+            && self.data.as_ref().is_some_and(|d| d.placeholder.is_none());
+        let svg = match &self.preview {
+            Some(preview::Preview::Svg(v)) => Some(v.read(cx).has_both()),
+            _ => None,
+        };
+        let image = self.image.is_some() || svg == Some(true);
+        // An SVG's two versions stack or sit side by side as its lines would, unless laid over.
+        let svg_layout = svg.is_some_and(|both| !both || o.image == ImageMode::Side);
+        let layout_toggle = |cx: &mut Context<Self>| {
+            [
+                Button::new("unified")
+                    .ghost()
+                    .xsmall()
+                    .icon(Lucide::Rows2)
+                    .label("Unified")
+                    .toggled(o.layout == Layout::Unified)
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        DiffOptions::update(cx, |o| o.layout = Layout::Unified)
+                    })),
+                Button::new("split")
+                    .ghost()
+                    .xsmall()
+                    .icon(Lucide::Columns2)
+                    .label("Split")
+                    .toggled(o.layout == Layout::Split)
+                    .tooltip("Unified / split (⌥S)")
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        DiffOptions::update(cx, |o| o.layout = Layout::Split)
+                    })),
+            ]
+        };
+        let svg_controls = self.svg_controls(style, cx);
+        let preview_switch = self.preview_switch(cx);
         h_flex()
             .h(px(34.))
             .flex_none()
@@ -1838,6 +1949,10 @@ impl DiffView {
             .text_size(style.ui_font_size)
             .text_color(c.foreground)
             .child(paint::path_label(&self.source.path, style))
+            .child(
+                icon_button("copy-path", Lucide::Copy, "Copy path", false)
+                    .on_click(cx.listener(|this, _, window, cx| this.copy_path(window, cx))),
+            )
             .when_some(self.source.old_path.clone(), |el, old| {
                 el.child(
                     div()
@@ -1874,29 +1989,7 @@ impl DiffView {
                     icon_button("next-change", Lucide::ArrowDown, "Next change (F7)", false)
                         .on_click(cx.listener(|this, _, _, cx| this.next_change(cx))),
                 )
-                .child(
-                    Button::new("unified")
-                        .ghost()
-                        .xsmall()
-                        .icon(Lucide::Rows2)
-                        .label("Unified")
-                        .toggled(o.layout == Layout::Unified)
-                        .on_click(cx.listener(|_, _, _, cx| {
-                            DiffOptions::update(cx, |o| o.layout = Layout::Unified)
-                        })),
-                )
-                .child(
-                    Button::new("split")
-                        .ghost()
-                        .xsmall()
-                        .icon(Lucide::Columns2)
-                        .label("Split")
-                        .toggled(o.layout == Layout::Split)
-                        .tooltip("Unified / split (⌥S)")
-                        .on_click(cx.listener(|_, _, _, cx| {
-                            DiffOptions::update(cx, |o| o.layout = Layout::Split)
-                        })),
-                )
+                .children(layout_toggle(cx))
                 .child(
                     icon_button(
                         "collapse",
@@ -1926,7 +2019,7 @@ impl DiffView {
                     })),
                 )
             })
-            .when(self.is_editable(), |el| {
+            .when(self.is_editable() && !self.previewing(), |el| {
                 el.child(
                     Button::new("edit")
                         .ghost()
@@ -1957,6 +2050,8 @@ impl DiffView {
                     }),
                 )
             })
+            .when(svg_layout, |el| el.children(layout_toggle(cx)))
+            .children(svg_controls)
             .when(open_file && self.source.file.status != "D", |el| {
                 el.child(
                     Button::new("open-file")
@@ -1978,6 +2073,7 @@ impl DiffView {
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(DiffEvent::ToggleViewed))),
                 )
             })
+            .children(preview_switch)
             .into_any_element()
     }
 
@@ -2007,6 +2103,7 @@ fn icon_button(id: &'static str, icon: Lucide, tip: &'static str, on: bool) -> B
 impl Render for DiffView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_options(cx);
+        self.sync_preview(window, cx);
         if std::mem::take(&mut self.edit_stale)
             && let Some(edit) = self.edit.clone()
         {
@@ -2062,6 +2159,10 @@ impl Render for DiffView {
             ));
         }
         let body: AnyElement = match (&self.state, &self.data) {
+            _ if self.preview.is_some() => self
+                .preview_element()
+                .map(|p| div().flex_1().min_h_0().child(p).into_any_element())
+                .unwrap_or_else(|| div().into_any_element()),
             _ if self.edit.is_some() => self
                 .edit
                 .clone()
@@ -2080,6 +2181,7 @@ impl Render for DiffView {
             (_, Some(_)) => {
                 let view = cx.entity().downgrade();
                 let menu_view = view.clone();
+                let bounds = self.body_bounds.clone();
                 div()
                     .id("diff-body")
                     .relative()
@@ -2088,6 +2190,11 @@ impl Render for DiffView {
                     .w_full()
                     .flex()
                     .bg(style.colors.background)
+                    .child(
+                        canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {})
+                            .absolute()
+                            .size_full(),
+                    )
                     .child({
                         let measure = view.clone();
                         vlist(
@@ -2108,6 +2215,8 @@ impl Render for DiffView {
                     })
                     .child(Scrollbar::vertical(&self.scroll))
                     .child(Scrollbar::horizontal(&self.scroll))
+                    .children(self.find_bar(&style, cx))
+                    .children(self.places_list(&style, cx))
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| this.released(cx)),
@@ -2193,7 +2302,9 @@ impl Render for DiffView {
                 }
             }))
             .on_action(cx.listener(|this, _: &ClearSelection, _, cx| {
-                if this.sel.take().is_some() {
+                if this.places.take().is_some() {
+                    cx.notify();
+                } else if this.sel.take().is_some() {
                     cx.emit(DiffEvent::SelectionChanged(None));
                     cx.notify();
                 } else {
@@ -2203,6 +2314,20 @@ impl Render for DiffView {
             .on_action(cx.listener(|this, _: &Save, window, cx| this.save(window, cx)))
             .on_action(cx.listener(|this, _: &SelectUp, _, cx| this.select_step(false, cx)))
             .on_action(cx.listener(|this, _: &SelectDown, _, cx| this.select_step(true, cx)))
+            .on_action(cx.listener(|this, _: &editor::Find, window, cx| this.open_find(window, cx)))
+            .on_action(cx.listener(|this, _: &editor::CopyGitHubLink, window, cx| {
+                this.github_link(false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &editor::OpenOnGitHub, window, cx| {
+                this.github_link(true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &editor::GoToDefinition, window, cx| {
+                if this.can_find() {
+                    this.go_to_definition(window, cx)
+                } else {
+                    cx.propagate()
+                }
+            }))
             .map(|mut el| {
                 for (action, command) in crate::actions::answers(cx).iter() {
                     let (view, command) = (cx.weak_entity(), *command);

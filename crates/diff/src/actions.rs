@@ -10,6 +10,8 @@ pub const CONTEXT: &str = "DiffView";
 pub const EDITING_CONTEXT: &str = "DiffViewEditing";
 /// The key context of a list of files shown as one scroll.
 pub const STACKED_CONTEXT: &str = "StackedDiff";
+/// The key context of the find box over a diff's lines.
+pub const FIND_CONTEXT: &str = "DiffFind";
 
 gpui_kit::actions!(
     diff_view,
@@ -34,6 +36,8 @@ gpui_kit::actions!(
         NextFile,
         PrevFile,
         Save,
+        FindMatchCase,
+        FindWholeWord,
     ]
 );
 
@@ -71,8 +75,9 @@ pub(crate) fn answers(cx: &App) -> Rc<Vec<(Box<dyn Action>, Command)>> {
         .unwrap_or_default()
 }
 
-/// Only the keys the app's own commands don't cover: copy, picking lines with ⇧↑/⇧↓, Esc.
-/// The app hands its diff and review commands to the views itself, so a rebinding applies.
+/// Only the keys the app's own commands don't cover: copy, picking lines with ⇧↑/⇧↓, Esc, the
+/// find box's toggles. The app hands its diff and review commands to the views itself, so a
+/// rebinding applies.
 pub fn init_local(cx: &mut App) {
     let c = Some(CONTEXT);
     cx.bind_keys([
@@ -80,6 +85,21 @@ pub fn init_local(cx: &mut App) {
         KeyBinding::new("escape", ClearSelection, c),
         KeyBinding::new("shift-up", SelectUp, c),
         KeyBinding::new("shift-down", SelectDown, c),
+    ]);
+    bind_find(cx);
+}
+
+/// Match Case and Whole Word while typing in the find box, as the code view's box has them.
+fn bind_find(cx: &mut App) {
+    let f = Some(FIND_CONTEXT);
+    let (case, word) = if cfg!(target_os = "macos") {
+        ("alt-cmd-c", "alt-cmd-w")
+    } else {
+        ("alt-c", "alt-w")
+    };
+    cx.bind_keys([
+        KeyBinding::new(case, FindMatchCase, f),
+        KeyBinding::new(word, FindWholeWord, f),
     ]);
 }
 
@@ -110,5 +130,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("k", PrevFile, s),
         KeyBinding::new("v", ToggleViewed, s),
         KeyBinding::new("c", AddNote, s),
+        // The app's own commands, which its keymap binds where the app runs.
+        KeyBinding::new("cmd-f", gitviber_ui::keymap::editor::Find, c),
+        KeyBinding::new("f12", gitviber_ui::keymap::editor::GoToDefinition, c),
     ]);
+    bind_find(cx);
 }

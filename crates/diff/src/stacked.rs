@@ -980,7 +980,7 @@ impl StackedDiff {
                     ))
                     .child(paint::sign(&t, style, m))
                     .child(paint::code_cell(
-                        paint::code(&l.data, &l.hl, side, row, style),
+                        paint::code(&l.data, &l.hl, side, row, style, &[]),
                         m,
                     ))
                     .on_mouse_move(cx.listener(move |this, _: &MouseMoveEvent, _, cx| {

@@ -7,6 +7,7 @@ extern crate gpui_kit as gpui;
 mod annotations;
 mod commands;
 mod edits;
+mod find;
 mod leaks;
 mod menu;
 mod review_fixes;

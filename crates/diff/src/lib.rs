@@ -26,13 +26,13 @@ mod view;
 pub use actions::{Command, answer};
 pub use annotate::{Annotation, RenderAnnotation};
 pub use data::DiffData;
-pub use image::{ImageCompare, image_format};
+pub use image::{Backdrop, ImageCompare, Zoom, image_format};
 pub use model::{LinePos, LineRange, Side};
 pub use paint::status_pill;
 pub use source::{Compare, DiffSource, FileFacts};
 pub use stacked::{StackedDiff, StackedEvent, StackedFile, is_media};
 pub use style::{DiffColors, DiffOptions, DiffStyle, ImageMode, Layout, Whitespace};
-pub use view::{DiffEvent, DiffView, LineAction, Notice, NoticeLevel};
+pub use view::{DiffEvent, DiffView, LineAction, Notice, NoticeLevel, set_file_opener};
 
 /// The app's one Core. Until gitviber-ui hands it out, the app (or a demo) sets it once with
 /// `set_core`; this is the only place the diff gets it from.

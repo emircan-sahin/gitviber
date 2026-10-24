@@ -83,13 +83,15 @@ impl Metrics {
     }
 }
 
-/// A line's code in its colors, its word changes marked.
+/// A line's code in its colors, its word changes marked; `marks` (byte ranges of the line, as
+/// Find's matches) are drawn over them.
 pub fn code(
     data: &DiffData,
     hl: &[Option<Highlighted>; 2],
     side: Side,
     row: &Row,
     style: &DiffStyle,
+    marks: &[(Range<usize>, Hsla)],
 ) -> StyledText {
     let line = if side == Side::Old { row.o } else { row.n };
     let text = data.side(side).line(line);
@@ -131,7 +133,41 @@ pub fn code(
             strikethrough: None,
         });
     }
+    if !marks.is_empty() {
+        let marks: Vec<(Range<usize>, Hsla)> = marks
+            .iter()
+            .map(|(r, c)| (shown.offset(r.start)..shown.offset(r.end), *c))
+            .collect();
+        runs = mark(runs, &marks);
+    }
     StyledText::new(SharedString::from(shown.text)).with_runs(runs)
+}
+
+/// `runs` cut at the edges of `marks` (offsets in their text), each piece inside one on its color.
+fn mark(runs: Vec<TextRun>, marks: &[(Range<usize>, Hsla)]) -> Vec<TextRun> {
+    let mut out = Vec::with_capacity(runs.len() + marks.len() * 2);
+    let mut at = 0;
+    for run in runs {
+        let end = at + run.len;
+        let mut cuts: Vec<usize> = marks
+            .iter()
+            .flat_map(|(r, _)| [r.start, r.end])
+            .filter(|&c| c > at && c < end)
+            .collect();
+        cuts.extend([at, end]);
+        cuts.sort_unstable();
+        cuts.dedup();
+        for w in cuts.windows(2) {
+            let mut piece = run.clone();
+            piece.len = w[1] - w[0];
+            if let Some((_, color)) = marks.iter().find(|(r, _)| w[0] >= r.start && w[1] <= r.end) {
+                piece.background_color = Some(*color);
+            }
+            out.push(piece);
+        }
+        at = end;
+    }
+    out
 }
 
 pub fn number(n: Option<u32>, bg: Hsla, color: Hsla, m: &Metrics) -> Div {

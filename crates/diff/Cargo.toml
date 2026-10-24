@@ -15,6 +15,10 @@ name = "gitviber_diff"
 futures.workspace = true
 gpui-kit.workspace = true
 gitviber-core = { path = "../core" }
+# The app's editor commands (Find, GitHub links, Go to Definition), toasts and the SVG setting.
+gitviber-ui = { path = "../ui" }
+# A markdown file's Preview. Neither it nor gitviber-ui depends on the diff: no cycle.
+gitviber-markdown = { path = "../markdown" }
 
 [dev-dependencies]
 # Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.

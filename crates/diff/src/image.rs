@@ -1,16 +1,19 @@
 //! A changed image's two versions: side by side, as a swipe (a divider between them) or as an
 //! onion skin (after faded in over before). Both are decoded once off the main thread and held
-//! by this view only; closing it takes their textures out of every window's atlas.
+//! by this view only; closing it takes their textures out of every window's atlas. An SVG's
+//! Preview is drawn here too, from the texts its diff has, fitted or at 1:1, on the theme's
+//! background or a light or dark one.
 
 use crate::source::DiffSource;
-use crate::style::{DiffOptions, DiffStyle, ImageMode};
+use crate::style::{DiffOptions, DiffStyle, ImageMode, Layout};
 use gitviber_core::Core;
-use gpui_kit::component::h_flex;
+use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::{
-    App, AppContext as _, Bounds, Context, Image, ImageFormat, ImageSource,
+    App, AppContext as _, Bounds, Context, DevicePixels, Hsla, Image, ImageFormat, ImageSource,
     InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit,
-    ParentElement as _, Pixels, Render, RenderImage, Styled as _, StyledImage as _, Subscription,
-    Task, Window, canvas, div, img, prelude::FluentBuilder as _, px, relative,
+    ParentElement as _, Pixels, Render, RenderImage, Rgba, StatefulInteractiveElement as _,
+    Styled as _, StyledImage as _, Subscription, SvgRenderer, SvgSize, Task, Window, canvas, div,
+    img, prelude::FluentBuilder as _, px, relative, size,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -36,6 +39,52 @@ struct Version {
     bytes: usize,
     /// Of the file's bytes: the same again isn't decoded again.
     hash: u64,
+    /// An SVG's own size, which 1:1 shows it at; its pixels are drawn for a fitted view.
+    natural: Option<(f32, f32)>,
+}
+
+/// How an SVG preview is sized.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Zoom {
+    #[default]
+    Fit,
+    Actual,
+}
+
+/// What an SVG preview is drawn on: art in the theme's own color vanishes on the theme's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Backdrop {
+    #[default]
+    Theme,
+    Light,
+    Dark,
+}
+
+/// An SVG's longer side is drawn this many device pixels long, whatever its own size: sharp
+/// when fitted to a pane, and two of them stay under ~45 MB.
+const SVG_MIN_SIDE: f32 = 1600.;
+const SVG_MAX_SIDE: f32 = 2400.;
+
+fn rasterize_svg(svg: &SvgRenderer, text: &str, hash: u64) -> Side {
+    let Some((w, h)) = crate::model::svg::intrinsic_size(text) else {
+        return Side::Failed("Not an SVG".into());
+    };
+    let long = w.max(h);
+    let k = (long * 2.).clamp(SVG_MIN_SIDE, SVG_MAX_SIDE) / long;
+    let px = |v: f32| DevicePixels((v * k).round().max(1.) as i32);
+    let exact = SvgSize::ExactSize(size(px(w), px(h)));
+    match svg
+        .parse_svg(text.as_bytes())
+        .and_then(|parsed| svg.render_parsed(&parsed, exact))
+    {
+        Ok(image) => Side::Ready(Version {
+            image,
+            bytes: text.len(),
+            hash,
+            natural: Some((w, h)),
+        }),
+        Err(e) => Side::Failed(format!("Could not draw this SVG: {e}")),
+    }
 }
 
 /// Past this the compressed file isn't decoded, and past this many pixels the decoded one isn't
@@ -69,6 +118,10 @@ pub struct ImageCompare {
     opacity: f32,
     dragging: bool,
     stage: Rc<Cell<Bounds<Pixels>>>,
+    /// Drawn from texts handed in (`set_svg_texts`), not read from git.
+    svg: bool,
+    zoom: Zoom,
+    backdrop: Backdrop,
     _load: Task<()>,
     _release: Subscription,
 }
@@ -83,6 +136,9 @@ impl ImageCompare {
             opacity: 0.5,
             dragging: false,
             stage: Rc::default(),
+            svg: false,
+            zoom: Zoom::Fit,
+            backdrop: Backdrop::Theme,
             _load: Task::ready(()),
             _release: cx.on_release(|this, cx| this.drop_images(cx)),
         };
@@ -90,9 +146,89 @@ impl ImageCompare {
         view
     }
 
+    /// An SVG's preview, drawn from the texts `set_svg_texts` gives it.
+    pub fn svg(source: DiffSource, cx: &mut Context<Self>) -> Self {
+        ImageCompare {
+            core: crate::core(cx),
+            source,
+            sides: [Side::Loading, Side::Loading],
+            divider: 0.5,
+            opacity: 0.5,
+            dragging: false,
+            stage: Rc::default(),
+            svg: true,
+            zoom: Zoom::Fit,
+            backdrop: Backdrop::Theme,
+            _load: Task::ready(()),
+            _release: cx.on_release(|this, cx| this.drop_images(cx)),
+        }
+    }
+
     /// Reads both versions again (the file changed on disk).
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        self.load(cx);
+        if !self.svg {
+            self.load(cx);
+        }
+    }
+
+    /// The SVG's text before and after (None: not on that side); the same text isn't drawn again.
+    pub fn set_svg_texts(&mut self, texts: [Option<String>; 2], cx: &mut Context<Self>) {
+        let svg = cx.svg_renderer();
+        let shown = [0, 1].map(|i| match &self.sides[i] {
+            Side::Ready(v) => Some(v.hash),
+            _ => None,
+        });
+        self._load = cx.spawn(async move |this, cx| {
+            let sides = cx
+                .background_spawn(async move {
+                    let [before, after] = texts;
+                    [(before, shown[0]), (after, shown[1])].map(|(text, shown)| match text {
+                        None => Side::Missing,
+                        Some(t) if shown == Some(hash(t.as_bytes())) => Side::Same,
+                        Some(t) if t.len() > MAX_BYTES => {
+                            Side::Failed("Too large to preview".into())
+                        }
+                        Some(t) => rasterize_svg(&svg, &t, hash(t.as_bytes())),
+                    })
+                })
+                .await;
+            this.update(cx, |this, cx| this.take_sides(sides, cx)).ok();
+        });
+    }
+
+    pub fn zoom(&self) -> Zoom {
+        self.zoom
+    }
+
+    pub fn set_zoom(&mut self, zoom: Zoom, cx: &mut Context<Self>) {
+        self.zoom = zoom;
+        cx.notify();
+    }
+
+    pub fn backdrop(&self) -> Backdrop {
+        self.backdrop
+    }
+
+    pub fn set_backdrop(&mut self, backdrop: Backdrop, cx: &mut Context<Self>) {
+        self.backdrop = backdrop;
+        cx.notify();
+    }
+
+    /// Both versions are there to lay one over the other.
+    pub fn has_both(&self) -> bool {
+        !matches!(self.sides, [Side::Missing, _] | [_, Side::Missing])
+    }
+
+    fn take_sides(&mut self, sides: [Side; 2], cx: &mut Context<Self>) {
+        for (i, side) in sides.into_iter().enumerate() {
+            if matches!(side, Side::Same) {
+                continue;
+            }
+            if let Side::Ready(old) = std::mem::replace(&mut self.sides[i], side) {
+                cx.drop_image(old.image, None);
+            }
+        }
+        cx.notify();
     }
 
     fn drop_images(&mut self, cx: &mut App) {
@@ -148,6 +284,7 @@ impl ImageCompare {
                                                 image,
                                                 bytes: len,
                                                 hash: h,
+                                                natural: None,
                                             })
                                         }
                                     }
@@ -160,18 +297,7 @@ impl ImageCompare {
                     })
                 })
                 .await;
-            this.update(cx, |this, cx| {
-                for (i, side) in sides.into_iter().enumerate() {
-                    if matches!(side, Side::Same) {
-                        continue;
-                    }
-                    if let Side::Ready(old) = std::mem::replace(&mut this.sides[i], side) {
-                        cx.drop_image(old.image, None);
-                    }
-                }
-                cx.notify();
-            })
-            .ok();
+            this.update(cx, |this, cx| this.take_sides(sides, cx)).ok();
         });
     }
 
@@ -193,8 +319,11 @@ impl ImageCompare {
 fn details(v: &Side) -> String {
     match v {
         Side::Ready(v) => {
-            let s = v.image.size(0);
-            format!("{}×{} · {}", s.width.0, s.height.0, bytes(v.bytes))
+            let (w, h) = v.natural.unwrap_or_else(|| {
+                let s = v.image.size(0);
+                (s.width.0 as f32, s.height.0 as f32)
+            });
+            format!("{}×{} · {}", w.round(), h.round(), bytes(v.bytes))
         }
         Side::Failed(e) => e.clone(),
         _ => String::new(),
@@ -211,11 +340,41 @@ fn bytes(n: usize) -> String {
 
 fn picture(v: &Side) -> Option<gpui_kit::Img> {
     let Side::Ready(v) = v else { return None };
+    // A fitted SVG fills its place: its pixels were drawn for that.
+    let fit = if v.natural.is_some() {
+        ObjectFit::Contain
+    } else {
+        ObjectFit::ScaleDown
+    };
     Some(
         img(ImageSource::Render(v.image.clone()))
             .size_full()
-            .object_fit(ObjectFit::ScaleDown),
+            .object_fit(fit),
     )
+}
+
+fn natural(v: &Side) -> Option<(f32, f32)> {
+    match v {
+        Side::Ready(v) => v.natural,
+        _ => None,
+    }
+}
+
+fn backdrop_color(b: Backdrop) -> Option<Hsla> {
+    let rgb = |n: u32| -> Hsla {
+        Rgba {
+            r: (n >> 16) as f32 / 255.,
+            g: ((n >> 8) & 0xff) as f32 / 255.,
+            b: (n & 0xff) as f32 / 255.,
+            a: 1.,
+        }
+        .into()
+    };
+    match b {
+        Backdrop::Theme => None,
+        Backdrop::Light => Some(rgb(0xffffff)),
+        Backdrop::Dark => Some(rgb(0x181818)),
+    }
 }
 
 impl Render for ImageCompare {
@@ -264,100 +423,145 @@ impl Render for ImageCompare {
         )
         .absolute()
         .size_full();
+        let bg = if self.svg {
+            backdrop_color(self.backdrop)
+        } else {
+            None
+        };
+        let actual = self.svg && self.zoom == Zoom::Actual;
+        // At 1:1 the two lie in one frame, as large as the larger of them.
+        let frame = actual.then(|| {
+            let [a, b] = [&self.sides[0], &self.sides[1]].map(|s| natural(s).unwrap_or((0., 0.)));
+            (a.0.max(b.0), a.1.max(b.1))
+        });
+        let overlay = |el: gpui_kit::Div| match frame {
+            Some((w, h)) => div().flex_1().min_h_0().p_4().flex().child(
+                el.relative()
+                    .flex_none()
+                    .m_auto()
+                    .w(px(w))
+                    .h(px(h))
+                    .when_some(bg, |el, bg| el.bg(bg)),
+            ),
+            None => el
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .m_4()
+                .when_some(bg, |el, bg| el.bg(bg)),
+        };
         let stage = match mode {
             ImageMode::Side => {
-                h_flex()
+                // An SVG's two versions stack in the unified layout, as its diff's lines do.
+                let stacked = self.svg && DiffOptions::get(cx).layout == Layout::Unified;
+                (if stacked { v_flex() } else { h_flex() })
                     .flex_1()
                     .min_h_0()
                     .gap_4()
                     .p_4()
-                    .children(self.sides.iter().map(|s| {
-                        div().flex_1().h_full().children(picture(s)).when(
-                            matches!(s, Side::Missing),
-                            |el| {
-                                el.flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_color(c.subtle)
-                                    .child("Not on this side")
-                            },
-                        )
+                    .children(self.sides.iter().enumerate().map(|(i, s)| {
+                        let cell = div()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .map(|el| if stacked { el.w_full() } else { el.h_full() });
+                        match (s, natural(s)) {
+                            (Side::Missing, _) => cell
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_color(c.subtle)
+                                .child("Not on this side"),
+                            (_, Some((w, h))) if actual => cell.child(
+                                div()
+                                    .id(("svg-actual", i))
+                                    .size_full()
+                                    .overflow_scroll()
+                                    .flex()
+                                    .child(
+                                        div()
+                                            .m_auto()
+                                            .flex_none()
+                                            .w(px(w))
+                                            .h(px(h))
+                                            .when_some(bg, |el, bg| el.bg(bg))
+                                            .children(picture(s)),
+                                    ),
+                            ),
+                            _ => cell.when_some(bg, |el, bg| el.bg(bg)).children(picture(s)),
+                        }
                     }))
             }
             ImageMode::Swipe => {
                 let d = self.divider.max(0.001);
+                overlay(
+                    div()
+                        .child(measure)
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .h_full()
+                                .w(relative(d))
+                                .overflow_hidden()
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .w(relative(1. / d))
+                                        .children(picture(&self.sides[0])),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .right_0()
+                                .h_full()
+                                .w(relative(1. - self.divider))
+                                .overflow_hidden()
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .right_0()
+                                        .h_full()
+                                        .w(relative(1. / (1. - self.divider).max(0.001)))
+                                        .children(picture(&self.sides[1])),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .h_full()
+                                .left(relative(self.divider))
+                                .w(px(2.))
+                                .bg(c.primary),
+                        ),
+                )
+            }
+            ImageMode::Onion => overlay(
                 div()
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .m_4()
                     .child(measure)
                     .child(
                         div()
                             .absolute()
                             .top_0()
                             .left_0()
-                            .h_full()
-                            .w(relative(d))
-                            .overflow_hidden()
-                            .child(
-                                div()
-                                    .h_full()
-                                    .w(relative(1. / d))
-                                    .children(picture(&self.sides[0])),
-                            ),
+                            .size_full()
+                            .children(picture(&self.sides[0])),
                     )
                     .child(
                         div()
                             .absolute()
                             .top_0()
-                            .right_0()
-                            .h_full()
-                            .w(relative(1. - self.divider))
-                            .overflow_hidden()
-                            .child(
-                                div()
-                                    .absolute()
-                                    .top_0()
-                                    .right_0()
-                                    .h_full()
-                                    .w(relative(1. / (1. - self.divider).max(0.001)))
-                                    .children(picture(&self.sides[1])),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .h_full()
-                            .left(relative(self.divider))
-                            .w(px(2.))
-                            .bg(c.primary),
-                    )
-            }
-            ImageMode::Onion => div()
-                .relative()
-                .flex_1()
-                .min_h_0()
-                .m_4()
-                .child(measure)
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .children(picture(&self.sides[0])),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .opacity(self.opacity)
-                        .children(picture(&self.sides[1])),
-                ),
+                            .left_0()
+                            .size_full()
+                            .opacity(self.opacity)
+                            .children(picture(&self.sides[1])),
+                    ),
+            ),
         };
         div()
             .id("image-compare")
@@ -370,6 +574,9 @@ impl Render for ImageCompare {
             .child(
                 stage
                     .id("image-stage")
+                    .when(frame.is_some() && mode != ImageMode::Side, |el| {
+                        el.overflow_scroll()
+                    })
                     .cursor_ew_resize()
                     .on_mouse_down(
                         MouseButton::Left,
