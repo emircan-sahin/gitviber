@@ -1,6 +1,6 @@
 //! Takes the welcome screen's place while git can't run: nothing else works without it. Checked
-//! once at launch, off the UI thread (a git only the login shell's PATH has shows up once that's
-//! read), and again on Check again.
+//! once at launch, off the UI thread, once the login shell's PATH is read (it decides which git
+//! every later call runs), and again on Check again.
 
 use gitviber_core::api;
 use gitviber_core::git::GitInfo;
@@ -20,8 +20,8 @@ use crate::help::toast;
 
 #[derive(Default)]
 pub struct GitCheck {
-    /// What the last check found, while git can't run.
-    missing: Option<GitInfo>,
+    /// What the last check found.
+    found: Option<GitInfo>,
     checking: bool,
     _task: Option<Task<()>>,
 }
@@ -30,7 +30,16 @@ impl Global for GitCheck {}
 
 /// Whether git is missing, as the last check found.
 pub fn missing(cx: &App) -> Option<&GitInfo> {
-    cx.try_global::<GitCheck>()?.missing.as_ref()
+    checked(cx).filter(|i| matches!(i.state, "missing" | "tools"))
+}
+
+/// The git found when it's older than GitViber needs.
+pub fn old(cx: &App) -> Option<&GitInfo> {
+    checked(cx).filter(|i| i.state == "old")
+}
+
+fn checked(cx: &App) -> Option<&GitInfo> {
+    cx.try_global::<GitCheck>()?.found.as_ref()
 }
 
 pub fn check(recheck: bool, cx: &mut App) {
@@ -38,7 +47,14 @@ pub fn check(recheck: bool, cx: &mut App) {
         return;
     }
     let core = gitviber_ui::core(cx);
-    let asked = cx.background_spawn(async move { api::repo::git_info(&core, recheck) });
+    let asked = cx.background_spawn(async move {
+        // Until the shell answers, the fallback PATH can find another git (Homebrew's) than the
+        // one every later call runs (an old /usr/local/bin/git first on the login PATH).
+        if !recheck {
+            gitviber_core::shell::wait_for_first_answer();
+        }
+        api::repo::git_info(&core, recheck)
+    });
     cx.default_global::<GitCheck>().checking = true;
     let task = cx.spawn(async move |cx| {
         let info = asked.await;
@@ -48,7 +64,7 @@ pub fn check(recheck: bool, cx: &mut App) {
             }
             let c = cx.default_global::<GitCheck>();
             c.checking = false;
-            c.missing = info.ok().filter(|i| matches!(i.state, "missing" | "tools"));
+            c.found = info.ok();
             cx.refresh_windows();
         });
     });

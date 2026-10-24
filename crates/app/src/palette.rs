@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gitviber_core::git::FileChange;
+use gitviber_core::git::{FileChange, GitInfo};
 use gitviber_core::{Core, api};
 use gitviber_ui::fuzzy::{Match, fuzzy_match, match_path, prepare_query};
 use gitviber_ui::keymap::{self, Category, IS_MAC, ROOT_CONTEXT, bindings_for, format_chord};
@@ -21,6 +21,7 @@ use gitviber_ui::workspace::{
 use gitviber_ui::{ActiveAppTheme, Settings, UiState, actions::workbench, store};
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
+use gpui_kit::component::dialog::DialogEntrance;
 use gpui_kit::{
     Action, App, AppContext as _, Context, Entity, FocusHandle, FontWeight, Global, HighlightStyle,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString,
@@ -257,12 +258,22 @@ fn changes_of(
 impl Palette {
     /// Opens the palette over `window` in `mode`, listing what applies where focus is now.
     pub fn open(mode: Mode, workspace: &Entity<Workspace>, window: &mut Window, cx: &mut App) {
+        Self::show(mode, workspace, window, cx);
+    }
+
+    /// `open`, giving the palette back; None while another dialog is up.
+    fn show(
+        mode: Mode,
+        workspace: &Entity<Workspace>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Entity<Self>> {
         if window.has_active_dialog(cx) {
-            return;
+            return None;
         }
         let ws = workspace.read(cx);
         let available = window.available_actions(cx);
-        let mut commands: Vec<Listed> = keymap::all_commands()
+        let commands: Vec<Listed> = keymap::all_commands()
             .filter(|c| c.id != "workbench.showCommands")
             .filter(|c| {
                 let name = c.action().name();
@@ -270,7 +281,6 @@ impl Palette {
             })
             .map(|c| Listed::new(c, Some(ws)))
             .collect();
-        commands.sort_by_key(|l| keymap::all_commands().position(|o| o.id == l.command.id));
         let project = ws.project().cloned();
         let root = project.as_ref().map(|p| p.read(cx).root().to_path_buf());
         let ctx = PanelContext {
@@ -333,23 +343,40 @@ impl Palette {
             palette.rank(cx);
             palette
         });
-        let first = std::cell::Cell::new(true);
-        window.open_dialog(cx, move |dialog, window, cx| {
-            if first.replace(false) {
-                let state = palette.read(cx).state.clone();
-                state.update(cx, |s, cx| s.focus(window, cx));
-            }
+        let shown = palette.clone();
+        // No entrance animation: the palette is there, whole, on the frame after the key.
+        window.open_dialog(cx, move |dialog, _, _| {
             dialog
                 .w(px(576.))
                 .margin_top(px(90.))
                 .close_button(false)
+                .entrance(DialogEntrance::None)
                 .p_0()
-                .child(palette.clone())
+                .child(shown.clone())
         });
+        // Focused here: focusing while the dialog draws asks for one more frame.
+        let state = palette.read(cx).state.clone();
+        state.update(cx, |s, cx| s.focus(window, cx));
+        Some(palette)
     }
 
-    /// What a mode reads off the UI thread: the status, read each time it's asked for.
+    /// What a mode reads off the UI thread: the status, read each time it's asked for; for
+    /// files, why quick open found none (its source keeps a failed listing to itself).
     fn load(&mut self, core: Arc<Core>, cx: &mut Context<Self>) {
+        if self.mode == Mode::Files {
+            if self.root.is_none() || self.quick.as_ref().is_none_or(|q| !q.is_empty()) {
+                return;
+            }
+            let read = cx.background_spawn(async move { api::files::list_files(&core).err() });
+            self._load = Some(cx.spawn(async move |this, cx| {
+                let Some(err) = read.await else { return };
+                let _ = this.update(cx, |p, cx| {
+                    p.error = Some(unlisted(&err, crate::dialogs::needs_git::old(cx)).into());
+                    cx.notify();
+                });
+            }));
+            return;
+        }
         if self.mode != Mode::Changes {
             return;
         }
@@ -504,14 +531,23 @@ impl Palette {
                 if let Some(root) = &self.root {
                     remember_file(&root.to_string_lossy(), path, cx);
                 }
-                let run = run.clone();
-                window.defer(cx, move |window, cx| run(window, cx));
+                let (run, ws) = (run.clone(), self.workspace.clone());
+                window.defer(cx, move |window, cx| {
+                    run(window, cx);
+                    if let Some(ws) = ws.upgrade() {
+                        ws.update(cx, |ws, cx| ws.focus_center(window, cx));
+                    }
+                });
             }
             Run::Change(selection) => {
                 let (selection, ws) = (selection.clone(), self.workspace.clone());
                 window.defer(cx, move |window, cx| {
                     if let Some(ws) = ws.upgrade() {
-                        ws.update(cx, |ws, cx| ws.open(selection, false, window, cx));
+                        ws.update(cx, |ws, cx| {
+                            if ws.open(selection, false, window, cx) {
+                                ws.focus_center(window, cx);
+                            }
+                        });
                     }
                 });
             }
@@ -555,7 +591,7 @@ impl Palette {
         } else {
             "".into()
         };
-        if mode != Mode::Commands && self.quick.is_none() && mode == Mode::Files {
+        if mode == Mode::Files && self.quick.is_none() {
             let ctx = PanelContext {
                 workspace: self.workspace.clone(),
                 project: self
@@ -567,8 +603,12 @@ impl Palette {
                 .quick_open()
                 .map(|source| source(&ctx, cx));
         }
-        if mode != Mode::Commands {
+        if mode != Mode::Commands && mode != self.mode {
             self.mode = mode;
+            self.error = None;
+            if gitviber_ui::has_core(cx) {
+                self.load(gitviber_ui::core(cx), cx);
+            }
         }
         self.query = query.clone();
         self.state
@@ -609,6 +649,19 @@ impl Palette {
             _ => "Search files by name · type > for commands",
         }
     }
+}
+
+/// Why quick open has no files: the old git the launch check found, else git's first line.
+fn unlisted(err: &str, old: Option<&GitInfo>) -> String {
+    let why = match old {
+        Some(git) => format!(
+            "git {} is older than GitViber needs ({})",
+            git.version.as_deref().unwrap_or_default(),
+            git.minimum
+        ),
+        None => err.lines().next().unwrap_or(err).trim().to_string(),
+    };
+    format!("Could not list files: {why}")
 }
 
 /// A new terminal tab in `cwd`, the window staying where it is.
@@ -735,6 +788,11 @@ impl Render for Palette {
 mod tests {
     use super::*;
 
+    use std::rc::Rc;
+
+    use gitviber_ui::workspace::{TabHandle, TabItem, register_opener, register_quick_open};
+    use gpui_kit::{TestAppContext, VisualTestContext};
+
     #[test]
     fn the_old_apps_recent_files_keep_their_roots_and_paths() {
         let old = serde_json::json!({
@@ -786,5 +844,208 @@ mod tests {
             .map(|(at, _)| at)
             .collect();
         assert_eq!(order[0], 0);
+    }
+
+    #[test]
+    fn files_that_cant_be_listed_say_why() {
+        let err = "error: unknown option `deduplicate'\nusage: git ls-files [<options>]";
+        assert_eq!(
+            unlisted(err, None),
+            "Could not list files: error: unknown option `deduplicate'"
+        );
+        let old = GitInfo {
+            state: "old",
+            version: Some("2.15.0".into()),
+            detail: None,
+            minimum: "2.36".into(),
+        };
+        assert_eq!(
+            unlisted(err, Some(&old)),
+            "Could not list files: git 2.15.0 is older than GitViber needs (2.36)"
+        );
+    }
+
+    struct Tab {
+        focus: FocusHandle,
+    }
+    impl Render for Tab {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().track_focus(&self.focus)
+        }
+    }
+    impl TabItem for Tab {
+        fn tab_title(&self, _: &App) -> SharedString {
+            "tab".into()
+        }
+        fn tab_focus(&self, _: &App) -> Option<FocusHandle> {
+            Some(self.focus.clone())
+        }
+    }
+
+    /// The main window as the palette sees it: the active tab under a root that holds focus.
+    struct Host {
+        ws: Entity<Workspace>,
+        focus: FocusHandle,
+    }
+    impl Render for Host {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let view = self.ws.update(cx, |ws, cx| ws.active_view(window, cx));
+            div().size_full().track_focus(&self.focus).children(view)
+        }
+    }
+
+    fn window<'a>(
+        name: &str,
+        cx: &'a mut TestAppContext,
+    ) -> (Entity<Host>, &'a mut VisualTestContext) {
+        let dir =
+            std::env::temp_dir().join(format!("gitviber-palette-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: the tests that read the config dir all point it at a temporary folder.
+        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        cx.update(gitviber_ui::init);
+        let mut host = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let ws = cx.new(Workspace::new);
+            Workspace::register_window(&ws, window, cx);
+            let h = cx.new(|cx| Host {
+                ws,
+                focus: cx.focus_handle(),
+            });
+            host = Some(h.clone());
+            gpui_kit::base::Root::new(h, window, cx)
+        });
+        let host = host.unwrap();
+        cx.update(|window, cx| host.read(cx).focus.clone().focus(window, cx));
+        cx.run_until_parked();
+        (host, cx)
+    }
+
+    fn tab_focused(host: &Entity<Host>, cx: &mut VisualTestContext) -> bool {
+        cx.update(|window, cx| {
+            let ws = host.read(cx).ws.read(cx);
+            let tab = ws.tabs().active().and_then(|t| t.item.focus_handle(cx));
+            tab.is_some_and(|f| f.is_focused(window))
+        })
+    }
+
+    /// Return on a file (quick open's own open leaves focus where it was) or a change: the
+    /// keyboard is in what opened, so PgDn scrolls it with no ⌘E first.
+    #[gpui_kit::test]
+    fn a_file_or_change_picked_takes_the_keyboard(cx: &mut TestAppContext) {
+        let (host, cx) = window("focus", cx);
+        cx.update(|_, cx| {
+            for kind in ["file", "unstaged"] {
+                register_opener(cx, kind, |_, _, cx| {
+                    Some(TabHandle::new(cx.new(|cx| Tab {
+                        focus: cx.focus_handle(),
+                    })))
+                });
+            }
+            register_quick_open(
+                cx,
+                Rc::new(|ctx: &PanelContext, _: &mut App| {
+                    let ws = ctx.workspace.clone();
+                    let run: RunItem = Rc::new(move |window, cx| {
+                        let file = Selection::File {
+                            path: "src/a.rs".into(),
+                        };
+                        if let Some(ws) = ws.upgrade() {
+                            ws.update(cx, |ws, cx| ws.open(file, false, window, cx));
+                        }
+                    });
+                    vec![QuickItem {
+                        label: "src/a.rs".into(),
+                        detail: None,
+                        is_path: true,
+                        run,
+                    }]
+                }),
+            );
+        });
+        let ws = cx.update(|_, cx| host.read(cx).ws.clone());
+        cx.update(|window, cx| Palette::show(Mode::Files, &ws, window, cx));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert!(tab_focused(&host, cx), "the file's tab has the keyboard");
+
+        // Back on the root, then a change picked from Open Changed File.
+        cx.update(|window, cx| host.read(cx).focus.clone().focus(window, cx));
+        let palette = cx
+            .update(|window, cx| Palette::show(Mode::Changes, &ws, window, cx))
+            .unwrap();
+        cx.update(|_, cx| {
+            palette.update(cx, |p, cx| {
+                let file = Arc::new(FileChange {
+                    path: "src/b.rs".into(),
+                    old_path: None,
+                    status: "M".into(),
+                    additions: None,
+                    deletions: None,
+                    oid: None,
+                    index_oid: None,
+                    conflict: None,
+                    mode: None,
+                    submodule: None,
+                    nested: None,
+                });
+                p.changes = Some(vec![(Selection::Unstaged { file: file.clone() }, file, "")]);
+                p.rank(cx);
+                cx.notify();
+            })
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(cx.update(|_, cx| ws.read(cx).tabs().len()), 2);
+        assert!(tab_focused(&host, cx), "the change's tab has the keyboard");
+    }
+
+    /// Quick open finding no files in an open repository says why, in git's words (an index
+    /// git can't read here; an old git, the launch check's).
+    #[gpui_kit::test]
+    fn no_files_listed_shows_the_reason(cx: &mut TestAppContext) {
+        let repo =
+            std::env::temp_dir().join(format!("gitviber-palette-repo-{}", std::process::id()));
+        _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("a.rs"), "fn main() {}\n").unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+        };
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "init",
+        ]);
+        let (host, cx) = window("unlisted", cx);
+        cx.update(|_, cx| {
+            gitviber_ui::install_core(cx);
+            // The files crate's source, failing: it hands back no files and keeps the error.
+            register_quick_open(cx, Rc::new(|_: &PanelContext, _: &mut App| Vec::new()));
+        });
+        let ws = cx.update(|_, cx| host.read(cx).ws.clone());
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(repo.clone(), window, cx)));
+        cx.run_until_parked();
+        std::fs::write(repo.join(".git/index"), "not an index").unwrap();
+        let palette = cx
+            .update(|window, cx| Palette::show(Mode::Files, &ws, window, cx))
+            .unwrap();
+        cx.run_until_parked();
+        let shown = cx.update(|_, cx| palette.read(cx).empty_text());
+        assert!(shown.starts_with("Could not list files: "), "{shown}");
+        assert!(shown.contains("index"), "{shown}");
+        _ = std::fs::remove_dir_all(&repo);
     }
 }

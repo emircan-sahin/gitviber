@@ -2,6 +2,7 @@
 //! workspace, so a change here shows there as it's made. What a section shows beyond settings
 //! (the open repository's remotes and identity, Obsidian's vaults, the apps Open in found, macOS's
 //! notification permission) is read when the window opens and again when it comes forward.
+//! ⌘W closes it, and so does Esc once nothing in it is left to cancel.
 
 mod fields;
 mod git;
@@ -28,10 +29,10 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::slider::{SliderEvent, SliderState};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, Context, Entity, Global, InteractiveElement as _,
-    IntoElement, Keystroke, ParentElement as _, PathPromptOptions, Render, ScrollHandle,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
-    prelude::FluentBuilder as _, px, rems, size,
+    AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, Global,
+    InteractiveElement as _, IntoElement, KeyDownEvent, Keystroke, ParentElement as _,
+    PathPromptOptions, Render, ScrollHandle, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px, rems, size,
 };
 
 pub use git::Which;
@@ -255,6 +256,8 @@ pub struct Data {
 
 pub struct SettingsWindow {
     weak: WeakEntity<SettingsWindow>,
+    /// Focused when the window opens: with nothing focused, its keys (⌘W, Esc) reached nothing.
+    focus: FocusHandle,
     section: Section,
     search: Entity<InputState>,
     /// The open section's rows; back to the top on another section.
@@ -346,8 +349,11 @@ impl SettingsWindow {
             }));
         }
         window.set_window_title("Settings");
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
         let mut this = Self {
             weak: cx.weak_entity(),
+            focus,
             section,
             search,
             scroll: ScrollHandle::new(),
@@ -918,6 +924,28 @@ impl SettingsWindow {
         true
     }
 
+    /// Esc, once what's open in the window (a dialog, a menu, a key being recorded) didn't take
+    /// it: a remote being edited is cancelled, a filled filter being typed in emptied, else the
+    /// window closes.
+    fn escape(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let k = &e.keystroke;
+        if k.key != "escape" || k.modifiers.modified() {
+            return;
+        }
+        cx.stop_propagation();
+        if self.data.git.editing.is_some() {
+            self.edit_remote(None, window, cx);
+            return;
+        }
+        for input in [&self.search, &self.shortcut_filter] {
+            if input.focus_handle(cx).is_focused(window) && !input.read(cx).value().is_empty() {
+                input.update(cx, |i, cx| i.set_value("", window, cx));
+                return;
+            }
+        }
+        window.remove_window();
+    }
+
     fn reset_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let asked = gitviber_refs::ask::ask(
             gitviber_refs::ask::Ask::new(
@@ -1135,6 +1163,8 @@ impl Render for SettingsWindow {
         div()
             .id("settings-window")
             .key_context(keymap::ROOT_CONTEXT)
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::escape))
             .size_full()
             .flex()
             .flex_col()
@@ -1207,5 +1237,76 @@ mod tests {
     fn the_sidebar_groups_list_every_section_once_in_order() {
         let listed: Vec<Section> = GROUPS.iter().flat_map(|(_, s)| s.iter().copied()).collect();
         assert_eq!(listed, Section::ALL);
+    }
+
+    /// Opens the window as ⌘, does, drawn: its handle and its view.
+    fn opened(cx: &mut gpui_kit::TestAppContext) -> (AnyWindowHandle, WeakEntity<SettingsWindow>) {
+        cx.update(|cx| open(None, cx));
+        cx.run_until_parked();
+        let (handle, view) = cx.update(|cx| cx.global::<Open>().0.clone()).unwrap();
+        let _ = cx.update_window(handle, |_, window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+        (handle, view)
+    }
+
+    struct Main;
+    impl Render for Main {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    /// ⌘W and Esc close the window as soon as it opens: out of the window list, its views
+    /// dropped. Esc in a filled filter empties it first.
+    #[gpui_kit::test]
+    fn cmd_w_and_escape_close_the_window_and_drop_it(cx: &mut gpui_kit::TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("gitviber-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: the tests that read the config dir all point it at a temporary folder.
+        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        cx.update(gitviber_ui::init);
+        let main: AnyWindowHandle = cx
+            .add_window(|window, cx| gpui_kit::base::Root::new(cx.new(|_| Main), window, cx))
+            .into();
+        // As on macOS, the main window comes forward once Settings is gone. (The test platform
+        // also keeps the last active window, and a text field's input handler with it, till then.)
+        let closed = |handle: AnyWindowHandle,
+                      view: WeakEntity<SettingsWindow>,
+                      cx: &mut gpui_kit::TestAppContext| {
+            cx.run_until_parked();
+            assert!(!cx.update(|cx| cx.windows().contains(&handle)));
+            assert!(view.upgrade().is_none());
+            let _ = main.update(cx, |_, window, _| window.activate_window());
+            cx.run_until_parked();
+        };
+        let close = |key: &str, cx: &mut gpui_kit::TestAppContext| {
+            let (handle, view) = opened(cx);
+            gpui_kit::VisualTestContext::from_window(handle, cx).simulate_keystrokes(key);
+            closed(handle, view, cx);
+        };
+        close("cmd-w", cx);
+        let snapshot = cx.update(|cx| cx.leak_detector_snapshot());
+        close("escape", cx);
+        close("cmd-w", cx);
+
+        let (handle, view) = opened(cx);
+        let search = view
+            .upgrade()
+            .unwrap()
+            .read_with(cx, |w, _| w.search.clone());
+        let _ = handle.update(cx, |_, window, cx| {
+            search.update(cx, |s, cx| {
+                s.set_value("font", window, cx);
+                s.focus(window, cx);
+            })
+        });
+        let mut vcx = gpui_kit::VisualTestContext::from_window(handle, cx);
+        vcx.simulate_keystrokes("escape");
+        assert!(search.read_with(&vcx, |s, _| s.value().is_empty()));
+        assert!(vcx.update(|_, cx| cx.windows().contains(&handle)));
+        vcx.simulate_keystrokes("escape");
+        drop(search);
+        closed(handle, view, cx);
+        cx.update(|cx| cx.assert_no_new_leaks(&snapshot));
     }
 }
