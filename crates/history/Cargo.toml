@@ -24,7 +24,7 @@ serde_json.workspace = true
 # Off-screen pictures of the demo (dev::run with GITVIBER_SNAPSHOT).
 gitviber-ui = { path = "../ui", features = ["snapshot"] }
 # Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.
-gpui-test = { package = "gpui-pre", version = "=0.3.9", features = ["test-support", "leak-detection"] }
+gpui-test.workspace = true
 
 # Every crate's example shares target/debug/examples/: a plain "demo" would be overwritten.
 [[example]]

@@ -12,7 +12,50 @@ authors = ["Emircan Sahin"]
 repository = "https://github.com/emircan-sahin/gitviber"
 
 [workspace.dependencies]
-gpui-kit = "=0.8.0"
+# One feature set for every crate. Cargo unifies features only among the crates a command builds,
+# so each crate asking for its own set built gpui-component and all above it again: 12 builds of
+# it sat in target/ at once. The highlighter's grammars (all but SQL, whose cc pin conflicts).
+gpui-kit = { version = "=0.8.0", features = [
+    "tree-sitter",
+    "tree-sitter-astro",
+    "tree-sitter-bash",
+    "tree-sitter-c",
+    "tree-sitter-cmake",
+    "tree-sitter-cpp",
+    "tree-sitter-csharp",
+    "tree-sitter-css",
+    "tree-sitter-diff",
+    "tree-sitter-ejs",
+    "tree-sitter-elixir",
+    "tree-sitter-erb",
+    "tree-sitter-go",
+    "tree-sitter-graphql",
+    "tree-sitter-html",
+    "tree-sitter-java",
+    "tree-sitter-javascript",
+    "tree-sitter-jsdoc",
+    "tree-sitter-kotlin",
+    "tree-sitter-lua",
+    "tree-sitter-make",
+    "tree-sitter-markdown",
+    "tree-sitter-php",
+    "tree-sitter-proto",
+    "tree-sitter-python",
+    "tree-sitter-ruby",
+    "tree-sitter-rust",
+    "tree-sitter-scala",
+    "tree-sitter-svelte",
+    "tree-sitter-swift",
+    "tree-sitter-toml",
+    "tree-sitter-tsx",
+    "tree-sitter-typescript",
+    "tree-sitter-yaml",
+    "tree-sitter-zig",
+] }
+# Tests, examples and the off-screen snapshot share this one gpui; any other feature set would be
+# another build of the whole stack.
+gpui-test = { package = "gpui-pre", version = "=0.3.9", features = ["test-support", "leak-detection"] }
+gpui-snapshot-platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["test-support"] }
 # Already in the tree through gpui-kit; pinned to the locked versions.
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
