@@ -1,13 +1,19 @@
 //! Right-click menus: on a commit, on several picked together, and on a file of a commit.
 
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
-use gitviber_core::git;
+use futures::FutureExt as _;
+use futures::future::Shared;
+use gitviber_core::{api, git};
 use gitviber_refs::names::folder_name;
+use gitviber_refs::net::NetOp;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
-use gpui_kit::{App, ClickEvent, Context, Entity, SharedString, Window};
+use gpui_kit::{
+    App, AppContext as _, ClickEvent, Context, Entity, Global, SharedString, Task, Window,
+};
 
 use crate::act::{Act, ActMany, act, act_many, commit_url, mark, web_url};
 use crate::commit::{Commit, RefKind, group_refs};
@@ -60,6 +66,109 @@ fn sub(
     } else {
         menu.submenu_with_icon(Some(Icon::new(icon)), label.to_string(), window, cx, f)
     }
+}
+
+/// The remote tags are pushed to and the ones it has, asked as a tagged commit's menu opens
+/// and reused for a few seconds.
+#[derive(Default)]
+struct RemoteTags(Option<(Instant, String, Vec<String>)>);
+impl Global for RemoteTags {}
+
+const FRESH: Duration = Duration::from_secs(10);
+/// A menu gives up on a remote that doesn't answer; git would wait minutes.
+const GIVE_UP: Duration = Duration::from_secs(6);
+
+type There = Result<(String, Vec<String>), String>;
+
+/// Pushing or deleting a tag changes the answer, the top bar's push menu's too.
+pub(crate) fn forget_remote_tags(cx: &mut App) {
+    cx.set_global(RemoteTags(None));
+    gitviber_refs::topbar::forget_remote_tags(cx);
+}
+
+/// One question for all of a commit's tags.
+fn remote_tags(cx: &mut App) -> Shared<Task<There>> {
+    let cached = cx.try_global::<RemoteTags>().and_then(|c| c.0.clone());
+    if let Some((at, remote, names)) = cached
+        && at.elapsed() < FRESH
+    {
+        return Task::ready(Ok((remote, names))).shared();
+    }
+    let core = gitviber_ui::core(cx);
+    let op = NetOp::quiet();
+    let (c2, id) = (core.clone(), op.id.clone());
+    let timer = cx.background_executor().timer(GIVE_UP);
+    cx.background_spawn(async move {
+        timer.await;
+        api::sync::cancel_network(&c2, id);
+    })
+    .detach();
+    cx.background_spawn(async move {
+        api::branches::remote_tags(&core, op.id.clone(), op.progress())
+            .map(|r| (r.remote, r.names))
+            .map_err(|e| {
+                if e == gitviber_core::network::CANCELLED {
+                    "The remote didn't answer in time.".to_string()
+                } else {
+                    e
+                }
+            })
+    })
+    .shared()
+}
+
+/// A tag's submenu; `there` None while the remote is asked.
+fn tag_items(
+    m: PopupMenu,
+    list: &Entity<CommitList>,
+    c: &Rc<Commit>,
+    tag: &str,
+    locked: bool,
+    there: Option<&There>,
+) -> PopupMenu {
+    let known = there.and_then(|t| t.as_ref().ok());
+    let here = known.map(|(_, names)| names.iter().any(|n| n == tag));
+    let remote = known.map(|(r, _)| r.as_str());
+    let label = match there {
+        None => "Checking the remote…".to_string(),
+        Some(Ok((r, _))) if here == Some(true) => format!("On {r}"),
+        Some(Ok((r, _))) => format!("Not on {r} yet"),
+        Some(Err(e)) => format!("Couldn't ask the remote: {e}"),
+    };
+    let tag = tag.to_string();
+    m.label(label)
+        .item(
+            item(
+                match remote {
+                    Some(r) => format!("Push tag to {r}"),
+                    None => "Push tag".into(),
+                },
+                Some(IconName::Upload),
+                here == Some(true),
+            )
+            .on_click(on(list, c, Act::PushTag(tag.clone()))),
+        )
+        .item(
+            item("Delete tag", Some(IconName::Trash), locked).on_click(on(
+                list,
+                c,
+                Act::DeleteTag(tag.clone()),
+            )),
+        )
+        .item(
+            item(
+                format!("Delete from {}…", remote.unwrap_or("the remote")),
+                Some(IconName::Trash),
+                here == Some(false),
+            )
+            .on_click(on(list, c, Act::DeleteRemoteTag(tag.clone()))),
+        )
+        .separator()
+        .item(item("Copy name", Some(IconName::Copy), false).on_click(on(
+            list,
+            c,
+            Act::CopyTag(tag),
+        )))
 }
 
 /// Right-click actions on a commit; on one of several picked, on them all.
@@ -352,41 +461,36 @@ pub fn commit_menu(
                 Act::CreateTag,
             )),
         );
+    // Submenus are built with the menu: the remote is asked as it opens.
+    let there = (!tags.is_empty()).then(|| remote_tags(cx));
     for tag in tags {
-        let (list, c) = (list.clone(), c.clone());
+        let (list, c, there) = (list.clone(), c.clone(), there.clone());
         menu = menu.submenu_with_icon(
             Some(Icon::new(IconName::Tag)),
             tag.clone(),
             window,
             cx,
-            move |m, _, _| {
-                m.item(item("Push tag", Some(IconName::Upload), false).on_click(on(
-                    &list,
-                    &c,
-                    Act::PushTag(tag.clone()),
-                )))
-                .item(
-                    item("Delete tag", Some(IconName::Trash), locked).on_click(on(
-                        &list,
-                        &c,
-                        Act::DeleteTag(tag.clone()),
-                    )),
-                )
-                .item(
-                    item("Delete from the remote…", Some(IconName::Trash), false).on_click(on(
-                        &list,
-                        &c,
-                        Act::DeleteRemoteTag(tag.clone()),
-                    )),
-                )
-                .separator()
-                .item(
-                    item("Copy name", Some(IconName::Copy), false).on_click(on(
-                        &list,
-                        &c,
-                        Act::CopyTag(tag.clone()),
-                    )),
-                )
+            move |m, window, cx| {
+                if let Some(there) = there.clone() {
+                    let (list, c, tag) = (list.clone(), c.clone(), tag.clone());
+                    cx.spawn_in(window, async move |menu, cx| {
+                        let answer = there.await;
+                        let _ = menu.update_in(cx, |menu, window, cx| {
+                            if let Ok((remote, names)) = &answer {
+                                cx.set_global(RemoteTags(Some((
+                                    Instant::now(),
+                                    remote.clone(),
+                                    names.clone(),
+                                ))));
+                            }
+                            menu.rebuild(window, cx, |m, _, _| {
+                                tag_items(m, &list, &c, &tag, locked, Some(&answer))
+                            });
+                        });
+                    })
+                    .detach();
+                }
+                tag_items(m, &list, &c, &tag, locked, None)
             },
         );
     }
@@ -546,7 +650,7 @@ pub fn file_menu(
     c: &Rc<Commit>,
     f: &git::FileChange,
     _: &mut Window,
-    _: &mut Context<PopupMenu>,
+    cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
     let name = f.path.rsplit('/').next().unwrap_or(&f.path).to_string();
     let open = {
@@ -565,7 +669,15 @@ pub fn file_menu(
             });
         }
     };
+    let open_file = {
+        let (ws, path) = (list.read(cx).workspace.clone(), f.path.clone());
+        move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+            let sel = gitviber_ui::workspace::Selection::File { path: path.clone() };
+            let _ = ws.update(cx, |ws, cx| ws.open(sel, false, window, cx));
+        }
+    };
     menu.item(item("Open Changes", Some(IconName::FileDiff), false).on_click(open))
+        .item(item("Open File", Some(IconName::File), false).on_click(open_file))
         .item(
             item("Open All Changes in Commit", Some(IconName::Files), false).on_click(on(
                 list,

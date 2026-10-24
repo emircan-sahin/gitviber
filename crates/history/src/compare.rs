@@ -61,12 +61,13 @@ impl CompareView {
         cx: &mut Context<Self>,
     ) -> Self {
         let weak = cx.weak_entity();
-        let files = cx.new(|_| {
+        let files = cx.new(|cx| {
             FileList::new(
                 "No differences.",
                 Rc::new(move |f, pin, window, cx| {
                     let _ = weak.update(cx, |this, cx| this.open_file(f, pin, window, cx));
                 }),
+                cx,
             )
         });
         // Built inside the workspace's own update: its project is looked up once that's over.
@@ -185,8 +186,18 @@ impl CompareView {
                 match c {
                     Ok(c) => {
                         let c = Rc::new(c);
-                        this.files
-                            .update(cx, |f, cx| f.set(Ok(c.files.clone()), cx));
+                        let (b, h) = (&this.base.label, &this.head.label);
+                        let empty = match (c.ahead > 0 || c.behind > 0, this.merge_base) {
+                            (true, true) => {
+                                format!("{h} changes no files since it parted from {b}.")
+                            }
+                            (true, false) => "Both sides hold the same files.".into(),
+                            (false, _) => "No differences.".into(),
+                        };
+                        this.files.update(cx, |f, cx| {
+                            f.set_empty(empty, cx);
+                            f.set(Ok(c.files.clone()), cx)
+                        });
                         this.comparison = Some(Ok(c));
                         this.list_side(cx);
                         this.check_merge(cx);

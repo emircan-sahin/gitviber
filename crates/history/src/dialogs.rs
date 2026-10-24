@@ -7,15 +7,16 @@ use std::rc::Rc;
 use futures::channel::oneshot;
 use gitviber_refs::names::ref_name_check;
 use gitviber_ui::ActiveAppTheme;
+use gitviber_ui::keymap::git as git_actions;
 use gitviber_ui::memory::Live;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::{Disableable as _, WindowExt as _};
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, Focusable as _, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
-    rems,
+    App, AppContext as _, Context, Entity, Focusable as _, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div,
+    prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::commit::Commit;
@@ -238,8 +239,16 @@ impl Render for NameForm {
                         .child(h),
                 )
             })
+            // Create Tag's shortcut (⌘↵ unless rebound) sends from the message.
             .when_some(self.message.clone(), |d, m| {
-                d.child(Textarea::new(&m).h(px(72.)))
+                d.child(
+                    div()
+                        .key_context("TagMessage")
+                        .on_action(cx.listener(|this, _: &git_actions::CreateTag, window, cx| {
+                            this.send(window, cx)
+                        }))
+                        .child(Textarea::new(&m).h(px(72.))),
+                )
             })
             .when(self.kind == NameKind::Tag, |d| {
                 d.child(

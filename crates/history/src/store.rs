@@ -17,6 +17,8 @@ pub struct Saved {
     pub all_branches: bool,
     /// By main worktree; left out while it's every ref.
     pub graph_refs: BTreeMap<String, GraphRefs>,
+    /// A fork's panes closed: "origin" (your branch), "parent" (the original).
+    pub closed_panes: Vec<String>,
 }
 
 impl Global for Saved {}
@@ -59,9 +61,17 @@ fn from_legacy(value: impl Fn(&str) -> Option<Value>) -> Saved {
             .collect(),
         _ => BTreeMap::new(),
     };
+    let closed_panes = match value("gitviber.history-panes.collapsed") {
+        Some(Value::Array(ids)) => ids
+            .into_iter()
+            .filter_map(|id| id.as_str().map(str::to_string))
+            .collect(),
+        _ => vec![],
+    };
     Saved {
         all_branches: value("gitviber.history.allBranches") == Some(Value::Bool(true)),
         graph_refs,
+        closed_panes,
     }
 }
 
@@ -96,6 +106,7 @@ mod tests {
     fn the_old_apps_choices_come_over() {
         let old = serde_json::json!({
             "gitviber.history.allBranches": true,
+            "gitviber.history-panes.collapsed": ["parent", 3],
             "gitviber.history.graphRefs": {
                 "/p/a": {"local": true, "remote": false, "tags": true, "hidden": ["refs/heads/x"], "only": null},
                 "/p/b": {"tags": false},
@@ -105,6 +116,7 @@ mod tests {
         });
         let saved = from_legacy(|key| old.get(key).cloned());
         assert!(saved.all_branches);
+        assert_eq!(saved.closed_panes, ["parent"]);
         assert!(!saved.graph_refs["/p/a"].remote);
         assert_eq!(saved.graph_refs["/p/a"].hidden, ["refs/heads/x"]);
         assert!(!saved.graph_refs["/p/b"].tags && saved.graph_refs["/p/b"].local);

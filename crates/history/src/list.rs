@@ -294,11 +294,13 @@ impl CommitList {
             },
         );
         // The active tab marks its file's row.
-        let tabs = workspace.upgrade().map(|ws| cx.observe(&ws, |this, _, cx| {
-            if this.open.is_some() {
-                cx.notify();
-            }
-        }));
+        let tabs = workspace.upgrade().map(|ws| {
+            cx.observe(&ws, |this, _, cx| {
+                if this.open.is_some() {
+                    cx.notify();
+                }
+            })
+        });
         let mut list = CommitList {
             repo,
             workspace,
@@ -749,7 +751,13 @@ impl CommitList {
                     };
                     if let Err(e) = &files {
                         let e = e.clone();
-                        let _ = this.workspace.update(cx, |ws, cx| ws.toast(gitviber_ui::workspace::Toast::error(e).title("Could not load commit"), cx));
+                        let _ = this.workspace.update(cx, |ws, cx| {
+                            ws.toast(
+                                gitviber_ui::workspace::Toast::error(e)
+                                    .title("Could not load commit"),
+                                cx,
+                            )
+                        });
                     }
                     let files = Rc::new(files.unwrap_or_default());
                     open.files = Some(files.clone());
@@ -934,7 +942,12 @@ impl CommitList {
     /// The keys do what the mouse does on the rows: ↵ and Space open and close a commit (↵ keeps
     /// a file's tab), → steps into a commit's files and on to the code, ← back out, ⇧ with a move
     /// picks commits along, ⇧F10 the row's menu.
-    pub(crate) fn key_down(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn key_down(
+        &mut self,
+        e: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let rows = self.nav_rows();
         if rows.is_empty() {
             return;
@@ -946,8 +959,17 @@ impl CommitList {
             return;
         }
         // The list may have been read again shorter since the cursor was put there.
-        let here = (self.cursor.unwrap_or(0).min(self.commits.len().saturating_sub(1)), self.on_file);
-        let at = rows.iter().position(|r| *r == here).or_else(|| rows.iter().position(|r| r.0 == here.0)).unwrap_or(0);
+        let here = (
+            self.cursor
+                .unwrap_or(0)
+                .min(self.commits.len().saturating_sub(1)),
+            self.on_file,
+        );
+        let at = rows
+            .iter()
+            .position(|r| *r == here)
+            .or_else(|| rows.iter().position(|r| r.0 == here.0))
+            .unwrap_or(0);
         let row = rows[at];
         let last = rows.len() - 1;
         let page = self.page_rows();
@@ -968,7 +990,8 @@ impl CommitList {
         if let Some(to) = to {
             if m.shift {
                 // Along the commits only, for picking them.
-                let commits: Vec<usize> = rows.iter().filter(|r| r.1.is_none()).map(|r| r.0).collect();
+                let commits: Vec<usize> =
+                    rows.iter().filter(|r| r.1.is_none()).map(|r| r.0).collect();
                 let i = commits.iter().position(|c| *c == row.0).unwrap_or(0);
                 let j = match k {
                     "down" => (i + 1).min(commits.len() - 1),
@@ -1038,16 +1061,34 @@ impl CommitList {
     }
 
     /// A row's right-click menu from the keyboard, just under the row's start.
-    fn open_row_menu(&mut self, row: (usize, Option<usize>), window: &mut Window, cx: &mut Context<Self>) {
+    fn open_row_menu(
+        &mut self,
+        row: (usize, Option<usize>),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(ix) = self.item_of(row) else { return };
         self.state.scroll_to_reveal_item(ix);
-        let Some(bounds) = self.state.bounds_for_item(ix) else { return };
+        let Some(bounds) = self.state.bounds_for_item(ix) else {
+            return;
+        };
         let position = bounds.origin + point(px(24.), bounds.size.height - px(4.));
         // After this key's dispatch: the menu opens as a right-click there would open it.
         window.defer(cx, move |window, cx| {
-            let down = gpui_kit::MouseDownEvent { button: MouseButton::Right, position, modifiers: Default::default(), click_count: 1, first_mouse: false };
+            let down = gpui_kit::MouseDownEvent {
+                button: MouseButton::Right,
+                position,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            };
             window.dispatch_event(gpui_kit::PlatformInput::MouseDown(down), cx);
-            let up = gpui_kit::MouseUpEvent { button: MouseButton::Right, position, modifiers: Default::default(), click_count: 1 };
+            let up = gpui_kit::MouseUpEvent {
+                button: MouseButton::Right,
+                position,
+                modifiers: Default::default(),
+                click_count: 1,
+            };
             window.dispatch_event(gpui_kit::PlatformInput::MouseUp(up), cx);
         });
     }
@@ -1150,7 +1191,8 @@ impl CommitList {
         let is_head = commit.sha == head;
         let open = self.open_sha() == Some(commit.sha.as_str());
         let picked = self.picked.iter().any(|s| *s == commit.sha);
-        let cursor = self.cursor == Some(i) && self.on_file.is_none() && self.focus.is_focused(window);
+        let cursor =
+            self.cursor == Some(i) && self.on_file.is_none() && self.focus.is_focused(window);
         let lit: Option<Vec<usize>> = self.lit.map(|l| {
             let r = self.row_graph(l);
             std::iter::once(r.id)
@@ -1509,7 +1551,9 @@ impl CommitList {
         let ws = self.workspace.upgrade()?;
         let ws = ws.read(cx);
         match ws.tabs().active()?.item.selection()? {
-            gitviber_ui::workspace::Selection::Commit { commit, file, .. } => Some((commit.sha.clone(), file.path.clone())),
+            gitviber_ui::workspace::Selection::Commit { commit, file, .. } => {
+                Some((commit.sha.clone(), file.path.clone()))
+            }
             _ => None,
         }
     }
@@ -1521,7 +1565,9 @@ impl CommitList {
         };
         let file = files[f].clone();
         let last = f + 1 == files.len();
-        let active = self.active_file(cx).is_some_and(|(sha, path)| sha == commit.sha && path == file.path);
+        let active = self
+            .active_file(cx)
+            .is_some_and(|(sha, path)| sha == commit.sha && path == file.path);
         let cursor = self.on_file == Some(f) && self.focus.is_focused(window);
         let menu_file = file.clone();
         let menu_commit = commit.clone();
@@ -1538,7 +1584,17 @@ impl CommitList {
             .pl_8()
             .text_size(rems(0.75))
             .cursor_pointer()
-            .when(active, |d| d.bg(t.primary.opacity(0.15)).child(div().absolute().top_0().bottom_0().left_0().w(px(2.)).bg(t.primary)))
+            .when(active, |d| {
+                d.bg(t.primary.opacity(0.15)).child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left_0()
+                        .w(px(2.))
+                        .bg(t.primary),
+                )
+            })
             .when(!active, |d| d.hover(|s| s.bg(t.hover)))
             .when(cursor, |d| d.border_1().border_color(t.ring))
             .when(last, |d| d.border_b_1().border_color(t.border))

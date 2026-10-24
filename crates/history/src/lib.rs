@@ -13,6 +13,7 @@ mod dialogs;
 mod diff_tab;
 pub mod edits;
 mod files;
+mod fork;
 pub mod graph;
 pub mod list;
 mod menu;
@@ -25,6 +26,7 @@ mod store;
 
 pub use commit_view::CommitView;
 pub use compare::CompareView;
+pub use fork::{Fork, ForkOf, fork_news, set_fork_of};
 pub use panel::HistoryPanel;
 
 use std::rc::Rc;
@@ -158,7 +160,8 @@ mod tests {
 
     use gitviber_ui::workspace::{PanelContext, TabGroup, Workspace};
     use gpui_kit::{
-        AppContext as _, Context, Entity, IntoElement, Render, TestAppContext, Window, div,
+        AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, TestAppContext,
+        Window, div,
     };
 
     use super::HistoryPanel;
@@ -302,6 +305,129 @@ mod tests {
             };
             l.key_down(&down, window, cx);
         });
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) -> String {
+        // Not the owner's config: no signing, no hooks.
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "T")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "T")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .expect("git runs");
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[gpui_kit::test]
+    fn a_fork_shows_the_originals_history_with_what_your_branch_lacks(cx: &mut TestAppContext) {
+        let config =
+            std::env::temp_dir().join(format!("gitviber-history-test-{}", std::process::id()));
+        // SAFETY: the tests that read the config dir all point it at a temporary folder.
+        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &config) };
+        // Your branch has one commit; the original's main, fetched before, one more.
+        let dir =
+            std::env::temp_dir().join(format!("gitviber-history-fork-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        let two = git(
+            &dir,
+            &["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "two"],
+        );
+        git(&dir, &["update-ref", "refs/remotes/upstream/main", &two]);
+        git(
+            &dir,
+            &[
+                "remote",
+                "add",
+                "upstream",
+                "https://github.com/someone/original.git",
+            ],
+        );
+        let fork = super::Fork {
+            original: "someone/original".into(),
+            branch: Some("main".into()),
+            fork_branch: Some("main".into()),
+            can_sync: true,
+        };
+        let forked = std::rc::Rc::new(std::cell::Cell::new(true));
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            let core = gitviber_ui::install_core(cx);
+            gitviber_diff::init(cx);
+            gitviber_diff::set_core(core, cx);
+            gitviber_refs::init(cx);
+            super::init(cx);
+            super::set_all_branches(false, cx);
+            let on = forked.clone();
+            super::set_fork_of(
+                cx,
+                std::rc::Rc::new(move |_| on.get().then(|| fork.clone())),
+            );
+            // Fetched a moment ago: no network round trip in a test.
+            cx.default_global::<super::fork::Fetched>()
+                .0
+                .insert("someone/original".into(), std::time::Instant::now());
+        });
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        cx.update(|window, cx| {
+            Workspace::register_window(&ws, window, cx);
+            ws.update(cx, |ws, cx| ws.open_project(dir.clone(), window, cx));
+        });
+        cx.run_until_parked();
+        let project = cx
+            .update(|_, cx| ws.read(cx).project().cloned())
+            .expect("the project opened");
+        let panel = cx.update(|window, cx| {
+            let ctx = PanelContext {
+                workspace: ws.downgrade(),
+                project: Some(project.clone()),
+            };
+            cx.new(|cx| HistoryPanel::new(&ctx, project.clone(), window, cx))
+        });
+        // The original's pane comes with the first look at History.
+        let draw = |cx: &mut gpui_kit::VisualTestContext| {
+            let panel = panel.clone();
+            cx.draw(
+                gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)),
+                gpui_kit::size(gpui_kit::px(400.), gpui_kit::px(800.)),
+                move |_, _| div().child(panel),
+            );
+        };
+        draw(cx);
+        cx.run_until_parked();
+        let pane = panel
+            .read_with(cx, |p, _| p.original().cloned())
+            .expect("a fork shows the original");
+        assert_eq!(
+            pane.read_with(cx, |p, _| p.remote().map(|r| r.map(str::to_string))),
+            Some(Some("upstream".into()))
+        );
+        let list = pane
+            .read_with(cx, |p, _| p.list().cloned())
+            .expect("its history");
+        let marks: Vec<bool> =
+            list.read_with(cx, |l, _| l.commits.iter().map(|c| c.not_in_head).collect());
+        assert_eq!(marks, [true, false], "two is the original's only");
+        // No longer a fork: the pane goes, its entities with it.
+        let weak = pane.downgrade();
+        drop((pane, list));
+        forked.set(false);
+        cx.update(|_, cx| super::fork_news(cx));
+        cx.run_until_parked();
+        assert!(panel.read_with(cx, |p, _| p.original().is_none()));
+        cx.update(|_, _| {});
+        cx.run_until_parked();
+        assert!(weak.upgrade().is_none(), "the original's pane is released");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[gpui_kit::test]

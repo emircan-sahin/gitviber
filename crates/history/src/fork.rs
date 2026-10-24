@@ -11,11 +11,11 @@ use gitviber_refs::RepoState;
 use gitviber_refs::toast::Note;
 use gitviber_ui::memory::Live;
 use gitviber_ui::{ActiveAppTheme, Workspace};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, Global, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Task,
-    WeakEntity, Window, div, prelude::FluentBuilder as _, rems,
+    App, AppContext as _, Context, Entity, Global, IntoElement, ParentElement as _, Render,
+    SharedString, Styled as _, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, rems,
 };
 
 use crate::list::{CommitList, ListOptions, Source};
@@ -60,8 +60,9 @@ pub fn fork_news(cx: &mut App) {
 /// A fetch of the original is a network round trip: not on every look at History.
 const REFETCH_AFTER: Duration = Duration::from_secs(5 * 60);
 
+/// When each original was last fetched, for every window's History.
 #[derive(Default)]
-struct Fetched(HashMap<String, Instant>);
+pub(crate) struct Fetched(pub(crate) HashMap<String, Instant>);
 impl Global for Fetched {}
 
 pub struct OriginalPane {
@@ -74,14 +75,23 @@ pub struct OriginalPane {
     error: Option<SharedString>,
     loading: bool,
     adding: bool,
+    syncing: bool,
     task: Option<Task<()>>,
     _list: Option<gpui_kit::Subscription>,
     _live: Live,
 }
 
 impl OriginalPane {
-    pub fn new(repo: Entity<RepoState>, workspace: WeakEntity<Workspace>, fork: Fork, cx: &mut Context<Self>) -> Self {
-        let stale = cx.try_global::<Fetched>().and_then(|f| f.0.get(&fork.original)).is_none_or(|at| at.elapsed() > REFETCH_AFTER);
+    pub fn new(
+        repo: Entity<RepoState>,
+        workspace: WeakEntity<Workspace>,
+        fork: Fork,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let stale = cx
+            .try_global::<Fetched>()
+            .and_then(|f| f.0.get(&fork.original))
+            .is_none_or(|at| at.elapsed() > REFETCH_AFTER);
         let mut pane = OriginalPane {
             repo,
             workspace,
@@ -91,6 +101,7 @@ impl OriginalPane {
             error: None,
             loading: false,
             adding: false,
+            syncing: false,
             task: None,
             _list: None,
             _live: Live::new("OriginalPane"),
@@ -99,12 +110,25 @@ impl OriginalPane {
         pane
     }
 
-    pub fn fork(&self) -> &Fork {
-        &self.fork
+    /// The same original and branch: only what you may do with it changed.
+    pub(crate) fn set_fork(&mut self, fork: Fork, cx: &mut Context<Self>) {
+        self.fork = fork;
+        cx.notify();
     }
 
-    pub fn is_loading(&self) -> bool {
-        self.loading
+    /// Fetching the original or syncing the fork: its buttons wait.
+    pub fn busy(&self) -> bool {
+        self.loading || self.syncing
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remote(&self) -> Option<Option<&str>> {
+        self.remote.as_ref().map(Option::as_deref)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn list(&self) -> Option<&Entity<CommitList>> {
+        self.list.as_ref()
     }
 
     fn branch(&self) -> String {
@@ -113,7 +137,11 @@ impl OriginalPane {
 
     /// The original's branch as fetched: `refs/remotes/<remote>/<branch>`.
     fn rev(&self) -> Option<String> {
-        Some(format!("refs/remotes/{}/{}", self.remote.clone()??, self.branch()))
+        Some(format!(
+            "refs/remotes/{}/{}",
+            self.remote.clone()??,
+            self.branch()
+        ))
     }
 
     /// Finds the original's remote, fetching it first with `fetch`. Offline or refused, the last
@@ -125,11 +153,37 @@ impl OriginalPane {
         cx.notify();
         let find = cx.background_spawn(async move {
             let op = gitviber_refs::net::NetOp::quiet();
-            let fetched = fetch.then(|| api::github::gh_original_remote(&core, original.clone(), true, op.id.clone(), op.progress()));
+            let fetched = fetch.then(|| {
+                api::github::gh_original_remote(
+                    &core,
+                    original.clone(),
+                    true,
+                    op.id.clone(),
+                    op.progress(),
+                )
+            });
             match fetched {
                 Some(Ok(name)) => (Ok(name), None),
-                Some(Err(e)) => (api::github::gh_original_remote(&core, original, false, op.id.clone(), op.progress()), Some(e)),
-                None => (api::github::gh_original_remote(&core, original, false, op.id.clone(), op.progress()), None),
+                Some(Err(e)) => (
+                    api::github::gh_original_remote(
+                        &core,
+                        original,
+                        false,
+                        op.id.clone(),
+                        op.progress(),
+                    ),
+                    Some(e),
+                ),
+                None => (
+                    api::github::gh_original_remote(
+                        &core,
+                        original,
+                        false,
+                        op.id.clone(),
+                        op.progress(),
+                    ),
+                    None,
+                ),
             }
         });
         self.task = Some(cx.spawn(async move |this, cx| {
@@ -137,11 +191,17 @@ impl OriginalPane {
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 if fetch {
-                    cx.default_global::<Fetched>().0.insert(this.fork.original.clone(), Instant::now());
+                    cx.default_global::<Fetched>()
+                        .0
+                        .insert(this.fork.original.clone(), Instant::now());
                 }
                 if let Some(e) = fetch_failed {
                     let _ = this.workspace.update(cx, |ws, cx| {
-                        ws.toast(gitviber_ui::workspace::Toast::error(e).title("Could not fetch the original"), cx)
+                        ws.toast(
+                            gitviber_ui::workspace::Toast::error(e)
+                                .title("Could not fetch the original"),
+                            cx,
+                        )
                     });
                 }
                 match found {
@@ -194,10 +254,14 @@ impl OriginalPane {
                 this.adding = false;
                 match added {
                     Ok(name) => {
-                        Note::success(format!("Added remote {name}")).detail(format!("It points at {original}.")).show(window, cx);
+                        Note::success(format!("Added remote {name}"))
+                            .detail(format!("It points at {original}."))
+                            .show(window, cx);
                         this.load(false, cx);
                     }
-                    Err(e) => Note::error("Could not add the remote").detail(e).show(window, cx),
+                    Err(e) => Note::error("Could not add the remote")
+                        .detail(e)
+                        .show(window, cx),
                 }
                 cx.notify();
             });
@@ -206,21 +270,47 @@ impl OriginalPane {
 
     /// GitHub's "Sync fork": origin's default branch catches up with the original, on GitHub.
     pub fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(branch) = self.fork.fork_branch.clone() else { return };
+        let Some(branch) = self.fork.fork_branch.clone() else {
+            return;
+        };
         let original = self.fork.original.clone();
-        let action = gitviber_refs::GitAction::new("Sync fork").net().untracked().done(format!("origin/{branch} is up to date with {original}"));
+        let action = gitviber_refs::GitAction::new("Sync fork")
+            .net()
+            .untracked()
+            .done(format!("origin/{branch} is up to date with {original}"));
+        self.syncing = true;
+        cx.notify();
         let done = self.repo.update(cx, |r, cx| {
-            r.run(action, move |core, op| gitviber_refs::repo::plain(api::github::gh_sync_fork(core, branch, op.id.clone(), op.progress())), window, cx)
+            r.run(
+                action,
+                move |core, op| {
+                    gitviber_refs::repo::plain(api::github::gh_sync_fork(
+                        core,
+                        branch,
+                        op.id.clone(),
+                        op.progress(),
+                    ))
+                },
+                window,
+                cx,
+            )
         });
         self.task = Some(cx.spawn(async move |this, cx| {
-            if done.await.unwrap_or(false) {
-                let _ = this.update(cx, |this, cx| this.load(true, cx));
-            }
+            let synced = done.await.unwrap_or(false);
+            let _ = this.update(cx, |this, cx| {
+                this.syncing = false;
+                if synced {
+                    this.load(true, cx);
+                }
+                cx.notify();
+            });
         }));
     }
 
     fn merge(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(remote) = self.remote.clone().flatten() else { return };
+        let Some(remote) = self.remote.clone().flatten() else {
+            return;
+        };
         let name = format!("{remote}/{}", self.branch());
         gitviber_refs::ops::merge(&self.repo, name, git::MergeKind::Ff, false, window, cx);
     }
@@ -229,7 +319,15 @@ impl OriginalPane {
 impl Render for OriginalPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.app_theme().clone();
-        let text = |s: SharedString| div().px_4().py_3().text_center().text_size(rems(0.75)).text_color(t.muted_foreground).child(s);
+        let text = |s: SharedString| {
+            div()
+                .px_4()
+                .py_3()
+                .text_center()
+                .text_size(rems(0.75))
+                .text_color(t.muted_foreground)
+                .child(s)
+        };
         match &self.remote {
             // Still looking: an empty list here would read as "no commits".
             None if self.error.is_none() => return div().into_any_element(),
@@ -239,11 +337,17 @@ impl Render for OriginalPane {
                     .flex()
                     .flex_col()
                     .items_center()
-                    .child(text(format!("No remote points at {} yet.", self.fork.original).into()))
+                    .child(text(
+                        format!("No remote points at {} yet.", self.fork.original).into(),
+                    ))
                     .child(
                         Button::new("add-upstream")
                             .small()
-                            .label(if self.adding { "Adding…" } else { "Add it as upstream" })
+                            .label(if self.adding {
+                                "Adding…"
+                            } else {
+                                "Add it as upstream"
+                            })
                             .disabled(self.adding)
                             .on_click(cx.listener(|this, _, window, cx| this.add(window, cx))),
                     )
@@ -251,7 +355,9 @@ impl Render for OriginalPane {
             }
             Some(Some(_)) => {}
         }
-        let Some(list) = self.list.clone() else { return div().into_any_element() };
+        let Some(list) = self.list.clone() else {
+            return div().into_any_element();
+        };
         let l = list.read(cx);
         // What the original has that this branch doesn't, as far as the loaded pages show.
         let missing = l.commits.iter().filter(|c| c.not_in_head).count();
@@ -286,7 +392,9 @@ impl Render for OriginalPane {
                                 .small()
                                 .label(format!("Merge into {into}"))
                                 .disabled(off)
-                                .on_click(cx.listener(|this, _, window, cx| this.merge(window, cx))),
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.merge(window, cx)),
+                                ),
                         ),
                 )
             })

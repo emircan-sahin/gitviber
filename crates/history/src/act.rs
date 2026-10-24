@@ -139,6 +139,16 @@ pub fn run(
         .update(cx, |r, cx| r.run(action, work, window, cx))
 }
 
+/// A tag pushed or deleted there: what the menus know of the remote's tags is out of date.
+fn forget_tags_after(done: oneshot::Receiver<bool>, cx: &mut Context<CommitList>) {
+    cx.spawn(async move |_, cx| {
+        if done.await.unwrap_or(false) {
+            cx.update(crate::menu::forget_remote_tags);
+        }
+    })
+    .detach();
+}
+
 pub fn act(
     list: &mut CommitList,
     c: &Rc<Commit>,
@@ -323,7 +333,7 @@ pub fn act(
                 .done(format!("Pushed tag {tag}"))
                 .untracked()
                 .net();
-            drop(run(
+            let done = run(
                 list,
                 a,
                 move |core, op| {
@@ -336,7 +346,8 @@ pub fn act(
                 },
                 window,
                 cx,
-            ));
+            );
+            forget_tags_after(done, cx);
         }
         Act::DeleteTag(tag) => {
             let a = GitAction::new("Delete tag").done(format!("Deleted tag {tag}"));
@@ -364,7 +375,7 @@ pub fn act(
                             .done(format!("Deleted {tag} from the remote"))
                             .untracked()
                             .net();
-                        drop(run(
+                        let done = run(
                             this,
                             a,
                             move |core, op| {
@@ -377,7 +388,8 @@ pub fn act(
                             },
                             window,
                             cx,
-                        ));
+                        );
+                        forget_tags_after(done, cx);
                     });
                 }
             }));

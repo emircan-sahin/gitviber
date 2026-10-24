@@ -9,7 +9,7 @@ use gitviber_core::api;
 use gitviber_refs::names::short_ref;
 use gitviber_refs::points::branch_point;
 use gitviber_refs::{RepoEvent, RepoState};
-use gitviber_ui::keymap::history as history_actions;
+use gitviber_ui::keymap::{editor, history as history_actions};
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{Panel, PanelContext};
 use gitviber_ui::{ActiveAppTheme, Project, Workspace};
@@ -18,7 +18,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{Icon, Selectable as _, Sizable as _};
+use gpui_kit::component::{Disableable as _, Icon, Selectable as _, Sizable as _};
 use gpui_kit::{
     Anchor, App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
     IntoElement, KeyDownEvent, ParentElement as _, Render, StatefulInteractiveElement as _,
@@ -29,6 +29,7 @@ use gpui_kit::{
 use crate::bisect::BisectBar;
 use crate::commit::GraphRefs;
 use crate::files::FileList;
+use crate::fork::{self, Fork, ForkNews, OriginalPane};
 use crate::list::{CommitList, ListEvent, ListOptions, Source};
 use crate::query::{parse_log_query, with_author};
 use crate::{open, store};
@@ -82,6 +83,9 @@ pub struct HistoryPanel {
     bisect: Option<Entity<BisectBar>>,
     /// What the branch comparison's files are diffed between: merge base and its tip.
     compared_range: Option<(String, String)>,
+    /// What GitHub knows of origin as a fork, and the original's pane once shown.
+    fork: Option<Fork>,
+    original: Option<(Entity<OriginalPane>, Subscription)>,
     debounce: Option<Task<()>>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
@@ -123,6 +127,7 @@ impl HistoryPanel {
                     this.read_ref_compare(with, cx);
                 }
             }),
+            cx.observe_global::<ForkNews>(|this: &mut Self, cx| this.sync_fork(cx)),
         ];
         let mut panel = HistoryPanel {
             repo,
@@ -136,6 +141,8 @@ impl HistoryPanel {
             mode: Mode::List,
             bisect: None,
             compared_range: None,
+            fork: fork::fork_of(cx),
+            original: None,
             debounce: None,
             focus: cx.focus_handle(),
             _subs: subs,
@@ -143,6 +150,24 @@ impl HistoryPanel {
         };
         panel.sync_bisect(cx);
         panel
+    }
+
+    /// Another original, or none: its pane goes. The same one keeps its list and remote.
+    fn sync_fork(&mut self, cx: &mut Context<Self>) {
+        let fork = fork::fork_of(cx);
+        if fork == self.fork {
+            return;
+        }
+        let same = |a: &Fork, b: &Fork| a.original == b.original && a.branch == b.branch;
+        match (&self.original, &fork) {
+            (Some((pane, _)), Some(f)) if self.fork.as_ref().is_some_and(|old| same(old, f)) => {
+                let f = f.clone();
+                pane.update(cx, |p, cx| p.set_fork(f, cx));
+            }
+            _ => self.original = None,
+        }
+        self.fork = fork;
+        cx.notify();
     }
 
     /// The graph's hidden branches are the repository's, across its worktrees.
@@ -415,12 +440,13 @@ impl HistoryPanel {
     /// A file list whose rows open a range's diff: `(base, head, label)` is read when clicked.
     fn range_files_list(&self, cx: &mut Context<Self>) -> Entity<FileList> {
         let weak = cx.weak_entity();
-        cx.new(|_| {
+        cx.new(|cx| {
             FileList::new(
                 "No changes",
                 Rc::new(move |f, pin, window, cx| {
                     let _ = weak.update(cx, |this, cx| this.open_compared_file(f, pin, window, cx));
                 }),
+                cx,
             )
         })
     }
@@ -526,6 +552,39 @@ impl HistoryPanel {
             },
             Mode::List => {}
         }
+    }
+
+    /// "Open All" by a comparison's files: all their diffs in one tab.
+    fn open_all(&self, cx: &mut Context<Self>) -> AnyEl {
+        let t = cx.app_theme().clone();
+        div()
+            .id("open-all")
+            .px_1()
+            .rounded(px(3.))
+            .text_color(t.primary)
+            .cursor_pointer()
+            .hover(|s| s.bg(t.hover))
+            .child("Open All")
+            .on_click(cx.listener(|this, _, window, cx| this.open_all_compared(window, cx)))
+            .into_any_element()
+    }
+
+    fn open_all_compared(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (base, head, label) = match &self.mode {
+            Mode::Ref(r) => {
+                let Some((base, head)) = self.compared_range.clone() else {
+                    return;
+                };
+                (base, head, short_ref(&r.with).to_string())
+            }
+            Mode::Points(p) => {
+                let Some(h) = &p.head else { return };
+                let label = format!("{}..{}", p.base.1, h.1);
+                (p.base.0.clone(), h.0.clone(), label)
+            }
+            Mode::List => return,
+        };
+        open::open_range(&self.workspace, base, head, label, window, cx);
     }
 
     fn close_compare(&mut self, cx: &mut Context<Self>) {
@@ -1032,7 +1091,28 @@ impl HistoryPanel {
                 let body = match pane {
                     Pane::Behind => r.behind.clone().into_any_element(),
                     Pane::Ahead => r.ahead.clone().into_any_element(),
-                    Pane::Files => r.files.clone().into_any_element(),
+                    Pane::Files => {
+                        let any = self.compared_range.is_some()
+                            && r.files.read(cx).files().is_some_and(|f| !f.is_empty());
+                        div()
+                            .size_full()
+                            .flex()
+                            .flex_col()
+                            .when(any, |d| {
+                                d.child(
+                                    div()
+                                        .flex()
+                                        .flex_none()
+                                        .h(px(24.))
+                                        .items_center()
+                                        .px_3()
+                                        .text_size(rems(0.65625))
+                                        .child(self.open_all(cx)),
+                                )
+                            })
+                            .child(div().flex_1().min_h_0().child(r.files.clone()))
+                            .into_any_element()
+                    }
                 };
                 div()
                     .flex()
@@ -1063,6 +1143,8 @@ impl HistoryPanel {
                     })
                     .into_any_element();
                 let swap = p.head.is_some();
+                // The working tree isn't a range a tab can hold.
+                let open_all = swap.then(|| self.open_all(cx));
                 let files = p.files.clone();
                 let (add, del) = files.read(cx).counts();
                 let n = files.read(cx).files().map(|f| f.len());
@@ -1091,6 +1173,7 @@ impl HistoryPanel {
                                         .text_color(t.muted_foreground)
                                         .child(n.to_string()),
                                 )
+                                .when_some(open_all, |d, b| d.child(b))
                                 .child(
                                     div()
                                         .ml_auto()
@@ -1107,8 +1190,176 @@ impl HistoryPanel {
                     .child(div().flex_1().min_h_0().child(files))
                     .into_any_element()
             }
-            _ => self.list.clone().into_any_element(),
+            _ => {
+                let fork = (!searching && !self.all && matches!(self.mode, Mode::List))
+                    .then(|| self.fork.clone())
+                    .flatten();
+                match fork {
+                    Some(fork) => self.render_fork(fork, cx),
+                    None => self.list.clone().into_any_element(),
+                }
+            }
         }
+    }
+
+    /// A fork's history in two panes, each closed on its own: your branch's, and the
+    /// original's default branch with what yours lacks marked.
+    fn render_fork(&mut self, fork: Fork, cx: &mut Context<Self>) -> AnyEl {
+        let original = match &self.original {
+            Some((pane, _)) => pane.clone(),
+            None => {
+                let (repo, ws) = (self.repo.clone(), self.workspace.clone());
+                let pane = cx.new(|cx| OriginalPane::new(repo, ws, fork.clone(), cx));
+                let sub = cx.observe(&pane, |_, _, cx| cx.notify());
+                self.original = Some((pane.clone(), sub));
+                pane
+            }
+        };
+        let closed = &store::get(cx).closed_panes;
+        let (ours, theirs) = (
+            !closed.iter().any(|p| p == "origin"),
+            !closed.iter().any(|p| p == "parent"),
+        );
+        let busy = original.read(cx).busy();
+        let mut actions = vec![];
+        if let Some(branch) = fork.fork_branch.as_ref().filter(|_| fork.can_sync) {
+            actions.push(
+                Button::new("sync-fork")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::ArrowDownToLine)
+                    .tooltip(format!(
+                        "Sync fork: bring origin/{branch} up to date with the original, on GitHub"
+                    ))
+                    .disabled(busy)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if let Some((pane, _)) = &this.original {
+                            pane.update(cx, |p, cx| p.sync(window, cx));
+                        }
+                    }))
+                    .into_any_element(),
+            );
+        }
+        actions.push(
+            Button::new("fetch-original")
+                .ghost()
+                .xsmall()
+                .icon(IconName::RefreshCw)
+                .loading(busy)
+                .disabled(busy)
+                .tooltip("Fetch the original")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some((pane, _)) = &this.original {
+                        pane.update(cx, |p, cx| p.load(true, cx));
+                    }
+                }))
+                .into_any_element(),
+        );
+        let branch = self.repo.read(cx).branch().unwrap_or_default().to_string();
+        let detail = match &fork.branch {
+            Some(b) => format!("{} · {b}", fork.original),
+            None => fork.original.clone(),
+        };
+        let ours_header = self.pane_header("origin", "Your branch", branch, ours, vec![], cx);
+        let theirs_header = self.pane_header("parent", "Original", detail, theirs, actions, cx);
+        // Closed panes keep their place: an open one below a closed one takes the height.
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(ours_header)
+            .when(ours, |d| {
+                d.child(div().flex_1().min_h_0().child(self.list.clone()))
+            })
+            .child(theirs_header)
+            .when(theirs, |d| {
+                d.child(div().flex_1().min_h_0().child(original))
+            })
+            .into_any_element()
+    }
+
+    fn pane_header(
+        &self,
+        id: &'static str,
+        title: &'static str,
+        detail: String,
+        open: bool,
+        actions: Vec<AnyEl>,
+        cx: &mut Context<Self>,
+    ) -> AnyEl {
+        let t = cx.app_theme().clone();
+        div()
+            .group(id)
+            .flex()
+            .flex_none()
+            .items_center()
+            .h(px(24.))
+            .pr_1()
+            .border_b_1()
+            .border_color(t.border)
+            .text_size(rems(0.65625))
+            .child(
+                div()
+                    .id(id)
+                    .flex()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .items_center()
+                    .gap_1()
+                    .pl_1()
+                    .cursor_pointer()
+                    .child(
+                        Icon::new(if open {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        })
+                        .xsmall()
+                        .text_color(t.subtle),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                            .child(title.to_uppercase()),
+                    )
+                    .child(
+                        div()
+                            .ml_1()
+                            .min_w_0()
+                            .truncate()
+                            .font_family(t.fonts.code.clone())
+                            .text_color(t.subtle)
+                            .child(detail),
+                    )
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        store::update(cx, |s| {
+                            if s.closed_panes.iter().any(|p| p == id) {
+                                s.closed_panes.retain(|p| p != id);
+                            } else {
+                                s.closed_panes.push(id.to_string());
+                            }
+                        });
+                        cx.notify();
+                    })),
+            )
+            // Out of the way until the header is hovered.
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .invisible()
+                    .group_hover(id, |s| s.visible())
+                    .children(actions),
+            )
+            .into_any_element()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn original(&self) -> Option<&Entity<OriginalPane>> {
+        self.original.as_ref().map(|(p, _)| p)
     }
 }
 
@@ -1144,6 +1395,10 @@ impl Render for HistoryPanel {
                 cx.listener(move |_, _: &history_actions::Find, window, cx| {
                     search_focus2.focus(window, cx);
                 }),
+            )
+            // ⌘F anywhere in History searches it.
+            .on_action(
+                cx.listener(|this, _: &editor::Find, window, cx| this.focus_search(window, cx)),
             )
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 // The words first, then the file.
