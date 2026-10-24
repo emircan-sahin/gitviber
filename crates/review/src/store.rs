@@ -143,9 +143,73 @@ pub enum Run {
         since: Instant,
         /// Fetching a pull request's commits, before the agent starts.
         fetching: bool,
+        /// What the agent CLI has printed so far, its end.
+        tail: Tail,
     },
     Stopped,
     Failed(String),
+}
+
+/// The end of what a run's command printed, as it prints it: at most MAX_TAIL bytes, its tab
+/// shows the last lines. Written from core's reader threads, read when the tab draws.
+#[derive(Clone, Debug, Default)]
+pub struct Tail(Arc<std::sync::Mutex<Vec<u8>>>);
+
+const MAX_TAIL: usize = 8 * 1024;
+
+impl PartialEq for Tail {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Tail {
+    pub fn push(&self, chunk: &[u8]) {
+        let mut b = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        b.extend_from_slice(chunk);
+        if b.len() > MAX_TAIL {
+            let cut = b.len() - MAX_TAIL;
+            b.drain(..cut);
+        }
+    }
+
+    /// The last `n` lines, as text: terminal escapes and other control characters left out.
+    pub fn lines(&self, n: usize) -> Vec<String> {
+        let b = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let text = String::from_utf8_lossy(&b);
+        let mut clean = String::with_capacity(text.len());
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                // A CSI sequence (colors, cursor moves): ESC [ params, then its final letter.
+                '\x1b' => {
+                    if chars.peek() == Some(&'[') {
+                        chars.next();
+                        for c in chars.by_ref() {
+                            if ('@'..='~').contains(&c) {
+                                break;
+                            }
+                        }
+                    }
+                }
+                // A carriage return redraws its line: what follows replaces it.
+                '\r' => {
+                    if chars.peek() != Some(&'\n') {
+                        let start = clean.rfind('\n').map_or(0, |i| i + 1);
+                        clean.truncate(start);
+                    }
+                }
+                '\n' | '\t' => clean.push(c),
+                c if c.is_control() => {}
+                c => clean.push(c),
+            }
+        }
+        let lines: Vec<&str> = clean.lines().filter(|l| !l.trim().is_empty()).collect();
+        lines[lines.len().saturating_sub(n)..]
+            .iter()
+            .map(|l| l.to_string())
+            .collect()
+    }
 }
 
 /// The run of a kind in progress: core writes one of each kind at a time.
@@ -325,6 +389,7 @@ impl Guides {
 
     /// Marks section `i` of the guide under `id` reviewed, or not.
     pub fn mark_done(cx: &mut App, id: &str, i: usize, done: bool) {
+        cx.default_global::<Guides>();
         cx.update_global::<Guides, _>(|g, cx| {
             g.ensure_loaded();
             let changed = g.guides.update(id, |s| {
@@ -341,6 +406,7 @@ impl Guides {
 
     /// Keeps a guide, as a run would: for a demo's canned one, and tests.
     pub fn keep(cx: &mut App, kind: RunKind, id: &str, run: SavedRun) {
+        cx.default_global::<Guides>();
         cx.update_global::<Guides, _>(|g, cx| {
             g.ensure_loaded();
             let size = run.text.len();
@@ -386,11 +452,13 @@ impl Guides {
         }
         let label = selection_path(&Selection::Guide { of: of.clone() });
         let fetching = matches!(of, GuideOf::Pull { .. });
+        let tail = Tail::default();
         cx.global_mut::<Guides>().runs.insert(
             (kind, id.clone()),
             Run::Running {
                 since: Instant::now(),
                 fetching,
+                tail: tail.clone(),
             },
         );
         let tabs = tab.map(|(ws, sel)| {
@@ -409,7 +477,7 @@ impl Guides {
         });
         let run_id = id.clone();
         let task = cx.spawn(async move |cx| {
-            let done = run(&core, &agent, kind, &of, token, cx).await;
+            let done = run(&core, &agent, kind, &of, token, tail, cx).await;
             cx.update(|cx| Guides::finish(cx, kind, &run_id, token, done));
         });
         cx.global_mut::<Guides>().active.insert(
@@ -534,6 +602,7 @@ async fn run(
     kind: RunKind,
     of: &GuideOf,
     token: u64,
+    tail: Tail,
     cx: &mut gpui_kit::AsyncApp,
 ) -> Result<SavedRun, Done> {
     let program = agent.program();
@@ -590,8 +659,18 @@ async fn run(
         );
         let args = agent.agent(lean, &schema);
         let ran = line.clone();
+        let tail = tail.clone();
+        let output: suggest::Output = Arc::new(move |chunk: &[u8]| tail.push(chunk));
         let task = exec.spawn(async move {
-            api::changes::suggest_guide(&core, line, prompt, target, args, kind.core())
+            api::changes::suggest_guide_streaming(
+                &core,
+                line,
+                prompt,
+                target,
+                args,
+                kind.core(),
+                output,
+            )
         });
         async move { (task.await, ran) }
     };
@@ -651,6 +730,18 @@ mod tests {
         assert_eq!(k.list.len(), 1);
         assert!(k.update("c", |v| *v = 9));
         assert_eq!(k.get("c"), Some(&9));
+    }
+
+    #[test]
+    fn the_tail_keeps_the_last_lines_without_terminal_codes() {
+        let t = Tail::default();
+        t.push(b"one\n\x1b[32mtwo\x1b[0m\nthree 10%\rthree 90%\n");
+        assert_eq!(t.lines(2), ["two", "three 90%"]);
+        t.push(&vec![b'x'; 20_000]);
+        assert_eq!(t.0.lock().unwrap().len(), MAX_TAIL);
+        // A cut through a character reads as text still.
+        t.push("é\nlast\n".as_bytes());
+        assert_eq!(t.lines(1), ["last"]);
     }
 
     #[gpui_kit::test]

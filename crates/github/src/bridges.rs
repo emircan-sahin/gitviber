@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use gitviber_core::api;
 use gitviber_refs::hooks::{BranchPull, Checks, PullState as RefsPull};
-use gitviber_ui::workspace::{Selection, Toast, Workspace};
+use gitviber_ui::workspace::{GuideOf, Selection, Toast, Workspace};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
@@ -19,7 +19,7 @@ use gpui_kit::{
 use crate::cache::Cache;
 use crate::logic::checks::{check_note, checks_summary, commit_summary, is_failing, sort_checks};
 use crate::model::{CiState, CommitChecks, PullItem, PullState};
-use crate::requests::{GithubRequest, set_request_handler, toast};
+use crate::requests::{GithubRequest, set_request_handler};
 use crate::ui::common::{ci_badge, theme};
 
 /// A commit's checks are read again this often while one runs, rarely once all are done.
@@ -217,11 +217,10 @@ fn handle(req: GithubRequest, window: &mut Window, cx: &mut App) {
                 });
             }
         }
-        GithubRequest::GuidedReview { .. } => toast(
-            Toast::info("Guided review comes with the review feature, not here yet."),
-            window,
-            cx,
-        ),
+        GithubRequest::GuidedReview { pull, target } => {
+            let pull = std::sync::Arc::new(pull.to_core());
+            gitviber_review::open_guide(GuideOf::Pull { pull, target }, window, cx);
+        }
     }
 }
 

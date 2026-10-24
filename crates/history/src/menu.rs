@@ -117,6 +117,13 @@ pub fn commit_menu(
                 Act::OpenAll,
             )),
         )
+        .item(
+            item("Explain Commit", Some(IconName::Sparkles), false).on_click(on(
+                list,
+                c,
+                Act::Explain,
+            )),
+        )
         .separator()
         .item(
             item(

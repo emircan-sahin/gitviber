@@ -14,6 +14,8 @@ name = "gitviber_changes"
 gitviber-core = { path = "../core" }
 gitviber-ui = { path = "../ui" }
 gitviber-diff = { path = "../diff" }
+# Review notes: on a local diff's lines, and the worktree's list.
+gitviber-review = { path = "../review" }
 gpui-kit.workspace = true
 serde.workspace = true
 serde_json.workspace = true

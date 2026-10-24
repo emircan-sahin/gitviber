@@ -79,6 +79,32 @@ pub struct PullItem {
     pub url: String,
 }
 
+impl PullItem {
+    /// As core has it, for what takes core's pull request (a guided review of it).
+    pub fn to_core(&self) -> github::Pull {
+        github::Pull {
+            number: self.number,
+            title: self.title.clone(),
+            state: match self.state {
+                PullState::Open => "open",
+                PullState::Closed => "closed",
+                PullState::Merged => "merged",
+            }
+            .into(),
+            draft: self.draft,
+            author: self.author.clone(),
+            head_ref: self.head_ref.clone(),
+            head_sha: self.head_sha.clone(),
+            head_repo: self.head_repo.clone(),
+            base_ref: self.base_ref.clone(),
+            base_sha: self.base_sha.clone(),
+            created_at: self.created_at.clone(),
+            updated_at: self.updated_at.clone(),
+            url: self.url.clone(),
+        }
+    }
+}
+
 impl From<&github::Pull> for PullItem {
     fn from(p: &github::Pull) -> Self {
         PullItem {
@@ -358,5 +384,29 @@ mod tests {
     fn github_times_read() {
         assert_eq!(unix("1970-01-01T00:01:00Z"), Some(60));
         assert_eq!(unix("garbage"), None);
+    }
+
+    #[test]
+    fn a_pull_goes_back_to_core_as_it_came() {
+        let core = github::Pull {
+            number: 7,
+            title: "T".into(),
+            state: "merged".into(),
+            draft: true,
+            author: "a".into(),
+            head_ref: "h".into(),
+            head_sha: "1".into(),
+            head_repo: Some("o/f".into()),
+            base_ref: "main".into(),
+            base_sha: "2".into(),
+            created_at: "c".into(),
+            updated_at: "u".into(),
+            url: "https://github.com/o/r/pull/7".into(),
+        };
+        let back = PullItem::from(&core).to_core();
+        assert_eq!(
+            serde_json::to_value(&back).unwrap(),
+            serde_json::to_value(&core).unwrap()
+        );
     }
 }

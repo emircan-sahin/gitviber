@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
-use gpui_kit::{App, BorrowAppContext as _, Global};
+use gpui_kit::{App, AppContext as _, BorrowAppContext as _, Global};
 use serde_json::Value;
 
 use crate::model::notes::ReviewNote;
@@ -106,6 +106,131 @@ impl ReviewNotes {
         });
     }
 }
+
+/// A new note's id: unique enough within a worktree's notes.
+fn new_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    format!("{nanos:x}-{:x}", N.fetch_add(1, Ordering::Relaxed))
+}
+
+impl ReviewNotes {
+    /// Adds `note` (its id given here) to `root`'s.
+    pub fn add(cx: &mut App, root: &str, mut note: ReviewNote) {
+        note.id = new_id();
+        let mut notes = Self::get(cx, root);
+        notes.push(note);
+        Self::set(cx, root, notes);
+    }
+
+    /// Changes the note `id` of `root`'s, if it's there.
+    pub fn update(cx: &mut App, root: &str, id: &str, f: impl FnOnce(&mut ReviewNote)) {
+        let mut notes = Self::get(cx, root);
+        if let Some(n) = notes.iter_mut().find(|n| n.id == id) {
+            f(n);
+            Self::set(cx, root, notes);
+        }
+    }
+
+    pub fn remove(cx: &mut App, root: &str, id: &str) {
+        let mut notes = Self::get(cx, root);
+        notes.retain(|n| n.id != id);
+        Self::set(cx, root, notes);
+    }
+
+    pub fn clear_resolved(cx: &mut App, root: &str) {
+        let mut notes = Self::get(cx, root);
+        notes.retain(|n| !n.resolved);
+        Self::set(cx, root, notes);
+    }
+
+    /// Open notes first, each file's in line order: as the list shows them.
+    pub fn ordered(cx: &mut App, root: &str) -> Vec<ReviewNote> {
+        let mut notes = Self::get(cx, root);
+        notes.sort_by(|a, b| {
+            a.resolved
+                .cmp(&b.resolved)
+                .then_with(|| a.path.cmp(&b.path))
+                .then(a.anchor.start.cmp(&b.anchor.start))
+        });
+        notes
+    }
+
+    /// Keeps the notes on the files on disk up with them: each noted file read again, and its
+    /// notes moved with their lines or marked outdated (and back, if the lines come back).
+    pub fn check(cx: &mut App, root: &str) -> gpui_kit::Task<()> {
+        let paths: Vec<String> = {
+            let mut p: Vec<String> = Self::get(cx, root)
+                .into_iter()
+                .filter(|n| crate::model::notes::is_live(n) && !n.resolved)
+                .map(|n| n.path)
+                .collect();
+            p.sort();
+            p.dedup();
+            p
+        };
+        if paths.is_empty() {
+            return gpui_kit::Task::ready(());
+        }
+        let dir = PathBuf::from(root);
+        let root = root.to_string();
+        let read = cx.background_spawn(async move {
+            paths
+                .into_iter()
+                .map(|p| {
+                    let lines = std::fs::read_to_string(dir.join(&p)).ok().map(|t| {
+                        t.split('\n')
+                            .map(|l| l.trim_end_matches('\r').to_string())
+                            .collect::<Vec<_>>()
+                    });
+                    (p, lines)
+                })
+                .collect::<Vec<_>>()
+        });
+        cx.spawn(async move |cx| {
+            let files = read.await;
+            cx.update(|cx| {
+                let mut notes = Self::get(cx, &root);
+                let mut changed = false;
+                // Files no live note is on any more give their lines back.
+                let prefix = format!("{root}\0");
+                let checked: std::collections::HashSet<String> =
+                    files.iter().map(|(p, _)| format!("{prefix}{p}")).collect();
+                cx.default_global::<Seen>()
+                    .0
+                    .retain(|k, _| !k.starts_with(&prefix) || checked.contains(k));
+                for (path, lines) in files {
+                    let key = format!("{root}\0{path}");
+                    let prev = cx.default_global::<Seen>().0.remove(&key);
+                    if let Some(next) = crate::model::notes::check_notes(
+                        &notes,
+                        &path,
+                        lines.as_deref(),
+                        prev.as_deref(),
+                    ) {
+                        notes = next;
+                        changed = true;
+                    }
+                    if let Some(lines) = lines {
+                        cx.default_global::<Seen>().0.insert(key, lines);
+                    }
+                }
+                if changed {
+                    Self::set(cx, &root, notes);
+                }
+            });
+        })
+    }
+}
+
+/// Each noted file's lines as last read, to tell how far edits above a note moved it.
+#[derive(Default)]
+struct Seen(std::collections::HashMap<String, Vec<String>>);
+
+impl Global for Seen {}
 
 /// On the first launch, the old app's notes, unless this build has a file of its own.
 pub(crate) fn import_legacy(cx: &mut App) {

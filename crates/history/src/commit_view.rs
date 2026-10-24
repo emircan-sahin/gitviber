@@ -64,6 +64,8 @@ pub struct CommitView {
     _files: Task<()>,
     _details: Task<()>,
     _diff: Option<Subscription>,
+    /// The review notes on the diff's lines, on the commit's version.
+    _notes: Option<Entity<gitviber_review::DiffNotes>>,
     _live: Live,
 }
 
@@ -149,6 +151,7 @@ impl CommitView {
             _files: files,
             _details: details,
             _diff: None,
+            _notes: None,
             _live: Live::new("CommitView"),
         }
     }
@@ -211,6 +214,11 @@ impl CommitView {
                         }
                     }
                 }));
+                // A commit's version, as the note says; a range's files take none.
+                if let Some(c) = &self.commit {
+                    let at = format!("commit {}", c.short);
+                    self._notes = Some(gitviber_review::attach_notes(&diff, Some(at), cx));
+                }
                 self.diff = Some(diff);
             }
         }

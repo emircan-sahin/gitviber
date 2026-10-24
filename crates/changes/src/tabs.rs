@@ -79,6 +79,8 @@ pub struct ChangeTab {
     root: Option<String>,
     /// Typing not written to the store yet.
     edit_pending: bool,
+    /// The review notes on the diff's lines (a local diff's).
+    _notes: Option<Entity<gitviber_review::DiffNotes>>,
     _subscriptions: Vec<Subscription>,
     _load: Task<()>,
     _keep: Task<()>,
@@ -145,6 +147,7 @@ impl ChangeTab {
             focus: cx.focus_handle(),
             root: None,
             edit_pending: false,
+            _notes: None,
             _subscriptions: subscriptions,
             _load: Task::ready(()),
             _keep: Task::ready(()),
@@ -176,6 +179,14 @@ impl ChangeTab {
         }
         self.sync_viewed(cx);
         self.repo_changed_stacked(cx);
+        if let Body::Diff(view) = &self.body
+            && matches!(
+                self.sel,
+                Selection::Unstaged { .. } | Selection::Staged { .. } | Selection::Branch { .. }
+            )
+        {
+            self._notes = Some(gitviber_review::attach_notes(view, None, cx));
+        }
         if let (Some(root), Some(path), Body::Diff(view)) =
             (&self.root, self.sel.edit_path(), &self.body)
             && let Some(kept) = store::edit(root, &path, cx)

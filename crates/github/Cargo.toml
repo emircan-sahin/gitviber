@@ -19,6 +19,8 @@ gitviber-markdown = { path = "../markdown" }
 # Bridges: the branch pickers' pull request, History's commit checks, worktrees for a PR or an issue.
 gitviber-refs = { path = "../refs" }
 gitviber-history = { path = "../history" }
+# A pull request's menu opens its guided review.
+gitviber-review = { path = "../review" }
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true

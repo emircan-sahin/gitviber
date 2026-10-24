@@ -247,6 +247,38 @@ pub fn paste_to_running_agent(
         .detach();
 }
 
+/// `text` pasted into a terminal of `root` (the one in front, if it's there), Enter left to the
+/// user; false when the worktree has none.
+pub fn paste_to_terminal(root: &Path, text: String, window: &mut Window, cx: &mut App) -> bool {
+    let Some(panel) = terminal(window, cx) else {
+        return false;
+    };
+    let front = panel.read(cx).active_pane();
+    let pane = front
+        .filter(|p| {
+            let p = p.read(cx);
+            !p.has_exited() && p.cwd() == root
+        })
+        .or_else(|| {
+            panel
+                .read(cx)
+                .panes()
+                .find(|p| {
+                    let p = p.read(cx);
+                    !p.has_exited() && p.cwd() == root
+                })
+                .cloned()
+        });
+    let Some(pane) = pane else {
+        return false;
+    };
+    pane.update(cx, |p, cx| {
+        p.paste_text(text, window, cx);
+        p.focus(window, cx);
+    });
+    true
+}
+
 /// The part asked about, as the agent would get it, on the clipboard.
 pub fn copy_as_prompt(a: &HandoffInput, window: &mut Window, cx: &mut App) {
     let text = as_prompt(&handoff_context(a), prompt_of(a, "").as_deref());

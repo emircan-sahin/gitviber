@@ -11,6 +11,7 @@ extern crate gpui_kit as gpui;
 pub mod agent;
 pub mod model;
 pub mod note_store;
+mod notes_ui;
 pub mod store;
 mod view;
 
@@ -19,12 +20,14 @@ mod tests;
 
 use std::collections::HashSet;
 
+use gitviber_ui::actions::review;
 use gitviber_ui::workspace::{
     GuideOf, Selection, TabHandle, Workspace, register_opener, selection_key,
 };
 use gpui_kit::{App, AppContext as _, Global, Window};
 
 pub use note_store::ReviewNotes;
+pub use notes_ui::{DiffNotes, NotesSection, attach_notes};
 pub use store::{Guides, RunKind, SavedRun};
 pub use view::GuideView;
 
@@ -52,6 +55,22 @@ pub fn init(cx: &mut App) {
             Some(TabHandle::new(cx.new(|cx| GuideView::new(of, window, cx))))
         }
         _ => None,
+    });
+    // From anywhere in a window, on the window in front once the key's dispatch is over.
+    cx.on_action(|_: &review::GuideUncommitted, cx| {
+        in_front(cx, |window, cx| open_guide(GuideOf::Changes, window, cx))
+    });
+    cx.on_action(|_: &review::CopyNotes, cx| in_front(cx, notes_ui::copy_pending));
+    cx.on_action(|_: &review::SendNotes, cx| in_front(cx, notes_ui::send_pending));
+}
+
+fn in_front(cx: &mut App, f: impl FnOnce(&mut Window, &mut App) + 'static) {
+    // The first window when none is in front (a test's).
+    let Some(handle) = cx.active_window().or_else(|| cx.windows().first().copied()) else {
+        return;
+    };
+    cx.defer(move |cx| {
+        let _ = handle.update(cx, |_, window, cx| f(window, cx));
     });
 }
 

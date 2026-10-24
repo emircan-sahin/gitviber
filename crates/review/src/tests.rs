@@ -279,3 +279,123 @@ fn a_cancel_kills_the_agent_and_what_it_started(cx: &mut TestAppContext) {
         "what it started was killed too"
     );
 }
+
+#[gpui_kit::test]
+fn a_note_written_on_a_commits_lines_is_kept_and_drawn_until_resolved(cx: &mut TestAppContext) {
+    use gitviber_diff::{Compare, DiffEvent, DiffSource, DiffView, LineRange, Side};
+    let (repo, agent) = setup("notes");
+    boot(cx, &agent);
+    let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+    let ws = host.read_with(cx, |h, _| h.0.clone());
+    open_project(&ws, &repo, cx);
+    let GuideOf::Commit { commit } = head_commit(cx) else {
+        unreachable!()
+    };
+    let source = DiffSource::new(
+        Compare::Commit {
+            sha: commit.sha.clone(),
+        },
+        "src/retry.ts",
+    );
+    let diff = cx.update(|_, cx| cx.new(|cx| DiffView::new(source, cx)));
+    cx.run_until_parked();
+    let notes = cx.update(|_, cx| crate::attach_notes(&diff, Some("commit 1a2b3c4".into()), cx));
+    let range = LineRange {
+        side: Side::New,
+        start: 1,
+        end: 1,
+    };
+    diff.update(cx, |_, cx| cx.emit(DiffEvent::AddNote(range)));
+    cx.run_until_parked();
+    assert!(
+        notes.read_with(cx, |n, _| n.has_draft()),
+        "C opened the composer"
+    );
+    notes.update_in(cx, |n, window, cx| n.write_draft("Why 3?", window, cx));
+    cx.run_until_parked();
+    let root = repo.to_string_lossy().into_owned();
+    let kept = cx.update(|_, cx| crate::ReviewNotes::get(cx, &root));
+    assert_eq!(kept.len(), 1);
+    let n = &kept[0];
+    assert_eq!(
+        (n.path.as_str(), n.anchor.start, n.at.as_deref()),
+        ("src/retry.ts", 1, Some("commit 1a2b3c4"))
+    );
+    assert_eq!(n.anchor.code, ["export const tries = 3;"]);
+    assert!(notes.read_with(cx, |n, _| n.drawn() && !n.has_draft()));
+    // Resolved, it leaves the diff.
+    let id = n.id.clone();
+    cx.update(|_, cx| crate::ReviewNotes::update(cx, &root, &id, |n| n.resolved = true));
+    cx.run_until_parked();
+    assert!(!notes.read_with(cx, |n, _| n.drawn()));
+    let weak = notes.downgrade();
+    drop(notes);
+    drop(diff);
+    cx.run_until_parked();
+    assert!(weak.upgrade().is_none());
+}
+
+#[gpui_kit::test]
+fn notes_on_the_files_on_disk_follow_their_lines(cx: &mut TestAppContext) {
+    let dir = std::env::temp_dir().join(format!("gitviber-review-check-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // SAFETY: each test runs in its own process (nextest), before any thread reads it.
+    unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", dir.join("config")) };
+    let file = dir.join("a.txt");
+    std::fs::write(&file, "one\ntwo\nthree\n").unwrap();
+    let root = dir.to_string_lossy().into_owned();
+    let lines: Vec<String> = ["one", "two", "three"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let note = crate::model::notes::ReviewNote {
+        id: String::new(),
+        path: "a.txt".into(),
+        body: "b".into(),
+        anchor: crate::model::notes::anchor_at(&lines, 2, 2),
+        ..Default::default()
+    };
+    cx.update(|cx| crate::ReviewNotes::add(cx, &root, note));
+    let check = |cx: &mut TestAppContext| {
+        let task = cx.update(|cx| crate::ReviewNotes::check(cx, &root));
+        cx.run_until_parked();
+        drop(task);
+        cx.update(|cx| crate::ReviewNotes::get(cx, &root)).remove(0)
+    };
+    assert_eq!(check(cx).anchor.start, 2);
+    std::fs::write(&file, "zero\none\ntwo\nthree\n").unwrap();
+    let moved = check(cx);
+    assert_eq!((moved.anchor.start, moved.outdated), (3, false));
+    std::fs::write(&file, "zero\none\nTWO\nthree\n").unwrap();
+    assert!(check(cx).outdated);
+}
+
+#[gpui_kit::test]
+fn the_guided_review_command_opens_the_uncommitted_changes_guide(cx: &mut TestAppContext) {
+    let (repo, agent) = setup("command");
+    boot(cx, &agent);
+    let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+    let ws = host.read_with(cx, |h, _| h.0.clone());
+    open_project(&ws, &repo, cx);
+    // Kept already, so the command shows it rather than asking (which would write in the repo).
+    let id = crate::store::guide_id(&repo.to_string_lossy(), &GuideOf::Changes, Some("main"));
+    let kept = crate::SavedRun {
+        text: GUIDE.into(),
+        base: "HEAD".into(),
+        head: "HEAD".into(),
+        stamp: None,
+        program: "fake-agent".into(),
+        details: vec![],
+        at: 0,
+    };
+    cx.update(|_, cx| Guides::keep(cx, RunKind::Guide, &id, kept));
+    cx.dispatch_action(gitviber_ui::actions::review::GuideUncommitted);
+    cx.run_until_parked();
+    let sel = Selection::Guide {
+        of: GuideOf::Changes,
+    };
+    let view = view_of(&ws, &sel, cx).expect("the command opened the guide");
+    assert!(view.read_with(cx, |v, _| v.guide().is_some()));
+    assert_eq!(calls(&agent), 0, "a kept guide isn't asked for");
+}

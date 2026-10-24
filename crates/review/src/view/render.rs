@@ -13,6 +13,23 @@ fn elapsed(run: &Option<Run>) -> String {
     }
 }
 
+/// The last lines the agent CLI printed, as it prints them; none until it does.
+fn printed(tail: &crate::store::Tail, t: &AppTheme) -> Option<AnyElement> {
+    let lines = tail.lines(8);
+    (!lines.is_empty()).then(|| {
+        div()
+            .px(px(12.))
+            .py(px(6.))
+            .rounded(px(6.))
+            .bg(t.panel)
+            .font_family(t.fonts.code.clone())
+            .text_size(rems(0.68))
+            .text_color(t.muted_foreground)
+            .children(lines.into_iter().map(|l| div().truncate().child(l)))
+            .into_any_element()
+    })
+}
+
 fn title_text(s: &Section) -> String {
     if s.title.is_empty() {
         "Untitled".into()
@@ -423,24 +440,32 @@ impl GuideView {
                 IconName::LoaderCircle,
                 t.foreground,
                 &t,
-                format!("Fetching the pull request's commits for {program}… {}", elapsed(run)),
-            )),
-            Some(Run::Running { .. }) => out.push(notice(
-                IconName::LoaderCircle,
-                t.foreground,
-                &t,
                 format!(
-                    "Asking {program} to explain {}. It can take a few minutes, and it goes on while you look at other tabs. {}",
-                    c.what,
+                    "Fetching the pull request's commits for {program}… {}",
                     elapsed(run)
                 ),
             )),
+            Some(Run::Running { tail, .. }) => {
+                out.push(notice(
+                    IconName::LoaderCircle,
+                    t.foreground,
+                    &t,
+                    format!(
+                        "Asking {program} to explain {}. It can take a few minutes, and it goes on while you look at other tabs. {}",
+                        c.what,
+                        elapsed(run)
+                    ),
+                ));
+                out.extend(printed(tail, &t));
+            }
             Some(Run::Stopped) => out.push(notice(
                 IconName::Square,
                 t.foreground,
                 &t,
                 if self.saved.is_some() {
-                    format!("Stopped before {program} was done: this is the guided review from before.")
+                    format!(
+                        "Stopped before {program} was done: this is the guided review from before."
+                    )
                 } else {
                     format!("Stopped before {program} was done.")
                 },
@@ -474,7 +499,7 @@ impl GuideView {
             ));
         }
         match risks_run {
-            Some(Run::Running { .. }) => out.push(notice(
+            Some(Run::Running { tail, .. }) => out.extend([Some(notice(
                 IconName::LoaderCircle,
                 t.foreground,
                 &t,
@@ -495,7 +520,7 @@ impl GuideView {
                             .label("Cancel")
                             .on_click(cx.listener(|this, _, _, cx| this.cancel(RunKind::Risks, cx))),
                     ),
-            )),
+            )), printed(tail, &t)].into_iter().flatten()),
             Some(Run::Stopped) => out.push(notice(IconName::Square, t.foreground, &t, format!("Stopped before {program} found the risks."))),
             Some(Run::Failed(why)) => out.push(notice(IconName::TriangleAlert, t.destructive, &t, format!("Couldn't find risks: {why}"))),
             None => {}

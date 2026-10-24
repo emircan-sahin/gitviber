@@ -276,6 +276,8 @@ pub struct ChangesPanel {
     keys: Vec<String>,
     scroll: UniformListScrollHandle,
     commit: Entity<CommitBox>,
+    /// The worktree's review notes, between the lists and the commit box.
+    notes: Entity<gitviber_review::NotesSection>,
     review: Option<Review>,
     branches: Vec<String>,
     expanded_stash: Option<String>,
@@ -315,6 +317,7 @@ impl ChangesPanel {
     pub fn new(ctx: &PanelContext, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter changed files"));
         let commit = cx.new(|cx| CommitBox::new(ctx.workspace.clone(), window, cx));
+        let notes = cx.new(|cx| gitviber_review::NotesSection::new(ctx, cx));
         let mut subscriptions = vec![cx.subscribe(&filter, |this, _, e: &InputEvent, cx| {
             if matches!(e, InputEvent::Change) {
                 this.rebuild(cx);
@@ -371,6 +374,7 @@ impl ChangesPanel {
             keys: vec![],
             scroll: UniformListScrollHandle::new(),
             commit,
+            notes,
             review: None,
             branches: vec![],
             expanded_stash: None,
@@ -2857,6 +2861,19 @@ impl ChangesPanel {
                             format!("{n} files")
                         }))
                         .child(LineCounts::new(Some(add), Some(del)))
+                        .when(self.review.is_none(), |row| {
+                            row.child(
+                                Button::new("guide-uncommitted")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Lucide::Sparkles)
+                                    .tooltip("Guided review of the uncommitted changes")
+                                    .on_click(|_, window, cx| {
+                                        window
+                                            .dispatch_action(Box::new(review::GuideUncommitted), cx)
+                                    }),
+                            )
+                        })
                         .child(div().flex_1())
                         .child(
                             h_flex()
@@ -3001,6 +3018,7 @@ impl Render for ChangesPanel {
                 (_, false) => div().flex_1().into_any_element(),
                 _ => list.into_any_element(),
             })
+            .child(self.notes.clone())
             .child(if blocked_by_op {
                 // Committing by hand mid-rebase would splice an extra commit into the history.
                 div()

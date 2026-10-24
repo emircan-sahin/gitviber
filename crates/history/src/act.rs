@@ -28,6 +28,8 @@ pub const MERGE_WARNING: &str = "This is a merge: the merged-in commits leave th
 #[derive(Clone, Debug)]
 pub enum Act {
     OpenAll,
+    /// A guided review of it, asked of the review agent unless one is kept.
+    Explain,
     Undo,
     Reword,
     /// Into its parent; `message`: ask for the message, else the oldest one's stays.
@@ -145,6 +147,14 @@ pub fn act(
     let short = c.short.to_string();
     match act {
         Act::OpenAll => crate::open::open_commit(list, c, window, cx),
+        Act::Explain => {
+            let commit = std::sync::Arc::new(c.to_core());
+            gitviber_review::open_guide(
+                gitviber_ui::workspace::GuideOf::Commit { commit },
+                window,
+                cx,
+            );
+        }
         Act::Undo => undo(list, c.clone(), window, cx),
         Act::Reword => {
             let submit = submit_rewrite(
