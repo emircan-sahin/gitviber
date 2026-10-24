@@ -171,7 +171,7 @@ impl WorkspaceView {
         // Set by the terminal whenever an agent's look changes; drawn again only when news did.
         subs.push(
             cx.observe_global::<gitviber_refs::hooks::AgentLooks>(|this, cx| {
-                let news = this.read_terminal_news(cx);
+                let news = gitviber_terminal::calling(cx);
                 if news != this.terminal_news {
                     this.terminal_news = news;
                     cx.notify();
@@ -227,34 +227,12 @@ impl WorkspaceView {
         this
     }
 
-    /// News from the terminals in the open project's worktrees: an agent that asked, a finish not
-    /// looked at. The terminal tells looks by folder, so one outside the repo isn't counted.
-    fn read_terminal_news(&self, cx: &App) -> Option<gitviber_ui::widgets::Look> {
-        use gitviber_ui::widgets::Look;
-        let project = self.workspace.read(cx).project()?;
-        let worktrees = gitviber_refs::RepoState::existing(project, cx)
-            .map(|s| s.read(cx).worktrees.clone())
-            .unwrap_or_default();
-        let root = project.read(cx).root().to_path_buf();
-        let dirs = worktrees.iter().map(|w| PathBuf::from(&w.path));
-        let dirs: Vec<PathBuf> = if worktrees.is_empty() {
-            vec![root]
-        } else {
-            dirs.collect()
-        };
-        gitviber_refs::hooks::most_urgent(
-            dirs.iter()
-                .map(|d| gitviber_terminal::agents_in(d, cx))
-                .map(|l| l.filter(|l| matches!(l, Look::Needs | Look::Unread))),
-        )
-    }
-
     /// The open project's events: one that opened asks for a git identity when there is none;
     /// a change on disk may be its worktree going away.
     fn follow_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let project = self.workspace.read(cx).project().cloned();
         self._gone = None;
-        self.terminal_news = self.read_terminal_news(cx);
+        self.terminal_news = gitviber_terminal::calling(cx);
         self._project = project.map(|p| {
             cx.subscribe_in(
                 &p,

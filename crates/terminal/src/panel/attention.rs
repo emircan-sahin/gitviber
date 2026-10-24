@@ -160,6 +160,22 @@ pub fn agents_in(dir: &Path, cx: &App) -> Option<gitviber_ui::widgets::Look> {
     look.map(ui_look)
 }
 
+/// For the terminal button's dot: the most urgent news of every pane in every window (one asked,
+/// or news not looked at), whatever folder it runs in. None when no pane calls.
+pub fn calling(cx: &App) -> Option<gitviber_ui::widgets::Look> {
+    let live = cx.try_global::<LivePanels>()?;
+    let look = agent::most_urgent(live.0.iter().filter_map(|p| p.upgrade()).map(|p| {
+        let p = p.read(cx);
+        agent::most_urgent(
+            p.panes
+                .values()
+                .map(|s| pane_look(s.agent.as_ref(), s.rang)),
+        )
+    }));
+    look.filter(|l| matches!(l, Look::Needs | Look::Unread))
+        .map(ui_look)
+}
+
 pub(crate) fn ui_look(l: Look) -> gitviber_ui::widgets::Look {
     match l {
         Look::Needs => gitviber_ui::widgets::Look::Needs,

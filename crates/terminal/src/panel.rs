@@ -42,7 +42,7 @@ mod attention;
 mod resume;
 mod saved;
 
-pub use attention::{agents_in, paste_to_agent, stopped_by_quit, worktree_agent};
+pub use attention::{agents_in, calling, paste_to_agent, stopped_by_quit, worktree_agent};
 pub(crate) use saved::import_legacy;
 
 /// A worktree the panel can open a terminal in, as the app lists them.
@@ -2868,6 +2868,45 @@ mod tests {
     }
 
     use gpui::{TestAppContext, VisualTestContext};
+
+    /// The terminal button's dot: a pane with news calls whatever folder it runs in.
+    #[gpui::test]
+    fn a_pane_anywhere_with_news_calls(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::init(cx);
+        });
+        let core = Arc::new(Core::new(Arc::new(|_| {})));
+        let dir = std::env::temp_dir();
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            TerminalPanel::new(
+                core.clone(),
+                dir.clone(),
+                TerminalConfig::default(),
+                TerminalTheme::dark(),
+                window,
+                cx,
+            )
+        });
+        for _ in 0..2 {
+            panel.update_in(cx, |p, window, cx| {
+                p.open_terminal(dir.clone(), None, window, cx)
+            });
+        }
+        // As a workspace's panel joins them.
+        let weak = panel.downgrade();
+        cx.update(|_, cx| cx.default_global::<LivePanels>().0.push(weak));
+        let calling = |cx: &mut VisualTestContext| cx.update(|_, cx| super::calling(cx));
+        assert_eq!(calling(cx), None);
+        panel.update(cx, |p, _| {
+            p.panes.values_mut().next().expect("a pane").rang = true;
+        });
+        assert_eq!(calling(cx), Some(gitviber_ui::widgets::Look::Unread));
+        panel.update(cx, |p, cx| p.close_all(cx));
+        assert_eq!(calling(cx), None);
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+    }
 
     /// The focused strip: arrows open tabs and keep the keys, ⌥→ moves the open tab, ↵ goes in;
     /// a screen reader gets the pane's screen without trailing blanks.

@@ -49,7 +49,7 @@ pub use find::FindOptions;
 pub use marks::{CommandEnd, end_text, end_title, format_duration, short_command};
 pub use pane::{FindResult, PaneEvent, TerminalPane};
 pub use panel::{
-    PanelEvent, TerminalPanel, WorktreeInfo, agents_in, config_from, paste_to_agent,
+    PanelEvent, TerminalPanel, WorktreeInfo, agents_in, calling, config_from, paste_to_agent,
     save_before_quit, stopped_by_quit, theme_from, worktree_agent,
 };
 
