@@ -1236,10 +1236,7 @@ mod tests {
 
     #[gpui_kit::test]
     fn five_thousand_remote_branches_filter_as_you_type(cx: &mut TestAppContext) {
-        let dir = std::env::temp_dir().join(format!("gitviber-refs-picker-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        let dir = gitviber_ui::test_support::config_dir("refs-picker");
         cx.update(|cx| {
             gitviber_ui::init(cx);
             gitviber_ui::install_core(cx);

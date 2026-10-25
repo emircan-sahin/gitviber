@@ -16,10 +16,7 @@ impl Render for Host {
 
 #[gpui_kit::test]
 fn pickers_and_repo_state_give_their_entities_back(cx: &mut TestAppContext) {
-    let dir = std::env::temp_dir().join(format!("gitviber-refs-leaks-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    // SAFETY: the tests that read the config dir all point it at a temporary folder.
-    unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+    let dir = gitviber_ui::test_support::config_dir("refs-leaks");
     cx.update(|cx| {
         gitviber_ui::init(cx);
         gitviber_ui::install_core(cx);

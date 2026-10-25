@@ -662,26 +662,20 @@ mod tests {
         }
     }
 
-    /// This repository, which the tests only read.
+    /// The repository the tests open first: one commit.
     fn here() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .canonicalize()
-            .unwrap()
+        let dir = scratch("here");
+        // Asked again for its path: the commit is made once.
+        if !dir.join(".git/refs/heads/main").exists() {
+            git(&dir, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        }
+        dir
     }
 
     /// A scratch repository to point core at instead.
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("gitviber-refs-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let ok = std::process::Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&dir)
-            .status()
-            .unwrap()
-            .success();
-        assert!(ok);
+        let dir = gitviber_ui::test_support::temp_dir(&format!("refs-{name}"));
+        git(&dir, &["init", "-q", "-b", "main"]);
         dir.canonicalize().unwrap()
     }
 
@@ -695,11 +689,7 @@ mod tests {
         repo: PathBuf,
         cx: &mut TestAppContext,
     ) -> (Entity<Workspace>, Entity<RepoState>, &mut VisualTestContext) {
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-refs-repo-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        gitviber_ui::test_support::config_dir("refs-repo-test");
         cx.update(|cx| {
             gitviber_ui::init(cx);
             gitviber_ui::install_core(cx);
@@ -868,16 +858,11 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         use std::os::unix::fs::PermissionsExt as _;
-        // The repo changes while open: core's watcher thread wakes the test.
-        cx.executor().allow_parking();
         let dir = scratch("secret");
         git(&dir, &["commit", "-q", "--allow-empty", "-m", "one"]);
         git(&dir, &["commit", "-q", "--allow-empty", "-m", "token"]);
         // A remote that refuses as GitHub's push protection does, naming the pushed commit.
-        let remote =
-            std::env::temp_dir().join(format!("gitviber-refs-bare-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&remote);
-        std::fs::create_dir_all(&remote).unwrap();
+        let remote = gitviber_ui::test_support::temp_dir("refs-bare");
         git(&remote, &["init", "-q", "--bare"]);
         let hook = remote.join("hooks/pre-receive");
         std::fs::write(
@@ -926,7 +911,6 @@ mod tests {
         );
         git(&dir, &["branch", "-q", "-u", &format!("origin/{branch}")]);
         assert_eq!(crate::ops::secret_only_in_head(&core, &listed), None);
-        let _ = std::fs::remove_dir_all(&remote);
     }
 
     #[gpui_kit::test]

@@ -141,8 +141,7 @@ mod tests {
 
     #[gpui_kit::test]
     fn both_menus_share_one_lookup_until_a_push_forgets_it(cx: &mut TestAppContext) {
-        let dir = std::env::temp_dir().join(format!("gitviber-refs-tags-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = gitviber_ui::test_support::temp_dir("refs-tags");
         let (bare, work) = (dir.join("remote.git"), dir.join("work"));
         std::fs::create_dir_all(&work).unwrap();
         git(&dir, &["init", "-q", "--bare", "remote.git"]);
