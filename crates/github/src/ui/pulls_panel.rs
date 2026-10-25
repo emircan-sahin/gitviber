@@ -903,11 +903,7 @@ fn pane_header(
         .border_b_1()
         .border_color(t.border)
         .text_size(rems(0.72))
-        .child(
-            div()
-                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                .child(title),
-        )
+        .child(div().font_weight(t.semibold()).child(title))
         .child(
             div()
                 .min_w_0()

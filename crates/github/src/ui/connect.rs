@@ -11,9 +11,8 @@ use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FontWeight, IntoElement,
-    ParentElement as _, Render, Styled as _, Task, WeakEntity, Window, div,
-    prelude::FluentBuilder as _, px, rems,
+    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, IntoElement, ParentElement as _,
+    Render, Styled as _, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::cache::{Cache, Read};
@@ -106,7 +105,7 @@ fn step(n: &'static str, title: &'static str, t: &AppTheme) -> gpui_kit::Div {
                 .gap(px(8.))
                 .mb(px(6.))
                 .text_size(rems(0.75))
-                .font_weight(FontWeight::MEDIUM)
+                .font_weight(t.medium())
                 .child(
                     div()
                         .size(px(16.))
@@ -157,7 +156,7 @@ impl Render for ConnectView {
             .items_center()
             .child(Icon::new(if self.hidden { IconName::Lock } else { IconName::GitPullRequest }).large().text_color(t.subtle))
             .when_some(self.error.clone(), |d, e| d.child(div().mt(px(8.)).w_full().text_center().text_size(rems(0.72)).child(error_text("connect-error", &e, t.removed, cx))))
-            .child(div().mt(px(12.)).text_center().text_size(rems(0.8125)).font_weight(FontWeight::MEDIUM).child(format!("Sign in to GitHub to see {}", self.subject)))
+            .child(div().mt(px(12.)).text_center().text_size(rems(0.8125)).font_weight(t.medium()).child(format!("Sign in to GitHub to see {}", self.subject)))
             .child(div().mt(px(4.)).text_center().text_size(rems(0.75)).text_color(t.muted_foreground).child(note))
             .child(
                 div()
@@ -273,7 +272,7 @@ fn no_github(
                 .mt(px(12.))
                 .text_center()
                 .text_size(rems(0.8125))
-                .font_weight(FontWeight::MEDIUM)
+                .font_weight(t.medium())
                 .child(title),
         )
         .child(

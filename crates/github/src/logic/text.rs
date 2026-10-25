@@ -2,13 +2,6 @@
 //! GitHub's own hosts (anything else tells its host your IP and when you read the PR, so it
 //! becomes a link). Done on the markdown before it's rendered.
 
-/// A piece of plain text, with the page it links to for a ref.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Piece {
-    pub text: String,
-    pub href: Option<String>,
-}
-
 fn word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
@@ -67,38 +60,24 @@ fn ref_at(chars: &[char], i: usize, repo: &str) -> Option<(usize, String)> {
     }
 }
 
-/// Plain text in pieces, @mentions and #123 with the page GitHub gives them (it redirects a
-/// PR's number); `repo` is https://github.com/owner/name. For a commit message's subject.
-pub fn github_refs(value: &str, repo: &str) -> Vec<Piece> {
+/// Plain text as markdown, each @mention and #123 a link to the page GitHub gives it (it
+/// redirects a PR's number); `repo` is https://github.com/owner/name.
+fn link_refs(value: &str, repo: &str, out: &mut String) {
     let chars: Vec<char> = value.chars().collect();
-    let mut out = Vec::new();
-    let mut last = 0;
     let mut i = 0;
     while i < chars.len() {
         if let Some((end, href)) = ref_at(&chars, i, repo) {
-            if i > last {
-                out.push(Piece {
-                    text: chars[last..i].iter().collect(),
-                    href: None,
-                });
-            }
-            out.push(Piece {
-                text: chars[i..end].iter().collect(),
-                href: Some(href),
-            });
-            last = end;
+            out.push('[');
+            out.extend(&chars[i..end]);
+            out.push_str("](");
+            out.push_str(&href);
+            out.push(')');
             i = end;
         } else {
+            out.push(chars[i]);
             i += 1;
         }
     }
-    if last < chars.len() || out.is_empty() {
-        out.push(Piece {
-            text: chars[last..].iter().collect(),
-            href: None,
-        });
-    }
-    out
 }
 
 /// Hosts GitHub serves images from; anything else loads only on request.
@@ -226,12 +205,7 @@ fn inline(
     let mut i = 0;
     let mut text = String::new();
     let flush = |text: &mut String, out: &mut String| {
-        for p in github_refs(text, repo) {
-            match p.href {
-                Some(href) => out.push_str(&format!("[{}]({href})", p.text)),
-                None => out.push_str(&p.text),
-            }
-        }
+        link_refs(text, repo, out);
         text.clear();
     };
     while i < chars.len() {
@@ -436,28 +410,16 @@ mod tests {
         );
     }
 
-    fn piece(text: &str, href: Option<&str>) -> Piece {
-        Piece {
-            text: text.into(),
-            href: href.map(str::to_string),
-        }
-    }
-
     #[test]
     fn plain_text_links_its_refs() {
+        let none = |_: &str| None;
         assert_eq!(
-            github_refs("Fix login (#12), thanks @octo; not x#3", REPO),
-            vec![
-                piece("Fix login (", None),
-                piece("#12", Some("https://github.com/o/r/issues/12")),
-                piece("), thanks ", None),
-                piece("@octo", Some("https://github.com/octo")),
-                piece("; not x#3", None),
-            ]
+            github_markdown("Fix login (#12), thanks @octo; not x#3", REPO, PAGE, &none),
+            "Fix login ([#12](https://github.com/o/r/issues/12)), thanks \
+             [@octo](https://github.com/octo); not x#3"
         );
-        assert_eq!(github_refs("no refs", REPO), vec![piece("no refs", None)]);
-        for text in ["#0", "#007", "é#8", "#8é", "ü@octo", "a@b.com"] {
-            assert_eq!(github_refs(text, REPO), vec![piece(text, None)], "{text}");
+        for text in ["no refs", "#0", "#007", "é#8", "#8é", "ü@octo", "a@b.com"] {
+            assert_eq!(github_markdown(text, REPO, PAGE, &none), text, "{text}");
         }
     }
 

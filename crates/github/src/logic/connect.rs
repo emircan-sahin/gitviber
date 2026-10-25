@@ -200,9 +200,7 @@ mod tests {
     /// The answers `gate` knows are core's own, read with no request (no token, no network).
     #[test]
     fn core_says_no_origin_as_gate_reads_it() {
-        let dir = std::env::temp_dir().join(format!("gitviber-gate-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = gitviber_ui::test_support::temp_dir("gate");
         let git = |args: &[&str]| {
             assert!(
                 Command::new("git")

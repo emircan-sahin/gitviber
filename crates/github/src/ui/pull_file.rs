@@ -21,8 +21,8 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Enter, Escape, InputEvent};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString,
+    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
+    IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
     prelude::FluentBuilder as _, px, rems,
 };
@@ -539,11 +539,7 @@ impl PullFileView {
                                     .flex()
                                     .gap(px(6.))
                                     .text_size(rems(0.69))
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child(c.author.clone()),
-                                    )
+                                    .child(div().font_weight(t.medium()).child(c.author.clone()))
                                     .child(div().text_color(t.subtle).child(ago(&c.created_at))),
                             )
                             .children(self.blocks.get(ci).map(|md| div().pt(px(4.)).child(md))),

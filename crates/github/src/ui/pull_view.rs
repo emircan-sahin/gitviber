@@ -1460,7 +1460,7 @@ impl PullView {
                     .child(
                         div()
                             .text_size(rems(0.78))
-                            .font_weight(FontWeight::SEMIBOLD)
+                            .font_weight(t.semibold())
                             .child(marks.text(("merge-title", 0), title, cx)),
                     )
                     .child(
@@ -1610,7 +1610,7 @@ impl PullView {
             };
         };
         if !data.title.is_empty() {
-            col = col.child(div().font_weight(FontWeight::SEMIBOLD).child(marks.text(
+            col = col.child(div().font_weight(t.semibold()).child(marks.text(
                 ("failure-title", row),
                 data.title.clone(),
                 cx,
@@ -1675,7 +1675,7 @@ impl PullView {
                                 )
                             })
                             .when(!a.title.is_empty(), |d| {
-                                d.child(div().font_weight(FontWeight::SEMIBOLD).child(marks.text(
+                                d.child(div().font_weight(t.semibold()).child(marks.text(
                                     ("annotation-title", at),
                                     format!("{}:", a.title),
                                     cx,
@@ -1981,6 +1981,7 @@ impl PullView {
                         .rounded(px(3.))
                         .bg(if open { t.active } else { t.hover })
                         .text_size(rems(0.625))
+                        .cursor_pointer()
                         .child("…")
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
@@ -2367,7 +2368,7 @@ impl PullView {
                             .items_center()
                             .gap(px(8.))
                             .text_size(rems(0.72))
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child(marks.text(
+                            .child(div().font_weight(t.semibold()).child(marks.text(
                                 ("comment-author", i),
                                 c.author.clone(),
                                 cx,
@@ -2712,7 +2713,7 @@ impl PullView {
                                     .flex_wrap()
                                     .gap_x(px(6.))
                                     .text_size(rems(1.06))
-                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .font_weight(t.semibold())
                                     .child(marks.text(("title", 0), p.title.clone(), cx))
                                     .child(
                                         div()

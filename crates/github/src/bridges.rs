@@ -14,8 +14,7 @@ use gitviber_ui::workspace::{GuideOf, Selection, Workspace};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, FontWeight, Global, IntoElement, ParentElement as _, Styled as _, Window, div,
-    px, rems,
+    AnyElement, App, Global, IntoElement, ParentElement as _, Styled as _, Window, div, px, rems,
 };
 
 use crate::cache::Cache;
@@ -197,7 +196,7 @@ fn commit_checks(sha: &str, header: bool, _: &mut Window, cx: &mut App) -> Optio
                     &t,
                 ))
                 .child(
-                    div().font_weight(FontWeight::MEDIUM).child(
+                    div().font_weight(t.medium()).child(
                         if data
                             .as_ref()
                             .is_some_and(|d| !d.checks.is_empty() && d.checks_error.is_none())

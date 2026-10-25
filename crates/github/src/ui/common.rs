@@ -15,7 +15,7 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Div, ElementId, Entity,
-    FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+    Hsla, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
     rems,
 };
@@ -61,6 +61,7 @@ fn pill(
     bg: gpui_kit::Hsla,
     fg: gpui_kit::Hsla,
     border: Option<gpui_kit::Hsla>,
+    t: &AppTheme,
 ) -> Div {
     div()
         .flex_none()
@@ -69,37 +70,39 @@ fn pill(
         .bg(bg)
         .text_color(fg)
         .text_size(rems(0.656))
-        .font_weight(FontWeight::SEMIBOLD)
+        .font_weight(t.semibold())
         .when_some(border, |d, b| d.border_1().border_color(b))
         .child(label)
 }
 
 pub fn pull_pill(state: PullState, draft: bool, t: &AppTheme) -> Div {
     match state {
-        PullState::Merged => pill("Merged", t.renamed_fill, t.on_status, None),
-        PullState::Closed => pill("Closed", t.removed_fill, t.on_status, None),
+        PullState::Merged => pill("Merged", t.renamed_fill, t.on_status, None, t),
+        PullState::Closed => pill("Closed", t.removed_fill, t.on_status, None, t),
         PullState::Open if draft => pill(
             "Draft",
             t.elevated,
             t.muted_foreground,
             Some(t.border_strong),
+            t,
         ),
-        PullState::Open => pill("Open", t.added_fill, t.on_status, None),
+        PullState::Open => pill("Open", t.added_fill, t.on_status, None, t),
     }
 }
 
 pub fn issue_pill(i: &IssueItem, t: &AppTheme) -> Div {
     if i.open {
-        pill("Open", t.added_fill, t.on_status, None)
+        pill("Open", t.added_fill, t.on_status, None, t)
     } else if i.not_planned() {
         pill(
             "Closed as not planned",
             t.elevated,
             t.muted_foreground,
             Some(t.border_strong),
+            t,
         )
     } else {
-        pill("Closed", t.renamed_fill, t.on_status, None)
+        pill("Closed", t.renamed_fill, t.on_status, None, t)
     }
 }
 
@@ -172,7 +175,7 @@ fn section_title(title: &'static str, aside: Option<SharedString>, t: &AppTheme)
         .border_b_1()
         .border_color(t.border)
         .text_size(rems(0.656))
-        .font_weight(FontWeight::SEMIBOLD)
+        .font_weight(t.semibold())
         .text_color(t.subtle)
         .child(title.to_uppercase())
         .when_some(aside, |d, a| {
@@ -234,7 +237,7 @@ pub fn load_failed(
             .child(
                 div()
                     .text_size(rems(0.875))
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .font_weight(t.semibold())
                     .child(format!("Couldn't load the {what}")),
             )
             .child(error_text("load-error", error, t.muted_foreground, cx))

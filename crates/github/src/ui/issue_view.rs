@@ -18,9 +18,9 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Enter, Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
+    AnyElement, App, AppContext as _, Context, Entity, EntityId, FocusHandle, FontWeight,
+    InteractiveElement as _, IntoElement, ListAlignment, ListState, ParentElement as _, Pixels,
+    Render, SharedString, Styled as _, Subscription, Task, WeakEntity, Window, div, list,
     prelude::FluentBuilder as _, px, rems,
 };
 
@@ -31,12 +31,15 @@ use crate::model::{Account, IssueItem, LabelItem, Target, repo_of};
 use crate::requests::{GithubRequest, request};
 use crate::ui::common::{
     Attachments, Blocks, ago, copy, error_text, issue_icon, issue_pill, label_chip, load_failed,
-    open_url, section, theme,
+    open_url, section, section_part, theme,
 };
 use crate::ui::dialogs::confirm;
 use crate::ui::labels::LabelPicker;
 use crate::ui::markdown_input::MarkdownInput;
-use crate::ui::page_find::{FindHost, PageFind, Parts};
+use crate::ui::page_find::{FindHost, Key, PageFind, Parts};
+
+/// How far past the page's view its list measures what it hasn't yet.
+const PAGE_OVERDRAW: Pixels = px(600.);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CloseReason {
@@ -102,7 +105,12 @@ pub struct IssueView {
     wakes: Wakes,
     generation: u64,
     focus: FocusHandle,
-    scroll: ScrollHandle,
+    /// The page as a list: the issue, then each comment, then the box to write one, so a long
+    /// thread draws only what's in view.
+    page: ListState,
+    /// The first and last items': drawn out of view while focus is in them (an edit, the box).
+    head_focus: FocusHandle,
+    compose_focus: FocusHandle,
     find: PageFind,
     _detail: Task<()>,
     _action: Task<()>,
@@ -154,6 +162,12 @@ impl IssueView {
                 }
             }),
         ];
+        let (head_focus, compose_focus) = (cx.focus_handle(), cx.focus_handle());
+        let page = ListState::new(0, ListAlignment::Top, PAGE_OVERDRAW);
+        page.splice_focusable(
+            0..0,
+            [Some(head_focus.clone()), Some(compose_focus.clone())],
+        );
         let mut view = IssueView {
             web,
             target: Some(repo),
@@ -176,7 +190,9 @@ impl IssueView {
             wakes: Cache::wakes(cx),
             generation: Cache::generation(cx),
             focus: cx.focus_handle(),
-            scroll: ScrollHandle::new(),
+            page,
+            head_focus,
+            compose_focus,
             find: PageFind::default(),
             _detail: Task::ready(()),
             _action: Task::ready(()),
@@ -247,8 +263,49 @@ impl IssueView {
     }
 
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.find
-            .open(self, Some(&self.scroll), &self.focus, window, cx);
+        self.find.open(self, None, &self.focus, window, cx);
+    }
+
+    /// Scrolls the page's list to item `ix`'s top unless some of it is in view; what's in it
+    /// then asks for the line it wants. By its top: items never drawn have no height yet.
+    fn reveal_item(&self, ix: usize) {
+        let view = self.page.viewport_bounds();
+        if !self
+            .page
+            .bounds_for_item(ix)
+            .is_some_and(|b| b.intersects(&view))
+        {
+            self.page.scroll_to(gpui_kit::ListOffset {
+                item_ix: ix,
+                offset_in_item: px(0.),
+            });
+        }
+    }
+
+    /// One item per comment, between the issue and the box: the list follows the comments read.
+    fn sync_items(&self) {
+        let want = 2 + self.detail.as_ref().map_or(0, |d| d.thread.len());
+        let have = self.page.item_count();
+        if want > have {
+            self.page.splice(have - 1..have - 1, want - have);
+        } else if want < have {
+            self.page.splice(want - 1..have - 1, 0);
+        }
+    }
+
+    /// The description and comments, as markdown views; at a frame, which has the window.
+    fn sync_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.text_stale = false;
+        let Some(d) = self.detail.clone() else { return };
+        let (web, url) = (self.web.clone(), self.url.clone());
+        let signed = self.attachments.signed.clone();
+        // Block 0 (the description) is in the page's first item, comment n's block in item n + 1.
+        for item in self
+            .blocks
+            .sync(&Self::texts(&d), &web, &url, &signed, window, cx)
+        {
+            self.page.remeasure_items(item..item + 1);
+        }
     }
 
     /// The labels shown: the ones being picked until they're saved.
@@ -654,60 +711,43 @@ impl FindHost for IssueView {
             parts.view(v);
         }
     }
+
+    /// The page's list draws the item the match is in: a comment's, else the issue's.
+    fn show_part(&mut self, (what, ix): Key, cx: &mut Context<Self>) {
+        let item = match what {
+            "comment-author" | "comment-time" => ix + 1,
+            _ => 0,
+        };
+        self.reveal_item(item);
+        cx.notify();
+    }
+
+    /// The description is in the first item, comment n's view in item n + 1, the comment being
+    /// written in the last; the description being edited is in the first.
+    fn show_view(&mut self, view: EntityId, cx: &mut Context<Self>) {
+        let writing = self
+            .comment
+            .read(cx)
+            .shown_preview()
+            .is_some_and(|v| v.entity_id() == view);
+        let item = match self.blocks.position(view) {
+            Some(item) => item,
+            None if writing => self.page.item_count() - 1,
+            None => 0,
+        };
+        self.reveal_item(item);
+        cx.notify();
+    }
 }
 
-impl Render for IssueView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = theme(cx);
-        let (wakes, generation) = (Cache::wakes(cx), Cache::generation(cx));
-        // Another repo or account (a restored tab reads before its project opened): read again now.
-        let reset = generation != self.generation;
-        if wakes != self.wakes || reset {
-            self.wakes = wakes;
-            self.generation = generation;
-            let old = self.detail_at.is_none_or(|at| at.elapsed() > MIN_AGE);
-            if (reset || old || self.detail.is_none()) && !self.loading {
-                self.load(cx);
-            }
-        }
-        if std::mem::take(&mut self.comment_clear) {
-            self.comment.update(cx, |c, cx| c.set_value("", window, cx));
-        }
-        if std::mem::take(&mut self.text_stale)
-            && let Some(d) = self.detail.clone()
-        {
-            let (web, url, signed) = (
-                self.web.clone(),
-                self.url.clone(),
-                self.attachments.signed.clone(),
-            );
-            self.blocks
-                .sync(&Self::texts(&d), &web, &url, &signed, window, cx);
-        }
-        self.find.sync(self, cx);
-        let marks = self.find.marks();
-        // The first read failed (offline, GitHub down): the list's copy alone isn't the page.
-        if let (None, Some(e)) = (&self.detail, &self.detail_error) {
-            let retry = cx.listener(|this, _, _, cx| this.load(cx));
-            return div()
-                .id("issue")
-                .track_focus(&self.focus)
-                .size_full()
-                .child(load_failed("issue", e, self.loading, retry, &t, cx))
-                .into_any_element();
-        }
+impl IssueView {
+    /// The page's first item: the title and the line under it, the actions, the description.
+    fn head(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(i) = self.item() else {
-            return div()
-                .id("issue")
-                .track_focus(&self.focus)
-                .size_full()
-                .p(px(32.))
-                .text_center()
-                .text_size(rems(0.78))
-                .text_color(t.muted_foreground)
-                .child("Loading the issue…")
-                .into_any_element();
+            return div().into_any_element();
         };
+        let t = theme(cx);
+        let marks = self.find.marks();
         let account = self.account(cx);
         let d = self.detail.clone();
         let rights = issue_rights(
@@ -811,7 +851,7 @@ impl Render for IssueView {
                                 .flex_wrap()
                                 .gap_x(px(6.))
                                 .text_size(rems(1.06))
-                                .font_weight(FontWeight::SEMIBOLD)
+                                .font_weight(t.semibold())
                                 .child(marks.text(("title", 0), i.title.clone(), cx))
                                 .child(
                                     div()
@@ -963,11 +1003,7 @@ impl Render for IssueView {
             });
 
         let mut page = div()
-            .mx_auto()
-            .max_w(px(900.))
-            .w_full()
-            .px(px(24.))
-            .py(px(20.))
+            .track_focus(&self.head_focus)
             .child(header)
             .child(actions)
             // Cached data stays on screen; a failed refresh (a rate limit, say) is noted under it.
@@ -1003,39 +1039,18 @@ impl Render for IssueView {
             };
             page = page.child(section("Description", None, &t).child(desc));
         }
-        if let Some(d) = d.as_ref().filter(|d| !d.thread.is_empty()) {
-            let mut s = section("Conversation", Some(d.thread.len().to_string().into()), &t);
-            for (n, c) in d.thread.iter().enumerate() {
-                let md = self.comment_view(d, n);
-                s =
-                    s.child(
-                        div()
-                            .px(px(12.))
-                            .py(px(10.))
-                            .border_b_1()
-                            .border_color(t.border)
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap(px(8.))
-                                    .text_size(rems(0.72))
-                                    .child(div().font_weight(FontWeight::SEMIBOLD).child(
-                                        marks.text(("comment-author", n), c.author.clone(), cx),
-                                    ))
-                                    .child(div().text_color(t.subtle).child(marks.text(
-                                        ("comment-time", n),
-                                        ago(&c.created_at),
-                                        cx,
-                                    ))),
-                            )
-                            .children(md.map(|md| div().mt(px(6.)).child(md))),
-                    );
-            }
-            page = page.child(s);
-        }
+        page.into_any_element()
+    }
+
+    /// The page's last item: the box to write a comment in.
+    fn composer(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = theme(cx);
+        let busy = self.busy.is_some();
+        let text = self.text(cx);
         let can_post = !text.is_empty() && !busy;
-        page = page.child(
-            section("Add a comment", None, &t).child(
+        section("Add a comment", None, &t)
+            .track_focus(&self.compose_focus)
+            .child(
                 div()
                     .p(px(8.))
                     .key_context("IssueComment")
@@ -1065,8 +1080,124 @@ impl Render for IssueView {
                                 .on_click(cx.listener(|this, _, _, cx| this.post(cx))),
                         ),
                     ),
-            ),
-        );
+            )
+            .into_any_element()
+    }
+
+    /// Comment `n`, as its item of the page's list: a slice of the Conversation section.
+    fn comment(&self, n: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(d) = self.detail.clone() else {
+            return div().into_any_element();
+        };
+        let Some(c) = d.thread.get(n) else {
+            return div().into_any_element();
+        };
+        let t = theme(cx);
+        let marks = self.find.marks();
+        let md = self.comment_view(&d, n);
+        let title = (n == 0).then(|| ("Conversation", Some(d.thread.len().to_string().into())));
+        section_part(title, n + 1 == d.thread.len(), &t)
+            .child(
+                div()
+                    .px(px(12.))
+                    .py(px(10.))
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(8.))
+                            .text_size(rems(0.72))
+                            .child(div().font_weight(t.semibold()).child(marks.text(
+                                ("comment-author", n),
+                                c.author.clone(),
+                                cx,
+                            )))
+                            .child(div().text_color(t.subtle).child(marks.text(
+                                ("comment-time", n),
+                                ago(&c.created_at),
+                                cx,
+                            ))),
+                    )
+                    .children(md.map(|md| div().mt(px(6.)).child(md))),
+            )
+            .into_any_element()
+    }
+
+    /// Item `ix` of the page's list: the issue, a comment each, then the box.
+    fn page_item(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let comments = self.detail.as_ref().map_or(0, |d| d.thread.len());
+        let item = match ix {
+            0 => self.head(cx),
+            n if n <= comments => self.comment(n - 1, cx),
+            _ => self.composer(cx),
+        };
+        // The page's column, centered in the list's width.
+        div()
+            .w_full()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .w_full()
+                    .max_w(px(900.))
+                    .px(px(24.))
+                    .when(ix == 0, |d| d.pt(px(20.)))
+                    .when(ix > comments, |d| d.pb(px(20.)))
+                    .child(item),
+            )
+            .into_any_element()
+    }
+}
+
+impl Render for IssueView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme(cx);
+        let (wakes, generation) = (Cache::wakes(cx), Cache::generation(cx));
+        // Another repo or account (a restored tab reads before its project opened): read again now.
+        let reset = generation != self.generation;
+        if wakes != self.wakes || reset {
+            self.wakes = wakes;
+            self.generation = generation;
+            let old = self.detail_at.is_none_or(|at| at.elapsed() > MIN_AGE);
+            if (reset || old || self.detail.is_none()) && !self.loading {
+                self.load(cx);
+            }
+        }
+        if std::mem::take(&mut self.comment_clear) {
+            self.comment.update(cx, |c, cx| c.set_value("", window, cx));
+        }
+        self.sync_items();
+        if self.text_stale {
+            self.sync_text(window, cx);
+        }
+        self.find.sync(self, cx);
+        // The first read failed (offline, GitHub down): the list's copy alone isn't the page.
+        if let (None, Some(e)) = (&self.detail, &self.detail_error) {
+            let retry = cx.listener(|this, _, _, cx| this.load(cx));
+            return div()
+                .id("issue")
+                .track_focus(&self.focus)
+                .size_full()
+                .child(load_failed("issue", e, self.loading, retry, &t, cx))
+                .into_any_element();
+        }
+        if self.item().is_none() {
+            return div()
+                .id("issue")
+                .track_focus(&self.focus)
+                .size_full()
+                .p(px(32.))
+                .text_center()
+                .text_size(rems(0.78))
+                .text_color(t.muted_foreground)
+                .child("Loading the issue…")
+                .into_any_element();
+        }
+        let weak = cx.weak_entity();
+        let page = list(self.page.clone(), move |ix, _, cx| {
+            weak.update(cx, |this, cx| this.page_item(ix, cx))
+                .unwrap_or_else(|_| div().into_any_element())
+        })
+        .size_full();
         div()
             .relative()
             .size_full()
@@ -1076,8 +1207,6 @@ impl Render for IssueView {
                     .id("issue")
                     .track_focus(&self.focus)
                     .size_full()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
                     .child(page),
             )
             .children(self.find.bar(cx))
@@ -1105,6 +1234,157 @@ mod tests {
     fn draw(cx: &mut VisualTestContext) {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();
+    }
+
+    /// Fills the page as a read would: `n` comments of a few paragraphs, a list and code.
+    fn fill_long(v: &mut IssueView, n: usize) {
+        let body = "A paragraph long enough to wrap once or twice at the page's width, about \
+                    what changed and why it matters for the issue.\n\n- one point\n- another \
+                    point\n\n```rust\nfn main() {\n    println!(\"hi\");\n}\n```\n";
+        v.detail = Some(Arc::new(IssueDetail {
+            issue: crate::ui::core_issue(&issue(1)),
+            body: "The body".into(),
+            thread: (0..n)
+                .map(|i| Comment {
+                    author: format!("user{i}"),
+                    body: format!("Comment {i}. {body}"),
+                    created_at: "2026-01-01T00:00:00Z".into(),
+                    review: None,
+                })
+                .collect(),
+            closed_by: None,
+        }));
+        v.detail_error = None;
+        v.detail_at = Some(Instant::now());
+        v.text_stale = true;
+    }
+
+    fn open_long(n: usize, cx: &mut TestAppContext) -> (Entity<IssueView>, &mut VisualTestContext) {
+        setup(cx);
+        let (host, cx) = cx.add_window_view(|window, cx| {
+            let ws = cx.new(Workspace::new);
+            Workspace::register_window(&ws, window, cx);
+            let i = issue(1);
+            let view =
+                cx.new(|cx| IssueView::new(ws.downgrade(), i.url.clone(), Some(i), window, cx));
+            Host(ws, view)
+        });
+        cx.run_until_parked();
+        let view = host.read_with(cx, |h, _| h.1.clone());
+        view.update(cx, |v, cx| {
+            fill_long(v, n);
+            cx.notify();
+        });
+        draw(cx);
+        draw(cx);
+        (view, cx)
+    }
+
+    /// Frame times on a long thread, scrolling top to bottom: `--run-ignored only`.
+    #[gpui_kit::test]
+    #[ignore = "a measurement, not a check"]
+    fn long_page_frame_times(cx: &mut TestAppContext) {
+        for n in [0, 300] {
+            let (view, cx) = open_long(n, cx);
+            let mut frames = vec![];
+            for _ in 0..60 {
+                view.update(cx, |v, cx| {
+                    v.page.scroll_by(px(400.));
+                    cx.notify();
+                });
+                let at = Instant::now();
+                draw(cx);
+                frames.push(at.elapsed());
+            }
+            frames.sort();
+            eprintln!(
+                "{n} comments: median {:?}, p90 {:?}, max {:?}",
+                frames[frames.len() / 2],
+                frames[frames.len() * 9 / 10],
+                frames[frames.len() - 1]
+            );
+        }
+    }
+
+    fn shown(view: &Entity<IssueView>, item: usize, cx: &mut VisualTestContext) -> bool {
+        view.read_with(cx, |v, _| {
+            let view = v.page.viewport_bounds();
+            v.page
+                .bounds_for_item(item)
+                .is_some_and(|b| b.intersects(&view))
+        })
+    }
+
+    #[gpui_kit::test]
+    fn a_long_thread_builds_only_what_is_in_view(cx: &mut TestAppContext) {
+        let (view, cx) = open_long(300, cx);
+        view.read_with(cx, |v, _| {
+            // The issue, 300 comments, the box; the last ones never built.
+            assert_eq!(v.page.item_count(), 302);
+            assert!(v.page.bounds_for_item(300).is_none());
+        });
+        // A comment read since goes in above the box.
+        view.update(cx, |v, cx| {
+            fill_long(v, 301);
+            cx.notify();
+        });
+        draw(cx);
+        assert_eq!(view.read_with(cx, |v, _| v.page.item_count()), 303);
+        view.update(cx, |v, cx| {
+            v.reveal_item(302);
+            cx.notify();
+        });
+        draw(cx);
+        assert!(shown(&view, 302, cx));
+    }
+
+    #[gpui_kit::test]
+    fn the_box_takes_keys_while_the_thread_is_scrolled_away(cx: &mut TestAppContext) {
+        let (view, cx) = open_long(300, cx);
+        let input = view.read_with(cx, |v, cx| v.comment.read(cx).input().clone());
+        view.update(cx, |v, cx| {
+            v.reveal_item(301);
+            cx.notify();
+        });
+        draw(cx);
+        cx.update(|window, cx| input.update(cx, |i, cx| i.focus(window, cx)));
+        draw(cx);
+        view.update(cx, |v, cx| {
+            v.page.scroll_to(gpui_kit::ListOffset::default());
+            cx.notify();
+        });
+        draw(cx);
+        assert!(!shown(&view, 301, cx));
+        cx.simulate_input("still here");
+        draw(cx);
+        assert_eq!(view.read_with(cx, |v, cx| v.text(cx)), "still here");
+    }
+
+    #[gpui_kit::test]
+    fn find_reaches_a_comment_far_down_a_long_thread(cx: &mut TestAppContext) {
+        let (view, cx) = open_long(300, cx);
+        view.update(cx, |v, cx| {
+            let d = Arc::get_mut(v.detail.as_mut().unwrap()).unwrap();
+            d.thread[250].body = "the needle is here".into();
+            d.thread[280].author = "needle-bot".into();
+            v.text_stale = true;
+            cx.notify();
+        });
+        draw(cx);
+        cx.update(|window, cx| view.update(cx, |v, cx| v.open_find(window, cx)));
+        cx.simulate_input("needle");
+        draw(cx);
+        draw(cx);
+        let finder = view.read_with(cx, |v, _| v.find.finder()).expect("open");
+        assert_eq!(finder.read_with(cx, |f, _| f.state().0), Some(0));
+        // The first: in comment 250's text, which its view scrolled to.
+        assert!(shown(&view, 251, cx));
+        // The next: comment 280's author, drawn as the list brought it in.
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        draw(cx);
+        assert!(shown(&view, 281, cx));
+        assert_eq!(finder.read_with(cx, |f, _| f.state()), (Some(1), 2, None));
     }
 
     #[gpui_kit::test]

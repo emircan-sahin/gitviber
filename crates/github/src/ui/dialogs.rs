@@ -6,9 +6,9 @@ use std::rc::Rc;
 use gitviber_core::api;
 use gitviber_core::github::Pull;
 use gitviber_review::model::agent::is_unknown_option;
-use gitviber_ui::Settings;
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{Toast, Workspace};
+use gitviber_ui::{AppTheme, Settings};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -17,10 +17,9 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
-    rems,
+    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::cache::Cache;
@@ -59,10 +58,10 @@ pub fn confirm(
     });
 }
 
-fn field_label(text: &'static str) -> impl IntoElement {
+fn field_label(text: &'static str, t: &AppTheme) -> impl IntoElement {
     div()
         .text_size(rems(0.72))
-        .font_weight(FontWeight::MEDIUM)
+        .font_weight(t.medium())
         .child(text)
 }
 
@@ -188,7 +187,7 @@ impl Render for ReviewDialog {
                             .child(
                                 div()
                                     .text_size(rems(0.75))
-                                    .font_weight(FontWeight::MEDIUM)
+                                    .font_weight(t.medium())
                                     .child(e.label()),
                             )
                             .child(
@@ -746,7 +745,7 @@ impl Render for CreatePullDialog {
                     .items_center()
                     .gap(px(8.))
                     .text_size(rems(0.75))
-                    .child(field_label("Base"))
+                    .child(field_label("Base", &t))
                     .child(Button::new("base").small().label(self.base.clone()).dropdown_caret(true).dropdown_menu(move |menu, _, _| {
                         let mut menu = menu;
                         for b in bases.clone() {
@@ -1032,7 +1031,7 @@ impl Render for AddRemoteDialog {
                          GitHub. Paste its URL (HTTPS or SSH).",
                     ),
             )
-            .child(field_label("URL for 'origin'"))
+            .child(field_label("URL for 'origin'", &t))
             .child(Input::new(&self.url))
             .when_some(self.error.clone(), |d, e| {
                 d.child(div().text_size(rems(0.72)).text_color(t.removed).child(e))

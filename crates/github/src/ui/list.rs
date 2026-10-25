@@ -10,10 +10,9 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Div, Entity, FocusHandle, FontWeight,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
-    prelude::FluentBuilder as _, px, rems,
+    AnyElement, App, AppContext as _, Context, Div, Entity, FocusHandle, InteractiveElement as _,
+    IntoElement, KeyDownEvent, ParentElement as _, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::logic::narrow::{Choice, Filter, ListKind, Narrow, Scope, compact_count, scopes_for};
@@ -210,7 +209,7 @@ pub fn filter_tabs<P: ListPanel>(
                 .rounded(px(3.))
                 .cursor_pointer()
                 .text_size(rems(0.72))
-                .font_weight(FontWeight::MEDIUM)
+                .font_weight(t.medium())
                 .when(on, |d| d.bg(t.active).text_color(t.foreground))
                 .when(!on, |d| {
                     d.text_color(t.subtle).hover(move |s| s.text_color(hover))

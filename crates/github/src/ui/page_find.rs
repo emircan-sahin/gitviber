@@ -730,9 +730,7 @@ mod tests {
     }
 
     fn init(cx: &mut TestAppContext) {
-        let dir = std::env::temp_dir().join(format!("gitviber-github-test-{}", std::process::id()));
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        gitviber_ui::test_support::config_dir("github-test");
         cx.update(gitviber_ui::init);
     }
 
