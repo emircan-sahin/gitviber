@@ -23,9 +23,7 @@ impl Render for Host {
 }
 
 fn setup(cx: &mut TestAppContext) {
-    let dir = std::env::temp_dir().join(format!("gitviber-files-test-{}", std::process::id()));
-    // SAFETY: the tests that read the config dir all point it at a temporary folder.
-    unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+    gitviber_ui::test_support::config_dir("files-test");
     cx.update(|cx| {
         gitviber_ui::init(cx);
         crate::init(cx);
@@ -38,7 +36,7 @@ fn closing_code_and_media_views_gives_their_entities_back(cx: &mut TestAppContex
     let text: String = (0..4000)
         .map(|i| format!("fn f{i}() -> u32 {{ {i} }}\n"))
         .collect();
-    let png = std::env::temp_dir().join(format!("gitviber-files-test-{}.png", std::process::id()));
+    let png = gitviber_ui::test_support::temp_dir("files-png").join("test.png");
     image::RgbaImage::from_pixel(64, 48, image::Rgba([200, 30, 30, 255]))
         .save(&png)
         .ok();
@@ -103,7 +101,7 @@ fn closing_code_and_media_views_gives_their_entities_back(cx: &mut TestAppContex
 #[gpui_kit::test]
 fn a_large_image_opened_and_closed_again_and_again_keeps_nothing(cx: &mut TestAppContext) {
     setup(cx);
-    let png = std::env::temp_dir().join(format!("gitviber-files-big-{}.png", std::process::id()));
+    let png = gitviber_ui::test_support::temp_dir("files-png").join("big.png");
     image::RgbaImage::from_fn(3000, 2000, |x, y| {
         image::Rgba([(x % 251) as u8, (y % 241) as u8, 90, 255])
     })
@@ -634,9 +632,7 @@ fn copy_github_link_takes_the_picked_lines_or_the_file(cx: &mut TestAppContext) 
 #[gpui_kit::test]
 fn find_in_the_rendered_markdown_preview(cx: &mut TestAppContext) {
     setup(cx);
-    let repo = std::env::temp_dir().join(format!("gitviber-files-mdfind-{}", std::process::id()));
-    _ = std::fs::remove_dir_all(&repo);
-    std::fs::create_dir_all(&repo).unwrap();
+    let repo = gitviber_ui::test_support::temp_dir("files-mdfind");
     std::fs::write(
         repo.join("README.md"),
         "# Foo\n\nfoo and **foo**, then a food.\n",
@@ -781,10 +777,7 @@ impl Render for PanelHost {
 #[gpui_kit::test]
 fn search_panel_keys_move_through_results_and_back(cx: &mut TestAppContext) {
     setup(cx);
-    let repo =
-        std::env::temp_dir().join(format!("gitviber-files-searchkeys-{}", std::process::id()));
-    _ = std::fs::remove_dir_all(&repo);
-    std::fs::create_dir_all(&repo).unwrap();
+    let repo = gitviber_ui::test_support::temp_dir("files-searchkeys");
     std::fs::write(repo.join("a.txt"), "foo one\nbar\nfoo two\n").unwrap();
     std::fs::write(repo.join("b.txt"), "foo three\n").unwrap();
     let git = |args: &[&str]| {
@@ -1280,4 +1273,56 @@ fn blocks_between_lines_take_rows_the_caret_steps_over(cx: &mut TestAppContext) 
     });
     cx.run_until_parked();
     cx.update(|_, cx| cx.assert_no_new_leaks(&snapshot));
+}
+
+/// Before a block is measured, its rows count in the editor's own rows, which are whole pixels
+/// (13.5 px at 1.6 lays out 22 px rows, not 21.6): a block two rows tall takes two, not three.
+#[gpui_kit::test]
+fn a_blocks_first_rows_are_the_editors_whole_pixel_rows(cx: &mut TestAppContext) {
+    use crate::code::CodeBlock;
+    use gitviber_ui::ActiveAppTheme as _;
+
+    setup(cx);
+    let text: String = (1..=10).map(|i| format!("line {i}\n")).collect();
+    let (host, cx) = cx.add_window_view(|_, _| Host(None));
+    let view = cx.update(|window, cx| {
+        let source = CodeSource {
+            path: "src/lib.rs".into(),
+            root: None,
+        };
+        let view = cx.new(|cx| {
+            CodeView::new(
+                gpui_kit::WeakEntity::<Workspace>::new_invalid(),
+                source,
+                text,
+                None,
+                vec![],
+                false,
+                window,
+                cx,
+            )
+        });
+        host.update(cx, |h, cx| {
+            h.0 = Some(view.clone().into());
+            cx.notify();
+        });
+        view
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    let (lh, unrounded) = cx.update(|_, cx| {
+        let t = cx.app_theme();
+        let lh = view.read(cx).state().read(cx).line_height().unwrap();
+        (lh, t.fonts.code_size * t.fonts.code_line_height)
+    });
+    assert_ne!(
+        lh, unrounded,
+        "the settings' line height is a fraction of a pixel"
+    );
+    let gap = cx.update(|_, cx| {
+        let block = CodeBlock::new("a", 3, lh * 2., |_, _| gpui_kit::div().into_any_element());
+        view.update(cx, |v, cx| v.set_blocks(vec![block], cx));
+        view.read(cx).state().read(cx).display_map().gap_rows(2)
+    });
+    assert_eq!(gap, 2);
 }

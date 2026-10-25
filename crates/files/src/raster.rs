@@ -171,7 +171,9 @@ impl ImagePreview {
     fn drop_images(&mut self, cx: &mut App) {
         self.player = None;
         for d in [self.base.take(), self.crop.take()].into_iter().flatten() {
-            cx.drop_image(d.image, None);
+            // Dropped once this update is over: the window it runs in is out of the app's list
+            // until then, and would keep the picture.
+            cx.defer(move |cx| cx.drop_image(d.image, None));
         }
     }
 
@@ -179,7 +181,7 @@ impl ImagePreview {
         let Some(p) = self.probe else { return };
         let part = [0., 0., p.size.0 as f32, p.size.1 as f32];
         if let Some(old) = self.base.replace(Drawn { image, part }) {
-            cx.drop_image(old.image, None);
+            cx.defer(move |cx| cx.drop_image(old.image, None));
         }
         cx.notify();
     }
@@ -253,7 +255,7 @@ impl ImagePreview {
             });
         let Some(crop) = crop else {
             if let Some(old) = self.crop.take() {
-                cx.drop_image(old.image, None);
+                cx.defer(move |cx| cx.drop_image(old.image, None));
             }
             self.asked = None;
             self._crop = Task::ready(());
@@ -276,7 +278,7 @@ impl ImagePreview {
                 if let Ok(image) = drawn {
                     let part = crop.part;
                     if let Some(old) = this.crop.replace(Drawn { image, part }) {
-                        cx.drop_image(old.image, None);
+                        cx.defer(move |cx| cx.drop_image(old.image, None));
                     }
                     cx.notify();
                 }
@@ -373,8 +375,7 @@ mod tests {
 
     /// A `w` × `h` PNG, red on its left half and blue on its right, in a temporary file.
     pub(crate) fn halves(name: &str, w: u32, h: u32) -> PathBuf {
-        let path =
-            std::env::temp_dir().join(format!("gitviber-files-{name}-{}.png", std::process::id()));
+        let path = gitviber_ui::test_support::temp_dir("files-png").join(format!("{name}.png"));
         image::RgbaImage::from_fn(w, h, |x, _| {
             image::Rgba(if x < w / 2 {
                 [255, 0, 0, 255]
@@ -409,12 +410,9 @@ mod tests {
     #[gpui_kit::test]
     fn an_animation_plays_only_while_shown(cx: &mut TestAppContext) {
         use image::codecs::gif::GifEncoder;
-        let dir = std::env::temp_dir().join(format!("gitviber-files-test-{}", std::process::id()));
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        gitviber_ui::test_support::config_dir("files-test");
         cx.update(gitviber_ui::init);
-        let path =
-            std::env::temp_dir().join(format!("gitviber-files-anim-{}.gif", std::process::id()));
+        let path = gitviber_ui::test_support::temp_dir("files-png").join("anim.gif");
         {
             let mut enc = GifEncoder::new(std::fs::File::create(&path).unwrap());
             for c in [[255, 0, 0, 255], [0, 0, 255, 255]] {
@@ -482,9 +480,7 @@ mod tests {
     /// ⌘= / ⌘− / ⌘0 zoom the picture where focus is on it, not the window.
     #[gpui_kit::test]
     fn the_window_zoom_keys_zoom_the_picture(cx: &mut TestAppContext) {
-        let dir = std::env::temp_dir().join(format!("gitviber-files-test-{}", std::process::id()));
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        gitviber_ui::test_support::config_dir("files-test");
         cx.update(gitviber_ui::init);
         let path = halves("keys", 1600, 1200);
         let (host, cx) = cx.add_window_view(|_, _| Host(None));
@@ -518,9 +514,7 @@ mod tests {
 
     #[gpui_kit::test]
     fn held_at_the_size_shown_and_drawn_crisp_zoomed_in(cx: &mut TestAppContext) {
-        let dir = std::env::temp_dir().join(format!("gitviber-files-test-{}", std::process::id()));
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        gitviber_ui::test_support::config_dir("files-test");
         cx.update(gitviber_ui::init);
         let path = halves("zoom", 1600, 1200);
         let (host, cx) = cx.add_window_view(|_, _| Host(None));
@@ -562,7 +556,10 @@ mod tests {
         });
         assert!(left.abs() < 0.01, "{left}");
 
-        // A double-click fits again and gives the crop back.
+        // A double-click fits again and gives the crop back, out of the window's atlas too: it
+        // goes while the window draws.
+        let crop = view.read_with(cx, |v, _| v.crop.as_ref().unwrap().image.clone());
+        assert!(cx.update(|window, _| window.has_image_atlas_entry(&crop)));
         let middle = cx.update(|_, cx| {
             let b = view.read(cx).z.stage.get();
             b.origin + point(b.size.width / 2., b.size.height / 2.)
@@ -577,6 +574,8 @@ mod tests {
         settle(cx);
         assert_eq!(view.read_with(cx, |v, _| v.z.zoom), FIT);
         assert!(view.read_with(cx, |v, _| v.crop.is_none()));
+        assert!(!cx.update(|window, _| window.has_image_atlas_entry(&crop)));
+        drop(crop);
 
         host.update(cx, |h, cx| {
             h.0 = None;

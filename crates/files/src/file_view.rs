@@ -260,7 +260,7 @@ impl FileView {
                 let toast = match link {
                     Ok(p) => {
                         let url =
-                            crate::explorer::permalink_url(&web, &p.sha, &path, p.tree, p.lines);
+                            gitviber_diff::permalink_url(&web, &p.sha, &path, p.tree, p.lines);
                         if open {
                             cx.open_url(&url);
                             return;

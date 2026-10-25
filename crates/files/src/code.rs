@@ -564,7 +564,9 @@ impl CodeView {
     /// in the order given.
     pub fn set_blocks(&mut self, blocks: Vec<CodeBlock>, cx: &mut Context<Self>) {
         let t = cx.app_theme();
-        let line_height = t.fonts.code_size * t.fonts.code_line_height;
+        // The editor's rows are whole pixels: unrounded, a block could take a row more than it
+        // measures to, and overlap for a frame until it's measured.
+        let line_height = (t.fonts.code_size * t.fonts.code_line_height).round();
         let blocks = blocks
             .into_iter()
             .map(|b| LineBlock {
@@ -1611,6 +1613,7 @@ impl Render for CodeView {
                                     .bordered(false)
                                     .appearance(false)
                                     .font_family(t.fonts.code.clone())
+                                    .font_weight(t.fonts.code_weight)
                                     // Settings → ligatures: off, `->` and `!=` draw as their characters.
                                     .font_features(if ligatures {
                                         gpui_kit::FontFeatures::default()

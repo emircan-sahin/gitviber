@@ -263,7 +263,9 @@ impl SvgPreview {
 
     fn drop_image(&mut self, cx: &mut App) {
         if let Some(d) = self.drawn.take() {
-            cx.drop_image(d.image, None);
+            // Dropped once this update is over: the window it runs in is out of the app's list
+            // until then, and would keep the picture.
+            cx.defer(move |cx| cx.drop_image(d.image, None));
         }
     }
 
@@ -409,9 +411,7 @@ mod tests {
 
     #[gpui_kit::test]
     fn the_part_on_screen_is_drawn_and_given_back(cx: &mut gpui_kit::TestAppContext) {
-        let dir = std::env::temp_dir().join(format!("gitviber-files-test-{}", std::process::id()));
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        gitviber_ui::test_support::config_dir("files-test");
         cx.update(gitviber_ui::init);
         let (host, cx) = cx.add_window_view(|_, _| Host(None));
         let snapshot = cx.update(|_, cx| cx.leak_detector_snapshot());
