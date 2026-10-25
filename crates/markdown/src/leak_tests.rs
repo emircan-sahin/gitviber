@@ -159,6 +159,7 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
 static ALLOC: Counting = Counting;
 
 /// A paragraph per line, `i` in each so no two documents are the same text.
+#[cfg(target_os = "macos")]
 fn prose(i: usize) -> String {
     (0..12)
         .map(|p| format!("Paragraph {p} of document {i}, with **bold** and `code {i}` in it.\n\n"))

@@ -1338,6 +1338,7 @@ impl ExplorerPanel {
     ) -> PopupMenu {
         let targets = self.targets(node.as_ref());
         let multi = targets.len() > 1;
+        #[cfg(target_os = "macos")]
         let files: Vec<Node> = targets.iter().filter(|n| !n.is_dir).cloned().collect();
         let me = cx.weak_entity();
         let item = |label: &str, f: MenuAction| menu_item(&me, label, f);

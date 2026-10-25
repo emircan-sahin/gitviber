@@ -8,7 +8,9 @@ use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::FileIcon;
 use gpui_kit::component::Sizable as _;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::Button;
+#[cfg(target_os = "macos")]
+use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::{
     AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Styled as _, Window, div, px,

@@ -65,6 +65,8 @@ jobs:
         run: |
           curl -fsSL -o "$RUNNER_TEMP/$NEXTEST" "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.148/$NEXTEST"
           echo "$NEXTEST_SHA256  $RUNNER_TEMP/$NEXTEST" | shasum -a 256 -c -
+          # A runner image can come without the folder (rustup elsewhere).
+          mkdir -p "$HOME/.cargo/bin"
           tar -xzf "$RUNNER_TEMP/$NEXTEST" -C "$HOME/.cargo/bin"
           cargo nextest --version
 
