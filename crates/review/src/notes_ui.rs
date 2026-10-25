@@ -14,10 +14,10 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
-    rems,
+    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, Font, IndentAdjustment,
+    InteractiveElement as _, IntoElement, LineFragment, ParentElement as _, Pixels, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity,
+    Window, div, font, prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::model::notes::{
@@ -116,11 +116,7 @@ impl DiffNotes {
         };
         cx.defer(move |cx| {
             let _ = window.update(cx, |_, window, cx| {
-                let input = cx.new(|cx| {
-                    TextareaState::new(window, cx)
-                        .rows(3)
-                        .placeholder("Review note… (⌘↵ to add, Esc to cancel)")
-                });
+                let input = cx.new(|cx| note_input(window, cx));
                 input.update(cx, |i, cx| i.focus(window, cx));
                 let _ = this.update(cx, |this, cx| {
                     let events =
@@ -232,7 +228,8 @@ impl DiffNotes {
                     side,
                     line: p.end as u32,
                 };
-                Annotation::new(note.id.clone(), pos, px(64.), move |_, _| {
+                let height = note_card_height(&note, &t, cx);
+                Annotation::new(note.id.clone(), pos, height, move |_, _| {
                     note_card(&note, &root, &t)
                 })
             })
@@ -268,9 +265,12 @@ impl DiffNotes {
             let on_add: OnNote = Rc::new(move |cx| {
                 let _ = add.update(cx, |this, cx| this.submit(cx));
             });
-            out.push(Annotation::new("draft", pos, px(120.), move |_, _| {
-                composer(&label, &input, on_cancel.clone(), on_add.clone(), &t)
-            }));
+            out.push(Annotation::new(
+                "draft",
+                pos,
+                COMPOSER_HEIGHT,
+                move |_, _| composer(&label, &input, on_cancel.clone(), on_add.clone(), &t),
+            ));
         }
         self.drawn = true;
         diff.update(cx, |d, cx| d.set_annotations(out, cx));
@@ -280,6 +280,44 @@ impl DiffNotes {
 fn card_button(id: SharedString, icon: IconName, tip: &'static str) -> Button {
     Button::new(id).ghost().xsmall().icon(icon).tooltip(tip)
 }
+
+/// A card's and a composer's text, set on them rather than taken from the view they're drawn
+/// in (a code view's line height), so the heights below are the ones they draw at.
+const NOTE_TEXT: Pixels = px(12.);
+pub(crate) const NOTE_LINE: Pixels = px(18.);
+/// As wide as a card or a composer gets.
+const NOTE_W: Pixels = px(760.);
+
+/// A card's height before it's drawn. The code editor and the diff measure a block only once
+/// it's on screen and hold its rows from this till then: short, it draws over the next lines
+/// and moves them when measured. Padding and border, the header (an xsmall button's 24px),
+/// and the body's lines wrapped at the card's widest; a narrower view's measure corrects it.
+pub(crate) fn note_card_height(note: &ReviewNote, t: &AppTheme, cx: &App) -> Pixels {
+    let font = Font {
+        weight: t.fonts.ui_weight,
+        ..font(t.fonts.ui.clone())
+    };
+    let mut wrapper = cx.text_system().line_wrapper(font, NOTE_TEXT);
+    // Inside its border and the body's padding.
+    let width = NOTE_W - px(2. + 20.);
+    let lines: usize = note
+        .body
+        .lines()
+        .map(|l| {
+            let fragments = [LineFragment::text(l)];
+            1 + wrapper
+                .wrap_line(&fragments, width, IndentAdjustment::NoIndent)
+                .count()
+        })
+        .sum();
+    px(4. * 2. + 2. + 4. + 24. + 8.) + NOTE_LINE * lines.max(1) as f32
+}
+
+/// An empty composer's height, as [`note_card_height`] is a card's: padding and border, the
+/// label, the small box's three 20px rows with its own padding and border, the small buttons
+/// (28px). Typing grows it once it's drawn, and the measure follows.
+pub(crate) const COMPOSER_HEIGHT: Pixels =
+    px(4. * 2. + 2. + 8. * 2. + 18. + 6. + (3. * 20. + 6.) + 6. + 28.);
 
 /// A note as it shows under its lines.
 pub(crate) fn note_card(note: &ReviewNote, root: &str, t: &AppTheme) -> AnyElement {
@@ -293,14 +331,16 @@ pub(crate) fn note_card(note: &ReviewNote, root: &str, t: &AppTheme) -> AnyEleme
         .py(px(4.))
         .child(
             div()
-                .max_w(px(760.))
+                .max_w(NOTE_W)
                 .rounded(px(6.))
                 .border_1()
                 .border_color(t.border_strong)
                 .bg(t.panel)
                 .text_color(t.foreground)
                 .font_family(t.fonts.ui.clone())
-                .text_size(rems(0.75))
+                .font_weight(t.fonts.ui_weight)
+                .text_size(NOTE_TEXT)
+                .line_height(NOTE_LINE)
                 .child(
                     div()
                         .flex()
@@ -353,6 +393,13 @@ pub(crate) fn note_card(note: &ReviewNote, root: &str, t: &AppTheme) -> AnyEleme
         .into_any_element()
 }
 
+/// A composer's box: three rows, growing with what's typed up to twelve.
+pub(crate) fn note_input(window: &mut Window, cx: &mut Context<TextareaState>) -> TextareaState {
+    TextareaState::new(window, cx)
+        .auto_grow(3, 12)
+        .placeholder("Review note… (⌘↵ to add, Esc to cancel)")
+}
+
 /// What a composer's buttons (and Esc) do.
 pub(crate) type OnNote = Rc<dyn Fn(&mut App)>;
 
@@ -380,7 +427,7 @@ pub(crate) fn composer(
         .on_action(move |_: &gitviber_ui::actions::editor::GoToDefinition, _, cx| defined(cx))
         .child(
             div()
-                .max_w(px(760.))
+                .max_w(NOTE_W)
                 .p(px(8.))
                 .flex()
                 .flex_col()
@@ -390,7 +437,9 @@ pub(crate) fn composer(
                 .border_color(t.border_strong)
                 .bg(t.panel)
                 .font_family(t.fonts.ui.clone())
-                .text_size(rems(0.75))
+                .font_weight(t.fonts.ui_weight)
+                .text_size(NOTE_TEXT)
+                .line_height(NOTE_LINE)
                 .child(
                     div()
                         .text_color(t.muted_foreground)

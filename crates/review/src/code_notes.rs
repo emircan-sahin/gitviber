@@ -10,11 +10,11 @@ use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::Toast;
 use gpui_kit::component::input::{InputEvent, RopeExt as _, TextareaState};
-use gpui_kit::{App, AppContext as _, Context, Entity, EntityId, Subscription, WeakEntity, px};
+use gpui_kit::{App, AppContext as _, Context, Entity, EntityId, Subscription, WeakEntity};
 
 use crate::model::notes::{Anchor, ReviewNote, anchor_at, find_note, is_live, note_lines};
 use crate::note_store::ReviewNotes;
-use crate::notes_ui::{OnNote, composer, note_card};
+use crate::notes_ui::{COMPOSER_HEIGHT, OnNote, composer, note_card, note_card_height, note_input};
 
 /// The composer's block id; notes' blocks go by their own.
 const DRAFT: &str = "draft";
@@ -134,11 +134,7 @@ impl CodeNotes {
         let this = cx.weak_entity();
         cx.defer(move |cx| {
             _ = window.update(cx, |_, window, cx| {
-                let input = cx.new(|cx| {
-                    TextareaState::new(window, cx)
-                        .rows(3)
-                        .placeholder("Review note… (⌘↵ to add, Esc to cancel)")
-                });
+                let input = cx.new(|cx| note_input(window, cx));
                 input.update(cx, |i, cx| i.focus(window, cx));
                 _ = this.update(cx, |this, cx| {
                     let events =
@@ -299,14 +295,18 @@ impl CodeNotes {
         if next == self.shown {
             return;
         }
+        let t = cx.app_theme();
         let mut blocks: Vec<CodeBlock> = next
             .notes
             .iter()
             .map(|(n, line)| {
                 let (note, root) = (n.clone(), root.clone());
-                CodeBlock::new(n.id.clone(), *line, px(64.), move |_, cx| {
-                    note_card(&note, &root, cx.app_theme())
-                })
+                CodeBlock::new(
+                    n.id.clone(),
+                    *line,
+                    note_card_height(n, t, cx),
+                    move |_, cx| note_card(&note, &root, cx.app_theme()),
+                )
             })
             .collect();
         if let (Some(d), Some((line, label, _))) = (&self.draft, &next.draft) {
@@ -318,15 +318,20 @@ impl CodeNotes {
             let on_add: OnNote = Rc::new(move |cx| {
                 _ = add.update(cx, |this, cx| this.submit(cx));
             });
-            blocks.push(CodeBlock::new(DRAFT, *line, px(120.), move |_, cx| {
-                composer(
-                    &label,
-                    &input,
-                    on_cancel.clone(),
-                    on_add.clone(),
-                    cx.app_theme(),
-                )
-            }));
+            blocks.push(CodeBlock::new(
+                DRAFT,
+                *line,
+                COMPOSER_HEIGHT,
+                move |_, cx| {
+                    composer(
+                        &label,
+                        &input,
+                        on_cancel.clone(),
+                        on_add.clone(),
+                        cx.app_theme(),
+                    )
+                },
+            ));
         }
         self.shown = next;
         code.update(cx, |c, cx| c.set_blocks(blocks, cx));

@@ -10,14 +10,14 @@ use gitviber_core::api;
 use gitviber_diff::{Annotation, DiffSource, LinePos, LineRange, Side};
 use gitviber_ui::ActiveAppTheme as _;
 use gpui_kit::component::input::{InputEvent, TextareaState};
-use gpui_kit::{AppContext as _, Context, Entity, Subscription, Task, Window, px};
+use gpui_kit::{AppContext as _, Context, Entity, Subscription, Task, Window};
 
 use super::GuideView;
 use crate::model::notes::{
     Anchor, ReviewNote, Shown, anchor_at, find_note, note_lines, place_notes,
 };
 use crate::note_store::ReviewNotes;
-use crate::notes_ui::{OnNote, composer, note_card};
+use crate::notes_ui::{COMPOSER_HEIGHT, OnNote, composer, note_card, note_card_height, note_input};
 
 /// A file's two sides, as lines; None for a side it doesn't have.
 type Sides = (Option<Vec<String>>, Option<Vec<String>>);
@@ -125,11 +125,7 @@ impl GuideView {
         let end = (range.end as usize).min(lines.len()).max(1);
         let start = (range.start as usize).clamp(1, end);
         let anchor = anchor_at(lines, start, end);
-        let input = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .rows(3)
-                .placeholder("Review note… (⌘↵ to add, Esc to cancel)")
-        });
+        let input = cx.new(|cx| note_input(window, cx));
         input.update(cx, |i, cx| i.focus(window, cx));
         let events = cx.subscribe(&input, |this: &mut Self, _, e: &InputEvent, cx| {
             if let InputEvent::PressEnter {
@@ -254,7 +250,8 @@ impl GuideView {
                     side,
                     line: p.end as u32,
                 };
-                Annotation::new(format!("note-{}", note.id), pos, px(64.), move |_, _| {
+                let height = note_card_height(&note, &t, cx);
+                Annotation::new(format!("note-{}", note.id), pos, height, move |_, _| {
                     note_card(&note, &root, &t)
                 })
             })
@@ -289,9 +286,12 @@ impl GuideView {
                 side: d.side,
                 line: end as u32,
             };
-            out.push(Annotation::new("note-draft", pos, px(120.), move |_, _| {
-                composer(&label, &input, on_cancel.clone(), on_add.clone(), &t)
-            }));
+            out.push(Annotation::new(
+                "note-draft",
+                pos,
+                COMPOSER_HEIGHT,
+                move |_, _| composer(&label, &input, on_cancel.clone(), on_add.clone(), &t),
+            ));
         }
         out
     }
