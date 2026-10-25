@@ -82,6 +82,8 @@ pub struct ChangeTab {
     edit_pending: bool,
     /// The review notes on the diff's lines (a local diff's).
     _notes: Option<Entity<gitviber_review::DiffNotes>>,
+    /// The same for Open All of the working tree or a branch: notes on any of its files.
+    _stacked_notes: Option<Entity<gitviber_review::StackedNotes>>,
     _subscriptions: Vec<Subscription>,
     _load: Task<()>,
     _keep: Task<()>,
@@ -145,6 +147,7 @@ impl ChangeTab {
             root: None,
             edit_pending: false,
             _notes: None,
+            _stacked_notes: None,
             _subscriptions: subscriptions,
             _load: Task::ready(()),
             _keep: Task::ready(()),
@@ -186,6 +189,18 @@ impl ChangeTab {
             )
         {
             self._notes = Some(gitviber_review::attach_notes(view, None, cx));
+        }
+        // On disk only: a commit's Open All has no notes store for its revision yet.
+        if let Body::Stacked(view) = &self.body
+            && matches!(
+                self.sel,
+                Selection::Changes {
+                    of: ChangesOf::Unstaged | ChangesOf::Staged | ChangesOf::Branch,
+                    ..
+                }
+            )
+        {
+            self._stacked_notes = Some(gitviber_review::attach_stacked_notes(view, cx));
         }
         if let (Some(root), Some(path), Body::Diff(view)) =
             (&self.root, self.sel.edit_path(), &self.body)
