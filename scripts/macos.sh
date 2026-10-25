@@ -1,33 +1,51 @@
 #!/bin/bash
 # The macOS release, step by step, so release.yml can compile with no secret in reach and sign
-# after. Everything lands in target/dist/macos/.
+# after. One app per architecture, ARCH aarch64 (Apple Silicon) or x64 (Intel), named as Tauri
+# named them; left out, it's this Mac's. Everything lands in target/dist/macos/.
 #
 #   scripts/macos.sh build [--host] [--profile P] [--features F]
-#                              the app for both architectures, joined with lipo (--host: this
+#                              the app for both architectures, <ARCH>/gitviber (--host: this
 #                              Mac's only, for a quick local bundle); profile release by default
-#   scripts/macos.sh app       GitViber.app around it: Info.plist, icons, the `gitviber` command
-#   scripts/macos.sh sign      codesign with the hardened runtime as $APPLE_SIGNING_IDENTITY,
+#   scripts/macos.sh app [ARCH]
+#                              <ARCH>/GitViber.app around it: Info.plist, icons, the `gitviber`
+#                              command
+#   scripts/macos.sh sign [ARCH]
+#                              codesign with the hardened runtime as $APPLE_SIGNING_IDENTITY,
 #                              ad hoc ("-") when unset
 #   scripts/macos.sh notarize <file>
 #                              notarytool, then staples the ticket: an App Store Connect API key
 #                              ($APPLE_API_KEY, $APPLE_API_ISSUER, $APPLE_API_KEY_PATH) or an Apple
 #                              ID ($APPLE_ID, $APPLE_PASSWORD, $APPLE_TEAM_ID)
-#   scripts/macos.sh dmg       GitViber_<version>_universal.dmg, signed like the app
-#   scripts/macos.sh updater   GitViber_<version>_universal.app.tar.gz, what the updater installs
+#   scripts/macos.sh dmg [ARCH]
+#                              GitViber_<version>_<ARCH>.dmg, signed like the app
+#   scripts/macos.sh updater [ARCH]
+#                              GitViber_<version>_<ARCH>.app.tar.gz, what the updater installs
 #                              (signed after with examples/sign.rs)
 #
-# Locally: scripts/macos.sh build && scripts/macos.sh app && scripts/macos.sh sign gives an ad hoc
-# signed app; never sign with your own identity here, the release does that.
+# Locally: scripts/macos.sh build --host && scripts/macos.sh app && scripts/macos.sh sign gives an
+# ad hoc signed app; never sign with your own identity here, the release does that.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 OUT=target/dist/macos
-APP="$OUT/GitViber.app"
 IDENTIFIER=app.gitviber.desktop
 version() { sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml; }
 die() {
   echo "macos.sh: $*" >&2
   exit 1
+}
+# The file names' architecture for a Rust target, and lipo's for a file name's.
+arch_of() { case $1 in aarch64-*) echo aarch64 ;; x86_64-*) echo x64 ;; *) die "no architecture for $1" ;; esac; }
+lipo_arch() { case $1 in aarch64) echo arm64 ;; x64) echo x86_64 ;; esac; }
+
+# use [ARCH]: sets ARCH, this Mac's when left out, and APP, its bundle.
+use() {
+  ARCH=${1:-}
+  if [ -z "$ARCH" ]; then
+    case $(uname -m) in arm64) ARCH=aarch64 ;; x86_64) ARCH=x64 ;; *) die "no build for $(uname -m)" ;; esac
+  fi
+  case $ARCH in aarch64 | x64) ;; *) die "unknown architecture $ARCH: aarch64 or x64" ;; esac
+  APP="$OUT/$ARCH/GitViber.app"
 }
 
 build() {
@@ -43,7 +61,7 @@ build() {
     esac
     shift
   done
-  local bins=() dir=$profile
+  local dir=$profile bin arch
   [ "$profile" = dev ] && dir=debug
   # The oldest macOS the bundle runs on (LSMinimumSystemVersion), as the Tauri build set it.
   export MACOSX_DEPLOYMENT_TARGET=13.0
@@ -51,24 +69,29 @@ build() {
     # This Mac's own architecture builds where a plain `cargo build` does, so one is reused.
     if [ "$target" = "$host" ]; then
       cargo build -p gitviber --locked --profile "$profile" ${features[@]+"${features[@]}"}
-      bins+=("target/$dir/gitviber")
+      bin=target/$dir/gitviber
     else
       cargo build -p gitviber --locked --profile "$profile" --target "$target" ${features[@]+"${features[@]}"}
-      bins+=("target/$target/$dir/gitviber")
+      bin=target/$target/$dir/gitviber
     fi
+    arch=$(arch_of "$target")
+    mkdir -p "$OUT/$arch"
+    cp "$bin" "$OUT/$arch/gitviber"
+    lipo -info "$OUT/$arch/gitviber"
   done
-  mkdir -p "$OUT"
-  lipo -create -output "$OUT/gitviber" "${bins[@]}"
-  lipo -info "$OUT/gitviber"
 }
 
 app() {
-  [ -f "$OUT/gitviber" ] || die "no binary; run scripts/macos.sh build first"
+  local bin="$OUT/$ARCH/gitviber"
+  [ -f "$bin" ] || die "no $bin; run scripts/macos.sh build first"
+  # Installed copies pick their update by the file name, so another architecture's binary under
+  # this one would reach every Mac of this kind as an app that can't open.
+  [ "$(lipo -archs "$bin")" = "$(lipo_arch "$ARCH")" ] || die "$bin is $(lipo -archs "$bin"), not $ARCH"
   rm -rf "$APP"
   mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin"
   sed "s/@VERSION@/$(version)/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
   plutil -lint -s "$APP/Contents/Info.plist"
-  cp "$OUT/gitviber" "$APP/Contents/MacOS/gitviber"
+  cp "$bin" "$APP/Contents/MacOS/gitviber"
   cp packaging/icons/icon.icns packaging/icons/Assets.car "$APP/Contents/Resources/"
   # The `gitviber` command: crates/core/src/cli.rs links it onto PATH, Homebrew's cask too.
   cp packaging/macos/gitviber "$APP/Contents/Resources/bin/gitviber"
@@ -114,7 +137,7 @@ notarize() {
 
 dmg() {
   [ -d "$APP" ] || die "no app; run scripts/macos.sh app first"
-  local dmg="$OUT/GitViber_$(version)_universal.dmg" stage="$OUT/dmg"
+  local dmg="$OUT/GitViber_$(version)_$ARCH.dmg" stage="$OUT/$ARCH/dmg"
   rm -rf "$stage" "$dmg"
   mkdir -p "$stage"
   # ditto keeps the signature's extended attributes and the stapled ticket.
@@ -131,10 +154,10 @@ dmg() {
 
 updater() {
   [ -d "$APP" ] || die "no app; run scripts/macos.sh app first"
-  local archive="$OUT/GitViber_$(version)_universal.app.tar.gz"
+  local archive="$OUT/GitViber_$(version)_$ARCH.app.tar.gz"
   # One folder, GitViber.app, at the root: Tauri's updater drops the first path component, ours
   # expects one bundle. No AppleDouble files or extended attributes, which neither unpacks.
-  COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata -czf "$archive" -C "$OUT" GitViber.app
+  COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata -czf "$archive" -C "$OUT/$ARCH" GitViber.app
   echo "$archive"
 }
 
@@ -142,10 +165,10 @@ command=${1:-}
 [ $# -gt 0 ] && shift
 case $command in
   build) build "$@" ;;
-  app) app ;;
-  sign) sign ;;
+  app | sign | dmg | updater)
+    use "$@"
+    "$command"
+    ;;
   notarize) notarize "$@" ;;
-  dmg) dmg ;;
-  updater) updater ;;
-  *) die "usage: scripts/macos.sh build|app|sign|notarize <file>|dmg|updater" ;;
+  *) die "usage: scripts/macos.sh build | app|sign|dmg|updater [aarch64|x64] | notarize <file>" ;;
 esac

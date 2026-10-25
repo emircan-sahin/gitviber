@@ -171,14 +171,16 @@ you are ([the list](docs/SHORTCUTS.md)).
 
 ## Install
 
-**macOS 13 or later**, signed and notarized, one app for Apple Silicon and Intel:
+**macOS 13 or later**, signed and notarized, for Apple Silicon and Intel:
 
 ```sh
 brew install --cask emircan-sahin/tap/gitviber
 ```
 
-Or grab `GitViber_<version>_universal.dmg` (56.5 MB) from [Releases](https://github.com/emircan-sahin/gitviber/releases/latest).
-The app takes 170 MB on disk: one binary with the code for both, about half of it each.
+Or grab the `.dmg` for your Mac from [Releases](https://github.com/emircan-sahin/gitviber/releases/latest):
+`GitViber_<version>_aarch64.dmg` for Apple Silicon, `GitViber_<version>_x64.dmg` for Intel (about
+28 MB each; Apple menu → About This Mac says which chip you have). The app takes about 85 MB on
+disk. Homebrew and the updater pick the right one themselves.
 
 **Linux x86_64** from the same page: `.deb` for Debian and Ubuntu, `.rpm` for Fedora, `.AppImage` for the rest.
 
@@ -222,7 +224,7 @@ git; on Linux, the libraries [CONTRIBUTING.md](CONTRIBUTING.md) lists.
 git clone https://github.com/emircan-sahin/gitviber && cd gitviber
 cargo build -p gitviber --release     # target/release/gitviber
 scripts/macos.sh build --host && scripts/macos.sh app && scripts/macos.sh sign
-                                      # macOS: target/dist/macos/GitViber.app, ad hoc signed
+                                      # macOS: target/dist/macos/<arch>/GitViber.app, ad hoc signed
 ```
 
 ## Privacy

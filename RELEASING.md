@@ -1,8 +1,9 @@
 # Releasing
 
-A pushed `v*` tag runs [`release.yml`](.github/workflows/release.yml): it builds a universal
-macOS app (the app and its `.dmg` signed and notarized) and the Linux `.deb`, `.rpm` and
-AppImage, then leaves them on a **draft** release with `SHA256SUMS`, the updater's `latest.json`
+A pushed `v*` tag runs [`release.yml`](.github/workflows/release.yml): it builds the macOS app
+for Apple Silicon and for Intel (`aarch64` and `x64`, each app and its `.dmg` signed and
+notarized; one universal app would be twice the download and the disk for everyone) and the
+Linux `.deb`, `.rpm` and AppImage, then leaves them on a **draft** release with `SHA256SUMS`, the updater's `latest.json`
 and notes from [CHANGELOG.md](CHANGELOG.md). Nothing is public until you publish the draft.
 
 ## How it's locked down
@@ -100,9 +101,9 @@ rm tap_key tap_key.pub
 
    The workflow checks that the tag matches the version before it builds anything.
 5. **Check the draft** under Releases once the run is green (under an hour; nothing is cached):
-   the `.dmg`, `.app.tar.gz` and `.sig`, `.deb`, `.rpm`, `.AppImage` and their `.sig`,
-   `SHA256SUMS` and `latest.json`. Download the `.dmg` and open it on a Mac that has never run GitViber: it
-   should open without a Gatekeeper warning.
+   a `.dmg`, `.app.tar.gz` and `.sig` for `aarch64` and for `x64`, `.deb`, `.rpm`, `.AppImage`
+   and their `.sig`, `SHA256SUMS` and `latest.json`. Download the `.dmg` for your Mac's chip and
+   open it on a Mac that has never run GitViber: it should open without a Gatekeeper warning.
 6. **Publish** the draft. From then on `releases/latest/download/latest.json` points at it and
    installed copies offer the update.
    Publishing also commits the new cask to the Homebrew tap (below); nothing to do there.
@@ -135,7 +136,7 @@ a workflow or build change before tagging.
 The official `homebrew/cask` only takes apps that meet its notability rules, so GitViber has its
 own tap until it does. [`packaging/homebrew/gitviber.rb`](packaging/homebrew/gitviber.rb) is the
 cask's template. Publishing a release runs the Homebrew workflow
-([`homebrew.yml`](.github/workflows/homebrew.yml)): it fills in the version and the `.dmg`'s
+([`homebrew.yml`](.github/workflows/homebrew.yml)): it fills in the version and each `.dmg`'s
 SHA-256 from the release's `SHA256SUMS` and commits `Casks/gitviber.rb` to the tap. A prerelease
 is skipped. If it fails (say, the deploy key was removed), fix that and run the workflow from the
 Actions tab with the tag. Every release run also prints the filled-in cask on its summary page,
@@ -159,7 +160,7 @@ After publishing a release, check it (`MIRROR` is the Worker's URL):
 ```sh
 curl -s $MIRROR/latest.json | grep '"version"'                     # the new version
 curl -s -r 0-99 -o /dev/null -w '%{http_code} %{size_download}\n' \
-  $MIRROR/download/vX.Y.Z/GitViber_X.Y.Z_universal.app.tar.gz        # 206 100
+  $MIRROR/download/vX.Y.Z/GitViber_X.Y.Z_aarch64.app.tar.gz          # 206 100
 ```
 
 Installs fall back to GitHub when the mirror fails (the native app's downloads too), so a broken
@@ -169,10 +170,13 @@ mirror slows an update down without blocking it.
 
 The first native release must install over 0.1.17 through 0.1.17's own updater, and it does: the
 release keeps everything that updater reads. `latest.json` has the same shape and keys
-(`scripts/updater-json.sh`, `{os}-{arch}-{bundle}` then `{os}-{arch}`), the files keep their names,
-`GitViber_X.Y.Z_universal.app.tar.gz` holds one folder, `GitViber.app` (that updater drops the
-first path component and swaps the rest in for the running app), and every `.sig` comes from the
-same key in the same format. The bundle keeps the identifier `app.gitviber.desktop` and the
+(`scripts/updater-json.sh`, `{os}-{arch}-{bundle}` then `{os}-{arch}`), each `.app.tar.gz` holds
+one folder, `GitViber.app` (that updater drops the first path component and swaps the rest in for
+the running app), and every `.sig` comes from the same key in the same format. 0.1.17 was
+universal, but its updater runs in the Mac's own half of it and asks for that architecture's key
+(`darwin-aarch64-app` or `darwin-x86_64-app`), which points at that architecture's
+`GitViber_X.Y.Z_aarch64.app.tar.gz` or `GitViber_X.Y.Z_x64.app.tar.gz`; the native updater does
+the same. The bundle keeps the identifier `app.gitviber.desktop` and the
 executable name `gitviber`, and the Linux packages stay `git-viber`, so a new `.deb` or `.rpm`
 upgrades the old one.
 
@@ -182,12 +186,13 @@ An unsigned or ad hoc signed app, for trying a release build; never with your ow
 release signs:
 
 ```sh
-scripts/macos.sh build --host      # --host: this Mac's architecture only; without it, universal
+scripts/macos.sh build --host      # --host: this Mac's architecture only; without it, both
 scripts/macos.sh app && scripts/macos.sh sign   # ad hoc unless APPLE_SIGNING_IDENTITY is set
-open target/dist/macos/GitViber.app
+open target/dist/macos/aarch64/GitViber.app     # x64 on an Intel Mac
 ```
 
-`scripts/macos.sh dmg` and `scripts/macos.sh updater` pack it as the release does. The Linux steps
+`scripts/macos.sh dmg` and `scripts/macos.sh updater` pack it as the release does. Each step takes
+the architecture, `aarch64` or `x64`, and does this Mac's when it's left out. The Linux steps
 (`scripts/linux.sh build|deb|rpm|appimage`) need Ubuntu 22.04 with the packages `release.yml`
 installs.
 

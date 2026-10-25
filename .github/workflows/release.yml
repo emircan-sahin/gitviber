@@ -66,13 +66,14 @@ jobs:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       # Everything that runs code from dependencies (build.rs, proc macros) happens before any
-      # secret is in reach: the app for both architectures, and the updater signer. The signing
+      # secret is in reach: an app for each architecture, and the updater signer. The signing
       # steps only sign what was built here.
       - name: Build
         run: |
           scripts/macos.sh build
           cargo build -p gitviber-updater --example sign --release --locked
-          scripts/macos.sh app
+          scripts/macos.sh app aarch64
+          scripts/macos.sh app x64
 
       # The certificate goes into a keychain of its own, non-extractable, deleted with the key
       # files at the end.
@@ -142,8 +143,8 @@ jobs:
             problem "Signed but not notarized: set APPLE_API_KEY, APPLE_API_ISSUER and APPLE_API_PRIVATE_KEY, or APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID."
           fi
 
-      # The app with the hardened runtime, its ticket stapled; then the .dmg around it, signed
-      # and with a ticket of its own, so opening the download doesn't ask Apple either.
+      # Each architecture's app with the hardened runtime, its ticket stapled; then the .dmg around
+      # it, signed and with a ticket of its own, so opening the download doesn't ask Apple either.
       - name: Sign, notarize and pack
         env:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
@@ -155,22 +156,26 @@ jobs:
           # The script picks the API key when its file is there, else the Apple ID.
           if [ -z "${APPLE_API_KEY_PATH:-}" ]; then unset APPLE_API_KEY APPLE_API_ISSUER; fi
           if [ -z "$APPLE_ID" ]; then unset APPLE_ID; fi
-          scripts/macos.sh sign
-          if [ "${NOTARIZED:-}" = true ]; then scripts/macos.sh notarize target/dist/macos/GitViber.app; fi
-          scripts/macos.sh dmg
-          if [ "${NOTARIZED:-}" = true ]; then scripts/macos.sh notarize "target/dist/macos/GitViber_${VERSION}_universal.dmg"; fi
-          scripts/macos.sh updater
+          for arch in aarch64 x64; do
+            scripts/macos.sh sign "$arch"
+            if [ "${NOTARIZED:-}" = true ]; then scripts/macos.sh notarize "target/dist/macos/$arch/GitViber.app"; fi
+            scripts/macos.sh dmg "$arch"
+            if [ "${NOTARIZED:-}" = true ]; then scripts/macos.sh notarize "target/dist/macos/GitViber_${VERSION}_$arch.dmg"; fi
+            scripts/macos.sh updater "$arch"
+          done
 
       - name: Check that Gatekeeper accepts it
         if: env.NOTARIZED == 'true'
         run: |
-          app=target/dist/macos/GitViber.app
-          dmg="target/dist/macos/GitViber_${VERSION}_universal.dmg"
-          codesign --verify --deep --strict "$app"
-          xcrun stapler validate "$app"
-          spctl --assess --type execute --verbose=2 "$app"
-          xcrun stapler validate "$dmg"
-          spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
+          for arch in aarch64 x64; do
+            app="target/dist/macos/$arch/GitViber.app"
+            dmg="target/dist/macos/GitViber_${VERSION}_$arch.dmg"
+            codesign --verify --deep --strict "$app"
+            xcrun stapler validate "$app"
+            spctl --assess --type execute --verbose=2 "$app"
+            xcrun stapler validate "$dmg"
+            spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
+          done
 
       # The updater bundle carries the Tauri updater key's signature, so copies installed by the
       # Tauri-built app (tauri-plugin-updater) and by this one both take it.
@@ -187,13 +192,13 @@ jobs:
             echo "::warning::No updater signing key, so no updater signature (.sig)."
             exit 0
           fi
-          target/release/examples/sign "target/dist/macos/GitViber_${VERSION}_universal.app.tar.gz"
+          target/release/examples/sign target/dist/macos/GitViber_"${VERSION}"_{aarch64,x64}.app.tar.gz
 
       - name: Collect the bundles
         run: |
           out="$RUNNER_TEMP/release"
           mkdir -p "$out"
-          for file in target/dist/macos/GitViber_"${VERSION}"_universal.{dmg,app.tar.gz,app.tar.gz.sig}; do
+          for file in target/dist/macos/GitViber_"${VERSION}"_{aarch64,x64}.{dmg,app.tar.gz,app.tar.gz.sig}; do
             if [ -e "$file" ]; then cp "$file" "$out/"; fi
           done
           ls -l "$out"
@@ -319,8 +324,10 @@ jobs:
 
       - name: Homebrew cask
         run: |
-          sha=$(sha256sum "release/GitViber_${VERSION}_universal.dmg" | cut -d ' ' -f 1)
-          sed -e '/^#/d' -e "s/__VERSION__/$VERSION/" -e "s/__SHA256__/$sha/" packaging/homebrew/gitviber.rb > gitviber.rb
+          arm=$(sha256sum "release/GitViber_${VERSION}_aarch64.dmg" | cut -d ' ' -f 1)
+          intel=$(sha256sum "release/GitViber_${VERSION}_x64.dmg" | cut -d ' ' -f 1)
+          sed -e '/^#/d' -e "s/__VERSION__/$VERSION/" -e "s/__SHA256_ARM__/$arm/" -e "s/__SHA256_INTEL__/$intel/" \
+            packaging/homebrew/gitviber.rb > gitviber.rb
           {
             echo "### Homebrew cask"
             echo "Publishing the release commits this to emircan-sahin/homebrew-tap (homebrew.yml):"

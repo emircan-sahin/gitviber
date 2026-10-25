@@ -25,20 +25,20 @@ for sig in "$dir"/*.sig; do
   [ -e "$sig" ] || continue
   file=$(basename "${sig%.sig}")
   [ -e "$dir/$file" ] || continue
+  case $file in *amd64* | *x86_64* | *_x64.*) arch=x86_64 ;; *arm64* | *aarch64*) arch=aarch64 ;; *) continue ;; esac
   case $file in
-    # One universal build serves both architectures.
-    *_universal.app.tar.gz) add "$file" darwin-aarch64 darwin-x86_64 darwin-aarch64-app darwin-x86_64-app; continue ;;
-  esac
-  case $file in *amd64* | *x86_64*) arch=x86_64 ;; *arm64* | *aarch64*) arch=aarch64 ;; *) continue ;; esac
-  case $file in
+    # Each Mac takes its own architecture's app; the old universal one served both.
+    *.app.tar.gz) add "$file" "darwin-$arch" "darwin-$arch-app" ;;
     # Like tauri-action, a Linux install that doesn't find its own bundle type gets the AppImage.
     *.AppImage) add "$file" "linux-$arch" "linux-$arch-appimage" ;;
     *.deb) add "$file" "linux-$arch-deb" ;;
     *.rpm) add "$file" "linux-$arch-rpm" ;;
   esac
 done
-# A release that updates only some installs is worse than one that fails here.
-missing=$(jq -r '["darwin-aarch64", "darwin-x86_64", "linux-x86_64"] - keys | join(", ")' <<< "$platforms")
+# A release that updates only some installs is worse than one that fails here. These are the keys
+# 0.1.17 published; installed copies look up the one of their own kind.
+missing=$(jq -r '["darwin-aarch64", "darwin-aarch64-app", "darwin-x86_64", "darwin-x86_64-app",
+  "linux-x86_64", "linux-x86_64-appimage", "linux-x86_64-deb", "linux-x86_64-rpm"] - keys | join(", ")' <<< "$platforms")
 if [ -n "$missing" ]; then
   echo "updater-json: no signed bundle for $missing" >&2
   exit 1
