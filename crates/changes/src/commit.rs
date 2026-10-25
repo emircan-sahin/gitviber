@@ -7,17 +7,21 @@ use crate::co_authors::CoAuthorPicker;
 use crate::model::commit::{Facts, SUMMARY_LIMIT, plan};
 use crate::model::list::{files, left_out, stageable};
 use crate::model::text::{
-    SUGGEST_PROMPT, author_name, command_line, parse_suggestion, paste_message, program_of,
+    SUGGEST_PROMPT, author_name, command_line, parse_suggestion, paste_message, plain_line,
+    program_of,
 };
 use crate::model::{Kind, Lists};
 use crate::store::{self, Draft};
+use crate::toasts::{git_error, tracked, with_undo};
 use gitviber_core::api;
 use gitviber_core::git::{CANCELLED_STASHED, Commit, CommitOptions};
 use gitviber_core::network::CANCELLED;
 use gitviber_core::suggest::{Kind as SuggestKind, Scope};
 use gitviber_refs::errors::GitFix;
 use gitviber_refs::net::NetActivity;
-use gitviber_refs::toast::{Action as ToastAction, git_failed};
+use gitviber_refs::toast::Action as ToastAction;
+use gitviber_refs::{RepoHold, hold_repo};
+use gitviber_review::model::agent::is_unknown_option;
 use gitviber_ui::actions::git;
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{Toast, Workspace};
@@ -36,6 +40,7 @@ use gpui_kit::{
     Styled as _, Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// While amending: HEAD's message in the fields, the user's own draft aside.
@@ -43,6 +48,24 @@ struct Amend {
     aside: Draft,
     sha: String,
     original: (String, String),
+}
+
+/// A commit as it started: where, and what it was told to do after.
+pub(crate) struct Started {
+    /// The worktree core had open, which the commit is made in.
+    pub repo: Option<PathBuf>,
+    /// Its draft's key.
+    pub root: String,
+    pub summary: String,
+    pub then: Option<Then>,
+    /// Nested repositories "commit everything" left out.
+    pub skipped: usize,
+    pub amended: bool,
+}
+
+/// A message nobody wrote in: blank, or still the `start` it began as.
+fn untouched(start: &(String, String), summary: &str, body: &str) -> bool {
+    (summary.trim().is_empty() && body.trim().is_empty()) || (summary == start.0 && body == start.1)
 }
 
 /// What the panel tells the box about the repo.
@@ -69,10 +92,12 @@ pub struct CommitBox {
     co_authors: Vec<String>,
     amend: Option<Amend>,
     no_verify: bool,
-    busy: bool,
+    /// While a commit runs: the window's repo stays put until it ends (its push is for it).
+    busy: Option<RepoHold>,
     suggesting: bool,
-    /// The description a new draft starts with (commit.template, a prepared message).
-    start_body: String,
+    /// The summary and description a new draft starts as: a prepared message, or none and
+    /// commit.template. A draft still as it started isn't the user's, and follows it.
+    start: (String, String),
     /// Add co-author's picker, while it's open.
     co_author: Option<Entity<CoAuthorPicker>>,
     _subscriptions: Vec<Subscription>,
@@ -106,9 +131,9 @@ impl CommitBox {
             co_authors: vec![],
             amend: None,
             no_verify: false,
-            busy: false,
+            busy: None,
             suggesting: false,
-            start_body: String::new(),
+            start: Default::default(),
             co_author: None,
             _subscriptions: subscriptions,
             _task: Task::ready(()),
@@ -148,9 +173,8 @@ impl CommitBox {
             return;
         }
         let draft = self.draft(cx);
-        let untouched = draft.summary.trim().is_empty()
-            && (draft.body.trim().is_empty() || draft.body == self.start_body)
-            && draft.co_authors.is_empty();
+        let untouched =
+            untouched(&self.start, &draft.summary, &draft.body) && draft.co_authors.is_empty();
         store::set_draft(&self.facts.root, (!untouched).then_some(draft), cx);
     }
 
@@ -211,7 +235,7 @@ impl CommitBox {
                 .ok()
                 .flatten();
             this.update_in(cx, |this, window, cx| {
-                let (summary, body) = match (&template, prepared) {
+                let start = match (&template, prepared) {
                     (Some(t), true) => {
                         let (s, b) = t.split_once('\n').unwrap_or((t, ""));
                         (s.to_string(), b.trim().to_string())
@@ -219,11 +243,16 @@ impl CommitBox {
                     (t, false) => (String::new(), t.clone().unwrap_or_default()),
                     (None, true) => (String::new(), String::new()),
                 };
-                let old_start = std::mem::replace(&mut this.start_body, body.clone());
-                let untouched = this.summary_text(cx).trim().is_empty()
-                    && (this.body_text(cx).trim().is_empty() || this.body_text(cx) == old_start);
-                if this.amend.is_none() && untouched {
-                    this.set_fields(&summary, &body, window, cx);
+                // A message still as it started follows: an aborted squash's goes with it.
+                let old = std::mem::replace(&mut this.start, start.clone());
+                if let Some(a) = this.amend.as_mut() {
+                    if a.aside.co_authors.is_empty()
+                        && untouched(&old, &a.aside.summary, &a.aside.body)
+                    {
+                        (a.aside.summary, a.aside.body) = start;
+                    }
+                } else if untouched(&old, &this.summary_text(cx), &this.body_text(cx)) {
+                    this.set_fields(&start.0, &start.1, window, cx);
                 }
             })
             .ok();
@@ -240,7 +269,7 @@ impl CommitBox {
         let Some((summary, body, caret)) = paste_message(
             &self.summary_text(cx),
             &self.body_text(cx),
-            &self.start_body,
+            &self.start.1,
             &text,
             range.start,
             range.end,
@@ -343,7 +372,7 @@ impl CommitBox {
             amend: self.amend.is_some(),
             edited: self.edited_amend(cx),
             summary_empty: self.summary_text(cx).trim().is_empty(),
-            busy: self.busy,
+            busy: self.busy.is_some(),
             branch: self.facts.branch.as_deref(),
         }
     }
@@ -382,7 +411,8 @@ impl CommitBox {
             return;
         }
         self.drop_suggestion(cx);
-        self.busy = true;
+        // Hooks can run for minutes: the worktree stays open until the commit (and its push) is done.
+        self.busy = Some(hold_repo("Commit", cx));
         cx.notify();
         let summary = self.summary_text(cx).trim().to_string();
         let body = self.body_text(cx).trim().to_string();
@@ -403,6 +433,14 @@ impl CommitBox {
         let (paths, skipped) = stageable(self.facts.lists.list(Kind::Unstaged));
         let auto = plan.stages_all;
         let core = crate::core(cx);
+        let started = Started {
+            repo: core.repo().ok(),
+            root: self.facts.root.clone(),
+            summary,
+            then,
+            skipped,
+            amended: options.amend,
+        };
         self._task = cx.spawn_in(window, async move |this, cx| {
             // Nothing staged means "commit everything", the common case after an agent run.
             let checked = {
@@ -428,7 +466,9 @@ impl CommitBox {
                 let weak = this.clone();
                 let (paths, message, options) = (paths.clone(), message.clone(), options);
                 this.update_in(cx, move |_, window, cx| {
-                    let go = std::rc::Rc::new(std::cell::RefCell::new(Some((message, options))));
+                    let go = std::rc::Rc::new(std::cell::RefCell::new(Some((
+                        message, options, started,
+                    ))));
                     let (go_ok, weak_ok, weak_cancel) = (go.clone(), weak.clone(), weak.clone());
                     window.open_alert_dialog(cx, move |alert, _, _| {
                         let (go_ok, weak_ok, weak_cancel, paths) = (
@@ -444,12 +484,11 @@ impl CommitBox {
                             .ok_text("Commit anyway")
                             .show_cancel(true)
                             .on_ok(move |_, window, cx| {
-                                if let Some((message, options)) = go_ok.borrow_mut().take() {
+                                if let Some((message, options, started)) = go_ok.borrow_mut().take()
+                                {
                                     weak_ok
                                         .update(cx, |this, cx| {
-                                            this.run_commit(
-                                                message, options, then, skipped, window, cx,
-                                            )
+                                            this.run_commit(message, options, started, window, cx)
                                         })
                                         .ok();
                                 }
@@ -459,7 +498,7 @@ impl CommitBox {
                                 let paths = paths.clone();
                                 weak_cancel
                                     .update(cx, |this, cx| {
-                                        this.busy = false;
+                                        this.busy = None;
                                         // Nothing was staged before, so unstaging what this staged puts the index back.
                                         if auto {
                                             let core = crate::core(cx);
@@ -481,7 +520,7 @@ impl CommitBox {
                 return;
             }
             this.update_in(cx, |this, window, cx| {
-                this.run_commit(message, options, then, skipped, window, cx)
+                this.run_commit(message, options, started, window, cx)
             })
             .ok();
         });
@@ -491,20 +530,30 @@ impl CommitBox {
         &mut self,
         message: String,
         options: CommitOptions,
-        then: Option<Then>,
-        skipped: usize,
+        started: Started,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let core = crate::core(cx);
-        let amended = options.amend;
-        let summary = self.summary_text(cx);
+        // Core opened another worktree while the large files were asked about.
+        if core.repo().ok() != started.repo {
+            self.busy = None;
+            self.toast(
+                Toast::info("Another worktree was opened while it waited.").title("Commit not run"),
+                cx,
+            );
+            cx.notify();
+            return;
+        }
         // Hooks can lint or test for minutes: the top bar shows the commit, with Cancel.
         let net = NetActivity::global(cx);
         let op = net.update(cx, |a, cx| a.start("Commit".into(), cx));
         let (id, progress) = (op.id.clone(), op.progress());
         let work = cx.background_spawn(async move {
-            api::changes::commit(&core, message, options, id, progress)
+            tracked(&core, |core| {
+                api::changes::commit(core, message, options, id, progress)
+            })
+            .map(|((), entry)| entry)
         });
         // Detached, holding the box weakly: dropping it wouldn't stop git, only leave the top bar
         // showing a commit that ended.
@@ -512,45 +561,66 @@ impl CommitBox {
             let result = work.await;
             net.update(cx, |a, cx| a.finish(&op.id, cx));
             this.update_in(cx, |this, window, cx| {
-                this.busy = false;
-                match result {
-                    Ok(()) => {
-                        this.clear(window, cx);
-                        this.no_verify = false;
-                        this.toast(
-                            Toast::success(summary.trim().to_string()).title(if amended {
-                                "Commit amended"
-                            } else {
-                                "Committed"
-                            }),
-                            cx,
-                        );
-                        if skipped > 0 && !amended {
-                            this.toast(
-                                Toast::info(crate::model::list::NESTED_EXPLAINED)
-                                    .title(format!("{} of the commit", left_out(skipped))),
-                                cx,
-                            );
-                        }
-                        match then {
-                            Some(Then::Push) => window.dispatch_action(Box::new(git::Push), cx),
-                            Some(Then::Sync) => window.dispatch_action(Box::new(git::Sync), cx),
-                            None => {}
-                        }
-                    }
-                    Err(e) => this.failed(&e, then, cx),
-                }
-                this.refresh_project(cx);
-                cx.notify();
+                this.committed(result, started, window, cx)
             })
             .ok();
         })
         .detach();
     }
 
+    /// The commit ended. It stays with the worktree it was made in: one opened meanwhile (a path
+    /// past the switch guard) keeps its own message and draft, and isn't pushed.
+    pub(crate) fn committed(
+        &mut self,
+        result: Result<Option<u64>, String>,
+        started: Started,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.busy = None;
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(e) => return self.failed(&e, started.then, cx),
+        };
+        let here = crate::core(cx).repo().ok() == started.repo;
+        if self.facts.root == started.root {
+            self.clear(window, cx);
+        } else if !started.amended {
+            store::set_draft(&started.root, None, cx);
+        }
+        self.no_verify = false;
+        let title = if started.amended {
+            "Commit amended"
+        } else {
+            "Committed"
+        };
+        let done = Toast::success(started.summary.clone()).title(title);
+        let repo = started.repo.clone().filter(|_| here);
+        self.toast(with_undo(done, entry, repo, self.workspace.clone()), cx);
+        if started.skipped > 0 && !started.amended {
+            self.toast(
+                Toast::info(crate::model::list::NESTED_EXPLAINED)
+                    .title(format!("{} of the commit", left_out(started.skipped))),
+                cx,
+            );
+        }
+        match started.then {
+            Some(_) if !here => self.toast(
+                Toast::info("Another worktree was opened while the commit ran.")
+                    .title("Not pushed"),
+                cx,
+            ),
+            Some(Then::Push) => window.dispatch_action(Box::new(git::Push), cx),
+            Some(Then::Sync) => window.dispatch_action(Box::new(git::Sync), cx),
+            None => {}
+        }
+        self.refresh_project(cx);
+        cx.notify();
+    }
+
     /// A cancel is told as one; a hook that stopped it offers committing without hooks.
     fn failed(&mut self, e: &str, then: Option<Then>, cx: &mut Context<Self>) {
-        self.busy = false;
+        self.busy = None;
         match e {
             CANCELLED => self.toast(Toast::info("Commit cancelled"), cx),
             CANCELLED_STASHED => self.toast(
@@ -577,11 +647,7 @@ impl CommitBox {
                     })
                     .ok();
                 });
-                let note = git_failed("Commit failed", e, &vec![(GitFix::Hooks, without)]);
-                let mut toast = Toast::error(note.detail.unwrap_or_default()).title(note.title);
-                if let Some(a) = note.action {
-                    toast = toast.action(a.label, move |window, cx| (a.run)(window, cx));
-                }
+                let toast = git_error("Commit failed", e, &vec![(GitFix::Hooks, without)]);
                 self.toast(toast, cx);
                 // git has no name or email for the commit: the app asks for them, even after a "Not now".
                 if no_identity(e) {
@@ -593,11 +659,20 @@ impl CommitBox {
         cx.notify();
     }
 
-    /// After a commit the fields start over; an amend's draft set aside comes back.
+    /// After a commit the fields start over; an amend's draft set aside comes back. A prepared
+    /// message went with the commit: what starts the next one comes with the next read.
     fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let next = self.amend.take().map(|a| a.aside).unwrap_or(Draft {
-            body: self.start_body.clone(),
-            ..Default::default()
+        let next = self.amend.take().map(|a| a.aside).unwrap_or_else(|| {
+            let (summary, body) = if self.facts.prepared.is_some() {
+                Default::default()
+            } else {
+                self.start.clone()
+            };
+            Draft {
+                summary,
+                body,
+                ..Default::default()
+            }
         });
         self.co_authors = next.co_authors.clone();
         self.set_fields(&next.summary, &next.body, window, cx);
@@ -607,7 +682,7 @@ impl CommitBox {
         let s = Settings::get(cx);
         s.suggest_enabled
             && !self.suggesting
-            && !self.busy
+            && self.busy.is_none()
             && (self.amend.is_some()
                 || self.facts.lists.staged.len() + self.facts.lists.unstaged.len() > 0)
     }
@@ -618,6 +693,7 @@ impl CommitBox {
         }
         let s = Settings::get(cx);
         let line = command_line(&s.suggest_command, &s.suggest_models, &s.suggest_efforts);
+        let plain = plain_line(&s.suggest_command, &s.suggest_models, &s.suggest_efforts);
         let program = program_of(&s.suggest_command);
         let scope = if self.amend.is_some() {
             Scope::Amend
@@ -632,16 +708,23 @@ impl CommitBox {
         self._suggest = cx.spawn_in(window, async move |this, cx| {
             let out = cx
                 .background_spawn(async move {
-                    api::changes::suggest_message(&core, line, SUGGEST_PROMPT.into(), scope)
+                    let ask = |line| {
+                        api::changes::suggest_message(&core, line, SUGGEST_PROMPT.into(), scope)
+                    };
+                    match (ask(line), plain) {
+                        // A Claude Code older than the lean flags refuses them: once more
+                        // without, as a guided review does.
+                        (Err(e), Some(plain)) if is_unknown_option(&e) => ask(plain),
+                        (out, _) => out,
+                    }
                 })
                 .await;
             this.update_in(cx, |this, window, cx| {
                 this.suggesting = false;
                 match out.map(|o| parse_suggestion(&o)) {
                     Ok(Some((summary, body))) => {
-                        let before = (this.summary_text(cx), this.body_text(cx));
-                        let blank = before.0.trim().is_empty()
-                            && (before.1.trim().is_empty() || before.1 == this.start_body);
+                        let blank =
+                            untouched(&this.start, &this.summary_text(cx), &this.body_text(cx));
                         this.set_fields(&summary, &body, window, cx);
                         if !blank {
                             this.toast(
@@ -683,6 +766,16 @@ impl CommitBox {
             self.suggesting = false;
             self.cancel_suggestion(cx);
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn committing(&self) -> bool {
+        self.busy.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn facts(&self) -> &RepoFacts {
+        &self.facts
     }
 
     /// Writes the message, as if typed (tests).
@@ -757,7 +850,7 @@ impl Render for CommitBox {
             }
         }
         .into();
-        let label: SharedString = if self.busy {
+        let label: SharedString = if self.busy.is_some() {
             "Committing…".into()
         } else if hidden > 0 {
             format!("{} · {hidden} hidden", plan.label).into()

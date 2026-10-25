@@ -5,13 +5,16 @@
 
 use crate::commit::{CommitBox, RepoFacts};
 use crate::dialogs::{self, Ask, Choice};
+use crate::model::conflicts::{Unsure, resolve_question, unsure};
 use crate::model::list::{
     ChangesView, Item, Kind, Lists, Mtimes, NESTED_EXPLAINED, file_sig, files, folder_key,
-    items_of, kept_by_restore, left_out, range_of, stageable, sum_lines, toggled, viewed_key,
+    items_of, kept_by_restore, left_out, range_of, stageable, sum_lines, toggled, unstage_paths,
+    viewed_key,
 };
-use crate::model::text::{describe_stash, has_conflict_markers, ignore_pattern};
+use crate::model::text::{describe_stash, ignore_pattern};
 use crate::model::tree::folders_of;
 use crate::store;
+use crate::toasts::{git_error, tracked, with_undo};
 use gitviber_core::api;
 use gitviber_core::git::{Commit, ExternalTools, FileChange, Side as GitSide};
 use gitviber_core::network::CANCELLED;
@@ -19,8 +22,11 @@ use gitviber_diff::{Compare, DiffSource};
 use gitviber_history::BisectBar;
 use gitviber_refs::net::NetActivity;
 use gitviber_ui::actions::{git, review};
+use gitviber_ui::keymap::editor;
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::{ChangeKind, FileIcon, LineCounts, PathLabel, StatusLetter};
+use gitviber_ui::widgets::{
+    ChangeKind, FileIcon, LineCounts, PathLabel, RelativeTime, StatusLetter,
+};
 use gitviber_ui::workspace::{
     ChangesOf, GuideOf, Panel, PanelContext, ProjectEvent, Selection, Toast, Workspace,
     WorkspaceEvent, selection_key,
@@ -33,10 +39,10 @@ use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMen
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, AnyWindowHandle, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, KeyBinding, Modifiers, ParentElement as _,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
-    UniformListScrollHandle, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
-    uniform_list,
+    Focusable, InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent, Modifiers,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Task, UniformListScrollHandle, WeakEntity, Window, div,
+    prelude::FluentBuilder as _, px, uniform_list,
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -113,7 +119,7 @@ pub fn set_viewed(ws: &mut Workspace, sel: &Selection, on: bool, cx: &mut Contex
 /// Unstages `files`; the project reads the repo again.
 pub fn unstage(files: Vec<FileChange>, ws: WeakEntity<Workspace>, cx: &mut App) {
     let core = crate::core(cx);
-    let paths: Vec<String> = files.into_iter().map(|f| f.path).collect();
+    let paths = unstage_paths(&files);
     cx.spawn(async move |cx| {
         let result = cx
             .background_spawn(async move { api::changes::unstage(&core, paths) })
@@ -122,7 +128,7 @@ pub fn unstage(files: Vec<FileChange>, ws: WeakEntity<Workspace>, cx: &mut App) 
             let Some(ws) = ws.upgrade() else { return };
             if let Err(e) = result {
                 ws.update(cx, |ws, cx| {
-                    ws.toast(Toast::error(e).title("Unstage failed"), cx)
+                    ws.toast(git_error("Unstage failed", &e, &vec![]), cx)
                 });
             }
             if let Some(p) = ws.read(cx).project().cloned() {
@@ -271,6 +277,11 @@ struct StashInfo {
 
 type StashFile = (String, Arc<FileChange>, bool);
 
+struct Filter {
+    input: Entity<InputState>,
+    _sub: Subscription,
+}
+
 struct Review {
     /// The full ref reviewed against, and its short name.
     reference: String,
@@ -303,7 +314,8 @@ pub struct ChangesPanel {
     view: ChangesView,
     closed: HashSet<String>,
     collapsed: HashSet<Section>,
-    filter: Entity<InputState>,
+    /// The filter row, while ⌘F has it open.
+    filter: Option<Filter>,
     /// Rows picked with ⌘ / ⇧ around the open one; None: just the open row.
     picked: Option<(Vec<String>, String)>,
     /// The key of the open tab's file, when it's one of ours.
@@ -340,6 +352,7 @@ pub struct ChangesPanel {
     reading: bool,
     again: bool,
     _read: Task<()>,
+    _head: Task<()>,
     _review: Task<()>,
     _action: Task<()>,
     _stash: Task<()>,
@@ -366,23 +379,27 @@ impl Focusable for ChangesPanel {
 
 impl ChangesPanel {
     pub fn new(ctx: &PanelContext, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter changed files"));
         let commit = cx.new(|cx| CommitBox::new(ctx.workspace.clone(), window, cx));
         let notes = cx.new(|cx| gitviber_review::NotesSection::new(ctx, cx));
-        let mut subscriptions = vec![cx.subscribe(&filter, |this, _, e: &InputEvent, cx| {
-            if matches!(e, InputEvent::Change) {
-                this.rebuild(cx);
-                // The commit button says how many of its files the filter hides.
-                this.commit_facts(cx);
-            }
-        })];
+        let mut subscriptions = vec![];
         if let Some(project) = &ctx.project {
             subscriptions.push(
                 cx.subscribe(project, |this, _, e: &ProjectEvent, cx| match e {
                     ProjectEvent::RepoChanged(_) => this.read(cx),
-                    ProjectEvent::Opened | ProjectEvent::Switched { .. } => {
+                    ProjectEvent::Opened => {
                         this.tools = None;
                         this.epoch += 1;
+                        this.start(cx);
+                    }
+                    ProjectEvent::Switched { .. } => {
+                        this.tools = None;
+                        this.epoch += 1;
+                        // The workspace brings back that worktree's branch review as it handles
+                        // the switch too: once it has.
+                        let weak = cx.weak_entity();
+                        cx.defer(move |cx| {
+                            weak.update(cx, |this, cx| this.follow_review_base(cx)).ok();
+                        });
                         this.read(cx);
                     }
                     ProjectEvent::Failed(e) => {
@@ -425,7 +442,7 @@ impl ChangesPanel {
                     .filter(|s| titles.iter().any(|t| t == s.title()))
                     .collect()
             },
-            filter,
+            filter: None,
             picked: None,
             open_key: None,
             cursor: None,
@@ -449,21 +466,56 @@ impl ChangesPanel {
             reading: false,
             again: false,
             _read: Task::ready(()),
+            _head: Task::ready(()),
             _review: Task::ready(()),
             _action: Task::ready(()),
             _stash: Task::ready(()),
             _subscriptions: subscriptions,
             _live: Live::new("ChangesPanel"),
         };
-        if let Some(base) = ctx
-            .workspace
-            .upgrade()
-            .and_then(|ws| ws.read(cx).review_base().map(str::to_string))
-        {
-            panel.start_review(base, cx);
+        // Built at launch, while the repo is still opening, it starts on `Opened`.
+        if panel.repo_open(cx) {
+            panel.start(cx);
         }
-        panel.read(cx);
         panel
+    }
+
+    /// The branch review the worktree was left in, and the first read.
+    fn start(&mut self, cx: &mut Context<Self>) {
+        if self.review.is_none()
+            && let Some(base) = self
+                .workspace()
+                .and_then(|ws| ws.read(cx).review_base().map(str::to_string))
+        {
+            self.start_review(base, cx);
+        }
+        self.read(cx);
+    }
+
+    /// The branch review the workspace has for the worktree open now, or none: another
+    /// worktree's has its own base, and its own files even against the same one.
+    fn follow_review_base(&mut self, cx: &mut Context<Self>) {
+        let base = self
+            .workspace()
+            .and_then(|ws| ws.read(cx).review_base().map(str::to_string));
+        match base {
+            // The read the switch started loads its files.
+            Some(base) => self.show_review(base, cx),
+            None if self.review.is_some() => self.end_review(cx),
+            None => {}
+        }
+    }
+
+    /// Whether git can read the repo yet: until the project opens it says "No repository is
+    /// open". Only the app's core opens a project; without one (a test), or without a project,
+    /// the core the panel reads is open already.
+    fn repo_open(&self, cx: &App) -> bool {
+        !gitviber_ui::has_core(cx)
+            || self
+                .ctx
+                .project
+                .as_ref()
+                .is_none_or(|p| p.read(cx).is_open())
     }
 
     fn workspace(&self) -> Option<Entity<Workspace>> {
@@ -497,8 +549,12 @@ impl ChangesPanel {
 
     // MARK: Reading the repo
 
-    /// Status, stashes and submodules, one read at a time; changes during a read make one more.
+    /// Status, stashes and submodules side by side, one read at a time; changes during a read
+    /// make one more. HEAD's commit follows on its own, once HEAD moved.
     fn read(&mut self, cx: &mut Context<Self>) {
+        if !self.repo_open(cx) {
+            return;
+        }
         if self.reading {
             self.again = true;
             return;
@@ -506,24 +562,23 @@ impl ChangesPanel {
         self.reading = true;
         let core = crate::core(cx);
         let recent = self.view.recent;
-        let head_before = self.head.as_ref().map(|h| h.sha.clone());
         // A git call of its own, and the config rarely changes: once a project.
         let want_tools = self.tools.is_none();
         let epoch = self.epoch;
         self._read = cx.spawn(async move |this, cx| {
-            let read = cx
-                .background_spawn(async move {
+            // None of these waits on another's git calls.
+            let status = cx.background_spawn({
+                let core = core.clone();
+                async move {
                     let status = api::changes::status(&core)?;
-                    let stashes = api::stash::stashes(&core).unwrap_or_default();
-                    let submodules = api::sync::submodules(&core).unwrap_or_default();
-                    let paths: Vec<String> = status
-                        .conflicted
-                        .iter()
-                        .chain(&status.staged)
-                        .chain(&status.unstaged)
-                        .map(|f| f.path.clone())
-                        .collect();
                     let mtimes = recent.then(|| {
+                        let paths: Vec<String> = status
+                            .conflicted
+                            .iter()
+                            .chain(&status.staged)
+                            .chain(&status.unstaged)
+                            .map(|f| f.path.clone())
+                            .collect();
                         let times =
                             api::files::file_mtimes(&core, paths.clone()).unwrap_or_default();
                         paths
@@ -532,23 +587,32 @@ impl ChangesPanel {
                             .filter_map(|(p, t)| t.map(|t| (p, t)))
                             .collect::<Mtimes>()
                     });
-                    let head = match (&status.head, head_before) {
-                        (Some(sha), Some(before)) if *sha == before => None,
-                        (Some(sha), _) => api::history::find_commit(&core, sha.clone())
-                            .ok()
-                            .flatten()
-                            .map(Arc::new),
-                        _ => None,
-                    };
-                    let tools =
-                        want_tools.then(|| api::changes::external_tools(&core).unwrap_or_default());
-                    Ok::<_, String>((status, stashes, submodules, mtimes, head, tools))
+                    Ok::<_, String>((status, mtimes))
+                }
+            });
+            let stashes = cx.background_spawn({
+                let core = core.clone();
+                async move { api::stash::stashes(&core).unwrap_or_default() }
+            });
+            let submodules = cx.background_spawn({
+                let core = core.clone();
+                async move { api::sync::submodules(&core).unwrap_or_default() }
+            });
+            let tools = want_tools.then(|| {
+                cx.background_spawn(async move {
+                    api::changes::external_tools(&core).unwrap_or_default()
                 })
-                .await;
+            });
+            let read = status.await;
+            let (stashes, submodules) = (stashes.await, submodules.await);
+            let tools = match tools {
+                Some(t) => Some(t.await),
+                None => None,
+            };
             this.update(cx, |this, cx| {
                 this.reading = false;
                 match read {
-                    Ok((status, stashes, submodules, mtimes, head, tools)) => {
+                    Ok((status, mtimes)) => {
                         this.loaded = true;
                         if tools.is_some() {
                             this.tools = tools;
@@ -556,13 +620,28 @@ impl ChangesPanel {
                         this.error = None;
                         this.root = status.root.clone();
                         this.branch = status.branch.clone();
-                        if status.head.is_none() {
-                            this.head = None;
-                        } else if let Some(h) = head {
-                            this.head = Some(h);
+                        match &status.head {
+                            None => {
+                                this.head = None;
+                                this._head = Task::ready(());
+                            }
+                            // Status gives HEAD's first 7 digits.
+                            Some(short)
+                                if !this
+                                    .head
+                                    .as_ref()
+                                    .is_some_and(|h| h.sha.starts_with(short)) =>
+                            {
+                                this.load_head(short.clone(), cx)
+                            }
+                            Some(_) => {}
                         }
-                        this.pushed = this.head.as_ref().is_some_and(|h| !h.unpushed)
-                            && (status.upstream.is_some() || status.push.is_some());
+                        // HEAD is on the branch `git push` updates (else its upstream).
+                        let push = status.push.as_ref().filter(|p| p.branch.is_some());
+                        let upstream = (status.upstream.is_some() && !status.upstream_gone)
+                            .then_some(status.ahead);
+                        this.pushed =
+                            status.head.is_some() && push.map(|p| p.ahead).or(upstream) == Some(0);
                         this.operation = status.operation.as_ref().map(|o| Op {
                             kind: o.kind.clone(),
                             subject: o.subject.clone(),
@@ -613,6 +692,24 @@ impl ChangesPanel {
                 }
             })
             .ok();
+        });
+    }
+
+    /// HEAD's commit, whose message Amend puts in the box. Nothing shown waits for it.
+    fn load_head(&mut self, sha: String, cx: &mut Context<Self>) {
+        let core = crate::core(cx);
+        self._head = cx.spawn(async move |this, cx| {
+            let head = cx
+                .background_spawn(async move { api::history::find_commit(&core, sha) })
+                .await;
+            // A failed read keeps the last one; the next read asks again.
+            if let Ok(Some(head)) = head {
+                this.update(cx, |this, cx| {
+                    this.head = Some(Arc::new(head));
+                    this.commit_facts(cx);
+                })
+                .ok();
+            }
         });
     }
 
@@ -689,7 +786,7 @@ impl ChangesPanel {
 
     /// What the filter leaves, while it has text.
     fn filtered_lists(&self, cx: &App) -> Option<Lists> {
-        let needle = self.filter.read(cx).value().trim().to_lowercase();
+        let needle = self.needle(cx);
         (!needle.is_empty()).then(|| {
             self.lists.filtered(|f| {
                 f.path.to_lowercase().contains(&needle)
@@ -701,7 +798,51 @@ impl ChangesPanel {
     }
 
     fn filtering(&self, cx: &App) -> bool {
-        !self.filter.read(cx).value().trim().is_empty()
+        !self.needle(cx).is_empty()
+    }
+
+    /// The filter's text, trimmed and lowercased; empty while it lets everything through.
+    fn needle(&self, cx: &App) -> String {
+        self.filter
+            .as_ref()
+            .map(|f| f.input.read(cx).value().trim().to_lowercase())
+            .unwrap_or_default()
+    }
+
+    /// Find (⌘F) in the panel opens the filter row, or puts the cursor back in it.
+    fn open_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(f) = &self.filter {
+            f.input.update(cx, |s, cx| {
+                s.focus(window, cx);
+                s.select_all(window, cx);
+            });
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter changed files"));
+        input.update(cx, |s, cx| s.focus(window, cx));
+        let sub = cx.subscribe(&input, |this, _, e: &InputEvent, cx| {
+            if matches!(e, InputEvent::Change) {
+                this.rebuild(cx);
+                // The commit button says how many of its files the filter hides.
+                this.commit_facts(cx);
+            }
+        });
+        self.filter = Some(Filter { input, _sub: sub });
+        cx.notify();
+    }
+
+    /// Clears and hides the row; the keys go back to the list.
+    fn close_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(filter) = self.filter.take() else {
+            return;
+        };
+        let had_text = !filter.input.read(cx).value().trim().is_empty();
+        self.focus.focus(window, cx);
+        if had_text {
+            self.rebuild(cx);
+            self.commit_facts(cx);
+        }
+        cx.notify();
     }
 
     fn rebuild(&mut self, cx: &mut Context<Self>) {
@@ -993,29 +1134,34 @@ impl ChangesPanel {
     // MARK: Git actions
 
     /// Runs `work` off the main thread and reads the repo again; `failed` titles its error.
+    /// `done` says it went through, with Undo when it went into the journal (a discard).
     fn run(
         &mut self,
         failed: &'static str,
-        done: Option<String>,
+        done: Option<Toast>,
         work: impl FnOnce(&gitviber_core::Core) -> Result<(), String> + Send + 'static,
         cx: &mut Context<Self>,
     ) {
         let core = crate::core(cx);
+        let repo = core.repo().ok();
         self.busy = true;
         cx.notify();
         // Short, and holding the panel weakly: one more S before git is done mustn't cancel it.
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { work(&core) }).await;
+            let result = cx
+                .background_spawn(async move { tracked(&core, work).map(|((), entry)| entry) })
+                .await;
             this.update(cx, |this, cx| {
                 this.busy = false;
                 this.settle_leave(result.is_err(), cx);
                 match result {
-                    Ok(()) => {
+                    Ok(entry) => {
                         if let Some(done) = done {
-                            this.toast(Toast::success(done), cx);
+                            let ws = this.ctx.workspace.clone();
+                            this.toast(with_undo(done, entry, repo, ws), cx);
                         }
                     }
-                    Err(e) => this.toast(Toast::error(e).title(failed), cx),
+                    Err(e) => this.toast(git_error(failed, &e, &vec![]), cx),
                 }
                 this.refresh_project(cx);
                 cx.notify();
@@ -1042,7 +1188,7 @@ impl ChangesPanel {
     }
 
     fn unstage_files(&mut self, files: Vec<Arc<FileChange>>, cx: &mut Context<Self>) {
-        let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+        let paths = unstage_paths(files.iter().map(Arc::as_ref));
         if !paths.is_empty() {
             self.leave(Kind::Staged, &files, cx);
             self.run(
@@ -1124,14 +1270,12 @@ impl ChangesPanel {
             ("Discard changes", q, "Discard")
         };
         let weak = cx.entity().downgrade();
-        let done = if restorable.is_empty() {
-            None
-        } else {
-            Some(format!(
-                "Discarded {}",
-                one.clone().unwrap_or_else(|| files(restorable.len()))
-            ))
-        };
+        let done = Some(discarded(
+            one.as_deref(),
+            restorable.len(),
+            copied,
+            untracked.len(),
+        ));
         dialogs::confirm(window, cx, title, question, ok, move |_, cx| {
             weak.update(cx, |this, cx| {
                 this.leave(Kind::Unstaged, &list, cx);
@@ -1147,7 +1291,7 @@ impl ChangesPanel {
         &mut self,
         restorable: Vec<String>,
         untracked: Vec<String>,
-        done: Option<String>,
+        done: Option<Toast>,
         cx: &mut Context<Self>,
     ) {
         self.run(
@@ -1178,19 +1322,16 @@ impl ChangesPanel {
         let weak = cx.entity().downgrade();
         self._action = cx.spawn_in(window, async move |_, cx| {
             let check = rows.clone();
-            let flagged = cx
+            // Both sides edited or added these: a file that can't be read can't be checked.
+            let found = cx
                 .background_spawn(async move {
                     check
                         .iter()
                         .filter(|f| matches!(f.conflict.as_deref(), Some("UU" | "AA")))
-                        .filter(|f| {
-                            api::files::read_file(&core, f.path.clone()).is_ok_and(|t| {
-                                t.exists
-                                    && !t.binary
-                                    && (t.too_large || has_conflict_markers(&t.text))
-                            })
+                        .filter_map(|f| {
+                            let read = api::files::read_file(&core, f.path.clone());
+                            unsure(&read).map(|u| (f.path.clone(), u))
                         })
-                        .map(|f| f.path.clone())
                         .collect::<Vec<_>>()
                 })
                 .await;
@@ -1198,19 +1339,17 @@ impl ChangesPanel {
                 let go = move |cx: &mut App| {
                     weak.update(cx, |this, cx| this.stage(rows, cx)).ok();
                 };
-                if flagged.is_empty() {
+                if found.is_empty() {
                     go(cx);
                 } else {
-                    let name = if flagged.len() == 1 {
-                        flagged[0].clone()
-                    } else {
-                        files(flagged.len())
+                    let of = |kind: Unsure| -> Vec<String> {
+                        found
+                            .iter()
+                            .filter(|(_, u)| *u == kind)
+                            .map(|(p, _)| p.clone())
+                            .collect()
                     };
-                    let q = format!(
-                        "{name} still {} conflict markers. Mark {} resolved anyway?",
-                        if flagged.len() == 1 { "has" } else { "have" },
-                        if flagged.len() == 1 { "it" } else { "them" }
-                    );
+                    let q = resolve_question(&of(Unsure::Markers), &of(Unsure::Unread));
                     dialogs::confirm(
                         window,
                         cx,
@@ -1386,7 +1525,7 @@ impl ChangesPanel {
                 weak.update(cx, |this, cx| {
                     this.run(
                         "Stash failed",
-                        Some(done),
+                        Some(Toast::success(done)),
                         move |core| {
                             api::stash::stash_push(
                                 core,
@@ -1437,7 +1576,7 @@ impl ChangesPanel {
                         }
                         this.stash_files = Some((sha.clone(), list));
                     }
-                    Err(e) => this.toast(Toast::error(e).title("Could not load stash"), cx),
+                    Err(e) => this.toast(git_error("Could not load stash", &e, &vec![]), cx),
                 }
                 this.rebuild(cx);
             })
@@ -1466,7 +1605,7 @@ impl ChangesPanel {
                     ),
                     Ok(false) => this.toast(Toast::success(done), cx),
                     Err(e) => this.toast(
-                        Toast::error(e).title(if pop { "Pop failed" } else { "Apply failed" }),
+                        git_error(if pop { "Pop failed" } else { "Apply failed" }, &e, &vec![]),
                         cx,
                     ),
                 }
@@ -1495,9 +1634,9 @@ impl ChangesPanel {
                 weak.update(cx, |this, cx| {
                     this.run(
                         "Drop failed",
-                        Some(format!(
+                        Some(Toast::success(format!(
                             "Stash dropped. To get it back: git stash apply {short}"
-                        )),
+                        ))),
                         move |core| api::stash::stash_drop(core, sha),
                         cx,
                     )
@@ -1532,7 +1671,7 @@ impl ChangesPanel {
                 weak.update(cx, |this, cx| {
                     this.run(
                         "Rename failed",
-                        Some("Stash renamed".into()),
+                        Some(Toast::success("Stash renamed")),
                         move |core| api::stash::stash_rename(core, sha, message),
                         cx,
                     )
@@ -1559,7 +1698,7 @@ impl ChangesPanel {
             move |name, _, cx| {
                 let sha = sha.clone();
                 let done = format!("Switched to new branch {name}");
-                weak.update(cx, |this, cx| this.run("Branch from stash failed", Some(done), move |core| api::stash::stash_branch(core, name, sha).map(|_| ()), cx)).ok();
+                weak.update(cx, |this, cx| this.run("Branch from stash failed", Some(Toast::success(done)), move |core| api::stash::stash_branch(core, name, sha).map(|_| ()), cx)).ok();
             },
         );
     }
@@ -1574,7 +1713,7 @@ impl ChangesPanel {
         let done = format!("Took {path} from the stash");
         self.run(
             "Could not take the file",
-            Some(done),
+            Some(Toast::success(done)),
             move |core| api::stash::stash_restore_file(core, sha, path, untracked),
             cx,
         );
@@ -1603,7 +1742,7 @@ impl ChangesPanel {
                 let toast = match result {
                     Ok(()) => Toast::success("Submodules updated"),
                     Err(e) if e == CANCELLED => Toast::info("Submodule update cancelled"),
-                    Err(e) => Toast::error(e).title("Could not update submodules"),
+                    Err(e) => git_error("Could not update submodules", &e, &vec![]),
                 };
                 this.toast(toast, cx);
                 this.refresh_project(cx);
@@ -1623,40 +1762,44 @@ impl ChangesPanel {
             .unwrap_or_default();
         let go = move |this: &mut Self, cx: &mut Context<Self>| {
             let core = crate::core(cx);
+            let repo = core.repo().ok();
             this.busy = true;
             let kind = kind.clone();
             this._action = cx.spawn(async move |this, cx| {
+                // Finished, the journal's entry is the whole merge or rebase: Undo takes it back.
                 let result = cx
                     .background_spawn(async move {
-                        match which {
-                            "continue" => api::sync::op_continue(&core),
-                            "skip" => api::sync::rebase_skip(&core),
-                            _ => api::sync::op_abort(&core).map(|_| false),
-                        }
+                        tracked(&core, |core| match which {
+                            "continue" => api::sync::op_continue(core),
+                            "skip" => api::sync::rebase_skip(core),
+                            _ => api::sync::op_abort(core).map(|_| false),
+                        })
                     })
                     .await;
                 this.update(cx, |this, cx| {
                     this.busy = false;
                     match result {
-                        Ok(true) => this.toast(
+                        Ok((true, _)) => this.toast(
                             Toast::info("Resolve them to continue.")
                                 .title("Stopped on new conflicts"),
                             cx,
                         ),
-                        Ok(false) if which != "abort" => this.toast(
-                            Toast::success(format!(
+                        Ok((false, entry)) if which != "abort" => {
+                            let done = Toast::success(format!(
                                 "{}{} finished",
                                 kind[..1.min(kind.len())].to_uppercase(),
                                 &kind[1.min(kind.len())..]
-                            )),
-                            cx,
-                        ),
-                        Ok(false) => {}
+                            ));
+                            let ws = this.ctx.workspace.clone();
+                            this.toast(with_undo(done, entry, repo, ws), cx)
+                        }
+                        Ok((false, _)) => {}
                         Err(e) => this.toast(
-                            Toast::error(e).title(format!(
-                                "{} failed",
-                                which[..1].to_uppercase() + &which[1..]
-                            )),
+                            git_error(
+                                format!("{} failed", which[..1].to_uppercase() + &which[1..]),
+                                &e,
+                                &vec![],
+                            ),
                             cx,
                         ),
                     }
@@ -1708,7 +1851,7 @@ impl ChangesPanel {
             let preview = cx.background_spawn(async move { api::patch::patch_preview(&core, text) }).await;
             cx.update(|window, cx| match preview {
                 Err(e) => {
-                    weak.update(cx, |this, cx| this.toast(Toast::error(e).title("Can't apply that patch"), cx)).ok();
+                    weak.update(cx, |this, cx| this.toast(git_error("Can't apply that patch", &e, &vec![]), cx)).ok();
                 }
                 Ok(p) => {
                     let n = p.files.len();
@@ -1725,7 +1868,7 @@ impl ChangesPanel {
                     }
                     let done = if n == 1 { format!("Applied patch to {}", p.files[0].path) } else { format!("Applied patch to {n} files") };
                     dialogs::confirm(window, cx, "Apply patch", question, "Apply", move |_, cx| {
-                        weak.update(cx, |this, cx| this.run("Apply patch failed", Some(done), move |core| api::patch::apply_patch(core, patch).map(|_| ()), cx)).ok();
+                        weak.update(cx, |this, cx| this.run("Apply patch failed", Some(Toast::success(done)), move |core| api::patch::apply_patch(core, patch).map(|_| ()), cx)).ok();
                     });
                 }
             })
@@ -1738,12 +1881,22 @@ impl ChangesPanel {
     /// Changes in place of the uncommitted list: what the branch changed since it left
     /// `reference`, committed or not.
     pub fn start_review(&mut self, reference: String, cx: &mut Context<Self>) {
+        self.show_review(reference.clone(), cx);
+        self.load_review(reference, cx);
+    }
+
+    /// The review against `reference` in place of the list, its files still to load.
+    fn show_review(&mut self, reference: String, cx: &mut Context<Self>) {
         let mut label = reference
             .trim_start_matches("refs/heads/")
             .trim_start_matches("refs/remotes/")
             .to_string();
         if label.is_empty() {
             label = "a base branch".into();
+        }
+        // The filter narrows the uncommitted lists, which the review takes the place of.
+        if self.filter.take().is_some() {
+            self.commit_facts(cx);
         }
         self.review = Some(Review {
             reference: reference.clone(),
@@ -1753,9 +1906,8 @@ impl ChangesPanel {
             error: None,
         });
         if let Some(ws) = self.workspace() {
-            ws.update(cx, |ws, cx| ws.set_review_base(Some(reference.clone()), cx));
+            ws.update(cx, |ws, cx| ws.set_review_base(Some(reference), cx));
         }
-        self.load_review(reference, cx);
         self.load_branches(cx);
         self.rebuild(cx);
     }
@@ -1907,6 +2059,31 @@ fn change_kind(status: &str) -> ChangeKind {
     ChangeKind::from_letter(status.chars().next().unwrap_or('M'))
 }
 
+/// What a discard says once done, `one` naming the file when it's alone: what went, and that
+/// the old versions (`copied` of the `restorable` files) and untracked files are in the Trash.
+fn discarded(one: Option<&str>, restorable: usize, copied: usize, untracked: usize) -> Toast {
+    if restorable == 0 {
+        let what = one.map_or_else(|| files(untracked), str::to_string);
+        return Toast::success(format!("Moved {what} to the Trash"));
+    }
+    let what = format!(
+        "Discarded {}",
+        one.map_or_else(|| files(restorable), str::to_string)
+    );
+    let trash = match (copied, untracked) {
+        (0, 0) => return Toast::success(what),
+        (0, n) => format!("{} git didn't track went to the Trash.", files(n)),
+        (1, 0) => "The old version is in the Trash.".to_string(),
+        (_, 0) => "The old versions are in the Trash.".to_string(),
+        (c, n) => format!(
+            "The old {} in the Trash, with {} git didn't track.",
+            if c == 1 { "version is" } else { "versions are" },
+            files(n)
+        ),
+    };
+    Toast::success(trash).title(what)
+}
+
 /// A stash as the commit its files' diffs are read from: `sha`, against its first parent.
 fn stash_commit(s: &StashInfo, sha: &str) -> Commit {
     Commit {
@@ -2046,9 +2223,10 @@ impl ChangesPanel {
                             .child(inside.len().to_string()),
                     )
                     .child(div().flex_1())
+                    // On the hovered row, and on the keys' row.
                     .child(
                         h_flex()
-                            .invisible()
+                            .when(!at_cursor, |el| el.invisible())
                             .group_hover("row", |s| s.visible())
                             .children(self.actions_for(kind, rows.clone(), true, cx)),
                     )
@@ -2570,6 +2748,7 @@ impl ChangesPanel {
         let key = selection_key(&sel);
         let row_key = self.keys[ix].clone();
         let active = self.open_key.as_deref() == Some(key.as_str());
+        let shown = active || at_cursor;
         let picked = self.picked.as_ref().is_some_and(|p| p.0.contains(&key));
         let viewed = ws.is_some_and(|ws| is_viewed(ws.read(cx), &sel));
         let is_review = matches!(sel, Selection::Branch { .. });
@@ -2669,8 +2848,11 @@ impl ChangesPanel {
                 )
             })
             .child(div().flex_1())
+            // The actions show on the hovered row, the keys' row and the open file's, in place
+            // of the line counts.
             .child(
                 div()
+                    .when(shown && !is_review, |el| el.invisible())
                     .group_hover("row", |s| s.invisible())
                     .child(LineCounts::new(file.additions, file.deletions)),
             )
@@ -2679,7 +2861,7 @@ impl ChangesPanel {
                     h_flex()
                         .absolute()
                         .right(px(22.))
-                        .invisible()
+                        .when(!shown, |el| el.invisible())
                         .group_hover("row", |s| s.visible())
                         .children(self.actions_for(kind, targets.clone(), false, cx)),
                 )
@@ -2719,8 +2901,6 @@ impl ChangesPanel {
         );
         let weak = cx.entity().downgrade();
         let (menu_sha, menu_text) = (sha.clone(), text.clone());
-        let when =
-            gitviber_ui::widgets::relative_time(s.timestamp, gitviber_ui::widgets::now_unix());
         h_flex()
             .id(("changes-row", ix))
             .h(px(ROW))
@@ -2746,20 +2926,21 @@ impl ChangesPanel {
             .child(Icon::new(Lucide::Archive).xsmall().text_color(t.subtle))
             .child(div().flex_1().min_w_0().truncate().child(text.clone()))
             .child(
-                div()
+                h_flex()
+                    .gap_1()
+                    .when(at_cursor, |el| el.invisible())
                     .group_hover("row", |s| s.invisible())
                     .text_size(px(10.5))
                     .text_color(t.subtle)
-                    .child(match &s.branch {
-                        Some(b) => format!("{b} · {when}"),
-                        None => when,
-                    }),
+                    .when_some(s.branch.clone(), |el, b| el.child(b).child("·"))
+                    // Kept current: "just now" turns into "5m ago" while the window sits idle.
+                    .child(RelativeTime::new(s.timestamp)),
             )
             .child(
                 h_flex()
                     .absolute()
                     .right_2()
-                    .invisible()
+                    .when(!at_cursor, |el| el.invisible())
                     .group_hover("row", |s| s.visible())
                     .child(row_button(
                         format!("apply-{ix}"),
@@ -2940,12 +3121,13 @@ impl ChangesPanel {
             )
             .child(
                 div()
+                    .when(active || at_cursor, |el| el.invisible())
                     .group_hover("row", |s| s.invisible())
                     .child(LineCounts::new(file.additions, file.deletions)),
             )
             .child(
                 h_flex()
-                    .invisible()
+                    .when(!active && !at_cursor, |el| el.invisible())
                     .group_hover("row", |s| s.visible())
                     .child(
                         row_button(
@@ -3165,6 +3347,56 @@ impl ChangesPanel {
         )
     }
 
+    /// List or tree, by name or newest first.
+    fn view_menu(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let view = self.view;
+        let weak = cx.entity().downgrade();
+        Button::new("view-menu")
+            .ghost()
+            .xsmall()
+            .icon(if view.tree {
+                Lucide::ListTree
+            } else {
+                Lucide::List
+            })
+            .tooltip("View and sort")
+            .dropdown_menu(move |menu, _, _| {
+                let set = |w: WeakEntity<ChangesPanel>, f: fn(&mut ChangesView)| {
+                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                        w.update(cx, |this, cx| {
+                            let mut next = this.view;
+                            f(&mut next);
+                            this.set_view(next, cx);
+                        })
+                        .ok();
+                    }
+                };
+                menu.label("View")
+                    .item(
+                        PopupMenuItem::new("List")
+                            .checked(!view.tree)
+                            .on_click(set(weak.clone(), |v| v.tree = false)),
+                    )
+                    .item(
+                        PopupMenuItem::new("Tree")
+                            .checked(view.tree)
+                            .on_click(set(weak.clone(), |v| v.tree = true)),
+                    )
+                    .separator()
+                    .label("Sort by")
+                    .item(
+                        PopupMenuItem::new("Name")
+                            .checked(!view.recent)
+                            .on_click(set(weak.clone(), |v| v.recent = false)),
+                    )
+                    .item(
+                        PopupMenuItem::new("Recently Modified")
+                            .checked(view.recent)
+                            .on_click(set(weak.clone(), |v| v.recent = true)),
+                    )
+            })
+    }
+
     fn render_summary(&self, t: &AppTheme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let ws = self.workspace()?;
         let (sels, list): (Vec<Selection>, Vec<Arc<FileChange>>) = match &self.review {
@@ -3193,6 +3425,8 @@ impl ChangesPanel {
         let (add, del) = sum_lines(list.iter().map(|f| f.as_ref()));
         let reviewed = sels.iter().filter(|s| is_viewed(ws.read(cx), s)).count();
         let frac = reviewed as f32 / n as f32;
+        // It orders the uncommitted lists; a review's stays as git gives it.
+        let view_menu = self.review.is_none().then(|| self.view_menu(cx));
         Some(
             v_flex()
                 .flex_none()
@@ -3223,6 +3457,7 @@ impl ChangesPanel {
                                     }),
                             )
                         })
+                        .children(view_menu)
                         .child(div().flex_1())
                         .child(
                             h_flex()
@@ -3269,64 +3504,49 @@ impl Render for ChangesPanel {
                 .update(cx, |b, cx| b.set_facts(facts, window, cx));
         }
         let t = cx.app_theme().clone();
-        let view = self.view;
-        let weak = cx.entity().downgrade();
-        let toolbar = h_flex()
-            .flex_none()
-            .gap_1()
-            .px_2()
-            .py_1p5()
-            .child(
-                div()
-                    .flex_1()
-                    .child(Input::new(&self.filter).small().cleanable(true)),
-            )
-            .child(
-                Button::new("view-menu")
-                    .ghost()
-                    .xsmall()
-                    .icon(if view.tree {
-                        Lucide::ListTree
-                    } else {
-                        Lucide::List
-                    })
-                    .tooltip("View and sort")
-                    .dropdown_menu(move |menu, _, _| {
-                        let set = |w: WeakEntity<ChangesPanel>, f: fn(&mut ChangesView)| {
-                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                w.update(cx, |this, cx| {
-                                    let mut next = this.view;
-                                    f(&mut next);
-                                    this.set_view(next, cx);
-                                })
-                                .ok();
-                            }
-                        };
-                        menu.label("View")
-                            .item(
-                                PopupMenuItem::new("List")
-                                    .checked(!view.tree)
-                                    .on_click(set(weak.clone(), |v| v.tree = false)),
-                            )
-                            .item(
-                                PopupMenuItem::new("Tree")
-                                    .checked(view.tree)
-                                    .on_click(set(weak.clone(), |v| v.tree = true)),
-                            )
-                            .separator()
-                            .label("Sort by")
-                            .item(
-                                PopupMenuItem::new("Name")
-                                    .checked(!view.recent)
-                                    .on_click(set(weak.clone(), |v| v.recent = false)),
-                            )
-                            .item(
-                                PopupMenuItem::new("Recently Modified")
-                                    .checked(view.recent)
-                                    .on_click(set(weak.clone(), |v| v.recent = true)),
-                            )
-                    }),
-            );
+        let filter = self.filter.as_ref().map(|f| {
+            h_flex()
+                .id("changes-filter")
+                .flex_none()
+                .px_2p5()
+                .border_b_1()
+                .border_color(t.border)
+                // Esc clears, then closes; ↓ or ↵ go on to the rows it leaves.
+                .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                    let Some(f) = &this.filter else { return };
+                    match e.keystroke.key.as_str() {
+                        "escape" if f.input.read(cx).value().is_empty() => {
+                            this.close_filter(window, cx)
+                        }
+                        "escape" => {
+                            let input = f.input.clone();
+                            // set_value says nothing of the change.
+                            input.update(cx, |s, cx| s.set_value("", window, cx));
+                            this.rebuild(cx);
+                            this.commit_facts(cx);
+                        }
+                        "down" | "enter" => this.focus.focus(window, cx),
+                        _ => return,
+                    }
+                    cx.stop_propagation();
+                }))
+                // The field's own padding spaces it from the icon.
+                .child(Icon::new(Lucide::Search).small().text_color(t.subtle))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(Input::new(&f.input).small().appearance(false)),
+                )
+                .child(
+                    Button::new("close-filter")
+                        .ghost()
+                        .xsmall()
+                        .icon(Lucide::X)
+                        .tooltip("Close filter")
+                        .on_click(cx.listener(|this, _, window, cx| this.close_filter(window, cx))),
+                )
+        });
         let count = self.rows.len();
         let list = uniform_list(
             "changes-rows",
@@ -3352,7 +3572,7 @@ impl Render for ChangesPanel {
             .size_full()
             .bg(t.chrome(t.sidebar))
             .text_color(t.foreground)
-            .child(toolbar)
+            .children(filter)
             .children(banner)
             .children(self.bisect.clone())
             .children(review_bar)
@@ -3453,6 +3673,13 @@ impl Render for ChangesPanel {
                     this.open_row_menu(window, cx);
                     true
                 })
+            }))
+            .on_action(cx.listener(|this, _: &editor::Find, window, cx| {
+                if this.review.is_none() {
+                    this.open_filter(window, cx);
+                } else {
+                    cx.propagate();
+                }
             }))
             .on_action(cx.listener(|this, _: &Escape, _, cx| {
                 if this.picked.take().is_some() {
@@ -4371,23 +4598,121 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The filter row is there only after Find (⌘F) in the panel; Esc clears it, then closes it.
     #[gpui_kit::test]
-    fn the_commit_button_counts_the_files_the_filter_hides(cx: &mut TestAppContext) {
+    fn find_opens_the_filter_and_the_commit_button_counts_what_it_hides(cx: &mut TestAppContext) {
         let dir = repo("hidden");
         setup(cx);
         let (_ws, host, cx) = open(cx, &dir);
         let p = panel(&host, cx);
         let commit = p.read_with(cx, |p, _| p.commit.clone());
-        assert_eq!(commit.read_with(cx, |b, _| b.hidden()), 0);
+        let hidden = |cx: &mut VisualTestContext| commit.read_with(cx, |b, _| b.hidden());
+        assert!(p.read_with(cx, |p, _| p.filter.is_none()));
         cx.update(|window, cx| {
-            let filter = p.read(cx).filter.focus_handle(cx);
-            filter.focus(window, cx)
+            let focus = p.read(cx).focus.clone();
+            focus.focus(window, cx)
         });
+        // ⌘F, which the app's root binds.
+        cx.dispatch_action(editor::Find);
         cx.simulate_input("a.txt");
         cx.run_until_parked();
         // Commit all takes a.txt, b.txt and c.txt; only a.txt is shown.
-        assert_eq!(commit.read_with(cx, |b, _| b.hidden()), 2);
+        assert_eq!(hidden(cx), 2);
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert_eq!(hidden(cx), 0);
+        assert!(
+            p.read_with(cx, |p, _| p.filter.is_some()),
+            "the first Esc clears it"
+        );
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let p = p.read(cx);
+            assert!(p.filter.is_none() && p.focus.is_focused(window));
+        });
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// At launch the panel is built while the repo is still opening: it reads once it's open,
+    /// and "No repository is open" never shows.
+    #[gpui_kit::test]
+    fn a_panel_built_while_the_repo_opens_reads_once_open(cx: &mut TestAppContext) {
+        let dir = repo("launch");
+        setup(cx);
+        cx.update(|cx| {
+            // Only the app's core opens a project: the panel reads that one too.
+            let core = gitviber_ui::install_core(cx);
+            cx.set_global(crate::TestCore(core));
+        });
+        let ws = cx.update(|cx| cx.new(Workspace::new));
+        let (host, cx) = cx.add_window_view(|_, _| Host {
+            panel: None,
+            center: None,
+        });
+        let errors = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        cx.update(|window, cx| {
+            Workspace::register_window(&ws, window, cx);
+            ws.update(cx, |ws, cx| ws.open_project(dir.clone(), window, cx));
+            let ctx = ws.update(cx, |ws, cx| ws.context(cx));
+            assert!(!ctx.project.as_ref().unwrap().read(cx).is_open());
+            let panel = cx.new(|cx| ChangesPanel::new(&ctx, window, cx));
+            // Each state it's drawn in.
+            let seen = errors.clone();
+            cx.observe(&panel, move |p, cx| {
+                seen.borrow_mut().extend(p.read(cx).error.clone())
+            })
+            .detach();
+            // A read now beats the open on real threads and fails; this executor would run the
+            // open first, so what counts is that none started.
+            assert!(!panel.read(cx).reading);
+            host.update(cx, |h, cx| {
+                h.panel = Some(panel);
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+        let p = panel(&host, cx);
+        assert_eq!(
+            p.read_with(cx, |p, _| paths(&p.lists.unstaged)),
+            ["a.txt", "b.txt", "c.txt"]
+        );
+        assert!(errors.borrow().is_empty(), "{:?}", errors.borrow());
+        assert!(p.read_with(cx, |p, _| p.error.is_none()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// HEAD's commit comes in after the lists, and again only once HEAD moves; "pushed" (an
+    /// amend needs a force push) comes from the branch's place against its push target.
+    #[gpui_kit::test]
+    fn head_and_pushed_follow_the_branch(cx: &mut TestAppContext) {
+        let dir = repo("pushed");
+        let remote = dir.with_extension("remote");
+        let _ = std::fs::remove_dir_all(&remote);
+        let url = remote.to_string_lossy().into_owned();
+        git(&dir, &["init", "-q", "--bare", &url]);
+        git(&dir, &["remote", "add", "origin", &url]);
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        let state = |cx: &mut VisualTestContext| {
+            p.read_with(cx, |p, _| {
+                (p.head.as_ref().map(|h| h.sha.clone()), p.pushed)
+            })
+        };
+        let head = || git(&dir, &["rev-parse", "HEAD"]).trim().to_string();
+        let first = head();
+        assert_eq!(state(cx), (Some(first.clone()), false), "not on origin yet");
+        git(&dir, &["push", "-q", "-u", "origin", "main"]);
+        p.update(cx, |p, cx| p.read(cx));
+        cx.run_until_parked();
+        assert_eq!(state(cx), (Some(first), true));
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "second"]);
+        p.update(cx, |p, cx| p.read(cx));
+        cx.run_until_parked();
+        assert_eq!(state(cx), (Some(head()), false));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
     }
 
     #[gpui_kit::test]
@@ -4603,6 +4928,407 @@ mod tests {
             ]
         );
         assert!(!ws.read_with(cx, |ws, _| ws.can_reopen_tab()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The box's message and description.
+    fn message(commit: &Entity<CommitBox>, cx: &mut VisualTestContext) -> (String, String) {
+        commit.read_with(cx, |b, cx| (b.summary_text(cx), b.body_text(cx)))
+    }
+
+    #[gpui_kit::test]
+    fn a_commit_stays_with_the_worktree_it_was_made_in(cx: &mut TestAppContext) {
+        let dir = repo("commit-stays");
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        let commit = p.read_with(cx, |p, _| p.commit.clone());
+        let pushed = Rc::new(Cell::new(0));
+        let count = pushed.clone();
+        cx.update(|_, cx| {
+            cx.on_action(move |_: &git::Push, _| count.set(count.get() + 1));
+        });
+        let a = dir.to_string_lossy().into_owned();
+
+        // Running, the commit holds the worktree open (the switch guard waits for it).
+        cx.update(|window, cx| {
+            commit.update(cx, |b, cx| {
+                b.write_message("Add things", "", window, cx);
+                b.commit(None, window, cx);
+                assert!(b.committing());
+            })
+        });
+        cx.run_until_parked();
+        assert!(!commit.read_with(cx, |b, _| b.committing()));
+        assert_eq!(message(&commit, cx), (String::new(), String::new()));
+        let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+        let done = toasts
+            .iter()
+            .find(|t| t.title.as_deref() == Some("Committed"));
+        assert_eq!(
+            done.and_then(|t| t.action.as_ref())
+                .map(|a| a.label.clone()),
+            Some("Undo".into()),
+            "the commit's toast takes it back"
+        );
+
+        // Another worktree came in while the next one ran (a path past the guard): its box and
+        // draft stay, the commit's draft goes, and nothing is pushed.
+        let b_root = "/nonexistent/gitviber-worktree-b".to_string();
+        cx.update(|window, cx| {
+            commit.update(cx, |b, cx| {
+                b.write_message("A's message", "", window, cx);
+                let mut facts = b.facts().clone();
+                facts.root = b_root.clone();
+                b.set_facts(facts, window, cx);
+                b.write_message("B's draft", "", window, cx);
+            })
+        });
+        let started = || crate::commit::Started {
+            repo: Some(PathBuf::from("/nonexistent/gitviber-worktree-a")),
+            root: a.clone(),
+            summary: "A's message".into(),
+            then: Some(crate::commit::Then::Push),
+            skipped: 0,
+            amended: false,
+        };
+        cx.update(|window, cx| {
+            commit.update(cx, |b, cx| b.committed(Ok(Some(7)), started(), window, cx))
+        });
+        cx.run_until_parked();
+        assert_eq!(message(&commit, cx).0, "B's draft");
+        assert_eq!(
+            cx.update(|_, cx| store::draft(&b_root, cx))
+                .map(|d| d.summary),
+            Some("B's draft".into())
+        );
+        assert_eq!(cx.update(|_, cx| store::draft(&a, cx)), None);
+        assert_eq!(pushed.get(), 0, "B isn't A's to push");
+        let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+        assert!(
+            toasts
+                .iter()
+                .any(|t| t.title.as_deref() == Some("Not pushed"))
+        );
+        // Its Undo is for A's journal: not offered in B.
+        let done = toasts
+            .iter()
+            .find(|t| t.title.as_deref() == Some("Committed"));
+        assert!(done.is_some_and(|t| t.action.is_none()));
+
+        // Where it was made, Commit and Push pushes.
+        let here = crate::commit::Started {
+            repo: cx.update(|_, cx| crate::core(cx).repo().ok()),
+            root: b_root.clone(),
+            ..started()
+        };
+        cx.update(|window, cx| commit.update(cx, |b, cx| b.committed(Ok(None), here, window, cx)));
+        cx.run_until_parked();
+        assert_eq!(pushed.get(), 1);
+        assert_eq!(message(&commit, cx).0, "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn unstaging_a_rename_unstages_both_paths(cx: &mut TestAppContext) {
+        let dir = repo("unrename");
+        git(&dir, &["mv", "b.txt", "d.txt"]);
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        let renamed = p.read_with(cx, |p, _| p.lists.staged.clone());
+        assert_eq!(
+            renamed
+                .iter()
+                .map(|f| (f.status.as_str(), f.old_path.as_deref()))
+                .collect::<Vec<_>>(),
+            [("R", Some("b.txt"))]
+        );
+        p.update(cx, |p, cx| p.unstage_files(renamed, cx));
+        cx.run_until_parked();
+        p.update(cx, |p, cx| p.read(cx));
+        cx.run_until_parked();
+        assert!(
+            p.read_with(cx, |p, _| p.lists.staged.is_empty()),
+            "b.txt's deletion stayed staged"
+        );
+        let status = git(&dir, &["status", "--porcelain"]);
+        assert!(
+            status.contains(" D b.txt") && status.contains("?? d.txt"),
+            "{status}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Open All Changes reads a file again when what its diff is against moves, though the file
+    /// and its status don't: the index under a reset, HEAD under a soft one.
+    #[test]
+    fn a_reset_moves_the_list_diffs_signature() {
+        use crate::model::list::diff_sig;
+        let dir = repo("reset-sig");
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "second"]);
+        let status = || gitviber_core::git::status(&dir).unwrap();
+        let entry = |list: Vec<FileChange>| list.into_iter().find(|f| f.path == "a.txt").unwrap();
+        let sigs = |f: &FileChange| {
+            let against = f.index_oid.as_deref().unwrap_or("");
+            (file_sig(f), diff_sig(f, against))
+        };
+        // Staged, then edited again: the unstaged change is against the staged version.
+        git(&dir, &["add", "a.txt"]);
+        std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        let before = sigs(&entry(status().unstaged));
+        git(&dir, &["reset", "-q"]);
+        let after = sigs(&entry(status().unstaged));
+        assert_eq!(before.0, after.0, "the file itself didn't change");
+        assert_ne!(before.1, after.1);
+        // Staged under a soft reset: the same blob, against another HEAD.
+        git(&dir, &["add", "a.txt"]);
+        let s = status();
+        let before = diff_sig(&entry(s.staged), s.head.as_deref().unwrap());
+        git(&dir, &["reset", "-q", "--soft", "HEAD~1"]);
+        let s = status();
+        let after = diff_sig(&entry(s.staged), s.head.as_deref().unwrap());
+        assert_ne!(before, after);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn an_aborted_squash_takes_its_message_with_it(cx: &mut TestAppContext) {
+        let dir = repo("squash-abort");
+        git(&dir, &["checkout", "-q", "-b", "x"]);
+        std::fs::write(dir.join("x.txt"), "x\n").unwrap();
+        git(&dir, &["add", "x.txt"]);
+        git(&dir, &["commit", "-q", "-m", "Add x"]);
+        git(&dir, &["checkout", "-q", "main"]);
+        git(&dir, &["merge", "-q", "--squash", "x"]);
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        let commit = p.read_with(cx, |p, _| p.commit.clone());
+        let root = dir.to_string_lossy().into_owned();
+        assert!(
+            message(&commit, cx).0.starts_with("Squashed commit"),
+            "{:?}",
+            message(&commit, cx)
+        );
+        // As git prepared it: not the user's draft.
+        assert_eq!(cx.update(|_, cx| store::draft(&root, cx)), None);
+        git(&dir, &["reset", "-q", "--merge"]);
+        p.update(cx, |p, cx| p.read(cx));
+        cx.run_until_parked();
+        assert_eq!(message(&commit, cx), (String::new(), String::new()));
+        assert_eq!(cx.update(|_, cx| store::draft(&root, cx)), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_held_index_lock_offers_removing_it(cx: &mut TestAppContext) {
+        let dir = repo("index-lock");
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        std::fs::write(dir.join(".git/index.lock"), "").unwrap();
+        let p = panel(&host, cx);
+        p.update(cx, |p, cx| {
+            let a = p.lists.unstaged[0].clone();
+            p.stage(vec![a], cx);
+        });
+        cx.run_until_parked();
+        let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+        let failed = toasts
+            .iter()
+            .find(|t| t.title.as_deref() == Some("Stage failed"))
+            .expect("a failure toast");
+        assert!(
+            failed
+                .message
+                .starts_with("Another git command holds the index lock"),
+            "{}",
+            failed.message
+        );
+        assert!(
+            failed
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("index.lock"))
+        );
+        assert_eq!(
+            failed.action.as_ref().map(|a| a.label.clone()),
+            Some("Remove lock".into())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_discard_says_where_the_old_version_went(cx: &mut TestAppContext) {
+        assert_eq!(
+            (
+                discarded(Some("a.txt"), 1, 1, 0).title,
+                discarded(Some("a.txt"), 1, 1, 0).message
+            ),
+            (
+                Some("Discarded a.txt".into()),
+                "The old version is in the Trash.".into()
+            )
+        );
+        assert_eq!(
+            discarded(None, 2, 1, 1).message.as_ref(),
+            "The old version is in the Trash, with 1 file git didn't track."
+        );
+        assert_eq!(
+            discarded(Some("gone.txt"), 1, 0, 0).message.as_ref(),
+            "Discarded gone.txt"
+        );
+        assert_eq!(
+            discarded(None, 0, 0, 2).message.as_ref(),
+            "Moved 2 files to the Trash"
+        );
+
+        let dir = repo("discard-undo");
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        // One file of this throwaway repo goes to the Trash.
+        p.update(cx, |p, cx| {
+            let done = discarded(Some("a.txt"), 1, 1, 0);
+            p.discard_now(vec!["a.txt".into()], vec![], Some(done), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one\n");
+        let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+        let done = toasts
+            .iter()
+            .find(|t| t.title.as_deref() == Some("Discarded a.txt"))
+            .expect("a done toast");
+        assert_eq!(done.message.as_ref(), "The old version is in the Trash.");
+        assert_eq!(
+            done.action.as_ref().map(|a| a.label.clone()),
+            Some("Undo".into())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A worktree switch brings back that worktree's branch review (or none), and leaves the
+    /// one it left saved with it.
+    #[gpui_kit::test]
+    fn a_branch_review_follows_the_worktree_switch(cx: &mut TestAppContext) {
+        let dir = repo("review-switch");
+        git(&dir, &["checkout", "-q", "-b", "feature"]);
+        git(&dir, &["branch", "later"]);
+        setup(cx);
+        let ws = cx.update(|cx| cx.new(Workspace::new));
+        let (host, cx) = cx.add_window_view(|_, _| Host {
+            panel: None,
+            center: None,
+        });
+        let core = cx.update(|_, cx| crate::core(cx));
+        api::repo::open_repo(&core, dir.to_string_lossy().into_owned()).unwrap();
+        let (a, b) = (dir.clone(), PathBuf::from("/nonexistent/gitviber-review-b"));
+        cx.update(|window, cx| {
+            Workspace::register_window(&ws, window, cx);
+            // No core of the app's: the project stays as it is, and the panel reads TestCore.
+            ws.update(cx, |ws, cx| ws.open_project(a.clone(), window, cx));
+            let ctx = ws.update(cx, |ws, cx| ws.context(cx));
+            let panel = cx.new(|cx| ChangesPanel::new(&ctx, window, cx));
+            host.update(cx, |h, cx| {
+                h.panel = Some(panel);
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+        let p = panel(&host, cx);
+        let project = ws.read_with(cx, |ws, _| ws.project().cloned().unwrap());
+        let switch = |from: &Path, to: &Path, cx: &mut VisualTestContext| {
+            let (from, to) = (from.to_path_buf(), to.to_path_buf());
+            project.update(cx, |_, cx| cx.emit(ProjectEvent::Switched { from, to }));
+            cx.run_until_parked();
+        };
+        let reviewed = |cx: &mut VisualTestContext| {
+            p.read_with(cx, |p, _| p.review.as_ref().map(|r| r.reference.clone()))
+        };
+        p.update(cx, |p, cx| p.start_review("refs/heads/main".into(), cx));
+        cx.run_until_parked();
+        switch(&a, &b, cx);
+        assert_eq!(reviewed(cx), None, "B has no review");
+        p.update(cx, |p, cx| p.start_review("refs/heads/later".into(), cx));
+        cx.run_until_parked();
+        switch(&b, &a, cx);
+        assert_eq!(reviewed(cx).as_deref(), Some("refs/heads/main"));
+        assert!(
+            p.read_with(cx, |p, _| p.review.as_ref().unwrap().base.is_some()),
+            "its files are read"
+        );
+        switch(&a, &b, cx);
+        assert_eq!(reviewed(cx).as_deref(), Some("refs/heads/later"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Claude Code too old for the lean flags refuses them: ✦ asks once more without them,
+    /// the model kept, as a guided review does.
+    #[gpui_kit::test]
+    fn a_suggestion_retries_an_old_claude_without_the_lean_flags(cx: &mut TestAppContext) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = repo("suggest-old");
+        let bin = dir.with_extension("bin");
+        let _ = std::fs::remove_dir_all(&bin);
+        std::fs::create_dir_all(&bin).unwrap();
+        let fake = bin.join("claude");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nhere=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\ncat >/dev/null\nlean=no; model=no\nfor a in \"$@\"; do [ \"$a\" = --strict-mcp-config ] && lean=yes; [ \"$a\" = --model ] && model=yes; done\necho \"$lean $model\" >> \"$here/calls\"\n[ $lean = yes ] && { echo \"error: unknown option '--strict-mcp-config'\" >&2; exit 1; }\nprintf 'Fix the thing\\n\\nWhy it was broken.\\n'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:/usr/bin:/bin", bin.display());
+        // SAFETY: each test runs in its own process (nextest), before any thread reads it.
+        unsafe { std::env::set_var("PATH", &path) };
+        // As core searches: Homebrew's, then this PATH. The real claude must never run.
+        let first = ["/opt/homebrew/bin", "/usr/local/bin"]
+            .into_iter()
+            .map(PathBuf::from)
+            .chain(std::env::split_paths(&path))
+            .map(|d| d.join("claude"))
+            .find(|p| p.exists());
+        assert_eq!(
+            first.as_deref(),
+            Some(fake.as_path()),
+            "a real claude would run"
+        );
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let line = cx.update(|_, cx| gitviber_ui::Settings::get(cx).suggest_command.clone());
+        assert_eq!(line, "claude -p");
+        let commit = panel(&host, cx).read_with(cx, |p, _| p.commit.clone());
+        cx.update(|window, cx| commit.update(cx, |b, cx| b.suggest(window, cx)));
+        cx.run_until_parked();
+        assert_eq!(
+            message(&commit, cx),
+            ("Fix the thing".into(), "Why it was broken.".into())
+        );
+        let calls = std::fs::read_to_string(bin.join("calls")).unwrap();
+        assert_eq!(
+            calls, "yes yes\nno yes\n",
+            "a refused try, then one without"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&bin);
+    }
+
+    /// Code in a conflict is drawn as in the diffs: a 2-space file widened to 4 columns a level.
+    #[gpui_kit::test]
+    fn the_conflict_view_widens_indentation_as_the_diffs_do(cx: &mut TestAppContext) {
+        let dir = conflicted(
+            "conflict-indent",
+            "a\n  B1\n    c\n  d\n",
+            "a\n  B2\n    c\n  d\n",
+        );
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let view = conflict_view(&host, "UU", cx);
+        assert_eq!(view.read_with(cx, |v, _| v.indent_unit_for_test()), Some(2));
+        assert_eq!(
+            gitviber_diff::model::indent::Shown::new("  B1", 2).text,
+            "    B1"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

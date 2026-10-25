@@ -5,6 +5,7 @@
 use crate::conflict::ConflictView;
 use crate::panel::{self, ChangesPanel};
 use crate::store;
+use crate::toasts::git_error;
 use gitviber_core::api;
 use gitviber_core::git::FileChange;
 use gitviber_diff::{
@@ -249,8 +250,11 @@ impl ChangeTab {
         self._load = cx.spawn(async move |_, cx| {
             let files = cx
                 .background_spawn(async move {
+                    // With each file, what its diff is against: the index under an unstaged
+                    // change, HEAD under a staged one; a reset moves them alone.
                     match of {
                         Some(staged) => api::changes::status(&core).map(|s| {
+                            let head = s.head.clone().unwrap_or_default();
                             let (list, compare) = if staged {
                                 (s.staged, Compare::Staged)
                             } else {
@@ -258,7 +262,14 @@ impl ChangeTab {
                             };
                             list.into_iter()
                                 .filter(|f| f.nested.is_none())
-                                .map(|f| (f, compare.clone()))
+                                .map(|f| {
+                                    let against = if staged {
+                                        head.clone()
+                                    } else {
+                                        f.index_oid.clone().unwrap_or_default()
+                                    };
+                                    (f, compare.clone(), against)
+                                })
                                 .collect::<Vec<_>>()
                         }),
                         None => match review {
@@ -266,7 +277,11 @@ impl ChangeTab {
                                 let compare = Compare::Base {
                                     base: r.base.clone(),
                                 };
-                                r.files.into_iter().map(|f| (f, compare.clone())).collect()
+                                let against = r.base.clone();
+                                r.files
+                                    .into_iter()
+                                    .map(|f| (f, compare.clone(), against.clone()))
+                                    .collect()
                             }),
                             None => Ok(vec![]),
                         },
@@ -282,7 +297,7 @@ impl ChangeTab {
                 };
                 let list: Vec<StackedFile> = files
                     .into_iter()
-                    .map(|(f, compare)| {
+                    .map(|(f, compare, against)| {
                         let file = Arc::new(f.clone());
                         let sel = match &compare {
                             Compare::Staged => Selection::Staged { file },
@@ -296,7 +311,7 @@ impl ChangeTab {
                         };
                         StackedFile {
                             viewed: viewed(&sel),
-                            sig: crate::model::list::file_sig(&f),
+                            sig: crate::model::list::diff_sig(&f, &against),
                             additions: f.additions,
                             deletions: f.deletions,
                             source: DiffSource::new(compare, f.path.clone())
@@ -393,12 +408,14 @@ impl ChangeTab {
                 }
             }
             DiffEvent::Notice(n) => {
+                let detail = n.detail.clone().unwrap_or_default();
                 let toast = match n.level {
-                    NoticeLevel::Error => Toast::error(n.detail.clone().unwrap_or_default()),
-                    NoticeLevel::Success => Toast::success(n.detail.clone().unwrap_or_default()),
-                    NoticeLevel::Info => Toast::info(n.detail.clone().unwrap_or_default()),
+                    // A line action's git failure, explained (another git holds the index lock).
+                    NoticeLevel::Error => git_error(n.title.clone(), &detail, &vec![]),
+                    NoticeLevel::Success => Toast::success(detail).title(n.title.clone()),
+                    NoticeLevel::Info => Toast::info(detail).title(n.title.clone()),
                 };
-                self.toast(toast.title(n.title.clone()), cx);
+                self.toast(toast, cx);
             }
             DiffEvent::LinesChanged | DiffEvent::Saved(_) => self.refresh_project(cx),
             DiffEvent::Edited => self.keep_edit_soon(cx),

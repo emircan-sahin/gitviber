@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use gitviber_core::api;
 use gitviber_core::github::Pull;
+use gitviber_review::model::agent::is_unknown_option;
 use gitviber_ui::Settings;
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{Toast, Workspace};
@@ -500,13 +501,27 @@ impl CreatePullDialog {
         };
         let s = Settings::get(cx);
         let command = command_line(&s.suggest_command, &s.suggest_models, &s.suggest_efforts);
+        let plain = gitviber_ui::settings::command_line(
+            &s.suggest_command,
+            &s.suggest_models,
+            &s.suggest_efforts,
+            false,
+            false,
+        );
         let program = program_of(&s.suggest_command).to_string();
         let core = crate::core(cx);
         self.suggesting = true;
         self._suggest = cx.spawn_in(window, async move |this, cx| {
             let out = cx
                 .background_spawn(async move {
-                    api::changes::suggest_pull(&core, command, PULL_PROMPT.into(), base_ref)
+                    lean_or_plain(command, plain, |line| {
+                        api::changes::suggest_pull(
+                            &core,
+                            line,
+                            PULL_PROMPT.into(),
+                            base_ref.clone(),
+                        )
+                    })
                 })
                 .await;
             this.update_in(cx, |this, window, cx| {
@@ -1032,5 +1047,50 @@ impl Render for AddRemoteDialog {
                         .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
                 ),
             )
+    }
+}
+
+/// Asks with `line`; a Claude Code older than the lean flags refuses them, and is asked once more
+/// with `plain`, the line without them, as a guided review does.
+fn lean_or_plain(
+    line: String,
+    plain: String,
+    ask: impl Fn(String) -> Result<String, String>,
+) -> Result<String, String> {
+    match ask(line.clone()) {
+        Err(e) if plain != line && is_unknown_option(&e) => ask(plain),
+        out => out,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lean_or_plain;
+    use std::cell::RefCell;
+
+    #[test]
+    fn an_old_claude_is_asked_again_without_the_lean_flags() {
+        let asked = RefCell::new(vec![]);
+        let ask = |line: String| {
+            asked.borrow_mut().push(line.clone());
+            if line.contains("--strict-mcp-config") {
+                Err("error: unknown option '--strict-mcp-config'".to_string())
+            } else {
+                Ok("Title".to_string())
+            }
+        };
+        let lean = "claude -p --strict-mcp-config --model sonnet";
+        let out = lean_or_plain(lean.into(), "claude -p --model sonnet".into(), ask);
+        assert_eq!(out.as_deref(), Ok("Title"));
+        assert_eq!(asked.borrow().len(), 2);
+        // Any other failure, or a line with nothing to drop, is said as it is.
+        let out = lean_or_plain("codex exec".into(), "codex exec".into(), |_| {
+            Err("error: unknown option '--x'".to_string())
+        });
+        assert!(out.is_err());
+        let out = lean_or_plain(lean.into(), "claude -p".into(), |_| {
+            Err("offline".to_string())
+        });
+        assert_eq!(out, Err("offline".to_string()));
     }
 }

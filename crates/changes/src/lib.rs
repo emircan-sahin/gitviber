@@ -17,6 +17,7 @@ mod status_item;
 mod store;
 mod sync;
 mod tabs;
+mod toasts;
 
 pub use commit::CommitBox;
 pub use conflict::ConflictView;

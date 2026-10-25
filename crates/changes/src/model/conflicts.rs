@@ -347,10 +347,108 @@ pub fn tool_can_open(path: &str) -> bool {
     !path.contains(['"', '\\', '\t', '\n'])
 }
 
+/// Why Mark resolved asks about a file both sides changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unsure {
+    /// It still has conflict markers.
+    Markers,
+    /// It can't be checked: a read error, too large to read, an LFS object not downloaded.
+    Unread,
+}
+
+/// What Mark resolved makes of a file read as it is now; None when there's nothing to ask (no
+/// markers, or deleted or binary: git writes no markers into those).
+pub fn unsure(read: &Result<gitviber_core::git::FileText, String>) -> Option<Unsure> {
+    let Ok(t) = read else {
+        return Some(Unsure::Unread);
+    };
+    if !t.exists || t.binary {
+        None
+    } else if t.too_large || t.lfs_missing.is_some() {
+        Some(Unsure::Unread)
+    } else {
+        super::text::has_conflict_markers(&t.text).then_some(Unsure::Markers)
+    }
+}
+
+/// Mark resolved's question about the files with markers and those it couldn't check.
+pub fn resolve_question(markers: &[String], unread: &[String]) -> String {
+    let name = |list: &[String]| match list {
+        [one] => one.clone(),
+        _ => super::list::files(list.len()),
+    };
+    let mut said = vec![];
+    if !markers.is_empty() {
+        let has = if markers.len() == 1 { "has" } else { "have" };
+        said.push(format!("{} still {has} conflict markers.", name(markers)));
+    }
+    if !unread.is_empty() {
+        let what = if markers.is_empty() {
+            "conflict markers"
+        } else {
+            "them"
+        };
+        said.push(format!(
+            "{} couldn't be read to check for {what}.",
+            name(unread)
+        ));
+    }
+    let it = if markers.len() + unread.len() == 1 {
+        "it"
+    } else {
+        "them"
+    };
+    format!("{} Mark {it} resolved anyway?", said.join(" "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::text::{Segment, parse_conflicts};
+
+    #[test]
+    fn mark_resolved_asks_about_markers_and_what_it_cant_read() {
+        let text = |text: &str| gitviber_core::git::FileText {
+            text: text.into(),
+            exists: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            unsure(&Ok(text("a\n<<<<<<< HEAD\nb\n=======\nc\n>>>>>>> x\n"))),
+            Some(Unsure::Markers)
+        );
+        assert_eq!(unsure(&Ok(text("a\n"))), None);
+        assert_eq!(
+            unsure(&Err("Permission denied".into())),
+            Some(Unsure::Unread)
+        );
+        let lfs = gitviber_core::git::FileText {
+            lfs_missing: Some("12 MB".into()),
+            ..text("version https://git-lfs.github.com/spec/v1\n")
+        };
+        assert_eq!(unsure(&Ok(lfs)), Some(Unsure::Unread));
+        let large = gitviber_core::git::FileText {
+            too_large: true,
+            ..text("")
+        };
+        assert_eq!(unsure(&Ok(large)), Some(Unsure::Unread));
+        let deleted = gitviber_core::git::FileText::default();
+        assert_eq!(unsure(&Ok(deleted)), None);
+
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            resolve_question(&s(&["a.rs"]), &[]),
+            "a.rs still has conflict markers. Mark it resolved anyway?"
+        );
+        assert_eq!(
+            resolve_question(&[], &s(&["big.bin"])),
+            "big.bin couldn't be read to check for conflict markers. Mark it resolved anyway?"
+        );
+        assert_eq!(
+            resolve_question(&s(&["a.rs", "b.rs"]), &s(&["c.psd"])),
+            "2 files still have conflict markers. c.psd couldn't be read to check for them. Mark them resolved anyway?"
+        );
+    }
 
     fn conflicts(text: &str) -> Vec<Block> {
         parse_conflicts(text)

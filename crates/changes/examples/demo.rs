@@ -1,7 +1,8 @@
 //! The Changes panel beside the center's tabs, on the repo given (else the current folder),
 //! read-only unless you act in it. `--open` also opens the first change's diff, `--all` the
-//! uncommitted list as one scroll, `--tree` / `--recent` set the list's view, `--cycles N`
-//! opens and closes the panel N times first and prints the memory before and after.
+//! uncommitted list as one scroll, `--tree` / `--recent` set the list's view, `--find` opens
+//! the filter row as ⌘F in the panel does, `--cycles N` opens and closes the panel N times
+//! first and prints the memory before and after.
 //!
 //! cargo build -p gitviber-changes --example changes-demo
 //! snap.sh target/debug/examples/changes-demo out.png 5 /path/to/repo --open
@@ -9,8 +10,8 @@
 use gitviber_changes::{ChangesPanel, ChangesView};
 use gitviber_ui::workspace::{ChangesOf, Selection, Workspace};
 use gpui_kit::{
-    AnyView, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
-    Styled as _, Task, Window, div, px,
+    AnyView, AppContext as _, Context, Entity, Focusable as _, IntoElement, ParentElement as _,
+    Render, Styled as _, Task, Window, div, px,
 };
 use std::time::Duration;
 
@@ -57,7 +58,7 @@ fn footprint() -> String {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let has = |flag: &str| args.iter().any(|a| a == flag);
-    let (open, all) = (has("--open"), has("--all"));
+    let (open, all, find) = (has("--open"), has("--all"), has("--find"));
     let view_of = ChangesView {
         tree: has("--tree"),
         recent: has("--recent"),
@@ -104,6 +105,10 @@ fn main() {
                         });
                     } else if open && let Some(first) = first {
                         ws.update(cx, |ws, cx| ws.open(first, false, window, cx));
+                    }
+                    if find && let Some(panel) = &demo.panel {
+                        panel.focus_handle(cx).focus(window, cx);
+                        window.dispatch_action(Box::new(gitviber_ui::keymap::editor::Find), cx);
                     }
                     cx.notify();
                 })

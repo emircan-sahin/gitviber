@@ -215,6 +215,17 @@ pub fn command_line(
     gitviber_ui::settings::command_line(command, models, efforts, false, true)
 }
 
+/// `command_line` without the lean flags, for a Claude Code too old for them; None when the
+/// line has none.
+pub fn plain_line(
+    command: &str,
+    models: &BTreeMap<String, String>,
+    efforts: &BTreeMap<String, String>,
+) -> Option<String> {
+    let plain = gitviber_ui::settings::command_line(command, models, efforts, false, false);
+    (plain != command_line(command, models, efforts)).then_some(plain)
+}
+
 /// The program a template runs, by name ("claude" from "~/.local/bin/claude -p").
 pub fn program_of(command: &str) -> String {
     gitviber_ui::settings::program_of(command).to_string()

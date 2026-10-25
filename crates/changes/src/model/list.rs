@@ -278,6 +278,18 @@ pub fn stageable(files: &[Arc<FileChange>]) -> (Vec<String>, usize) {
 
 pub const NESTED_EXPLAINED: &str = "It's a separate git repository. git add would record only a pointer to its current commit, not its files. Commit inside it instead.";
 
+/// What Unstage passes git: a staged rename's old path too, or its deletion would stay staged.
+pub fn unstage_paths<'a>(files: impl IntoIterator<Item = &'a FileChange>) -> Vec<String> {
+    let mut paths = vec![];
+    for f in files {
+        paths.push(f.path.clone());
+        if f.status == "R" {
+            paths.extend(f.old_path.clone());
+        }
+    }
+    paths
+}
+
 /// git restore leaves a submodule's checkout as it is; only a deleted one comes back.
 pub fn kept_by_restore(f: &FileChange) -> bool {
     f.submodule.is_some() && f.status != "D"
@@ -305,6 +317,17 @@ pub fn file_sig(f: &FileChange) -> String {
             f.deletions.map_or("null".into(), |n| n.to_string())
         ),
     }
+}
+
+/// What a file's diff in a list depends on, for reading it again: its content, a submodule's
+/// state, and `against`, what it's compared with (the index blob under an unstaged change, HEAD
+/// under a staged one), which a reset moves with nothing else changing.
+pub fn diff_sig(f: &FileChange, against: &str) -> String {
+    format!(
+        "{}:{}:{against}",
+        file_sig(f),
+        f.submodule.as_deref().unwrap_or_default()
+    )
 }
 
 /// The key a file's viewed mark is kept under.
