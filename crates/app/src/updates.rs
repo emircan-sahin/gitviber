@@ -7,6 +7,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
+use futures::channel::oneshot;
 use gitviber_ui::actions::app;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::relative_time;
@@ -27,6 +28,17 @@ use crate::help::{REPO, open_url, toast};
 
 /// How often a running app looks again, besides at launch and when the Updates page opens.
 const EVERY: Duration = Duration::from_secs(4 * 60 * 60);
+/// After a check that got no answer (the network not up yet at launch, a wake from sleep): again
+/// this soon, twice as long after each one that fails, up to EVERY.
+const RETRY: Duration = Duration::from_secs(10);
+
+/// The wait before the next timed check: EVERY once one answered, else the retry's.
+fn next_wait(answered: bool, failed_before: u32) -> Duration {
+    if answered {
+        return EVERY;
+    }
+    RETRY.saturating_mul(1 << failed_before.min(16)).min(EVERY)
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Release {
@@ -102,13 +114,23 @@ pub fn set_updater(updater: Rc<dyn Updater>, cx: &mut App) {
     if first {
         cx.on_action(|_: &app::CheckForUpdates, cx| check(true, cx));
         let timer = cx.spawn(async move |cx| {
+            let mut failed = 0;
             loop {
-                cx.update(|cx| {
-                    if Settings::get(cx).auto_update {
-                        check(false, cx);
-                    }
+                let answer = cx.update(|cx| {
+                    Settings::get(cx).auto_update.then(|| {
+                        let (tx, rx) = oneshot::channel();
+                        run_check(false, Some(tx), cx);
+                        rx
+                    })
                 });
-                cx.background_executor().timer(EVERY).await;
+                // Not asked (off, or one already running): taken as answered.
+                let answered = match answer {
+                    Some(answer) => answer.await.unwrap_or(true),
+                    None => true,
+                };
+                let wait = next_wait(answered, failed);
+                failed = if answered { 0 } else { failed + 1 };
+                cx.background_executor().timer(wait).await;
             }
         });
         cx.global_mut::<Updates>()._timer = Some(timer);
@@ -152,6 +174,12 @@ pub fn status_line(cx: &App) -> String {
 
 /// Asks GitHub Releases; `told`: the user asked, so how it went shows either way.
 pub fn check(told: bool, cx: &mut App) {
+    run_check(told, None, cx);
+}
+
+/// `check`, telling `answered` whether GitHub did; dropped unsent when no check started (no
+/// updater, or one already running).
+fn run_check(told: bool, answered: Option<oneshot::Sender<bool>>, cx: &mut App) {
     let Some(updater) = Updates::get(cx).updater.clone() else {
         return;
     };
@@ -162,6 +190,9 @@ pub fn check(told: bool, cx: &mut App) {
     let asked = updater.check(cx);
     let task = cx.spawn(async move |cx| {
         let answer = asked.await;
+        if let Some(tx) = answered {
+            let _ = tx.send(answer.is_ok());
+        }
         cx.update(|cx| {
             let u = Updates::get(cx);
             u.checking = false;
@@ -440,6 +471,56 @@ mod tests {
             Task::ready(Ok(()))
         }
         fn restart(&self, _: &mut App) {}
+    }
+
+    /// Fails its first check (offline at launch), answers after.
+    struct Flaky(Rc<Cell<u32>>);
+
+    impl Updater for Flaky {
+        fn mode(&self) -> Mode {
+            Mode::Install
+        }
+        fn check(&self, _: &mut App) -> Task<Result<Option<Release>, String>> {
+            self.0.set(self.0.get() + 1);
+            Task::ready(if self.0.get() == 1 {
+                Err("offline".into())
+            } else {
+                Ok(None)
+            })
+        }
+        fn download(&self, _: &Release, _: Progress, _: &mut App) -> Task<Result<(), String>> {
+            Task::ready(Ok(()))
+        }
+        fn restart(&self, _: &mut App) {}
+    }
+
+    #[test]
+    fn failed_checks_retry_soon_then_less_often() {
+        assert_eq!(next_wait(false, 0), RETRY);
+        assert_eq!(next_wait(false, 1), RETRY * 2);
+        assert_eq!(next_wait(false, 40), EVERY);
+        assert_eq!(next_wait(true, 3), EVERY);
+    }
+
+    #[gpui_kit::test]
+    fn a_launch_check_that_failed_is_tried_again_in_seconds(cx: &mut TestAppContext) {
+        let checks = Rc::new(Cell::new(0));
+        cx.update(|cx| {
+            cx.set_global(gitviber_ui::Settings::default());
+            set_updater(Rc::new(Flaky(checks.clone())), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(checks.get(), 1);
+        cx.executor().advance_clock(RETRY);
+        cx.run_until_parked();
+        assert_eq!(checks.get(), 2, "not four hours later");
+        // Answered: the next one is the usual few hours away.
+        cx.executor().advance_clock(RETRY * 8);
+        cx.run_until_parked();
+        assert_eq!(checks.get(), 2);
+        cx.executor().advance_clock(EVERY);
+        cx.run_until_parked();
+        assert_eq!(checks.get(), 3);
     }
 
     #[gpui_kit::test]

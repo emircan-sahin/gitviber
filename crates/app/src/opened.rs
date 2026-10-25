@@ -4,16 +4,22 @@
 //! as a stalled network volume can take seconds to answer, and the last one's project opens in the
 //! main window, with its file at its line.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use gitviber_core::opened::{Taken, Target};
 use gitviber_core::{Core, Event, api};
-use gitviber_files::{OpenOptions, Reveal};
+use gitviber_files::Reveal;
 use gitviber_ui::workspace::Toast;
-use gitviber_ui::{CoreEvents, UiState, Workspace};
+use gitviber_ui::{CoreEvents, UiState};
 use gpui_kit::{App, AppContext as _, Global, Subscription, Task};
 
 use crate::help::toast;
+use crate::open_repo::{self, Found, Request};
+
+/// Past this, a launch still looking for its project (a stalled network volume) shows the
+/// welcome screen rather than an empty window.
+const LAUNCH_WAIT: Duration = Duration::from_millis(400);
 
 #[derive(Default)]
 struct Opened {
@@ -21,12 +27,16 @@ struct Opened {
     /// The launch's own take, which a later one waits for: it must not open the last project
     /// over what was asked meanwhile.
     taking: Option<Task<()>>,
+    /// The launch is still finding what to open: the window shows no welcome screen, which
+    /// would flash before the last project.
+    launching: bool,
+    _launch_wait: Option<Task<()>>,
 }
 
 impl Global for Opened {}
 
-/// Opens what the launch named, else the project used last while it's still a folder; from then
-/// on, whatever is handed over.
+/// Opens what the launch named, else the project used last while it's still a repository; from
+/// then on, whatever is handed over.
 pub fn install(cx: &mut App) {
     if !gitviber_ui::has_core(cx) {
         return;
@@ -37,7 +47,32 @@ pub fn install(cx: &mut App) {
         }
     });
     cx.default_global::<Opened>()._events = Some(events);
+    wait_for_launch(cx);
     take(true, cx);
+}
+
+/// No welcome screen until the launch's take says whether a project opens, LAUNCH_WAIT at most.
+fn wait_for_launch(cx: &mut App) {
+    let wait = cx.spawn(async move |cx| {
+        cx.background_executor().timer(LAUNCH_WAIT).await;
+        cx.update(launched);
+    });
+    let opened = cx.default_global::<Opened>();
+    opened.launching = true;
+    opened._launch_wait = Some(wait);
+}
+
+/// The launch is still finding what to open (briefly): no welcome screen yet.
+pub fn launching(cx: &App) -> bool {
+    cx.try_global::<Opened>().is_some_and(|o| o.launching)
+}
+
+fn launched(cx: &mut App) {
+    let opened = cx.default_global::<Opened>();
+    opened._launch_wait = None;
+    if std::mem::take(&mut opened.launching) {
+        cx.refresh_windows();
+    }
 }
 
 /// macOS's open-documents event (Dock, Finder, `open -a`), as file URLs.
@@ -119,79 +154,75 @@ fn take(launch: bool, cx: &mut App) {
         None => cx.background_spawn(async move { resolve(&core, recent) }),
     };
     let task = cx.spawn(async move |cx| {
-        let (taken, recent) = found.await;
+        let resolved = found.await;
         cx.update(|cx| {
-            let (last, toasts) = plan(&taken.open, &taken.missing);
+            let (last, toasts) = plan(&resolved.taken.open, &resolved.taken.missing);
             for t in toasts {
                 toast(t, cx);
             }
-            match last.map(|i| &taken.open[i]) {
-                Some(target) => open_target(target, cx),
-                None => {
-                    if let Some(root) = recent {
-                        open_folder(root, None, cx);
+            match (last.map(|i| &resolved.taken.open[i]), resolved.asked) {
+                (Some(target), Some(found)) => open_repo::act(found, request(target), cx),
+                _ => {
+                    if let Some(root) = resolved.recent {
+                        open_repo::act(Found::Repo(root.clone()), Request::folder(root), cx);
                     }
                 }
+            }
+            if launch {
+                launched(cx);
             }
         });
     });
     cx.default_global::<Opened>().taking = Some(task);
 }
 
-/// What was handed over, and `recent` while it's still a folder. Reads the disk: a gone network
-/// mount can take seconds to say so.
-fn resolve(core: &Core, recent: Option<String>) -> (Taken, Option<PathBuf>) {
-    let taken = api::app::take_opened(core).unwrap_or_default();
-    let recent = recent
-        .map(PathBuf::from)
-        .filter(|p| p.is_dir())
-        .and_then(|p| p.canonicalize().ok());
-    (taken, recent)
+struct Resolved {
+    taken: Taken,
+    /// What git says the last target's folder is in.
+    asked: Option<Found>,
+    /// The project used last, by its top level, while it's still a repository; looked for only
+    /// when nothing was handed over.
+    recent: Option<PathBuf>,
 }
 
-fn open_target(t: &Target, cx: &mut App) {
+/// What was handed over and where it is. Reads the disk and asks git: a gone network mount can
+/// take seconds to say so.
+fn resolve(core: &Core, recent: Option<String>) -> Resolved {
+    let taken = api::app::take_opened(core).unwrap_or_default();
+    let asked = taken
+        .open
+        .last()
+        .map(|t| open_repo::look(Path::new(&t.folder)));
+    let recent = recent.filter(|_| taken.open.is_empty()).and_then(|p| {
+        match open_repo::look(Path::new(&p)) {
+            Found::Repo(root) => Some(root),
+            _ => None,
+        }
+    });
+    Resolved {
+        taken,
+        asked,
+        recent,
+    }
+}
+
+/// The folder a target names, with its file at its line.
+fn request(t: &Target) -> Request {
     let file = t.file.clone().map(|path| {
         let line = t.line.unwrap_or(1);
         let column = t.column.unwrap_or(1).saturating_sub(1);
         (path, t.line.map(|_| Reveal::Line { line, column }))
     });
-    open_folder(PathBuf::from(&t.folder), file, cx);
-}
-
-/// Opens `root` in the main window (brought forward), then `file` in it: a tab opened while the
-/// repo opens stays.
-fn open_folder(root: PathBuf, file: Option<(String, Option<Reveal>)>, cx: &mut App) {
-    let Some(handle) = crate::workspace_view::main_window(cx) else {
-        return;
-    };
-    let _ = handle.update(cx, |_, window, cx| {
-        window.activate_window();
-        let Some(ws) = Workspace::for_window(window, cx) else {
-            return;
-        };
-        ws.update(cx, |ws, cx| ws.open_project(root, window, cx));
-        if let Some((path, reveal)) = file {
-            gitviber_files::open_file(
-                &ws.downgrade(),
-                &path,
-                OpenOptions {
-                    preview: false,
-                    reveal,
-                    focus: true,
-                },
-                window,
-                cx,
-            );
-        }
-    });
-    if !gitviber_ui::windows::background_launch() {
-        cx.activate(true);
+    Request {
+        folder: PathBuf::from(&t.folder),
+        file,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_kit::{AnyWindowHandle, TestAppContext, VisualTestContext};
 
     fn target(folder: &str, file: Option<&str>) -> Target {
         Target {
@@ -200,6 +231,49 @@ mod tests {
             line: None,
             column: None,
         }
+    }
+
+    /// The window's first frames show no welcome screen while the launch looks for the last
+    /// project: it would flash before it. Past LAUNCH_WAIT (a stalled volume), the welcome shows.
+    #[gpui_kit::test]
+    fn the_welcome_screen_waits_for_the_launch_to_say_what_opens(cx: &mut TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("gitviber-launch-{}", std::process::id()));
+        // SAFETY: the tests that read the config dir all point it at a temporary folder.
+        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            crate::placeholders::register(cx);
+        });
+        let welcome = |cx: &mut TestAppContext| {
+            let window: AnyWindowHandle = cx
+                .add_window(|window, cx| {
+                    let view = crate::workspace_view::main_view(None, window, cx);
+                    gpui_kit::base::Root::new(view, window, cx)
+                })
+                .into();
+            VisualTestContext::from_window(window, cx)
+        };
+        cx.update(wait_for_launch);
+        let mut vcx = welcome(cx);
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("welcome").is_none(),
+            "nothing while it looks"
+        );
+        vcx.update(|_, cx| launched(cx));
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("welcome").is_some(),
+            "found nothing: the welcome"
+        );
+        // A launch that takes too long shows it anyway.
+        cx.update(wait_for_launch);
+        let mut vcx = welcome(cx);
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("welcome").is_none());
+        vcx.executor().advance_clock(LAUNCH_WAIT);
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("welcome").is_some());
     }
 
     #[test]

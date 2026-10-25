@@ -287,9 +287,17 @@ pub fn tab_strip(
             )
         })
         .collect();
+    // Two files of one name (a/index.ts, b/index.ts) show their folders.
+    let folders = Selection::folders_apart(entries.iter().filter_map(|e| e.9.as_ref()));
     let tabs = entries.into_iter().map(
         |(i, key, preview, title, detail, tab_icon, tooltip, closable, dirty, selection)| {
             let is_active = active == Some(i);
+            let folder = selection
+                .as_ref()
+                .filter(|s| s.is_file_like())
+                .and_then(|s| folders.get(&selection_path(s)))
+                .filter(|f| !f.is_empty())
+                .cloned();
             let ws_click = workspace.clone();
             let ws_close = workspace.clone();
             let ws_middle = workspace.clone();
@@ -355,6 +363,16 @@ pub fn tab_strip(
                         .when(preview, |d| d.italic())
                         .child(title.clone()),
                 )
+                .when_some(folder, |d, folder| {
+                    d.child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(rems(0.6875))
+                            .text_color(t.subtle)
+                            .child(folder),
+                    )
+                })
                 .when_some(detail, |d, detail| {
                     d.child(
                         div()

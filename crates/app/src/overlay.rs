@@ -11,9 +11,9 @@ use gitviber_ui::workspace::{Part, Slot, Workspace};
 use gitviber_ui::{ActiveAppTheme, Settings};
 use gpui_kit::{
     AnyElement, App, Context, Entity, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ModifiersChangedEvent, MouseButton, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Task, Window, deferred, div,
-    prelude::FluentBuilder as _, px, rems,
+    Modifiers, ModifiersChangedEvent, MouseButton, MouseMoveEvent, ParentElement as _, Render,
+    ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _, Task, Window,
+    deferred, div, prelude::FluentBuilder as _, px, rems,
 };
 
 /// Off macOS "cmd" is Ctrl (the keymap's rule), so that's the key to hold there.
@@ -283,6 +283,16 @@ impl ShortcutOverlay {
     pub fn pointer(&mut self) {
         self.hold = None;
     }
+
+    /// An event over the overlay that says what's held. Mission Control (the swipe, F3, ⌃↑)
+    /// takes ⌘'s release and the window stays key, so the first move, scroll or click after it
+    /// is what says ⌘ is up.
+    fn still_held(&mut self, m: &Modifiers, cx: &mut Context<Self>) {
+        let held = if IS_MAC { m.platform } else { m.control };
+        if self.shown == Some(Shown::Held) && !held {
+            self.hide(cx);
+        }
+    }
 }
 
 fn keycap(key: &str, cx: &App) -> AnyElement {
@@ -407,6 +417,7 @@ impl Render for ShortcutOverlay {
         deferred(
             div()
                 .id("shortcut-overlay")
+                .debug_selector(|| "shortcut-overlay".into())
                 .absolute()
                 .inset_0()
                 .flex()
@@ -415,6 +426,14 @@ impl Render for ShortcutOverlay {
                 .p_6()
                 .bg(gpui_kit::black().opacity(0.5))
                 .occlude()
+                .on_mouse_move(
+                    cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                        this.still_held(&e.modifiers, cx)
+                    }),
+                )
+                .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, _, cx| {
+                    this.still_held(&e.modifiers, cx)
+                }))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| this.hide(cx)),

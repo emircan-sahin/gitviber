@@ -182,26 +182,53 @@ pub fn status_bar(
                 .h_full()
                 .gap_px()
                 .when(repo, |d| {
-                    d.child(item("status-syntax", cx).child(syntax))
-                        .child(item("status-font", cx).child(font))
-                        .child(
-                            item("status-layout", cx)
-                                .pressable(cx)
-                                .child(layout)
-                                .on_click(|_, window, cx| {
-                                    window.dispatch_action(Box::new(diff::ToggleSplit), cx)
-                                }),
-                        )
-                        .child(
-                            item("status-wrap", cx)
-                                .pressable(cx)
-                                .when(wrap, |d| d.text_color(t.primary))
-                                .child(Icon::new(IconName::TextWrap).xsmall())
-                                .child("Wrap")
-                                .on_click(|_, window, cx| {
-                                    window.dispatch_action(Box::new(editor::ToggleWrap), cx)
-                                }),
-                        )
+                    // Both are set in Settings → Editor, which a click opens.
+                    let editor_settings =
+                        |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| {
+                            crate::settings_window::open(
+                                Some(crate::settings_window::Section::Editor),
+                                cx,
+                            )
+                        };
+                    d.child(
+                        item("status-syntax", cx)
+                            .debug_selector(|| "status-syntax".into())
+                            .pressable(cx)
+                            .child(syntax)
+                            .tooltip(|window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new("Syntax theme")
+                                    .build(window, cx)
+                            })
+                            .on_click(editor_settings),
+                    )
+                    .child(
+                        item("status-font", cx)
+                            .pressable(cx)
+                            .child(font)
+                            .tooltip(|window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new("Code font")
+                                    .build(window, cx)
+                            })
+                            .on_click(editor_settings),
+                    )
+                    .child(
+                        item("status-layout", cx)
+                            .pressable(cx)
+                            .child(layout)
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(diff::ToggleSplit), cx)
+                            }),
+                    )
+                    .child(
+                        item("status-wrap", cx)
+                            .pressable(cx)
+                            .when(wrap, |d| d.text_color(t.primary))
+                            .child(Icon::new(IconName::TextWrap).xsmall())
+                            .child("Wrap")
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(editor::ToggleWrap), cx)
+                            }),
+                    )
                 })
                 // Features' own (the open file's language) after the view's settings.
                 .children(right)

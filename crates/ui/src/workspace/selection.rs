@@ -306,15 +306,32 @@ impl Selection {
         }
     }
 
-    /// The tab's title before its view is built: the file's name, else what `selection_path` says.
-    pub fn title(&self) -> SharedString {
-        let path = selection_path(self);
-        let file_like = self.file().is_some()
+    /// Shows one file (its contents or a diff of it): titled by the file's name.
+    pub fn is_file_like(&self) -> bool {
+        self.file().is_some()
             || matches!(
                 self,
                 Self::File { .. } | Self::Vault { .. } | Self::External { .. }
-            );
-        if file_like {
+            )
+    }
+
+    /// What tabs of one file name show after it, by `selection_path`: their folders, as few as
+    /// tell them apart. Only file tabs are named by their file.
+    pub fn folders_apart<'a>(
+        tabs: impl IntoIterator<Item = &'a Selection>,
+    ) -> HashMap<String, String> {
+        let paths: Vec<String> = tabs
+            .into_iter()
+            .filter(|s| s.is_file_like())
+            .map(selection_path)
+            .collect();
+        distinct_folders(paths.iter().map(String::as_str))
+    }
+
+    /// The tab's title before its view is built: the file's name, else what `selection_path` says.
+    pub fn title(&self) -> SharedString {
+        let path = selection_path(self);
+        if self.is_file_like() {
             path.rsplit('/').next().unwrap_or(&path).to_string().into()
         } else {
             path.into()
@@ -423,6 +440,44 @@ pub fn selection_path(s: &Selection) -> String {
         Selection::Browser { url, .. } => page_label(url),
         _ => s.file().map(|f| f.path.clone()).unwrap_or_default(),
     }
+}
+
+/// For each of `paths` whose file name another of them shares, the fewest of its last folders
+/// that tell it apart ("x", else "a/x"; "" at the root).
+fn distinct_folders<'a>(paths: impl IntoIterator<Item = &'a str>) -> HashMap<String, String> {
+    let mut by_name: HashMap<&str, Vec<&str>> = HashMap::new();
+    for p in paths {
+        let group = by_name
+            .entry(p.rsplit('/').next().unwrap_or(p))
+            .or_default();
+        if !group.contains(&p) {
+            group.push(p);
+        }
+    }
+    let mut folders = HashMap::new();
+    for group in by_name.values().filter(|g| g.len() > 1) {
+        let dirs: Vec<Vec<&str>> = group
+            .iter()
+            .map(|p| match p.rsplit_once('/') {
+                Some((dir, _)) => dir.split('/').collect(),
+                None => Vec::new(),
+            })
+            .collect();
+        let tail = |segs: &[&str], k: usize| segs[segs.len().saturating_sub(k)..].join("/");
+        for (i, segs) in dirs.iter().enumerate() {
+            let mut k = 1;
+            while k < segs.len()
+                && dirs
+                    .iter()
+                    .enumerate()
+                    .any(|(j, o)| j != i && tail(o, k) == tail(segs, k))
+            {
+                k += 1;
+            }
+            folders.insert(group[i].to_string(), tail(segs, k));
+        }
+    }
+    folders
 }
 
 /// Identity of what a tab shows; also how a list row finds its open tab.
@@ -768,6 +823,64 @@ mod tests {
             }),
             "All Changes · 1111111..2222222"
         );
+    }
+
+    #[test]
+    fn tabs_of_one_name_show_the_fewest_folders_that_tell_them_apart() {
+        let folders = |paths: &[&str]| {
+            let mut f: Vec<(String, String)> = distinct_folders(paths.iter().copied())
+                .into_iter()
+                .collect();
+            f.sort();
+            f
+        };
+        let pairs = |p: &[(&str, &str)]| -> Vec<(String, String)> {
+            p.iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect()
+        };
+        assert_eq!(
+            folders(&[
+                "src/a/index.ts",
+                "src/b/index.ts",
+                "lib/c/index.ts",
+                "README.md"
+            ]),
+            pairs(&[
+                ("lib/c/index.ts", "c"),
+                ("src/a/index.ts", "a"),
+                ("src/b/index.ts", "b")
+            ])
+        );
+        // The same parent's name at different depths.
+        assert_eq!(
+            folders(&["a/x/index.ts", "b/x/index.ts", "x/index.ts"]),
+            pairs(&[
+                ("a/x/index.ts", "a/x"),
+                ("b/x/index.ts", "b/x"),
+                ("x/index.ts", "x")
+            ])
+        );
+        // A root-level file has no folder to show; the other's tells them apart.
+        assert_eq!(
+            folders(&["index.ts", "src/index.ts"]),
+            pairs(&[("index.ts", ""), ("src/index.ts", "src")])
+        );
+        // One file in two tabs (its diff and itself) isn't two names.
+        assert!(folders(&["a.ts", "a.ts", "src/a/b.ts"]).is_empty());
+        // Tabs: a file and another's diff of one name; a list's tab isn't named by a file.
+        let file = |p: &str| Selection::File { path: p.into() };
+        let tabs = [
+            file("a/index.ts"),
+            Selection::files("x.ts", "b/index.ts"),
+            Selection::Changes {
+                of: ChangesOf::Unstaged,
+            },
+        ];
+        let apart = Selection::folders_apart(&tabs);
+        assert_eq!(apart.get("a/index.ts").map(String::as_str), Some("a"));
+        assert_eq!(apart.get("b/index.ts").map(String::as_str), Some("b"));
+        assert_eq!(apart.len(), 2);
     }
 
     #[test]

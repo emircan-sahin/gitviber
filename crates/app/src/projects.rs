@@ -171,12 +171,9 @@ fn move_to_top(path: &str, cx: &mut App) {
     });
 }
 
-fn open_project(path: &str, window: &mut Window, cx: &mut App) {
-    if let Some(ws) = Workspace::for_window(window, cx) {
-        ws.update(cx, |ws, cx| {
-            ws.open_project(PathBuf::from(path), window, cx)
-        });
-    }
+/// In the main window, once git says it's a repository (open_repo).
+fn open_project(path: &str, cx: &mut App) {
+    crate::open_repo::open(crate::open_repo::Request::folder(path), cx);
 }
 
 /// A terminal in a project, the window staying where it is.
@@ -211,7 +208,7 @@ fn copy(text: &str, what: &'static str, cx: &mut App) {
 }
 
 /// Pick the new place of a folder that was moved: it takes the old one's place in the list.
-fn locate(path: &str, window: &mut Window, cx: &mut App) {
+fn locate(path: &str, cx: &mut App) {
     let picked = cx.prompt_for_paths(PathPromptOptions {
         files: false,
         directories: true,
@@ -219,7 +216,6 @@ fn locate(path: &str, window: &mut Window, cx: &mut App) {
         prompt: Some("Locate".into()),
     });
     let old = path.to_string();
-    let handle = window.window_handle();
     cx.spawn(async move |cx| {
         let Ok(Ok(Some(paths))) = picked.await else {
             return;
@@ -237,7 +233,7 @@ fn locate(path: &str, window: &mut Window, cx: &mut App) {
                 }
             });
             refresh(true, cx);
-            let _ = handle.update(cx, |_, window, cx| open_project(&new, window, cx));
+            open_project(&new, cx);
         });
     })
     .detach();
@@ -247,6 +243,8 @@ fn locate(path: &str, window: &mut Window, cx: &mut App) {
 /// as a row of another project would.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Away {
+    /// The worktree the window is in: the row's New Terminal starts there, as + does.
+    root: String,
     folder: String,
     main_branch: Option<String>,
 }
@@ -254,12 +252,19 @@ pub struct Away {
 /// Set while the window is in `root` and not in the project's `main` folder.
 pub fn away_of(root: &str, main: &str, worktrees: &[gitviber_core::git::Worktree]) -> Option<Away> {
     (root != main).then(|| Away {
+        root: root.to_string(),
         folder: folder_name(root).to_string(),
         main_branch: worktrees
             .iter()
             .find(|w| w.main)
             .and_then(|w| w.branch.clone()),
     })
+}
+
+/// Where a row's New Terminal starts: in the worktree the window is in, for the open project's
+/// row (`away` is set only on that one), as the terminal's + does.
+fn terminal_dir(path: &str, away: Option<&Away>) -> String {
+    away.map_or_else(|| path.to_string(), |a| a.root.clone())
 }
 
 impl Away {
@@ -330,9 +335,9 @@ fn key_down(
         "up" => step(at.saturating_sub(1), cx),
         "enter" | "space" => {
             if info(path, cx).is_some_and(|i| !i.exists) {
-                locate(path, window, cx)
+                locate(path, cx)
             } else if away || current != Some(path.as_str()) {
-                open_project(path, window, cx)
+                open_project(path, cx)
             }
         }
         _ => return,
@@ -444,9 +449,9 @@ pub fn list(
                 let p = path.clone();
                 buttons.push(
                     action("locate", IconName::FolderSearch, "Locate…")
-                        .on_click(move |_, window, cx| {
+                        .on_click(move |_, _, cx| {
                             cx.stop_propagation();
-                            locate(&p, window, cx)
+                            locate(&p, cx)
                         })
                         .into_any_element(),
                 );
@@ -553,16 +558,16 @@ pub fn list(
                     gpui_kit::component::tooltip::Tooltip::new(detail.clone()).build(window, cx)
                 })
             })
-            .on_click(move |_, window, cx| {
+            .on_click(move |_, _, cx| {
                 let _ = keys_c.update(cx, |k, cx| {
                     k.row = Some(clicked.clone());
                     k.by_key = false;
                     cx.notify();
                 });
                 if missing {
-                    locate(&open, window, cx)
+                    locate(&open, cx)
                 } else if !here {
-                    open_project(&open, window, cx)
+                    open_project(&open, cx)
                 }
             })
             .on_drag(DraggedProject { path: path.clone() }, |d, _, _, cx| {
@@ -584,16 +589,17 @@ pub fn list(
                     m = m.item(
                         PopupMenuItem::new("Locate…")
                             .icon(IconName::FolderSearch)
-                            .on_click(move |_, window, cx| locate(&l, window, cx)),
+                            .on_click(move |_, _, cx| locate(&l, cx)),
                     );
                 } else {
-                    let (o, tm, r) = (p.clone(), p.clone(), p.clone());
+                    let tm = terminal_dir(&p, away.as_ref());
+                    let (o, r) = (p.clone(), p.clone());
                     m = m
                         .item(
                             PopupMenuItem::new(open_label.clone())
                                 .icon(IconName::FolderOpen)
                                 .disabled(here)
-                                .on_click(move |_, window, cx| open_project(&o, window, cx)),
+                                .on_click(move |_, _, cx| open_project(&o, cx)),
                         )
                         .item(
                             PopupMenuItem::new("New Terminal")
@@ -734,6 +740,9 @@ mod tests {
         let away = away_of("/r/app-fix", "/r/app", &[main]).unwrap();
         assert_eq!(away.folder, "app-fix");
         assert_eq!(away.open_label(), "Open the main folder, on main");
+        // #110: the open project's New Terminal starts in the linked worktree, others' in theirs.
+        assert_eq!(terminal_dir("/r/app", Some(&away)), "/r/app-fix");
+        assert_eq!(terminal_dir("/r/other", None), "/r/other");
         assert_eq!(
             away_of("/r/x", "/r/app", &[]).unwrap().open_label(),
             "Open the main folder"

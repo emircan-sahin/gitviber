@@ -9,6 +9,7 @@ mod git;
 mod pages;
 mod shell;
 mod shortcuts;
+mod to_main;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -167,6 +168,14 @@ impl Global for Open {}
 pub fn install(cx: &mut App) {
     cx.on_action(|_: &workbench::OpenSettings, cx| open(None, cx));
     cx.on_action(|_: &help::Shortcuts, cx| open(Some(Section::Shortcuts), cx));
+    to_main::install(cx);
+}
+
+/// Whether `window` is the settings window.
+fn is_open_in(window: &Window, cx: &App) -> bool {
+    cx.try_global::<Open>()
+        .and_then(|o| o.0.as_ref())
+        .is_some_and(|(handle, _)| *handle == window.window_handle())
 }
 
 /// Shows the settings window at `section` (or where it was), bringing it forward when it's open
@@ -187,11 +196,55 @@ pub fn open(section: Option<Section>, cx: &mut App) {
         let options =
             windows::options(None, size(px(880.), px(660.)), size(px(620.), px(420.)), cx);
         let section = section.unwrap_or(Section::Appearance);
-        match gpui_kit::open_window(options, cx, move |window, cx| view(section, window, cx)) {
+        let opened = gpui_kit::open_window(options, cx, move |window, cx| {
+            no_full_screen(window);
+            view(section, window, cx)
+        });
+        match opened {
             Ok((handle, view)) => cx.global_mut::<Open>().0 = Some((handle, view.downgrade())),
             Err(err) => eprintln!("gitviber: couldn't open the settings window: {err}"),
         }
     });
+}
+
+/// Kept beside the main window, it has no use for full screen, where it left an empty band
+/// over its sidebar: the green button zooms it instead, and ⌃⌘F does nothing.
+fn no_full_screen(window: &Window) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::msg_send;
+        use objc2::runtime::AnyObject;
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let Ok(handle) = HasWindowHandle::window_handle(window) else {
+            return;
+        };
+        let RawWindowHandle::AppKit(h) = handle.as_raw() else {
+            return;
+        };
+        let view = h.ns_view.as_ptr().cast::<AnyObject>();
+        // SAFETY: GPUI's live NSView of `window`, on the main thread; NSWindow's
+        // collectionBehavior is an NSUInteger.
+        unsafe {
+            let ns_window: *mut AnyObject = msg_send![view, window];
+            if ns_window.is_null() {
+                return;
+            }
+            let behavior: usize = msg_send![ns_window, collectionBehavior];
+            let _: () = msg_send![ns_window, setCollectionBehavior: without_full_screen(behavior)];
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+}
+
+/// An NSWindow collection behavior that can't go full screen.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn without_full_screen(behavior: usize) -> usize {
+    // NSWindowCollectionBehaviorFullScreenPrimary, …FullScreenAuxiliary, …FullScreenNone.
+    const PRIMARY: usize = 1 << 7;
+    const AUXILIARY: usize = 1 << 8;
+    const NONE: usize = 1 << 9;
+    (behavior & !(PRIMARY | AUXILIARY)) | NONE
 }
 
 /// The window's view at `section`: what `open` puts in its window, and a snapshot draws.
@@ -1181,6 +1234,7 @@ impl Render for SettingsWindow {
             .on_action(|_: &view::ZoomIn, _, cx| Settings::step_ui_scale(cx, 1))
             .on_action(|_: &view::ZoomOut, _, cx| Settings::step_ui_scale(cx, -1))
             .on_action(|_: &view::ZoomReset, _, cx| Settings::step_ui_scale(cx, 0))
+            .map(to_main::send_on)
             .child(
                 div()
                     .h(windows::TOP_BAR_HEIGHT)
@@ -1225,6 +1279,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_window_is_never_a_full_screen_one() {
+        // Managed (1 << 2) and FullScreenPrimary (1 << 7), as a new window has them.
+        assert_eq!(
+            without_full_screen((1 << 2) | (1 << 7)),
+            (1 << 2) | (1 << 9)
+        );
+        assert_eq!(without_full_screen(1 << 8), 1 << 9);
+    }
+
+    #[test]
     fn sections_round_trip_their_ids() {
         for s in Section::ALL {
             assert_eq!(Section::parse(s.id()), Some(s));
@@ -1247,6 +1311,58 @@ mod tests {
         let _ = cx.update_window(handle, |_, window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();
         (handle, view)
+    }
+
+    /// With Settings in front, a menu item of the main window's (Toggle Git Panel) is there to
+    /// pick and runs in the main window; its key pressed in Settings does nothing behind it.
+    #[gpui_kit::test]
+    fn the_main_windows_menu_items_work_with_settings_in_front(cx: &mut gpui_kit::TestAppContext) {
+        let dir =
+            std::env::temp_dir().join(format!("gitviber-settings-menu-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: the tests that read the config dir all point it at a temporary folder.
+        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            crate::placeholders::register(cx);
+            install(cx);
+        });
+        let main: AnyWindowHandle = cx
+            .add_window(|window, cx| {
+                let view = crate::workspace_view::main_view(Some(dir.clone()), window, cx);
+                gpui_kit::base::Root::new(view, window, cx)
+            })
+            .into();
+        cx.run_until_parked();
+        let ws = main
+            .update(cx, |_, window, cx| {
+                gitviber_ui::Workspace::for_window(window, cx)
+            })
+            .unwrap()
+            .unwrap();
+        let left = |cx: &mut gpui_kit::TestAppContext| {
+            ws.read_with(cx, |ws, _| ws.is_open(gitviber_ui::workspace::Slot::Left))
+        };
+        let before = left(cx);
+        let (handle, _) = opened(cx);
+        let _ = handle.update(cx, |_, window, _| window.activate_window());
+        cx.run_until_parked();
+        assert_eq!(cx.update(|cx| cx.active_window()), Some(handle));
+        assert!(cx.update(|cx| cx.is_action_available(&view::ToggleGitPanel)));
+        // As the menu bar runs an item.
+        cx.update(|cx| cx.dispatch_action(&view::ToggleGitPanel));
+        cx.run_until_parked();
+        assert_eq!(left(cx), !before, "ran in the main window");
+        assert_eq!(
+            cx.update(|cx| cx.active_window()),
+            Some(main),
+            "which came forward"
+        );
+        let _ = handle.update(cx, |_, window, _| window.activate_window());
+        cx.run_until_parked();
+        gpui_kit::VisualTestContext::from_window(handle, cx).simulate_keystrokes("cmd-b");
+        cx.run_until_parked();
+        assert_eq!(left(cx), !before, "a key in Settings stays there");
     }
 
     struct Main;

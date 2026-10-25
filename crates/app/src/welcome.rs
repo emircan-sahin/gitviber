@@ -9,8 +9,8 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, IntoElement, ParentElement as _, Styled as _, Window, div, img,
-    prelude::FluentBuilder as _, px, rems,
+    AnyElement, App, InteractiveElement as _, IntoElement, ParentElement as _, Styled as _, Window,
+    div, img, prelude::FluentBuilder as _, px, rems,
 };
 
 fn hint_row(label: &'static str, id: &'static str, cx: &App) -> AnyElement {
@@ -50,6 +50,7 @@ pub fn no_project(window: &mut Window, cx: &mut App) -> AnyElement {
         .then(|| crate::projects::list("welcome-projects", None, None, false, None, window, cx));
     let open_key = gitviber_ui::keymap::shortcut_label("file.openRepo", cx);
     div()
+        .debug_selector(|| "welcome".into())
         .size_full()
         .flex()
         .items_center()

@@ -10,6 +10,7 @@ mod leaks;
 mod menus;
 mod native_updater;
 mod open_in_button;
+mod open_repo;
 mod opened;
 mod overlay;
 mod palette;
@@ -21,6 +22,7 @@ mod status_bar;
 mod tab_strip;
 mod top_bar;
 pub mod updates;
+mod wake;
 mod welcome;
 mod workspace_view;
 

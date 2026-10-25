@@ -45,7 +45,8 @@ pub fn options(
     }
 }
 
-/// Saved geometry as window bounds, when it still lands on a connected display.
+/// Saved geometry as window bounds, when it still lands on a connected display: fitted to the
+/// one it's most on, so a window left big on an external display opens whole on the laptop's.
 pub fn restore_bounds(
     saved: Option<&WindowGeometry>,
     min_size: Size<Pixels>,
@@ -59,10 +60,16 @@ pub fn restore_bounds(
             px(g.height.max(f32::from(min_size.height))),
         ),
     );
-    let on_screen = cx.displays().iter().any(|d| d.bounds().intersects(&bounds));
-    if !on_screen {
-        return None;
-    }
+    let on = |area: Bounds<Pixels>| {
+        let b = area.intersect(&bounds);
+        f32::from(b.size.width).max(0.) * f32::from(b.size.height).max(0.)
+    };
+    let display = cx
+        .displays()
+        .into_iter()
+        .filter(|d| d.bounds().intersects(&bounds))
+        .max_by(|a, b| on(a.bounds()).total_cmp(&on(b.bounds())))?;
+    let bounds = fit(bounds, display.visible_bounds(), min_size);
     Some(if g.fullscreen {
         WindowBounds::Fullscreen(bounds)
     } else if g.maximized {
@@ -70,6 +77,16 @@ pub fn restore_bounds(
     } else {
         WindowBounds::Windowed(bounds)
     })
+}
+
+/// `bounds` shrunk to fit `area` (a display's, less the menu bar and Dock) and moved into it;
+/// never under `min`.
+fn fit(bounds: Bounds<Pixels>, area: Bounds<Pixels>, min: Size<Pixels>) -> Bounds<Pixels> {
+    let w = bounds.size.width.min(area.size.width).max(min.width);
+    let h = bounds.size.height.min(area.size.height).max(min.height);
+    let x = bounds.origin.x.min(area.right() - w).max(area.left());
+    let y = bounds.origin.y.min(area.bottom() - h).max(area.top());
+    Bounds::new(point(x, y), size(w, h))
 }
 
 /// Window bounds as they're saved.
@@ -126,4 +143,35 @@ pub fn install_app_actions(cx: &mut App) {
         async {}
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn b(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
+        Bounds::new(point(px(x), px(y)), size(px(w), px(h)))
+    }
+
+    #[test]
+    fn a_window_bigger_than_its_display_is_shrunk_into_it() {
+        let min = size(px(900.), px(560.));
+        // The laptop's 1512×982, under a 33pt menu bar; the window left at 2400×1300.
+        let laptop = b(0., 33., 1512., 949.);
+        assert_eq!(fit(b(200., 100., 2400., 1300.), laptop, min), laptop);
+        // One that fits stays where it was; one hanging off the edge comes in.
+        assert_eq!(
+            fit(b(100., 80., 1000., 700.), laptop, min),
+            b(100., 80., 1000., 700.)
+        );
+        assert_eq!(
+            fit(b(900., 600., 1000., 700.), laptop, min),
+            b(512., 282., 1000., 700.)
+        );
+        // A display smaller than the window's minimum: the minimum, from its corner.
+        assert_eq!(
+            fit(b(0., 0., 1200., 800.), b(0., 0., 800., 500.), min),
+            b(0., 0., 900., 560.)
+        );
+    }
 }

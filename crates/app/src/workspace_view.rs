@@ -23,20 +23,22 @@ use gpui_kit::component::resizable::HandleEdge;
 use gpui_kit::component::resize_handle;
 use gpui_kit::{
     AnyElement, AnyWindowHandle, App, AppContext as _, Axis, Context, DragMoveEvent, Empty, Entity,
-    FocusHandle, Global, InteractiveElement as _, IntoElement, KeyDownEvent, ModifiersChangedEvent,
-    MouseButton, ParentElement as _, PathPromptOptions, Render, ScrollHandle,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
-    prelude::*, px, size,
+    ExternalPaths, FocusHandle, Global, InteractiveElement as _, IntoElement, KeyDownEvent,
+    ModifiersChangedEvent, MouseButton, ParentElement as _, PathPromptOptions, Render,
+    ScrollHandle, StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity,
+    Window, div, prelude::*, px, size,
 };
 
 use crate::layout::{self, LEFT, RIGHT};
 use crate::menus::{ClearRecent, OpenRecent};
 use crate::open_in_button::OpenInButton;
+use crate::open_repo::{self, Found, Request};
 use crate::overlay::ShortcutOverlay;
 use crate::palette::{Mode, Palette};
 use crate::status_bar::{STATUS_BAR_HEIGHT, status_bar};
 use crate::tab_strip::{StripKeys, tab_strip};
 use crate::top_bar::top_bar;
+use crate::wake::Wake;
 use crate::welcome;
 
 pub const DEFAULT_SIZE: (f32, f32) = (1480., 920.);
@@ -96,6 +98,8 @@ pub struct WorkspaceView {
     _gone: Option<Task<()>>,
     /// The terminal's most urgent news, for its button's dot while it's hidden.
     terminal_news: Option<gitviber_ui::widgets::Look>,
+    /// Reads the repo again when the window comes back to a change the watcher missed.
+    wake: Entity<Wake>,
     _live: Live,
     _subscriptions: Vec<Subscription>,
 }
@@ -171,11 +175,14 @@ impl WorkspaceView {
             UiState::update_later(cx, |s| s.window = Some(geometry));
         }));
         // ⌘Tab leaves without a keyup: a held overlay goes too. Back in front, a folder moved
-        // meanwhile shows in the projects list.
+        // meanwhile shows in the projects list, and a change the watcher missed in the repo.
         subs.push(cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
                 crate::projects::mark_stale(cx);
+                let project = this.workspace.read(cx).project().cloned();
+                this.wake.update(cx, |w, cx| w.back(project, cx));
             } else {
+                this.wake.update(cx, |w, cx| w.left(cx));
                 this.overlay.update(cx, |o, cx| o.hide(cx));
             }
         }));
@@ -231,6 +238,7 @@ impl WorkspaceView {
             _project: None,
             _gone: None,
             terminal_news: None,
+            wake: cx.new(|_| Wake::new()),
             _live: Live::new("WorkspaceView"),
             _subscriptions: subs,
         };
@@ -280,7 +288,12 @@ impl WorkspaceView {
             if root.is_dir() {
                 return None;
             }
-            let next = candidates.into_iter().find(|p| p.is_dir());
+            let next = candidates
+                .into_iter()
+                .find_map(|p| match open_repo::look(&p) {
+                    Found::Repo(top) => Some(top),
+                    _ => None,
+                });
             Some((root, next))
         });
         self._gone = Some(cx.spawn_in(window, async move |this, cx| {
@@ -381,46 +394,40 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    fn open_folder(&mut self, _: &file::OpenRepo, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_folder(&mut self, _: &file::OpenRepo, _: &mut Window, cx: &mut Context<Self>) {
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
             multiple: false,
             prompt: Some("Open".into()),
         });
-        let workspace = self.workspace.clone();
-        let handle = window.window_handle();
         cx.spawn(async move |_, cx| {
             let Ok(Ok(Some(paths))) = paths.await else {
                 return;
             };
-            let Some(root) = paths.into_iter().next() else {
-                return;
-            };
-            let _ = handle.update(cx, |_, window, cx| {
-                workspace.update(cx, |ws, cx| ws.open_project(root, window, cx));
-            });
+            if let Some(folder) = paths.into_iter().next() {
+                cx.update(|cx| open_repo::open(Request::folder(folder), cx));
+            }
         })
         .detach();
     }
 
-    fn open_recent(&mut self, action: &OpenRecent, window: &mut Window, cx: &mut Context<Self>) {
-        let root = PathBuf::from(action.path.as_ref());
+    fn open_recent(&mut self, action: &OpenRecent, _: &mut Window, cx: &mut Context<Self>) {
+        let folder = PathBuf::from(action.path.as_ref());
         let workspace = self.workspace.downgrade();
-        let handle = window.window_handle();
         // Off the UI thread: a gone network mount can take seconds to say so.
         self._open_recent = Some(cx.spawn(async move |_, cx| {
-            let check = root.clone();
-            let there = cx.background_spawn(async move { check.is_dir() }).await;
-            let _ = handle.update(cx, |_, window, cx| {
-                let Some(workspace) = workspace.upgrade() else {
-                    return;
-                };
-                if there {
-                    workspace.update(cx, |ws, cx| ws.open_project(root, window, cx));
-                } else {
-                    let path = root.to_string_lossy().into_owned();
-                    UiState::update(cx, |s| s.recent_projects.retain(|p| *p != path));
+            let at = folder.clone();
+            let found = cx
+                .background_spawn(async move { open_repo::look(&at) })
+                .await;
+            cx.update(|cx| {
+                if found != Found::Gone {
+                    return open_repo::act(found, Request::folder(folder), cx);
+                }
+                let path = folder.to_string_lossy().into_owned();
+                UiState::update(cx, |s| s.recent_projects.retain(|p| *p != path));
+                if let Some(workspace) = workspace.upgrade() {
                     workspace.update(cx, |ws, cx| {
                         ws.toast(
                             Toast::warning(format!("{path} is gone; it's off the list.")),
@@ -885,6 +892,11 @@ impl Render for WorkspaceView {
         let body: AnyElement = if !ws_has_project {
             match crate::dialogs::needs_git::missing(cx) {
                 Some(info) => crate::dialogs::needs_git::screen(info, cx),
+                // Not before the launch said whether a project opens: it would flash first.
+                None if crate::opened::launching(cx) => div()
+                    .size_full()
+                    .bg(t.code(t.background))
+                    .into_any_element(),
                 None => welcome::no_project(window, cx),
             }
         } else if maximized {
@@ -964,6 +976,15 @@ impl Render for WorkspaceView {
             .capture_any_mouse_down(
                 cx.listener(|this, _, _, cx| this.overlay.update(cx, |o, _| o.pointer())),
             )
+            // Away from the terminal panes, which paste a drop's paths: a folder opens as a
+            // project, a file in its repository, as `gitviber <path>` opens them.
+            .on_drop(|paths: &ExternalPaths, _, cx| {
+                let paths = paths.paths().iter();
+                let paths = paths.map(|p| p.to_string_lossy().into_owned()).collect();
+                if gitviber_ui::has_core(cx) {
+                    gitviber_core::api::app::open_dropped(&gitviber_ui::core(cx), paths);
+                }
+            })
             .on_mouse_move(
                 cx.listener(|this, _, _, cx| this.overlay.update(cx, |o, _| o.pointer())),
             )
@@ -1962,6 +1983,97 @@ mod tests {
             assert_eq!(focused(cx), Some(Part::Slot(Slot::Bottom)));
             keys(cx, "cmd-j");
             assert_eq!(focused(cx), Some(Part::Center));
+        }
+    }
+
+    /// Bugs the old app fixed, checked on the real window.
+    mod old_bugs {
+        use gpui_kit::{FileDropEvent, Modifiers, TestAppContext, VisualTestContext, point};
+
+        use super::super::*;
+
+        /// The main window on `project`, drawn, with a config dir of the test's own.
+        fn launch(
+            tag: &str,
+            project: Option<PathBuf>,
+            cx: &mut TestAppContext,
+        ) -> VisualTestContext {
+            let dir =
+                std::env::temp_dir().join(format!("gitviber-app-old-{tag}-{}", std::process::id()));
+            // SAFETY: the tests that read the config dir all point it at a temporary folder.
+            unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", dir.join("config")) };
+            cx.update(|cx| {
+                gitviber_ui::init(cx);
+                crate::placeholders::register(cx);
+            });
+            let window: AnyWindowHandle = cx
+                .add_window(|window, cx| {
+                    let view = main_view(project, window, cx);
+                    gpui_kit::base::Root::new(view, window, cx)
+                })
+                .into();
+            let vcx = VisualTestContext::from_window(window, cx);
+            vcx.simulate_resize(size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)));
+            vcx.run_until_parked();
+            vcx
+        }
+
+        /// #31: ⌘ let go in Mission Control (no keyup reaches the window, which stays key): the
+        /// first move that says ⌘ is up closes the held overlay.
+        #[gpui_kit::test]
+        fn the_held_overlay_closes_once_an_event_says_cmd_is_up(cx: &mut TestAppContext) {
+            let cx = &mut launch("overlay", None, cx);
+            let shown = |cx: &mut VisualTestContext| cx.debug_bounds("shortcut-overlay").is_some();
+            cx.simulate_modifiers_change(Modifiers::command());
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(2));
+            cx.run_until_parked();
+            assert!(shown(cx), "held ⌘ shows it");
+            let at = point(px(400.), px(300.));
+            cx.simulate_mouse_move(at, None, Modifiers::command());
+            cx.run_until_parked();
+            assert!(shown(cx), "still held");
+            cx.simulate_mouse_move(at, None, Modifiers::none());
+            cx.run_until_parked();
+            assert!(!shown(cx), "the move says ⌘ is up");
+        }
+
+        /// A folder dropped on the window away from the terminal goes where `gitviber <path>`
+        /// goes, which opens it (opened.rs, open_repo.rs).
+        #[gpui_kit::test]
+        fn a_folder_dropped_on_the_window_is_opened_as_gitviber_path_is(cx: &mut TestAppContext) {
+            let dir =
+                std::env::temp_dir().join(format!("gitviber-app-drop-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let dir = dir.canonicalize().unwrap();
+            // No repo opens here: core's watcher thread would wake the test's executor.
+            let core = cx.update(gitviber_ui::install_core);
+            let cx = &mut launch("drop", None, cx);
+            let at = point(px(700.), px(400.));
+            cx.simulate_event(FileDropEvent::Entered {
+                position: at,
+                paths: ExternalPaths(vec![dir.clone()].into()),
+            });
+            cx.simulate_event(FileDropEvent::Submit { position: at });
+            cx.run_until_parked();
+            let taken = gitviber_core::api::app::take_opened(&core).unwrap();
+            let folders: Vec<&str> = taken.open.iter().map(|t| t.folder.as_str()).collect();
+            assert_eq!(folders, [dir.to_string_lossy()]);
+        }
+
+        /// The status bar's syntax theme opens Settings → Editor, where it's set.
+        #[gpui_kit::test]
+        fn the_syntax_item_opens_its_settings(cx: &mut TestAppContext) {
+            let project =
+                std::env::temp_dir().join(format!("gitviber-app-status-{}", std::process::id()));
+            std::fs::create_dir_all(&project).unwrap();
+            let cx = &mut launch("status", Some(project), cx);
+            let item = cx
+                .debug_bounds("status-syntax")
+                .expect("drawn with a project");
+            cx.simulate_click(item.center(), Modifiers::none());
+            cx.run_until_parked();
+            assert_eq!(cx.update(|_, cx| cx.windows().len()), 2);
         }
     }
 }

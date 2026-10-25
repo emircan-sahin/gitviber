@@ -8,7 +8,10 @@ use gitviber_ui::actions::{
 };
 use gitviber_ui::{Settings, UiState};
 use gpui_kit::component::input as text;
-use gpui_kit::{Action, App, Menu, MenuItem, OsAction, SharedString, SystemMenuType};
+use gpui_kit::{
+    Action, App, KeyContext, Keymap, Keystroke, Menu, MenuItem, OsAction, SharedString,
+    SystemMenuType,
+};
 
 /// File → Open Recent's items.
 #[derive(Clone, PartialEq, Debug, gpui_kit::Action)]
@@ -280,7 +283,38 @@ fn inputs(
     )
 }
 
+/// A ⌘ chord one of our commands binds, but under none of its bindings that apply in `context`:
+/// the keymap keeps it from there (⌘Z from the terminal and text fields), and so must the menu.
+pub fn kept_from_menu(keystroke: &Keystroke, context: &[KeyContext], keymap: &Keymap) -> bool {
+    if !keystroke.modifiers.platform {
+        return false;
+    }
+    let input = std::slice::from_ref(keystroke);
+    keymap
+        .all_bindings_for_input(input)
+        .iter()
+        .any(|b| gitviber_ui::keymap::command_for_action(b.action()).is_some())
+        && keymap.bindings_for_input(input, context).0.is_empty()
+}
+
+/// macOS offers the menu bar every ⌘ key GPUI let through, and its items carry their command's
+/// key whatever the focus: ⌘Z passed by a terminal ran Undo Git Action. Such a key is taken
+/// here, as handled; menu clicks and keys our commands don't bind are left alone.
+fn keep_keys_from_menu(cx: &mut App) {
+    cx.observe_keystrokes(|e, _, cx| {
+        if e.action.is_none()
+            && kept_from_menu(&e.keystroke, &e.context_stack, &cx.key_bindings().borrow())
+        {
+            cx.stop_propagation();
+        }
+    })
+    .detach();
+}
+
 pub fn install(cx: &mut App) {
+    if MAC {
+        keep_keys_from_menu(cx);
+    }
     cx.set_menus(build(cx));
     let mut last = inputs(cx);
     let mut rebuild = move |cx: &mut App| {
@@ -298,4 +332,135 @@ pub fn install(cx: &mut App) {
     // The default app's name comes with the list of found ones.
     cx.observe_global::<gitviber_ui::open_in::Found>(move |cx| found(cx))
         .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gitviber_ui::keymap::ROOT_CONTEXT;
+    use gpui_kit::component::input::{Editor, EditorState, Input, InputState};
+    use gpui_kit::{
+        AnyWindowHandle, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
+        IntoElement, KeyDownEvent, ParentElement as _, PlatformInput, Render, TestAppContext,
+        VisualTestContext, Window, div,
+    };
+
+    struct Host {
+        terminal: FocusHandle,
+        field: Entity<InputState>,
+        code: Entity<EditorState>,
+    }
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .key_context(ROOT_CONTEXT)
+                .child(
+                    div()
+                        .key_context("Terminal")
+                        .track_focus(&self.terminal)
+                        .child("terminal"),
+                )
+                .child(Input::new(&self.field))
+                .child(Editor::new(&self.code))
+        }
+    }
+
+    /// Whether `key` went on past the window, to where macOS would offer it to the menu bar.
+    fn passed_on(key: &str, cx: &mut VisualTestContext) -> bool {
+        let down = KeyDownEvent {
+            keystroke: Keystroke::parse(key).unwrap(),
+            is_held: false,
+            prefer_character_input: false,
+        };
+        cx.update(|window, cx| {
+            window
+                .dispatch_event(PlatformInput::KeyDown(down), cx)
+                .propagate
+        })
+    }
+
+    #[gpui_kit::test]
+    fn a_key_the_terminal_passes_never_reaches_the_menu_and_fields_keep_their_undo(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = std::env::temp_dir().join(format!("gitviber-menu-keys-{}", std::process::id()));
+        // SAFETY: the tests that read the config dir all point it at a temporary folder.
+        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            keep_keys_from_menu(cx);
+        });
+        let mut host = None;
+        let window: AnyWindowHandle = cx
+            .add_window(|window, cx| {
+                let h = cx.new(|cx| Host {
+                    terminal: cx.focus_handle(),
+                    field: cx.new(|cx| InputState::new(window, cx)),
+                    code: cx.new(|cx| EditorState::new(window, cx)),
+                });
+                host = Some(h.clone());
+                gpui_kit::base::Root::new(h, window, cx)
+            })
+            .into();
+        let host = host.unwrap();
+        let cx = &mut VisualTestContext::from_window(window, cx);
+        cx.run_until_parked();
+        let terminal = host.read_with(cx, |h, _| h.terminal.clone());
+        cx.update(|window, cx| terminal.focus(window, cx));
+        cx.run_until_parked();
+        assert!(
+            !passed_on("cmd-z", cx),
+            "Undo Git Action's key stays with the terminal"
+        );
+        assert!(!passed_on("shift-cmd-z", cx));
+        assert!(
+            passed_on("cmd-`", cx),
+            "keys of no command of ours stay macOS's"
+        );
+        let (field, code) = host.read_with(cx, |h, _| (h.field.clone(), h.code.clone()));
+        cx.update(|window, cx| field.update(cx, |s, cx| s.focus(window, cx)));
+        cx.simulate_input("abc");
+        cx.simulate_keystrokes("cmd-z");
+        assert_eq!(
+            field.read_with(cx, |s, _| s.value()).as_ref(),
+            "",
+            "⌘Z undoes in a field"
+        );
+        cx.update(|window, cx| code.update(cx, |s, cx| s.focus(window, cx)));
+        cx.simulate_input("abc");
+        assert_eq!(code.read_with(cx, |s, _| s.value()).as_ref(), "abc");
+        cx.simulate_keystrokes("cmd-z");
+        assert_eq!(
+            code.read_with(cx, |s, _| s.value()).as_ref(),
+            "",
+            "and in the code editor"
+        );
+    }
+
+    #[test]
+    fn only_command_keys_kept_from_where_focus_is_are_taken() {
+        let keymap = Keymap::new(gitviber_ui::keymap::key_bindings(&Default::default(), true));
+        let stack = |names: &[&str]| -> Vec<KeyContext> {
+            names
+                .iter()
+                .map(|n| KeyContext::parse(n).unwrap())
+                .collect()
+        };
+        let key = |k: &str| Keystroke::parse(k).unwrap();
+        let terminal = stack(&[ROOT_CONTEXT, "Terminal"]);
+        let field = stack(&[ROOT_CONTEXT, "Input"]);
+        let list = stack(&[ROOT_CONTEXT]);
+        assert!(kept_from_menu(&key("cmd-z"), &terminal, &keymap));
+        assert!(kept_from_menu(&key("cmd-z"), &field, &keymap));
+        assert!(
+            !kept_from_menu(&key("cmd-z"), &list, &keymap),
+            "bound there"
+        );
+        assert!(!kept_from_menu(&key("cmd-`"), &terminal, &keymap));
+        assert!(
+            !kept_from_menu(&key("z"), &terminal, &keymap),
+            "not a ⌘ key"
+        );
+    }
 }
