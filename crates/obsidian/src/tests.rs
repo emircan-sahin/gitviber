@@ -66,13 +66,21 @@ fn setup(name: &str, cx: &mut TestAppContext) -> String {
     write("Folder/Deep.md", b"deep");
     write(".obsidian/app.json", b"{}");
     let vault = vault.canonicalize().unwrap().to_string_lossy().into_owned();
-    let config = root.join("home/Library/Application Support/obsidian");
+    // Where Obsidian keeps its list under this $HOME. XDG_CONFIG_HOME would win on Linux, so it
+    // points there too.
+    let home = root.join("home");
+    let config = if cfg!(target_os = "macos") {
+        home.join("Library/Application Support/obsidian")
+    } else {
+        home.join(".config/obsidian")
+    };
     std::fs::create_dir_all(&config).unwrap();
     let list = serde_json::json!({ "vaults": { "a": { "path": vault, "ts": 1 } } });
     std::fs::write(config.join("obsidian.json"), list.to_string()).unwrap();
     // SAFETY: each test runs in its own process (nextest), and only these tests read them.
     unsafe {
-        std::env::set_var("HOME", root.join("home"));
+        std::env::set_var("HOME", &home);
+        std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
         std::env::set_var("GITVIBER_CONFIG_DIR", root.join("config"));
     }
     cx.update(|cx| {
@@ -210,7 +218,7 @@ fn saving_a_note_keeps_its_line_endings(cx: &mut TestAppContext) {
         let focus = editor.read(cx).editor_focus(cx);
         window.focus(&focus, cx);
     });
-    cx.simulate_keystrokes("cmd-a");
+    cx.simulate_keystrokes("secondary-a");
     cx.simulate_input("one\nthree\n");
     assert!(cx.update(|_, cx| editor.read(cx).is_dirty()));
     cx.update(|window, cx| editor.update(cx, |e, cx| e.save(window, cx)));
@@ -290,7 +298,7 @@ fn type_all(view: &Entity<VaultTab>, text: &str, cx: &mut VisualTestContext) {
             .editor_focus(cx);
         window.focus(&focus, cx);
     });
-    cx.simulate_keystrokes("cmd-a");
+    cx.simulate_keystrokes("secondary-a");
     cx.simulate_input(text);
 }
 
@@ -485,7 +493,7 @@ fn find_in_a_rendered_note(cx: &mut TestAppContext) {
     // ⌘F where the workspace puts focus on showing the tab.
     let shown = cx.update(|_, cx| TabItem::tab_focus(view.read(cx), cx).unwrap());
     focus(cx, shown);
-    cx.simulate_keystrokes("cmd-f");
+    cx.simulate_keystrokes("secondary-f");
     assert_eq!(hits(cx), Some((0, 0)));
     // As it reads: "[[Plan#Goals]]" shows "Plan > Goals", "## Later" shows "Later".
     cx.simulate_input("goals");
@@ -507,7 +515,7 @@ fn find_in_a_rendered_note(cx: &mut TestAppContext) {
         marks(cx)
     );
     // ⌘F again selects the query, so what's typed next replaces it.
-    cx.simulate_keystrokes("cmd-f");
+    cx.simulate_keystrokes("secondary-f");
     cx.simulate_input("e");
     let (_, n) = hits(cx).unwrap();
     assert!(n > 3, "{n}");
@@ -526,7 +534,7 @@ fn find_in_a_rendered_note(cx: &mut TestAppContext) {
     // The tab's own focus (its header clicked) finds in the note too.
     let own = cx.update(|_, cx| view.read(cx).own_focus());
     focus(cx, own);
-    cx.simulate_keystrokes("cmd-f");
+    cx.simulate_keystrokes("secondary-f");
     assert_eq!(
         hits(cx),
         Some((n - 1, n)),
@@ -661,7 +669,7 @@ fn cmd_g_steps_through_a_notes_matches_and_goes_on_without_its_box(cx: &mut Test
     });
     let shown = cx.update(|_, cx| TabItem::tab_focus(view.read(cx), cx).unwrap());
     cx.update(|window, cx| window.focus(&shown, cx));
-    cx.simulate_keystrokes("cmd-f");
+    cx.simulate_keystrokes("secondary-f");
     cx.simulate_input("e");
     let (_, n) = hits(cx).unwrap();
     assert!(n > 3, "{n}");
@@ -684,7 +692,7 @@ fn cmd_g_steps_through_a_notes_matches_and_goes_on_without_its_box(cx: &mut Test
     assert_eq!(went_on.get(), 0, "the box took them");
     // Closed, the keys go on (⇧⌘G to the Git panel).
     cx.update(|window, cx| window.focus(&own, cx));
-    cx.simulate_keystrokes("cmd-f escape");
+    cx.simulate_keystrokes("secondary-f escape");
     assert_eq!(hits(cx), None);
     cx.simulate_keystrokes(next);
     cx.simulate_keystrokes(prev);
@@ -743,7 +751,7 @@ fn a_long_note_scrolls_from_the_keyboard_but_not_from_its_find_box(cx: &mut Test
         "{top} of {max}"
     );
     // In the find box, they stay there.
-    cx.simulate_keystrokes("cmd-f home pageup up");
+    cx.simulate_keystrokes("secondary-f home pageup up");
     assert_eq!(scrolled(cx).0, top);
     cx.update(|window, cx| window.focus(&shown, cx));
     cx.simulate_keystrokes("home");

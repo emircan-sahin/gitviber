@@ -174,6 +174,8 @@ fn closing_an_image_compare_frees_it(cx: &mut TestAppContext) {
     cx.update(|_, cx| cx.assert_no_new_leaks(&snapshot));
 }
 
+/// Copy Image is macOS's: a file onto the pasteboard.
+#[cfg(target_os = "macos")]
 #[gpui::test]
 fn a_right_click_copies_either_version(cx: &mut TestAppContext) {
     let (before, after) = (png(40, 20, RED, GREEN), png(40, 20, RED, BLUE));

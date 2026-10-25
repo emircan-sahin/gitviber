@@ -1654,10 +1654,10 @@ mod tests {
             gpui_kit::VisualTestContext::from_window(handle, cx).simulate_keystrokes(key);
             closed(handle, view, cx);
         };
-        close("cmd-w", cx);
+        close("secondary-w", cx);
         let snapshot = cx.update(|cx| cx.leak_detector_snapshot());
         close("escape", cx);
-        close("cmd-w", cx);
+        close("secondary-w", cx);
 
         let (handle, view) = opened(cx);
         let search = view

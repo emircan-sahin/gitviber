@@ -47,7 +47,8 @@ pub fn readout_enabled() -> bool {
 }
 
 /// The process's physical footprint in bytes: what Activity Monitor's Memory column shows on
-/// macOS (compressed and swapped pages included), the resident set elsewhere.
+/// macOS (compressed and swapped pages included). On Linux its anonymous memory, resident or
+/// swapped, which macOS's counts too: the resident set adds the binary's code as it pages in.
 pub fn footprint() -> Option<u64> {
     #[cfg(target_os = "macos")]
     {
@@ -56,9 +57,11 @@ pub fn footprint() -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
         let status = std::fs::read_to_string("/proc/self/status").ok()?;
-        let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
-        let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
-        Some(kb * 1024)
+        let kb = |key: &str| -> Option<u64> {
+            let line = status.lines().find(|l| l.starts_with(key))?;
+            line.split_whitespace().nth(1)?.parse().ok()
+        };
+        Some((kb("RssAnon:")? + kb("VmSwap:").unwrap_or(0)) * 1024)
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {

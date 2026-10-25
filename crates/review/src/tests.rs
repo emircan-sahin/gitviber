@@ -385,7 +385,7 @@ fn a_note_written_on_a_commits_lines_is_kept_and_drawn_until_resolved(cx: &mut T
     // Typed into its box; ⌘↵ adds it, though the diff takes ⌘↵ for Go to Definition.
     draw(cx);
     cx.simulate_input("Why 3?");
-    cx.simulate_keystrokes("cmd-enter");
+    cx.simulate_keystrokes("secondary-enter");
     cx.run_until_parked();
     let root = repo.to_string_lossy().into_owned();
     let kept = cx.update(|_, cx| crate::ReviewNotes::get(cx, &root));
@@ -1006,7 +1006,7 @@ fn open_all_takes_c_for_a_note_and_its_box_gives_the_keys_back(cx: &mut TestAppC
     assert!(!focused(cx), "its box has the keys");
     draw(cx);
     cx.simulate_input("Why 5?");
-    cx.simulate_keystrokes("cmd-enter");
+    cx.simulate_keystrokes("secondary-enter");
     cx.run_until_parked();
     let root = repo.to_string_lossy().into_owned();
     let kept = cx.update(|_, cx| crate::ReviewNotes::get(cx, &root));
@@ -1072,7 +1072,7 @@ fn a_guides_note_and_ask_boxes_give_the_keys_back_to_its_diffs(cx: &mut TestAppC
     assert!(view.read_with(cx, |v, _| v.has_note_draft()) && !focused(cx));
     draw(cx);
     cx.simulate_input("Why 3?");
-    cx.simulate_keystrokes("cmd-enter");
+    cx.simulate_keystrokes("secondary-enter");
     cx.run_until_parked();
     assert!(!view.read_with(cx, |v, _| v.has_note_draft()));
     assert!(focused(cx), "the keys back on the diffs");

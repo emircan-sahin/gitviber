@@ -3458,7 +3458,7 @@ mod tests {
         cx.simulate_keystrokes("escape");
         assert!(in_pane(cx));
         focus_tabs(cx);
-        cx.simulate_keystrokes("cmd-w");
+        cx.simulate_keystrokes("secondary-w");
         draw(cx);
         assert_eq!(groups(cx).0, vec![ids[0], ids[2]]);
         assert!(on_strip(cx));

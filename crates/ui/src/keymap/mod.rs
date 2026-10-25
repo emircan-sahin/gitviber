@@ -909,7 +909,8 @@ mod tests {
     ) {
         layouts_setup(cx, "keymap-us-names");
         let ctrl = |m: &mut Modifiers| m.control = true;
-        let cmd = |m: &mut Modifiers| m.platform = true;
+        // ⌘, Ctrl elsewhere.
+        let cmd = |m: &mut Modifiers| *m = Modifiers::secondary_key();
         let (ran, _) = press(cx, "Pane", keystroke("\"", Some("`"), ctrl));
         assert_eq!(ran, ["terminal"]);
         // In the terminal too: ⌃` is the app's there.

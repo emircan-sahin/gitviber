@@ -876,12 +876,16 @@ mod tests {
             finder.read_with(cx, |f, _| f.counts.iter().sum::<usize>())
         };
         // A regex, which could match the break between the title and the next part.
-        cx.simulate_keystrokes("alt-cmd-r");
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "alt-cmd-r"
+        } else {
+            "alt-r"
+        });
         cx.simulate_input(r"b\sc");
         draw(cx);
         assert_eq!(total(cx), 0);
         // Each part is a line of its own.
-        cx.simulate_keystrokes("cmd-a backspace");
+        cx.simulate_keystrokes("secondary-a backspace");
         cx.simulate_input("^cd|ab$");
         draw(cx);
         assert_eq!(total(cx), 2);

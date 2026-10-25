@@ -4705,7 +4705,7 @@ mod tests {
         let paste = |text: &str, cx: &mut VisualTestContext| {
             let item = gpui_kit::ClipboardItem::new_string(text.to_string());
             cx.update(|_, cx| cx.write_to_clipboard(item));
-            cx.simulate_keystrokes("cmd-v");
+            cx.simulate_keystrokes("secondary-v");
             cx.run_until_parked();
             commit.read_with(cx, |b, cx| (b.summary_text(cx), b.body_text(cx)))
         };

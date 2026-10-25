@@ -1940,13 +1940,13 @@ mod tests {
             let project = setup("report", cx);
             let cx = &mut launch(Some(project), (1200., 800.), cx);
             assert_eq!(drawn(cx), [Some(320.), Some(260.), None]);
-            keys(cx, "cmd-b");
+            keys(cx, "secondary-b");
             for size in [(1600., 1000.), (2400., 1350.), (3008., 1692.)] {
                 resize(cx, size);
                 assert_eq!(drawn(cx)[L], None, "shown again at {size:?}");
                 assert!(!open(cx)[L]);
             }
-            keys(cx, "cmd-b");
+            keys(cx, "secondary-b");
             assert_eq!(
                 drawn(cx),
                 [Some(320.), Some(260.), None],
@@ -1960,14 +1960,14 @@ mod tests {
         ) {
             let project = setup("resizes", cx);
             let cx = &mut launch(Some(project), START, cx);
-            keys(cx, "cmd-j");
+            keys(cx, "secondary-j");
             let shown = drawn(cx);
             let bottom = layout::bottom_base(column(START.1));
             assert_eq!(shown, [Some(320.), Some(260.), Some(bottom)]);
             let toggles: [(&str, Box<dyn gpui_kit::Action>); 3] = [
-                ("cmd-b", Box::new(view::ToggleGitPanel)),
-                ("alt-cmd-b", Box::new(view::ToggleExplorer)),
-                ("cmd-j", Box::new(terminal::Toggle)),
+                ("secondary-b", Box::new(view::ToggleGitPanel)),
+                ("alt-secondary-b", Box::new(view::ToggleExplorer)),
+                ("secondary-j", Box::new(terminal::Toggle)),
             ];
             for (slot, (key, menu)) in toggles.into_iter().enumerate() {
                 // Hidden by its key, shown by its menu item.
@@ -1994,7 +1994,7 @@ mod tests {
         ) {
             let project = setup("points", cx);
             let cx = &mut launch(Some(project), START, cx);
-            keys(cx, "cmd-j");
+            keys(cx, "secondary-j");
             // Sized by the user: 400, 300 and 500 tall.
             drag(cx, L, &[(390., 400.), (400., 400.)]);
             drag(cx, R, &[(1190., 400.), (1180., 400.)]);
@@ -2066,11 +2066,11 @@ mod tests {
             draw(cx);
             assert!(!open(cx)[L]);
             // It opens again at the width the drag began with.
-            keys(cx, "cmd-b");
+            keys(cx, "secondary-b");
             assert_eq!(drawn(cx)[L], Some(300.));
             // The terminal stops where the code view keeps its min, and a double click on its
             // edge puts it back to its share of the column.
-            keys(cx, "cmd-j");
+            keys(cx, "secondary-j");
             drag(cx, B, &[(700., 300.), (700., 0.)]);
             assert_eq!(drawn(cx)[B], Some(column(START.1) - 120.));
             double_click(cx, B);
@@ -2082,19 +2082,19 @@ mod tests {
             let project = setup("relaunch", cx);
             let cx = &mut launch(Some(project.clone()), START, cx);
             // The terminal shown and never sized: it comes back, at the height it had.
-            keys(cx, "cmd-j");
+            keys(cx, "secondary-j");
             let first = drawn(cx);
             let cx = &mut relaunch(Some(project.clone()), START, cx);
             assert_eq!(drawn(cx), first);
             // Sized, one side hidden, the terminal hidden.
             drag(cx, L, &[(390., 400.), (410., 400.)]);
             drag(cx, R, &[(1190., 400.), (1170., 400.)]);
-            keys(cx, "cmd-b cmd-j");
+            keys(cx, "secondary-b secondary-j");
             assert_eq!(drawn(cx), [None, Some(310.), None]);
             let cx = &mut relaunch(Some(project.clone()), (1600., 1000.), cx);
             assert_eq!(drawn(cx), [None, Some(310.), None]);
             assert_eq!(open(cx), [false, true, false]);
-            keys(cx, "cmd-b cmd-j");
+            keys(cx, "secondary-b secondary-j");
             assert_eq!(drawn(cx), [Some(410.), Some(310.), first[B]]);
             // Relaunched in a window too small for them: squeezed, and saved as they were.
             let cx = &mut relaunch(Some(project), MIN_SIZE, cx);
@@ -2165,9 +2165,9 @@ mod tests {
             let cx = &mut launch(Some(project), START, cx);
             drag(cx, L, &[(390., 400.), (410., 400.)]);
             assert_eq!(drawn(cx)[L], Some(410.));
-            keys(cx, "cmd-b");
+            keys(cx, "secondary-b");
             resize(cx, MIN_SIZE);
-            keys(cx, "cmd-b");
+            keys(cx, "secondary-b");
             let squeezed = drawn(cx)[L].expect("shown");
             assert!((LEFT.min..410.).contains(&squeezed), "{squeezed}");
             let saved = cx.update(|_, cx| UiState::get(cx).panels.left.size);
@@ -2187,7 +2187,7 @@ mod tests {
             cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(project, window, cx)));
             draw(cx);
             assert_eq!(drawn(cx), [Some(320.), Some(260.), None]);
-            keys(cx, "alt-cmd-b");
+            keys(cx, "alt-secondary-b");
             cx.update(|window, cx| {
                 ws.update(cx, |ws, cx| {
                     ws.open_tab(
@@ -2218,7 +2218,7 @@ mod tests {
         fn a_maximized_terminal_stays_maximized_through_resizes(cx: &mut TestAppContext) {
             let project = setup("maximized", cx);
             let cx = &mut launch(Some(project), START, cx);
-            keys(cx, "cmd-j");
+            keys(cx, "secondary-j");
             let height = drawn(cx)[B];
             let ws = workspace(cx);
             cx.update(|_, cx| ws.update(cx, |ws, cx| ws.set_terminal_maximized(true, cx)));
@@ -2244,16 +2244,16 @@ mod tests {
             // The terminal's view built, as a panel shown before is.
             cx.update(|_, cx| ws.update(cx, |ws, cx| ws.set_open(Slot::Bottom, true, cx)));
             draw(cx);
-            keys(cx, "cmd-j");
+            keys(cx, "secondary-j");
             assert_eq!(drawn(cx)[B], None);
-            keys(cx, "cmd-b");
-            keys(cx, "cmd-b");
+            keys(cx, "secondary-b");
+            keys(cx, "secondary-b");
             assert_eq!(focused(cx), Some(Part::Slot(Slot::Left)));
-            keys(cx, "cmd-b");
+            keys(cx, "secondary-b");
             assert_eq!(focused(cx), Some(Part::Center));
-            keys(cx, "cmd-j");
+            keys(cx, "secondary-j");
             assert_eq!(focused(cx), Some(Part::Slot(Slot::Bottom)));
-            keys(cx, "cmd-j");
+            keys(cx, "secondary-j");
             assert_eq!(focused(cx), Some(Part::Center));
         }
     }
@@ -2393,13 +2393,13 @@ mod tests {
         fn the_held_overlay_closes_once_an_event_says_cmd_is_up(cx: &mut TestAppContext) {
             let cx = &mut launch("overlay", None, cx);
             let shown = |cx: &mut VisualTestContext| cx.debug_bounds("shortcut-overlay").is_some();
-            cx.simulate_modifiers_change(Modifiers::command());
+            cx.simulate_modifiers_change(Modifiers::secondary_key());
             cx.executor()
                 .advance_clock(std::time::Duration::from_secs(2));
             cx.run_until_parked();
             assert!(shown(cx), "held ⌘ shows it");
             let at = point(px(400.), px(300.));
-            cx.simulate_mouse_move(at, None, Modifiers::command());
+            cx.simulate_mouse_move(at, None, Modifiers::secondary_key());
             cx.run_until_parked();
             assert!(shown(cx), "still held");
             cx.simulate_mouse_move(at, None, Modifiers::none());

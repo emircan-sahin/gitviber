@@ -187,7 +187,7 @@ fn a_note_on_a_files_view_follows_typing_survives_a_reopen_and_goes_with_it(
     cx.dispatch_action(gitviber_ui::keymap::review::AddNote);
     draw(cx);
     cx.simulate_input("Why 3?");
-    cx.simulate_keystrokes("cmd-enter");
+    cx.simulate_keystrokes("secondary-enter");
     draw(cx);
     draw(cx);
     let kept = cx.update(|_, cx| ReviewNotes::get(cx, &root));
