@@ -1,7 +1,10 @@
-//! How an SVG preview is zoomed and moved: fitted to its room, or `scale` view pixels per SVG
-//! pixel with the point (u, v) of the drawing, as fractions of its size, held at the room's
-//! center. The wheel zooms around the pointer, a drag moves the drawing, and neither lets it
-//! leave a gap at an edge it could fill.
+//! How an SVG or image preview is zoomed and moved: fitted to its room, or `scale` view pixels
+//! per pixel of the picture with the point (u, v) of it, as fractions of its size, held at the
+//! room's center. Zooming keeps the point under the pointer, a drag moves the picture, and
+//! neither lets it leave a gap at an edge it could fill.
+
+/// What the zoom buttons' tooltip says the pointer does.
+pub const TIP: &str = "Pinch or ⌘-scroll to zoom, drag to move, double-click for 1:1 or Fit";
 
 /// Margin around a drawing fitted to its room.
 pub const PAD: f32 = 16.;
@@ -40,21 +43,34 @@ impl Default for Zoom {
 pub struct Frame {
     pub room: (f32, f32),
     pub natural: (f32, f32),
+    /// Fitting may enlarge it past its own size: a drawing's does, an image's pixels don't.
+    pub grow: bool,
 }
 
 impl Frame {
-    /// The scale that fits the drawing inside the room's margins.
-    pub fn fit(&self) -> f32 {
+    /// The scale that fills the room's margins.
+    fn fill(&self) -> f32 {
         let (rw, rh) = self.room;
         let (nw, nh) = self.natural;
         ((rw - 2. * PAD) / nw).min((rh - 2. * PAD) / nh).max(0.)
     }
 
-    /// How far it may zoom out and in.
+    /// The scale that fits the drawing inside the room's margins.
+    pub fn fit(&self) -> f32 {
+        let fill = self.fill();
+        if self.grow { fill } else { fill.min(1.) }
+    }
+
+    /// How far it may zoom out and in: a small image as far in as a drawing that fills the
+    /// room. Only a drawing is held to a longest side: an image's part on screen is all that's
+    /// decoded, however far in.
     pub fn limits(&self) -> (f32, f32) {
-        let fit = self.fit();
-        let min = fit.min(1.) / 2.;
-        let max = (fit.max(1.) * 16.).min(MAX_DRAWN / self.natural.0.max(self.natural.1));
+        let fill = self.fill();
+        let min = fill.min(1.) / 2.;
+        let mut max = fill.max(1.) * 16.;
+        if self.grow {
+            max = max.min(MAX_DRAWN / self.natural.0.max(self.natural.1));
+        }
         (min, min.max(max))
     }
 
@@ -78,14 +94,27 @@ impl Frame {
 
     /// `z` zoomed by `factor`, the point at `at` (room pixels) staying where it is.
     pub fn zoomed(&self, z: Zoom, factor: f32, at: (f32, f32)) -> Zoom {
+        self.zoomed_to(z, self.scale(z) * factor, at)
+    }
+
+    /// `z` at the scale `to` (within the limits), the point at `at` staying where it is.
+    fn zoomed_to(&self, z: Zoom, to: f32, at: (f32, f32)) -> Zoom {
         let (min, max) = self.limits();
         let from = self.scale(z);
-        let to = (from * factor).clamp(min, max);
+        let to = to.clamp(min, max);
         let (nw, nh) = self.natural;
         Zoom {
             scale: Some(to),
             u: zoom_axis(self.room.0, nw * from, nw * to, z.u, at.0),
             v: zoom_axis(self.room.1, nh * from, nh * to, z.v, at.1),
+        }
+    }
+
+    /// A double-click at `at`: fitted goes to 1:1 around it, anything else back to fitted.
+    pub fn toggled(&self, z: Zoom, at: (f32, f32)) -> Zoom {
+        match z.scale {
+            None => self.zoomed_to(z, 1., at),
+            Some(_) => FIT,
         }
     }
 
@@ -138,6 +167,7 @@ mod tests {
     const ICON: Frame = Frame {
         room: (432., 232.),
         natural: (100., 50.),
+        grow: true,
     };
 
     #[test]
@@ -177,5 +207,36 @@ mod tests {
         assert!(near(ICON.drawn(back)[0], -10.));
         // A drawing that fits stays centered.
         assert_eq!(ICON.panned(FIT, (50., 50.)), FIT);
+    }
+
+    #[test]
+    fn an_image_fits_without_growing_but_zooms_as_far() {
+        let photo = Frame {
+            room: (432., 232.),
+            natural: (4000., 1000.),
+            grow: false,
+        };
+        assert_eq!(photo.fit(), 0.1);
+        assert_eq!(photo.limits(), (0.05, 16.));
+        let icon = Frame {
+            grow: false,
+            ..ICON
+        };
+        assert_eq!(icon.fit(), 1.);
+        assert_eq!(icon.drawn(FIT), ICON.drawn(ACTUAL));
+        assert_eq!(icon.limits(), (0.5, 64.));
+    }
+
+    #[test]
+    fn a_double_click_goes_between_fit_and_one_to_one() {
+        let at = (116., 66.);
+        let one = ICON.toggled(FIT, at);
+        assert_eq!(one.scale, Some(1.));
+        // The point under the pointer stays where it was, as far as the edges allow.
+        let [x, ..] = ICON.drawn(one);
+        assert_eq!(x, 166.);
+        assert_eq!(ICON.toggled(one, at), FIT);
+        let zoomed = ICON.zoomed(FIT, 3., at);
+        assert_eq!(ICON.toggled(zoomed, at), FIT);
     }
 }

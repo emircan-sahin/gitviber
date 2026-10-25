@@ -1,25 +1,26 @@
 //! A changed image's two versions: side by side, as a swipe (a divider between them) or as an
-//! onion skin (after faded in over before). Both are decoded once off the main thread and held
-//! by this view only; closing it takes their textures out of every window's atlas. An SVG's
-//! Preview is drawn here too, from the texts its diff has (see `svg`).
+//! onion skin (after faded in over before), sharing one zoom so they stay lined up (`stage`).
+//! An image's file is held by this view only and decoded off the main thread no bigger than it's
+//! shown (`raster`); closing the view takes its textures out of every window's atlas. An SVG's
+//! Preview is drawn here too, from the texts its diff has.
 
-mod svg;
+pub mod raster;
+mod stage;
 
 use crate::model::zoom::Zoom;
 use crate::source::DiffSource;
-use crate::style::{DiffOptions, DiffStyle, ImageMode, Layout};
+use crate::style::{DiffOptions, DiffStyle, ImageMode};
 use gitviber_core::Core;
-use gpui_kit::component::{h_flex, v_flex};
+use gpui_kit::component::h_flex;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Bounds, Context, DevicePixels, FocusHandle, Image,
-    ImageFormat, ImageSource, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, ObjectFit, ParentElement as _, Pixels, Point, Render, RenderImage, Styled as _,
-    StyledImage as _, Subscription, SvgRenderer, SvgSize, Task, Window, canvas, div, img, px,
-    relative, size,
+    App, AppContext as _, Bounds, Context, DevicePixels, FocusHandle, ImageFormat, IntoElement,
+    ParentElement as _, Pixels, Point, RenderImage, Styled as _, Subscription, SvgRenderer,
+    SvgSize, Task, Window, div, px, size,
 };
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// The image formats the compare view decodes.
 pub fn image_format(path: &str) -> Option<ImageFormat> {
@@ -37,12 +38,17 @@ pub fn image_format(path: &str) -> Option<ImageFormat> {
 }
 
 struct Version {
-    image: Arc<RenderImage>,
+    /// The whole picture as held: an SVG's drawn as it loads, an image's at the size its room
+    /// fits it (None until the room is known), an animation's frame now.
+    image: Option<Arc<RenderImage>>,
     bytes: usize,
     /// Of the file's bytes: the same again isn't decoded again.
     hash: u64,
-    /// An SVG's own size, which 1:1 shows it at; its pixels are drawn for a fitted view.
-    natural: Option<(f32, f32)>,
+    /// Its own size, which 1:1 shows it at.
+    natural: (f32, f32),
+    /// An image's file, decoded again for a zoomed part; an SVG's text is `texts`.
+    raster: Option<Arc<[u8]>>,
+    animated: bool,
 }
 
 /// What an SVG preview is drawn on: art in the theme's own color vanishes on the theme's.
@@ -56,7 +62,7 @@ pub enum Backdrop {
 
 /// An SVG's longer side is drawn this many device pixels long, whatever its own size: sharp
 /// when fitted to a pane, and two of them stay under ~45 MB. Zoomed past it, only the part on
-/// screen is drawn again (`svg`).
+/// screen is drawn again (`stage`).
 const SVG_MIN_SIDE: f32 = 1600.;
 const SVG_MAX_SIDE: f32 = 2400.;
 
@@ -73,19 +79,19 @@ fn rasterize_svg(svg: &SvgRenderer, text: &str, hash: u64) -> Side {
         .and_then(|parsed| svg.render_parsed(&parsed, exact))
     {
         Ok(image) => Side::Ready(Version {
-            image,
+            image: Some(image),
             bytes: text.len(),
             hash,
-            natural: Some((w, h)),
+            natural: (w, h),
+            raster: None,
+            animated: false,
         }),
         Err(e) => Side::Failed(format!("Could not draw this SVG: {e}")),
     }
 }
 
-/// Past this the compressed file isn't decoded, and past this many pixels the decoded one isn't
-/// kept: a 10000×10000 screenshot is 400 MB as pixels.
+/// Past this the compressed file isn't read in.
 const MAX_BYTES: usize = 64 * 1024 * 1024;
-const MAX_PIXELS: u64 = 40_000_000;
 
 fn hash(bytes: &[u8]) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -120,18 +126,27 @@ pub struct ImageCompare {
     /// Both sides' zoom, so they stay lined up.
     zoom: Zoom,
     backdrop: Backdrop,
-    /// Where each SVG side was drawn last frame (one stage for both when laid over each other).
+    /// Where each side was drawn last frame (one stage for both when laid over each other).
     rooms: [Rc<Cell<Bounds<Pixels>>>; 2],
     /// The part on screen of a zoomed side, drawn sharp, and what the last one asked for was.
-    crops: [Option<svg::Crop>; 2],
-    asked: [Option<svg::CropKey>; 2],
+    crops: [Option<stage::Crop>; 2],
+    asked: [Option<stage::CropKey>; 2],
+    /// The size each image side's whole picture was last asked at.
+    sized: [Option<(u32, u32)>; 2],
+    /// An animated side's frames, and when its next one is due.
+    players: [Option<(raster::Player, Instant)>; 2],
+    /// Set as a side paints: a hidden view's animations stop until it's drawn again.
+    painted: Rc<Cell<bool>>,
+    playing: bool,
     /// The pointer while a drag moves the drawing.
     pan: Option<Point<Pixels>>,
     /// Onion skin's fade track, where it was drawn.
     fade: Rc<Cell<Bounds<Pixels>>>,
     focus: FocusHandle,
     _load: Task<()>,
+    _sized: [Task<()>; 2],
     _crop: Task<()>,
+    _tick: Task<()>,
     _release: Subscription,
 }
 
@@ -163,11 +178,17 @@ impl ImageCompare {
             rooms: Default::default(),
             crops: [None, None],
             asked: [None, None],
+            sized: [None, None],
+            players: [None, None],
+            painted: Rc::default(),
+            playing: false,
             pan: None,
             fade: Rc::default(),
             focus: cx.focus_handle(),
             _load: Task::ready(()),
+            _sized: [Task::ready(()), Task::ready(())],
             _crop: Task::ready(()),
+            _tick: Task::ready(()),
             _release: cx.on_release(|this, cx| this.drop_images(cx)),
         }
     }
@@ -187,10 +208,7 @@ impl ImageCompare {
             self.drop_crops(cx);
         }
         let svg = cx.svg_renderer();
-        let shown = [0, 1].map(|i| match &self.sides[i] {
-            Side::Ready(v) => Some(v.hash),
-            _ => None,
-        });
+        let shown = self.shown_hashes();
         self._load = cx.spawn(async move |this, cx| {
             let sides = cx
                 .background_spawn(async move {
@@ -232,37 +250,52 @@ impl ImageCompare {
         !matches!(self.sides, [Side::Missing, _] | [_, Side::Missing])
     }
 
+    fn shown_hashes(&self) -> [Option<u64>; 2] {
+        [0, 1].map(|i| match &self.sides[i] {
+            Side::Ready(v) => Some(v.hash),
+            _ => None,
+        })
+    }
+
     fn take_sides(&mut self, sides: [Side; 2], cx: &mut Context<Self>) {
         for (i, side) in sides.into_iter().enumerate() {
             if matches!(side, Side::Same) {
                 continue;
             }
-            if let Side::Ready(old) = std::mem::replace(&mut self.sides[i], side) {
-                cx.drop_image(old.image, None);
+            if let Side::Ready(old) = std::mem::replace(&mut self.sides[i], side)
+                && let Some(image) = old.image
+            {
+                cx.drop_image(image, None);
             }
+            self.sized[i] = None;
+            self._sized[i] = Task::ready(());
+            self.players[i] = None;
+            if let Some(crop) = self.crops[i].take() {
+                cx.drop_image(crop.image, None);
+            }
+            self.asked[i] = None;
         }
         cx.notify();
     }
 
     fn drop_images(&mut self, cx: &mut App) {
+        self.players = [None, None];
         for side in &mut self.sides {
-            if let Side::Ready(v) = std::mem::replace(side, Side::Loading) {
-                cx.drop_image(v.image, None);
+            if let Side::Ready(v) = std::mem::replace(side, Side::Loading)
+                && let Some(image) = v.image
+            {
+                cx.drop_image(image, None);
             }
         }
         self.drop_crops(cx);
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
-        let Some(format) = image_format(&self.source.path) else {
+        if image_format(&self.source.path).is_none() {
             return;
-        };
+        }
         let (core, source) = (self.core.clone(), self.source.clone());
-        let svg = cx.svg_renderer();
-        let shown = [0, 1].map(|i| match &self.sides[i] {
-            Side::Ready(v) => Some(v.hash),
-            _ => None,
-        });
+        let shown = self.shown_hashes();
         self._load = cx.spawn(async move |this, cx| {
             let sides = cx
                 .background_spawn(async move {
@@ -283,28 +316,17 @@ impl ImageCompare {
                             Ok(b) if b.len() > MAX_BYTES => {
                                 Side::Failed("Too large to preview".into())
                             }
-                            Ok(b) => {
-                                let (len, h) = (b.len(), hash(&b));
-                                match Image::from_bytes(format, b).to_image_data(svg.clone()) {
-                                    Ok(image) => {
-                                        let size = image.size(0);
-                                        if size.width.0 as u64 * size.height.0 as u64 > MAX_PIXELS {
-                                            Side::Failed(format!(
-                                                "{}×{} is too large to preview",
-                                                size.width.0, size.height.0
-                                            ))
-                                        } else {
-                                            Side::Ready(Version {
-                                                image,
-                                                bytes: len,
-                                                hash: h,
-                                                natural: None,
-                                            })
-                                        }
-                                    }
-                                    Err(e) => Side::Failed(e.to_string()),
-                                }
-                            }
+                            Ok(b) => match raster::probe(&b) {
+                                Ok(p) => Side::Ready(Version {
+                                    image: None,
+                                    bytes: b.len(),
+                                    hash: hash(&b),
+                                    natural: (p.size.0 as f32, p.size.1 as f32),
+                                    raster: Some(b.into()),
+                                    animated: p.animated,
+                                }),
+                                Err(e) => Side::Failed(e),
+                            },
                             // A side that isn't there (added, deleted) reads as an error.
                             Err(_) => Side::Missing,
                         }
@@ -333,32 +355,13 @@ impl ImageCompare {
 fn details(v: &Side) -> String {
     match v {
         Side::Ready(v) => {
-            let (w, h) = v.natural.unwrap_or_else(|| {
-                let s = v.image.size(0);
-                (s.width.0 as f32, s.height.0 as f32)
-            });
-            format!("{}×{} · {}", w.round(), h.round(), bytes(v.bytes))
+            let (w, h) = v.natural;
+            let size = raster::file_size(v.bytes as u64);
+            format!("{}×{} · {size}", w.round(), h.round())
         }
         Side::Failed(e) => e.clone(),
         _ => String::new(),
     }
-}
-
-fn bytes(n: usize) -> String {
-    match n {
-        n if n >= 1 << 20 => format!("{:.1} MB", n as f64 / (1 << 20) as f64),
-        n if n >= 1 << 10 => format!("{:.1} KB", n as f64 / 1024.),
-        n => format!("{n} B"),
-    }
-}
-
-fn picture(v: &Side) -> Option<gpui_kit::Img> {
-    let Side::Ready(v) = v else { return None };
-    Some(
-        img(ImageSource::Render(v.image.clone()))
-            .size_full()
-            .object_fit(ObjectFit::ScaleDown),
-    )
 }
 
 impl ImageCompare {
@@ -401,151 +404,8 @@ impl ImageCompare {
     }
 }
 
-impl Render for ImageCompare {
+impl gpui_kit::Render for ImageCompare {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.svg {
-            return self.render_svg(window, cx).into_any_element();
-        }
-        let style = DiffStyle::get(cx).clone();
-        let c = &style.colors;
-        let mode = self.mode(cx);
-        let bar = self.bar(
-            &style,
-            (mode == ImageMode::Onion)
-                .then(|| format!("After at {}% · drag to fade", (self.opacity * 100.).round())),
-        );
-        let stage_bounds = self.stage.clone();
-        let measure = canvas(
-            move |bounds, _, _| stage_bounds.set(bounds),
-            |_, _, _, _| {},
-        )
-        .absolute()
-        .size_full();
-        let overlay = |el: gpui_kit::Div| el.relative().flex_1().min_h_0().m_4();
-        let stage = match mode {
-            ImageMode::Side => {
-                h_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .gap_4()
-                    .p_4()
-                    .children(self.sides.iter().map(|s| {
-                        let cell = div().flex_1().min_w_0().min_h_0().h_full();
-                        match s {
-                            Side::Missing => cell
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_color(c.subtle)
-                                .child("Not on this side"),
-                            _ => cell.children(picture(s)),
-                        }
-                    }))
-            }
-            ImageMode::Swipe => {
-                let d = self.divider.max(0.001);
-                overlay(
-                    div()
-                        .child(measure)
-                        .child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .h_full()
-                                .w(relative(d))
-                                .overflow_hidden()
-                                .child(
-                                    div()
-                                        .h_full()
-                                        .w(relative(1. / d))
-                                        .children(picture(&self.sides[0])),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .right_0()
-                                .h_full()
-                                .w(relative(1. - self.divider))
-                                .overflow_hidden()
-                                .child(
-                                    div()
-                                        .absolute()
-                                        .top_0()
-                                        .right_0()
-                                        .h_full()
-                                        .w(relative(1. / (1. - self.divider).max(0.001)))
-                                        .children(picture(&self.sides[1])),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .h_full()
-                                .left(relative(self.divider))
-                                .w(px(2.))
-                                .bg(c.primary),
-                        ),
-                )
-            }
-            ImageMode::Onion => overlay(
-                div()
-                    .child(measure)
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .size_full()
-                            .children(picture(&self.sides[0])),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .size_full()
-                            .opacity(self.opacity)
-                            .children(picture(&self.sides[1])),
-                    ),
-            ),
-        };
-        div()
-            .id("image-compare")
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(c.background)
-            .text_color(c.foreground)
-            .child(bar)
-            .child(
-                stage
-                    .id("image-stage")
-                    .cursor_ew_resize()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, e: &MouseDownEvent, _, cx| {
-                            this.dragging = true;
-                            this.drag(e.position.x, cx);
-                        }),
-                    )
-                    .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
-                        if this.dragging && e.pressed_button == Some(MouseButton::Left) {
-                            this.drag(e.position.x, cx);
-                        }
-                    }))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, _| this.dragging = false),
-                    )
-                    .on_mouse_up_out(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, _| this.dragging = false),
-                    ),
-            )
-            .into_any_element()
+        self.render_stage(window, cx)
     }
 }

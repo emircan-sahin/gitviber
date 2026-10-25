@@ -15,6 +15,7 @@ mod lookups;
 mod menu;
 mod overview;
 mod preview;
+mod raster;
 mod review_fixes;
 mod scroll;
 mod stacked;

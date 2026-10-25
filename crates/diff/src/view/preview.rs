@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::image::Backdrop;
-use crate::model::zoom::{ACTUAL, FIT, Zoom};
+use crate::model::zoom::{ACTUAL, FIT, TIP, Zoom};
 use gitviber_markdown::{MarkdownBase, MarkdownEvent, MarkdownView, ReadImage, is_markdown};
 use gitviber_ui::Settings;
 
@@ -198,14 +198,16 @@ impl DiffView {
         }
     }
 
-    /// The SVG preview's Fit / 1:1 and background, before the Diff / Preview switch.
+    /// The SVG preview's or the image's Fit / 1:1 and background, before the Diff / Preview
+    /// switch.
     pub(super) fn svg_controls(
         &self,
         style: &DiffStyle,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let Some(Preview::Svg(view)) = &self.preview else {
-            return vec![];
+        let view = match (&self.preview, &self.image) {
+            (Some(Preview::Svg(view)), _) | (None, Some(view)) => view,
+            _ => return vec![],
         };
         let (zoom, backdrop) = {
             let v = view.read(cx);
@@ -223,7 +225,7 @@ impl DiffView {
                 .ghost()
                 .xsmall()
                 .label(label)
-                .tooltip("Scroll to zoom, drag to pan, double-click to fit")
+                .tooltip(TIP)
                 .toggle(zoom.scale == to.scale, cx)
                 .on_click(move |_, _, cx| {
                     view.update(cx, |v, cx| v.set_zoom(to, cx)).ok();

@@ -29,7 +29,7 @@ mod view;
 pub use actions::{Command, answer};
 pub use annotate::{Annotation, RenderAnnotation};
 pub use data::DiffData;
-pub use image::{Backdrop, ImageCompare, image_format};
+pub use image::{Backdrop, ImageCompare, image_format, raster};
 pub use model::{LinePos, LineRange, Side};
 pub use paint::status_pill;
 pub use source::{Compare, DiffSource, FileFacts};

@@ -41,10 +41,11 @@ fn zooming_in_draws_the_part_on_screen(cx: &mut TestAppContext) {
     let left = cell_w + 32. + (cell_w - 20. * fit) / 2.;
     // Three quarters across the drawing: in its blue half.
     let at = point(px(left + 15. * fit), px(28. + 16. + cell_h / 2.));
+    // ⌘ and the wheel zoom; the wheel alone would move a drawing bigger than its room.
     let wheel = |dy: f32| ScrollWheelEvent {
         position: at,
         delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
-        modifiers: Modifiers::none(),
+        modifiers: Modifiers::command(),
         touch_phase: TouchPhase::Moved,
     };
     assert_eq!(view.read_with(cx, |v, _| v.crops()), [None, None]);
