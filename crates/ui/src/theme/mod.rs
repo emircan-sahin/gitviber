@@ -15,8 +15,9 @@ use std::rc::Rc;
 
 use gpui_kit::component::{Theme, ThemeConfig, ThemeConfigColors, ThemeMode};
 use gpui_kit::{
-    App, FontWeight, Global, Hsla, Pixels, Refineable as _, Rgba, SharedString, StyleRefinement,
-    Styled as _, Subscription, Window, WindowAppearance, WindowBackgroundAppearance, px,
+    Anchor, App, Font, FontWeight, Global, Hsla, Pixels, Refineable as _, Rgba, SharedString,
+    StyleRefinement, Styled as _, Subscription, Window, WindowAppearance,
+    WindowBackgroundAppearance, font, px,
 };
 use serde::{Deserialize, Serialize};
 
@@ -213,7 +214,13 @@ impl Glass {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fonts {
     pub ui: SharedString,
+    /// Body text's weight in `ui`, as `AppTheme::weight` gives it; set it as is.
     pub ui_weight: FontWeight,
+    /// What the Interface font weight setting adds to the normal, medium and semibold weights:
+    /// 0 at Regular, 100 at Medium.
+    pub ui_step: f32,
+    /// The weight that draws `ui`'s Medium face (`medium_request`).
+    pub ui_medium: FontWeight,
     pub code: SharedString,
     pub code_weight: FontWeight,
     pub code_size: Pixels,
@@ -339,6 +346,33 @@ impl AppTheme {
     pub fn ui_text(&self) -> gpui_kit::Rems {
         gpui_kit::rems(0.75)
     }
+
+    /// A weight for text in the UI font: 400 body, 500 medium, 600 semibold, 700 bold. Body,
+    /// medium and semibold move up with the Interface font weight setting, so at its default a
+    /// medium label draws at 600 and still stands out from 500 body text; bold stays. Every UI
+    /// weight goes through here: a bare `FontWeight::MEDIUM` draws SF's Regular face.
+    pub fn weight(&self, weight: FontWeight) -> FontWeight {
+        label_weight(weight, self.fonts.ui_step, self.fonts.ui_medium)
+    }
+
+    /// A label a step above body text: `weight(FontWeight::MEDIUM)`.
+    pub fn medium(&self) -> FontWeight {
+        self.weight(FontWeight::MEDIUM)
+    }
+
+    /// Two steps above body text: `weight(FontWeight::SEMIBOLD)`.
+    pub fn semibold(&self) -> FontWeight {
+        self.weight(FontWeight::SEMIBOLD)
+    }
+}
+
+fn label_weight(weight: FontWeight, step: f32, medium: FontWeight) -> FontWeight {
+    let w = if (400.0..=600.0).contains(&weight.0) {
+        weight.0 + step
+    } else {
+        weight.0
+    };
+    if w == 500.0 { medium } else { FontWeight(w) }
 }
 
 /// #RRGGBB or #RRGGBBAA as a color; black for anything else.
@@ -411,12 +445,40 @@ fn installed(name: &str, cx: &mut App) -> bool {
         return *hit;
     }
     crate::fonts::ensure(name, cx);
-    let names = cx.text_system().all_font_names();
-    let found = names.iter().any(|n| n == name);
+    // Loads this one family instead of listing every font (40-50 ms before the first frame). A
+    // family that fails to load resolves to gpui's fallback stack, whose font has another name.
+    let text = cx.text_system();
+    let found = text
+        .get_font_for_id(text.resolve_font(&font(name.to_string())))
+        .is_some_and(|f| f.family.as_ref() == name);
     cx.global_mut::<InstalledFonts>()
         .0
         .insert(SharedString::from(name.to_string()), found);
     found
+}
+
+/// What to ask the text system for to draw `family`'s Medium face. gpui matches weights as CSS
+/// does, so a 500 with no face at exactly 500 gets Regular, and Apple's Medium faces (SF,
+/// Helvetica Neue, Avenir Next, SF Mono) report 530: they were never drawn. Just above 500 gets
+/// the lightest heavier face, which is that Medium when one sits below the 600 face.
+fn medium_request(family: &SharedString, cx: &App) -> FontWeight {
+    let text = cx.text_system();
+    let id = |weight: f32| {
+        text.resolve_font(&Font {
+            weight: FontWeight(weight),
+            ..font(family.clone())
+        })
+    };
+    let regular = id(400.0);
+    if id(500.0) != regular {
+        return FontWeight::MEDIUM;
+    }
+    let above = id(501.0);
+    if above != regular && above != id(600.0) {
+        FontWeight(501.0)
+    } else {
+        FontWeight::MEDIUM
+    }
 }
 
 fn first_installed(names: &[&str], cx: &mut App) -> SharedString {
@@ -478,9 +540,13 @@ fn resolve_fonts(s: &Settings, cx: &mut App) -> Fonts {
         TerminalFont::Custom => code.clone(),
         preset => mono(preset.as_str(), cx),
     };
+    let ui_medium = medium_request(&ui, cx);
+    let ui_step = f32::from(s.ui_font_weight) - 400.0;
     Fonts {
+        ui_weight: label_weight(FontWeight::NORMAL, ui_step, ui_medium),
         ui,
-        ui_weight: FontWeight(s.ui_font_weight as f32),
+        ui_step,
+        ui_medium,
         code,
         code_weight: FontWeight(s.code_font_weight as f32),
         code_size: px(s.code_font_size),
@@ -651,6 +717,8 @@ pub fn component_config(t: &AppTheme) -> ThemeConfig {
         scrollbar_thumb_hover = t.subtle,
         switch = t.border_strong,
         switch_thumb = hex("#ffffff"),
+        // Off, the white thumb on a light gray track nearly vanishes on a white surface.
+        switch_border = t.subtle,
         slider_bar = t.primary,
         slider_thumb = hex("#ffffff"),
         progress_bar = t.primary,
@@ -694,7 +762,12 @@ pub fn refresh(cx: &mut App) {
     }
     let config = Rc::new(component_config(&next));
     cx.set_global(next);
-    Theme::update(cx, |theme| theme.apply_config(&config));
+    Theme::update(cx, |theme| {
+        theme.apply_config(&config);
+        // Bottom right, clear of the top bar's and Settings' controls.
+        theme.notification.placement = Anchor::BottomRight;
+        theme.notification.width = px(384.);
+    });
 }
 
 /// Keeps a window in step with the theme: the OS appearance it reports, its see-through
@@ -702,12 +775,7 @@ pub fn refresh(cx: &mut App) {
 /// the subscriptions as long as the window's view.
 pub fn attach(window: &mut Window, cx: &mut App) -> Vec<Subscription> {
     // Deferred: while the window's view is being built its root isn't there yet.
-    window.defer(cx, |window, cx| {
-        gpui_kit::base::Root::update(window, cx, |root, _, _| {
-            root.style()
-                .refine(&StyleRefinement::default().bg(gpui_kit::transparent_black()));
-        });
-    });
+    window.defer(cx, style_root);
     let applied = Rc::new(Cell::new(cx.app_theme().window_background()));
     window.set_background_appearance(applied.get());
     vec![
@@ -718,8 +786,23 @@ pub fn attach(window: &mut Window, cx: &mut App) -> Vec<Subscription> {
                 applied.set(want);
                 window.set_background_appearance(want);
             }
+            style_root(window, cx);
         }),
     ]
+}
+
+/// The window root's text: dialogs, toasts, menus and tooltips sit beside the window's view, not
+/// in it, so without this they fell back to a 16px rem at the Regular weight.
+fn style_root(window: &mut Window, cx: &mut App) {
+    let t = cx.app_theme();
+    let style = StyleRefinement::default()
+        .bg(gpui_kit::transparent_black())
+        .text_size(t.ui_text())
+        .font_weight(t.fonts.ui_weight);
+    gpui_kit::base::Root::update(window, cx, |root, _, cx| {
+        root.style().refine(&style);
+        cx.notify();
+    });
 }
 
 pub(crate) fn init(cx: &mut App) {
@@ -735,7 +818,9 @@ mod tests {
     fn fonts() -> Fonts {
         Fonts {
             ui: ".SystemUIFont".into(),
-            ui_weight: FontWeight::MEDIUM,
+            ui_weight: FontWeight(501.0),
+            ui_step: 100.0,
+            ui_medium: FontWeight(501.0),
             code: "Menlo".into(),
             code_weight: FontWeight::MEDIUM,
             code_size: px(13.5),
@@ -743,6 +828,25 @@ mod tests {
             terminal: "Menlo".into(),
             terminal_size: px(13.),
         }
+    }
+
+    #[test]
+    fn label_weights_step_with_the_setting_and_reach_the_medium_face() {
+        let mut t = build(&Settings::default(), true, fonts());
+        let w = |t: &AppTheme, weight: FontWeight| t.weight(weight).0;
+        // Interface font weight Medium: body at the Medium face, labels 600, semibold 700.
+        assert_eq!(w(&t, FontWeight::NORMAL), 501.0);
+        assert_eq!(w(&t, FontWeight::MEDIUM), 600.0);
+        assert_eq!(w(&t, FontWeight::SEMIBOLD), 700.0);
+        assert_eq!(w(&t, FontWeight::BOLD), 700.0);
+        // Regular: no step; a medium label still asks for what draws the Medium face.
+        t.fonts.ui_step = 0.0;
+        assert_eq!(w(&t, FontWeight::NORMAL), 400.0);
+        assert_eq!(w(&t, FontWeight::MEDIUM), 501.0);
+        assert_eq!(t.semibold().0, 600.0);
+        // A family whose Medium face is at 500 is asked for 500.
+        t.fonts.ui_medium = FontWeight::MEDIUM;
+        assert_eq!(t.medium().0, 500.0);
     }
 
     #[test]

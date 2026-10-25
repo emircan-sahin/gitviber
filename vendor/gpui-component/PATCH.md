@@ -1,0 +1,33 @@
+# gpui-component 0.8.0, patched
+
+The crates.io release of gpui-component 0.8.0, byte for byte, except the changes below and this
+file. Wired in through `[patch.crates-io]` in the workspace Cargo.toml (and excluded from the
+workspace). The whole patch: `diff -ru ~/.cargo/registry/src/index.crates.io-*/gpui-component-0.8.0
+vendor/gpui-component`. On a gpui-kit bump, re-apply it to the new version; nothing here is a bug
+fix to offer upstream, it is GitViber's density.
+
+## Why
+
+The app's text is 12px (SF, weight 500). Upstream draws a `.small()` control at 14px in a 24px
+box and menus, tooltips and toasts at 14px, so every control and overlay was both larger and more
+cramped than the labels around it. The old app's controls were 12px in 28px boxes. Changing the
+size table once beats setting a size at ~360 call sites.
+
+## The changes
+
+- `src/sizing.rs`: `Size::control_text_size()` is the one text table, used by
+  `input_text_size`, `button_text_size` and `table_cell_size`: XSmall 11.5px, Small 12px,
+  Medium 12.5px, Large 14px (rems, so the interface scale still applies). `input_h`:
+  24/28/32/36px (upstream 20/24/32/44). `input_px`: 8/10/10/12px (upstream 4/8/10/12).
+- `src/button/button.rs`: buttons take the same heights (icon-only squares 24/28/32/36px) and
+  a bit more side padding (8/10/12/14px).
+- `src/menu/popup_menu.rs`: menu rows at 12px. `src/tooltip.rs`: tooltips at 11.5px.
+  `src/notification.rs`: a toast's title at 12px over an 11.5px muted message; a message
+  without a title stays at 12px in the foreground. `src/dialog/title.rs`: a dialog's title at
+  13.5px (still semibold); `src/dialog/description.rs`: its description at 12px, muted.
+- `src/theme/theme_color.rs`, `src/theme/schema.rs`, `src/switch.rs`: a `switch_border` color
+  (`switch.border` in a theme file, transparent by default) for the 1px ring of an unchecked
+  switch's track. A light gray track and white thumb on a white surface was about 1.5:1.
+
+Untouched on purpose: icon sizes, tabs, toggles, lists' row padding, the switch's own sizes
+(28×16 at Small is the old app's).

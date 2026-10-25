@@ -161,7 +161,7 @@ impl RenderOnce for StatusPill {
             .bg(self.0.fill(t))
             .text_color(t.on_status)
             .text_size(rems(0.656))
-            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+            .font_weight(t.semibold())
             .child(self.0.label())
     }
 }

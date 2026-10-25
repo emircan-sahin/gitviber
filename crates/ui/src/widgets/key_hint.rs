@@ -39,22 +39,29 @@ impl RenderOnce for KeyHint {
             .chord
             .map(|c| chord_keys(&c, IS_MAC))
             .unwrap_or_default();
+        // Keycaps with a heavier bottom edge, in foreground ink: muted flat caps read as noise
+        // next to the 12.5px row titles they sit beside.
         div()
             .flex()
             .flex_none()
-            .gap(px(2.))
+            .gap(px(3.))
             .children(keys.into_iter().map(|k| {
                 div()
-                    .min_w(px(16.))
-                    .px(px(3.))
-                    .rounded(px(3.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .h(rems(1.125))
+                    .min_w(rems(1.125))
+                    .px(rems(0.25))
+                    .rounded(px(4.))
                     .border_1()
+                    .border_b_2()
                     .border_color(t.border_strong)
-                    .bg(t.elevated)
-                    .text_color(t.muted_foreground)
-                    .text_size(rems(0.656))
-                    .line_height(rems(0.875))
-                    .text_center()
+                    .bg(t.background)
+                    .text_color(t.foreground)
+                    .text_size(rems(0.6875))
+                    .line_height(rems(0.6875))
+                    .font_weight(t.medium())
                     .child(SharedString::from(k))
             }))
     }
