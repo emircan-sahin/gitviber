@@ -46,6 +46,7 @@ fn footprint() -> String {
     )
 }
 
+#[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Default)]
 struct MallocStatistics {
@@ -55,15 +56,23 @@ struct MallocStatistics {
     size_allocated: usize,
 }
 
+#[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn malloc_zone_statistics(zone: *mut std::ffi::c_void, stats: *mut MallocStatistics);
 }
 
+#[cfg(target_os = "macos")]
 fn heap_in_use() -> u64 {
     let mut stats = MallocStatistics::default();
     // SAFETY: a null zone sums every zone into `stats`, which the call fills.
     unsafe { malloc_zone_statistics(std::ptr::null_mut(), &mut stats) };
     stats.size_in_use as u64
+}
+
+// macOS's malloc zones only; elsewhere the footprint is the measure.
+#[cfg(not(target_os = "macos"))]
+fn heap_in_use() -> u64 {
+    0
 }
 
 fn live() -> String {
