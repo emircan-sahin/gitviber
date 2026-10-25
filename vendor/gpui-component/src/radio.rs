@@ -228,6 +228,14 @@ impl RenderOnce for Radio {
                 Size::Size(_) => this,
                 size => this.input_text_size(size),
             })
+            // GitViber: the pointing hand over the dot and its label, the arrow while disabled.
+            .map(|this| {
+                if disabled {
+                    this.cursor_default()
+                } else {
+                    this.cursor_pointer()
+                }
+            })
             .refine_style(&self.style)
             .child(
                 div()

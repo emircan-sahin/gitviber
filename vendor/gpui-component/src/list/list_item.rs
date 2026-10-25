@@ -190,6 +190,8 @@ impl RenderOnce for ListItem {
         let is_active = self.confirmed || self.selected || self.secondary_selected;
 
         let is_selectable = !(self.disabled || self.mode.is_separator());
+        let clickable =
+            self.on_click.is_some() || self.on_mouse_down.contains_key(&MouseButton::Left);
 
         // The outline is an absolute child, so it has to repeat the item's own radius.
         let mut outline_style = StyleRefinement::default();
@@ -206,6 +208,10 @@ impl RenderOnce for ListItem {
             .relative()
             .items_center()
             .justify_between()
+            // GitViber: the pointing hand on a row that answers a click, the arrow on a disabled
+            // one (over the pointer of the `List` row around it).
+            .when(is_selectable && clickable, |this| this.cursor_pointer())
+            .when(!is_selectable, |this| this.cursor_default())
             .refine_style(&self.style)
             .when_some(accessibility_label, |this, label| this.aria_label(label))
             .when(is_selectable, |this| {

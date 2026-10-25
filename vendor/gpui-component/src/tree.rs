@@ -100,7 +100,9 @@ impl RenderOnce for Tree {
                             .selected(entry_state.is_selected())
                             .secondary_selected(entry_state.is_right_clicked());
 
+                        // GitViber: base's row selects or toggles on a click.
                         div()
+                            .when(!entry.is_disabled(), |this| this.cursor_pointer())
                             .child(item)
                             .context_menu(move |menu, window, cx| {
                                 let Some(build) = context_menu_builder.as_ref() else {

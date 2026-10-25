@@ -920,6 +920,14 @@ impl RenderOnce for Tab {
             .id(self.ix)
             .selected(self.selected)
             .disabled(self.disabled)
+            // GitViber: the pointing hand on every tab that isn't disabled, the current one too.
+            .map(|this| {
+                if self.disabled {
+                    this.cursor_default()
+                } else {
+                    this.cursor_pointer()
+                }
+            })
             .when_some(aria_label, |this, label| this.accessibility_label(label))
             .styles(|styles| {
                 styles

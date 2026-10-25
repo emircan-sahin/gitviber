@@ -4,7 +4,7 @@ The crates.io release of gpui-component 0.8.0, byte for byte, except the changes
 file. Wired in through `[patch.crates-io]` in the workspace Cargo.toml (and excluded from the
 workspace). The whole patch: `diff -ru ~/.cargo/registry/src/index.crates.io-*/gpui-component-0.8.0
 vendor/gpui-component`. On a gpui-kit bump, re-apply it to the new version; nothing here is a bug
-fix to offer upstream, it is GitViber's density.
+fix to offer upstream, it is GitViber's density and cursors.
 
 ## Why
 
@@ -28,6 +28,16 @@ size table once beats setting a size at ~360 call sites.
 - `src/theme/theme_color.rs`, `src/theme/schema.rs`, `src/switch.rs`: a `switch_border` color
   (`switch.border` in a theme file, transparent by default) for the 1px ring of an unchecked
   switch's track. A light gray track and white thumb on a white surface was about 1.5:1.
+
+- Cursors (the old app gave anything clickable the pointing hand, and the arrow while
+  disabled). Pointer when it can be pressed, default when disabled: `button/button.rs` (every
+  variant; upstream only link and text), `menu/menu_item.rs` (popup, context and completion
+  menu rows, submenus too), `switch.rs` (upstream: not-allowed when disabled), `checkbox.rs`,
+  `radio.rs`, `tab/tab.rs`, `button/toggle.rs`, `list/list_item.rs` (a row with its own click),
+  `list/list.rs` (the row a click confirms), `tree.rs`, `command/state.rs` (palette rows;
+  upstream: the arrow), `notification.rs` (a toast with an `on_click`),
+  `searchable_list/item.rs` (disabled: default, upstream not-allowed). Inputs keep the I-beam;
+  resize handles already had theirs (gpui-base).
 
 Untouched on purpose: icon sizes, tabs, toggles, lists' row padding, the switch's own sizes
 (28×16 at Small is the old app's).

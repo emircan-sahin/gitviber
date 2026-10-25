@@ -229,10 +229,10 @@ impl RenderOnce for Switch {
             BaseSwitch::new(self.id.clone())
                 .checked(checked)
                 .disabled(self.disabled)
+                // GitViber: the pointing hand, and the arrow while disabled (upstream: not-allowed).
+                .cursor_pointer()
                 .styles(|styles| {
-                    styles.disabled(|style| {
-                        style.text_color(disabled_label_color).cursor_not_allowed()
-                    })
+                    styles.disabled(|style| style.text_color(disabled_label_color).cursor_default())
                 })
                 .when_some(accessibility_label, |this, label| {
                     this.accessibility_label(label)

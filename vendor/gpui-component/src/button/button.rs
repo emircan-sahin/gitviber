@@ -651,17 +651,20 @@ impl RenderOnce for Button {
             ButtonRounded::None => Pixels::ZERO,
         };
 
+        // GitViber: every variant takes the pointing hand while it can be pressed (upstream: link
+        // and text only); flat buttons don't look clickable otherwise.
         let root = base
-            .cursor_default()
             .flex()
             .flex_shrink_0()
             .items_center()
             .justify_center()
-            .cursor_default()
-            .when(
-                interactive && (self.variant.is_link() || self.variant.is_text()),
-                |this| this.cursor_pointer(),
-            )
+            .map(|this| {
+                if interactive {
+                    this.cursor_pointer()
+                } else {
+                    this.cursor_default()
+                }
+            })
             .when(
                 !disabled && cx.theme().shadow && normal_style.shadow,
                 |this| this.shadow_xs(),
@@ -1720,7 +1723,7 @@ mod tests {
     }
 
     /// A loading button must be as inert as a disabled one. `interactive` is what
-    /// gates the hover and active styling, the `cursor_pointer` of link buttons and
+    /// gates the hover and active styling, the pointer cursor and
     /// the `mouse_down` handler, none of which depend on a listener being set.
     #[gpui::test]
     fn test_button_loading_is_not_interactive(_cx: &mut gpui::TestAppContext) {

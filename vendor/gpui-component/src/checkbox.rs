@@ -258,10 +258,13 @@ impl RenderOnce for Checkbox {
         base.role(self.role)
             .checked(checked)
             .disabled(self.disabled)
+            // GitViber: the pointing hand over the box and its label, the arrow while disabled.
+            .cursor_pointer()
             .styles(|styles| {
                 styles.disabled(|style| {
                     style
                         .text_color(disabled_text_color)
+                        .cursor_default()
                         .refine_style(&instance_style)
                 })
             })

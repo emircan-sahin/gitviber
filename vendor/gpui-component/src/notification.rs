@@ -487,6 +487,8 @@ impl Render for Notification {
                     view.dismiss(window, cx);
                     on_click(event, window, cx);
                 }))
+                // GitViber: a toast that answers a click takes the pointing hand.
+                .cursor_pointer()
             })
             .on_aux_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
                 if event.is_middle_click() {

@@ -850,7 +850,8 @@ impl CommandState {
             .aria_selected(selected)
             .when(disabled, |this| this.text_color(muted_foreground))
             .when(!disabled, |this| {
-                this.cursor_default()
+                // GitViber: a click runs the row (upstream: the arrow).
+                this.cursor_pointer()
                     .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
                         if *hovered {
                             this.select(matched_ix, window, cx);

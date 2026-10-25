@@ -219,6 +219,14 @@ impl RenderOnce for Toggle {
                         .refine_style(&instance_style)
                 })
             })
+            // GitViber: the pointing hand, the arrow while disabled.
+            .map(|this| {
+                if disabled {
+                    this.cursor_default()
+                } else {
+                    this.cursor_pointer()
+                }
+            })
             .refine_style(&self.style)
             .children(self.children)
             .map(|this| self.tooltip.apply(this))

@@ -115,8 +115,9 @@ impl RenderOnce for SearchableListItemElement {
                 })
             })
             .when(self.selected, |this| this.bg(cx.theme().tokens.accent))
+            // GitViber: the arrow while disabled (upstream: not-allowed), over the row's pointer.
             .when(self.disabled, |this| {
-                this.cursor_not_allowed()
+                this.cursor_default()
                     .text_color(cx.theme().muted_foreground)
             })
             .child(

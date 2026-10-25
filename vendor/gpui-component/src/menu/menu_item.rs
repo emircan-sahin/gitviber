@@ -105,6 +105,14 @@ impl RenderOnce for MenuItemElement {
             .relative()
             .items_center()
             .justify_between()
+            // GitViber: the pointing hand on an item that can be chosen, a submenu's too.
+            .map(|this| {
+                if self.disabled {
+                    this.cursor_default()
+                } else {
+                    this.cursor_pointer()
+                }
+            })
             .refine_style(&self.style)
             .when_some(self.on_hover, |this, on_hover| {
                 this.on_hover(move |hovered, window, cx| (on_hover)(hovered, window, cx))

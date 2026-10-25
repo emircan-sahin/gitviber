@@ -523,6 +523,8 @@ where
                         cx.notify();
                     }),
                 )
+                // GitViber: a click confirms the row, so it takes the pointing hand.
+                .cursor_pointer()
             })
     }
 
