@@ -1,8 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
-# The Tauri app stays buildable as a reference until the native app replaces it.
-exclude = ["src-tauri", "vendor"]
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.17"

@@ -1,2 +1,2 @@
-# Written by scripts/licenses.mjs; collapsed in GitHub diffs.
-src/lib/third-party-licenses.json linguist-generated=true
+# Written by the licenses_are_current test (RELEASING.md); collapsed in GitHub diffs.
+crates/app/licenses/third-party-licenses.json linguist-generated=true

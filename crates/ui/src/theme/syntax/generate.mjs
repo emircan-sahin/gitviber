@@ -1,13 +1,14 @@
 // Turns the old app's 24 Shiki (VS Code TextMate) syntax themes into gpui-component highlight
-// themes, one JSON per id in themes/. Run from the repo root while node_modules is there:
-//   node crates/ui/src/theme/syntax/generate.mjs [shiki-themes-dist-dir]
+// themes, one JSON per id in themes/. Takes @shikijs/themes's dist folder (4.4.3 made these,
+// from `npm pack @shikijs/themes@4.4.3`):
+//   node crates/ui/src/theme/syntax/generate.mjs <shiki-themes-dist-dir>
 // The JSON is checked in, so the build never needs node.
 //
 // Tree-sitter names a token by what it is (`function`, `type`); TextMate by a dotted scope. Each
 // capture gets the color the theme gives the scopes VS Code puts on that kind of token, matched
 // the way TextMate does: the longest selector that is a prefix of the scope wins.
 
-import { readdirSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -116,11 +117,11 @@ function style(rules, scopes) {
   return Object.keys(out).length ? out : null;
 }
 
-const dist = process.argv[2] ?? (() => {
-  const pnpm = join(here, "../../../../../node_modules/.pnpm");
-  const dir = readdirSync(pnpm).find((d) => d.startsWith("@shikijs+themes@"));
-  return join(pnpm, dir, "node_modules/@shikijs/themes/dist");
-})();
+const dist = process.argv[2];
+if (!dist) {
+  console.error("usage: node crates/ui/src/theme/syntax/generate.mjs <shiki-themes-dist-dir>");
+  process.exit(1);
+}
 
 for (const id of ids) {
   const theme = (await import(join(dist, `${id}.mjs`))).default;

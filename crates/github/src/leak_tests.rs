@@ -18,14 +18,11 @@ struct Host(Entity<Workspace>);
 /// Draws what the app would: the PRs and Issues panels and the active tab.
 impl Render for Host {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let views: Vec<gpui_kit::AnyView> = self.0.update(cx, |ws, cx| {
-            let mut v: Vec<gpui_kit::AnyView> = ["pulls", "issues"]
-                .iter()
-                .filter_map(|id| ws.panel(id, window, cx).map(|p| p.view()))
-                .collect();
-            v.extend(ws.active_view(window, cx));
-            v
-        });
+        let mut views: Vec<gpui_kit::AnyView> = ["pulls", "issues"]
+            .iter()
+            .filter_map(|id| Workspace::ensure_panel(&self.0, id, window, cx).map(|p| p.view()))
+            .collect();
+        views.extend(self.0.update(cx, |ws, cx| ws.active_view(window, cx)));
         div().size_full().flex().children(
             views
                 .into_iter()
@@ -112,8 +109,10 @@ fn closed_tabs_and_panels_leave_nothing_behind(cx: &mut TestAppContext) {
                     window,
                     cx,
                 );
-                assert!(ws.panel("pulls", window, cx).is_some());
-                assert!(ws.panel("issues", window, cx).is_some());
+            });
+            assert!(Workspace::ensure_panel(&ws, "pulls", window, cx).is_some());
+            assert!(Workspace::ensure_panel(&ws, "issues", window, cx).is_some());
+            ws.update(cx, |ws, cx| {
                 assert!(ws.open(
                     Selection::Pull {
                         pull: Arc::new(crate::ui::core_pull(&pull(n)))

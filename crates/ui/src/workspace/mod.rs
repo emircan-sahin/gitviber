@@ -200,15 +200,6 @@ impl Workspace {
         }
     }
 
-    /// For what outlives a project (a per-window panel): the workspace only, so it never keeps a
-    /// project alive past a switch; it reads the current one from the workspace.
-    fn window_context(&self, cx: &Context<Self>) -> PanelContext {
-        PanelContext {
-            workspace: cx.weak_entity(),
-            project: None,
-        }
-    }
-
     // MARK: Project
 
     pub fn project(&self) -> Option<&Entity<Project>> {
@@ -1047,6 +1038,8 @@ impl Workspace {
         if spec.per_project && ws.project.is_none() {
             return None;
         }
+        // A per-window panel outlives projects: it reads the current one from the workspace, so
+        // it never keeps one alive past a switch.
         let ctx = PanelContext {
             workspace: workspace.downgrade(),
             project: if spec.per_project {
@@ -1060,8 +1053,10 @@ impl Workspace {
         Some(panel)
     }
 
-    /// A panel's view, built the first time it's asked for, inside the workspace's update: only
-    /// for panels whose constructor doesn't read the workspace (tests). Views use `ensure_panel`.
+    /// A panel's view, built inside the workspace's update. Test-only: a real panel's constructor
+    /// reads the workspace, and building one here leased it twice (how ⌘T crashed). The app,
+    /// examples and other crates' tests use `ensure_panel`.
+    #[cfg(test)]
     pub fn panel(
         &mut self,
         id: &str,
@@ -1075,10 +1070,13 @@ impl Workspace {
         if spec.per_project && self.project.is_none() {
             return None;
         }
-        let ctx = if spec.per_project {
-            self.context(cx)
-        } else {
-            self.window_context(cx)
+        let ctx = PanelContext {
+            workspace: cx.weak_entity(),
+            project: if spec.per_project {
+                self.project.clone()
+            } else {
+                None
+            },
         };
         let panel = spec.build(&ctx, window, cx);
         self.panels.insert(spec.id, panel.clone());

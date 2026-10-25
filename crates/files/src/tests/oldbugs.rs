@@ -429,9 +429,7 @@ fn a_shift_range_starts_over_once_its_anchor_is_hidden(cx: &mut TestAppContext) 
     });
     cx.run_until_parked();
     let panel = cx
-        .update(|window, cx| {
-            ws.update(cx, |ws, cx| ws.panel(crate::explorer::PANEL_ID, window, cx))
-        })
+        .update(|window, cx| Workspace::ensure_panel(&ws, crate::explorer::PANEL_ID, window, cx))
         .unwrap()
         .view();
     host.update(cx, |h, cx| {

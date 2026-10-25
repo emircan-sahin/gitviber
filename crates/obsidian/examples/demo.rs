@@ -197,10 +197,7 @@ fn main() {
         if let Some(v) = &a.vault {
             model.update(cx, |m, cx| m.pick(v, cx));
         }
-        let side = workspace
-            .update(cx, |ws, cx| {
-                ws.panel(gitviber_obsidian::PANEL_ID, window, cx)
-            })
+        let side = Workspace::ensure_panel(&workspace, gitviber_obsidian::PANEL_ID, window, cx)
             .expect("the panel")
             .view();
         let a2 = a.clone();

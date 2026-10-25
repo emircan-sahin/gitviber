@@ -45,8 +45,7 @@ struct Tiled {
     stopped: Option<f64>,
 }
 
-/// The agent script, its parts joined in order (scripts/agent/prelude.js says what each holds);
-/// the tests join the same list (src/lib/browser/agentSource.test.ts).
+/// The agent script, its parts joined in order (scripts/agent/prelude.js says what each holds).
 const AGENT: &str = concat!(
     include_str!("scripts/agent/prelude.js"),
     include_str!("scripts/agent/read.js"),

@@ -231,10 +231,7 @@ impl Demo {
 impl Render for Demo {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let id = if self.issues { "issues" } else { "pulls" };
-        let panel = self
-            .ws
-            .update(cx, |ws, cx| ws.panel(id, window, cx))
-            .map(|p| p.view());
+        let panel = Workspace::ensure_panel(&self.ws, id, window, cx).map(|p| p.view());
         let tab: Option<AnyView> = self.ws.update(cx, |ws, cx| ws.active_view(window, cx));
         let t = gitviber_ui::ActiveAppTheme::app_theme(&**cx).clone();
         div()

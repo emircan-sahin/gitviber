@@ -11,12 +11,11 @@
 .npmrc
 
 # Build output
+/target/
 node_modules/
 dist/
 dist-ssr/
 dist-*/
-src-tauri/target/
-src-tauri/gen/
 
 # Editor / OS
 .DS_Store
@@ -24,6 +23,3 @@ src-tauri/gen/
 .vscode/*
 !.vscode/extensions.json
 *.log
-
-# Native app build output
-/target/

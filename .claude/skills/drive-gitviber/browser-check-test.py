@@ -2,7 +2,6 @@
 import importlib.util
 import json
 import pathlib
-import socket
 import struct
 import sys
 import unittest
@@ -58,13 +57,6 @@ class Parsing(unittest.TestCase):
         again = rows[:800] + [(255, 0, 0)] * 60 + rows[860:]
         self.assertIn("row 803", check.tall_check(again))
         self.assertIn("2980 rows", check.tall_check(rows[:-20]))
-
-    def test_bridge_replies(self):
-        self.assertEqual(check.bridge_value('{"ok":true,"value":"x y"}'), (True, "x y"))
-        self.assertEqual(check.bridge_value('{"ok":true,"value":3}'), (True, "3"))
-        self.assertEqual(check.bridge_value('{"ok":true,"value":null}'), (True, "null"))
-        self.assertEqual(check.bridge_value('{"ok":false,"error":"boom"}'), (False, "boom"))
-        self.assertFalse(check.bridge_value("")[0])
 
     def test_eval_output_with_or_without_page_markers(self):
         self.assertEqual(check.eval_value('"visible"\n'), "visible")
@@ -130,12 +122,6 @@ class Parsing(unittest.TestCase):
     def test_eval_value_without_notes(self):
         self.assertEqual(check.eval_value('"hi-from-popup"\n→ popup opened as tab t1-popup1 (http://a/popup)'), "hi-from-popup")
 
-    def test_file_path(self):
-        out = "→ tab t2: downloaded gitviber-check.txt (24 B): /Users/x/Downloads/GitViber/gitviber-check.txt"
-        self.assertEqual(check.file_path(out, "gitviber-check.txt"), "/Users/x/Downloads/GitViber/gitviber-check.txt")
-        self.assertIsNone(check.file_path("/a/gitviber-check.txt.part", "gitviber-check.txt"))
-        self.assertIsNone(check.file_path("downloaded gitviber-check.txt", "gitviber-check.txt"))
-
     def test_shot_expect(self):
         self.assertEqual(check.shot_expect(1280, 800), (1280, 800))
         self.assertEqual(check.shot_expect(1280, 800, 0.5), (640, 400))
@@ -154,111 +140,6 @@ class Parsing(unittest.TestCase):
         help_text = "  tab new [name]\n  session save <name>\n  network <id>\n"
         self.assertEqual(check.missing(help_text, ["session save", "network <id>"]), [])
         self.assertEqual(check.missing(help_text, ["find", "network <id>", "get"]), ["find", "get"])
-
-    def test_memory(self):
-        before = check.webcontent("  10 1000 /System/Library/Frameworks/WebKit.framework/XPCServices/com.apple.WebKit.WebContent.xpc/WebContent\n 11 50 /bin/zsh\n")
-        after = check.webcontent("10 1000 com.apple.WebKit.WebContent\n12 103400 com.apple.WebKit.WebContent\n13 103000 com.apple.WebKit.WebContent\n")
-        self.assertEqual(before, {10: 1000})
-        self.assertEqual(check.memory_note(before, after, 2), "2 awake tabs: 2 new WebContent processes, +202 MB RSS in all (101 MB a tab)")
-        self.assertIn("0 MB a tab", check.memory_note(before, before, 0))
-
-
-def stream(*msgs):
-    return "\n".join(json.dumps(m) for m in msgs)
-
-
-def bash(command):
-    return {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": command}}]}}
-
-
-def tool(name):
-    return {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": name, "input": {}}]}}
-
-
-RESULT = {"type": "result", "subtype": "success", "is_error": False, "result": "200", "num_turns": 9}
-
-
-class Agent(unittest.TestCase):
-    def test_skill_version_only_for_a_skill_gitviber_wrote(self):
-        ours = "---\nname: gitviber-browser\ndescription: x\n---\n<!-- managed by GitViber 0.1.14; edits are replaced -->\n# GitViber browser\n"
-        self.assertEqual(check.skill_version(ours), "0.1.14")
-        self.assertIsNone(check.skill_version(ours.replace("0.1.14", "dev")))
-        quoted = "---\nname: gitviber-browser\n---\n# Mine\n<!-- managed by GitViber 0.1.14; edits are replaced -->\n"
-        self.assertIsNone(check.skill_version(quoted))
-        self.assertIsNone(check.skill_version("---\nname: other\n---\n<!-- managed by GitViber 0.1.14; edits are replaced -->\n"))
-
-    def test_browser_commands_skip_flags_and_the_tab_name(self):
-        self.assertEqual(check.browser_commands("gitviber browser --tab t1 open http://a/form && gitviber browser snapshot -i"), ["open", "snapshot"])
-        self.assertEqual(check.browser_commands("gitviber browser --json network | head"), ["network"])
-        self.assertEqual(check.browser_commands("ls"), [])
-
-    def test_a_run_that_used_gitviber_browser_passes(self):
-        run = stream({"type": "system", "subtype": "init"}, bash("gitviber browser open http://127.0.0.1:5/form?run=ab"),
-                     bash("gitviber browser fill '#name' Ada"), bash("gitviber browser select '#color' green"),
-                     bash("gitviber browser click '#send'"), bash("gitviber browser network --filter /api/form"), RESULT)
-        summary = check.agent_summary("not json from stderr\n" + run)
-        ok, note = check.agent_verdict(summary, 200)
-        self.assertTrue(ok, note)
-        self.assertEqual(note, "answered '200'; 5 tool calls, gitviber browser open, fill, select, click, network")
-
-    def test_another_browser_or_a_wrong_answer_fails(self):
-        chrome = check.agent_summary(stream(tool("mcp__claude-in-chrome__navigate"), RESULT))
-        ok, note = check.agent_verdict(chrome, 200)
-        self.assertFalse(ok)
-        self.assertIn("other browser: mcp__claude-in-chrome__navigate", note)
-        self.assertFalse(check.agent_verdict(check.agent_summary(stream(bash("npx playwright test"), RESULT)), 200)[0])
-        wrong = check.agent_summary(stream(bash("gitviber browser open http://a"), {**RESULT, "result": "It returned 500."}))
-        self.assertFalse(check.agent_verdict(wrong, 200)[0])
-        self.assertFalse(check.agent_verdict(check.agent_summary(""), 200)[0])
-        # Tools used, but never gitviber browser: it can't have read the page the way asked.
-        self.assertFalse(check.agent_verdict(check.agent_summary(stream(bash("curl -X POST http://a/api/form"), RESULT)), 200)[0])
-
-    def test_the_summary_keeps_none_of_the_transcript(self):
-        run = stream(bash("gitviber browser fill '#pw' secret-from-the-page"), {**RESULT, "result": "200. The page said: secret-from-the-page, and more"})
-        note = check.agent_verdict(check.agent_summary(run), 200)[1]
-        # The answer cut to 40 characters, and no command's arguments: only its subcommand.
-        self.assertEqual(note, "answered '200. The page said: secret-from-the-page'; 1 tool calls, gitviber browser fill")
-
-    def test_form_submit_from_webkit_only(self):
-        webkit = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"
-        chrome = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36"
-        log = f"sse: client came\nform-submit run=ab name=Ada color=green ua={chrome}\nform-submit run=cd name=Ada color=green ua={webkit}\n"
-        self.assertEqual(check.form_submit(log, "cd"), (True, webkit))
-        self.assertEqual(check.form_submit(log, "ab"), (False, chrome))
-        self.assertEqual(check.form_submit(log, "ef"), (False, None))
-
-
-class Ports(unittest.TestCase):
-    def listener(self, family=socket.AF_INET, host="127.0.0.1"):
-        s = socket.socket(family)
-        s.bind((host, 0))
-        s.listen()
-        self.addCleanup(s.close)
-        return s
-
-    def test_a_listening_port_is_taken(self):
-        self.assertFalse(check.port_free(self.listener().getsockname()[1]))
-
-    def test_a_port_listened_on_over_ipv6_only_is_taken(self):
-        try:
-            s = self.listener(socket.AF_INET6, "::1")
-        except OSError:
-            self.skipTest("no IPv6 loopback")
-        self.assertFalse(check.port_free(s.getsockname()[1]))
-
-    def test_a_port_left_in_time_wait_is_free(self):
-        server = self.listener()
-        port = server.getsockname()[1]
-        client = socket.create_connection(("127.0.0.1", port))
-        conn, _ = server.accept()
-        # The side that closes first keeps the port in TIME_WAIT: here the server's.
-        conn.close()
-        server.close()
-        client.close()
-        with socket.socket() as plain:
-            with self.assertRaises(OSError, msg="no TIME_WAIT to test against"):
-                plain.bind(("127.0.0.1", port))
-        self.assertTrue(check.port_free(port))
 
 
 class Table(unittest.TestCase):

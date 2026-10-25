@@ -257,9 +257,7 @@ fn explorer_lists_creates_and_renames_and_quick_open_lists_files(cx: &mut TestAp
     });
     cx.run_until_parked();
     let panel = cx
-        .update(|window, cx| {
-            ws.update(cx, |ws, cx| ws.panel(crate::explorer::PANEL_ID, window, cx))
-        })
+        .update(|window, cx| Workspace::ensure_panel(&ws, crate::explorer::PANEL_ID, window, cx))
         .unwrap();
     let panel = panel.view().downcast::<crate::ExplorerPanel>().unwrap();
     cx.run_until_parked();
@@ -349,10 +347,8 @@ fn explorer_built_while_the_repo_opens_lists_once_open(cx: &mut TestAppContext) 
     let panel = cx
         .update(|window, cx| {
             Workspace::register_window(&ws, window, cx);
-            ws.update(cx, |ws, cx| {
-                ws.open_project(repo.clone(), window, cx);
-                ws.panel(crate::explorer::PANEL_ID, window, cx)
-            })
+            ws.update(cx, |ws, cx| ws.open_project(repo.clone(), window, cx));
+            Workspace::ensure_panel(&ws, crate::explorer::PANEL_ID, window, cx)
         })
         .unwrap();
     let panel = panel.view().downcast::<crate::ExplorerPanel>().unwrap();
@@ -807,7 +803,7 @@ fn search_panel_keys_move_through_results_and_back(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     let panel = cx
-        .update(|window, cx| ws.update(cx, |ws, cx| ws.panel(crate::search::PANEL_ID, window, cx)))
+        .update(|window, cx| Workspace::ensure_panel(&ws, crate::search::PANEL_ID, window, cx))
         .unwrap()
         .view();
     host.update(cx, |h, cx| {
@@ -856,9 +852,7 @@ fn search_panel_keys_move_through_results_and_back(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("escape");
     draw(cx);
     let explorer = cx
-        .update(|window, cx| {
-            ws.update(cx, |ws, cx| ws.panel(crate::explorer::PANEL_ID, window, cx))
-        })
+        .update(|window, cx| Workspace::ensure_panel(&ws, crate::explorer::PANEL_ID, window, cx))
         .unwrap();
     let focused = cx.update(|window, cx| {
         explorer
@@ -939,9 +933,7 @@ fn escape_clears_the_explorer_filter_then_closes_it(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     let panel = cx
-        .update(|window, cx| {
-            ws.update(cx, |ws, cx| ws.panel(crate::explorer::PANEL_ID, window, cx))
-        })
+        .update(|window, cx| Workspace::ensure_panel(&ws, crate::explorer::PANEL_ID, window, cx))
         .unwrap()
         .view();
     host.update(cx, |h, cx| {

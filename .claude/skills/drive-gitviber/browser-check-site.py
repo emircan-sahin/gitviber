@@ -1,10 +1,9 @@
-"""Test pages for browser-check.sh: python3 -I browser-check-site.py <port>. Logs what the checks
+"""Test pages for browser-check-native.sh: python3 -I browser-check-site.py <port>. Logs what the checks
 look for (an SSE stream the client left) to stdout.
 
   /       an rAF counter (window.frames_), a CSS animation, a localStorage "login", and a fetch
           (/api/hello) and an XHR (/api/missing, 404) as it loads; startSse() and stopSse()
-  /form   a text field, a password field and a <select>, posted to /api/form with the address's
-          ?run= as a header; the server logs each submit with it and the user agent
+  /form   a text field, a password field and a <select>, posted to /api/form
   /sse    an event a half second, for five minutes
   /act    a button whose fetch gets a 500, one that does nothing, a "Sign in" link, a popup
           opener that keeps what the popup posts (window.msg_), and a download link
@@ -54,9 +53,7 @@ FORM = """<!doctype html><html><head><title>live-check form</title></head><body>
 <script>
 document.getElementById('f').addEventListener('submit', async (e) => {
   e.preventDefault();
-  // The run the address names (?run=), so the server's log tells this run's submit apart.
-  const run = new URLSearchParams(location.search).get('run') || '';
-  const r = await fetch('/api/form', { method: 'POST', headers: { 'x-live-check-run': run }, body: new URLSearchParams(new FormData(e.target)) });
+  const r = await fetch('/api/form', { method: 'POST', body: new URLSearchParams(new FormData(e.target)) });
   const j = await r.json();
   document.getElementById('out').textContent = `sent ${j.name} ${j.color} pw:${j.pw ? 'yes' : 'no'}`;
 });
@@ -282,9 +279,6 @@ class H(BaseHTTPRequestHandler):
             form = {k: v[0] for k, v in parse_qs(raw.decode()).items()}
             # Never echoed: whether there was one is all the page needs.
             reply = {"name": form.get("name", ""), "color": form.get("color", ""), "pw": bool(form.get("pw"))}
-            # Who sent it, for agent_e2e: the run's marker and the browser's user agent.
-            run, ua = self.headers.get("x-live-check-run", ""), self.headers.get("user-agent", "")
-            print(f"form-submit run={run} name={reply['name']} color={reply['color']} ua={ua}", flush=True)
         else:
             reply = {"token": f"tok-{json.loads(raw or b'{}').get('user')}"}
         self.send(200, json.dumps(reply), "application/json")

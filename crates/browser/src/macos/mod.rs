@@ -1293,7 +1293,7 @@ pub fn create(
         if given.is_none() {
             config.setWebsiteDataStore(&store);
         }
-        // Its own, so none of the app page's scripts (Tauri's IPC) reach this page.
+        // Its own, so no other tab's scripts reach this page.
         let content = WKUserContentController::new(mtm);
         page_tools::install(&content, id, agent.then_some(&*clipboard), look.touch, mtm);
         config.setUserContentController(&content);

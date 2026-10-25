@@ -609,10 +609,10 @@ check_background_keys() {
 
 # Both read the user's clipboard back with pbpaste, which no unattended run may do.
 check_clipboard_safe() {
-  record "page can't write your clipboard" SKIP "reads your clipboard (pbpaste): run browser-check.sh's clipboard_safe by hand"
+  record "page can't write your clipboard" SKIP "reads your clipboard (pbpaste): by hand, /native's Copy must leave it as it was"
 }
 check_clipboard_bypass() {
-  record "a page past the shim can't write your clipboard" SKIP "reads your clipboard (pbpaste): run browser-check.sh's clipboard_bypass by hand"
+  record "a page past the shim can't write your clipboard" SKIP "reads your clipboard (pbpaste): by hand, /clipbypass's button must leave it as it was"
 }
 
 # The tab's own clipboard, from the page's Copy buttons, read back by the page and pasted with the

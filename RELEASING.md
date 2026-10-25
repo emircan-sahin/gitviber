@@ -57,7 +57,7 @@ renewed or the API key revoked.
 Tag builds sign the updater bundles (`.app.tar.gz`, `.deb`, `.rpm`, `.AppImage`) with this key,
 and installed copies only accept updates signed by it: the Tauri-built ones (0.1.17 and earlier,
 through `tauri-plugin-updater`) and the native ones (`crates/updater`, whose `PUBLIC_KEY` is the
-key `tauri.conf.json` has). `crates/updater/examples/sign.rs` writes the same `.sig` that
+key the Tauri builds' `tauri.conf.json` had). `crates/updater/examples/sign.rs` writes the same `.sig` that
 `tauri signer sign` did, from the same `TAURI_SIGNING_PRIVATE_KEY` and its password; any other
 build simply has no `.sig`. The private key is `~/.tauri/gitviber-updater.key`, its password is
 in the macOS Keychain (`security find-generic-password -s "gitviber updater key password" -w`),

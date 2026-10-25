@@ -171,19 +171,12 @@ fn our_signer_makes_what_the_tauri_updater_accepts() {
 }
 
 #[test]
-fn the_release_key_is_the_one_tauri_conf_json_names() {
+fn the_release_key_is_the_one_the_tauri_builds_have() {
+    // 0.1.17 and earlier install only what this key signed (their tauri.conf.json): a new key here
+    // alone would strand them, so it changes with them or not at all.
+    const TAURI_BUILDS_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE5M0QxQkUzMkVERDMyOTgKUldTWU10MHU0eHM5cWRkSUNhRmp2dHZ3cUlhZGZCajVTQjdTT0pIZk8zT0JOL3JmSWVTdXJDWVQK";
+    assert_eq!(PUBLIC_KEY, TAURI_BUILDS_KEY);
     decode(PUBLIC_KEY, TAURI_TEST_SIG).unwrap();
-    // Until src-tauri/ is deleted, the two must not drift apart.
-    let conf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/tauri.conf.json");
-    if let Ok(text) = std::fs::read_to_string(conf) {
-        let conf: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(conf["plugins"]["updater"]["pubkey"], PUBLIC_KEY);
-        assert_eq!(
-            conf["plugins"]["updater"]["endpoints"],
-            serde_json::json!(ENDPOINTS)
-        );
-        assert_eq!(conf["identifier"], "app.gitviber.desktop");
-    }
 }
 
 /// Serves `routes` (path → status, body) over HTTP/1.1 on localhost, one request per connection.

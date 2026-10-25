@@ -8,8 +8,8 @@ use objc2::msg_send;
 use objc2::runtime::{AnyClass, AnyObject};
 use std::ffi::{c_char, CStr, CString};
 
-// NSWorkspace and NSPasteboard are AppKit's. The app links it through gpui and the Tauri build did
-// through wry; core's own test binaries link nothing else, and AnyClass::get found no class.
+// NSWorkspace and NSPasteboard are AppKit's. The app links it through gpui; core's own test
+// binaries link nothing else, and AnyClass::get found no class.
 #[link(name = "AppKit", kind = "framework")]
 extern "C" {}
 

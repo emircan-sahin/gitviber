@@ -1,6 +1,6 @@
 //! The zsh integration's command mark (OSC 133;C;cmdline_url=…) from a real `zsh -i` on a pty,
 //! loaded as a pane loads it (ZDOTDIR), with a made-up HOME so no one's own rc files run.
-//! The mark must reach xterm.js whole: its parser ends or drops an OSC at BEL, ESC, CAN, SUB
+//! The mark must reach the terminal whole: a VT parser ends or drops an OSC at BEL, ESC, CAN, SUB
 //! and every C1 control (U+0080..U+009F), and whatever follows is then printed or run.
 
 use super::*;
@@ -135,7 +135,7 @@ fn decoded(mark: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out).into_owned())
 }
 
-/// What would end or drop the OSC in xterm.js before its BEL.
+/// What would end or drop the OSC in a VT parser before its BEL.
 fn breaks_osc(c: char) -> bool {
     matches!(c as u32, 0x07 | 0x18 | 0x1a | 0x1b | 0x80..=0x9f)
 }
@@ -186,9 +186,9 @@ fn a_command_line_with_controls_in_it_reaches_the_terminal_whole() {
 }
 
 /// With LC_ALL=C (set by some for sort order or old tools) zsh reads bytes, and a C1 control
-/// pasted into a line (U+009B, U+009C, U+009D) went out raw: xterm.js took U+009C as the mark's
-/// end and printed the rest with a bell (the tab's dot), U+009B ran the rest as CSI (`2J` cleared
-/// the screen), U+009D set the window title, and the command had no mark at all.
+/// pasted into a line (U+009B, U+009C, U+009D) went out raw: the old app's xterm.js took U+009C
+/// as the mark's end and printed the rest with a bell (the tab's dot), U+009B ran the rest as CSI
+/// (`2J` cleared the screen), U+009D set the window title, and the command had no mark at all.
 #[test]
 fn a_c1_control_in_the_line_never_breaks_the_mark_in_the_c_locale() {
     let Some(mut z) = Zsh::start("marks-c-locale", "", &[("LC_ALL", "C")]) else {

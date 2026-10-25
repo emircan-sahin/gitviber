@@ -180,8 +180,7 @@ fn main() {
         } else {
             gitviber_files::explorer::PANEL_ID
         };
-        let side = workspace
-            .update(cx, |ws, cx| ws.panel(side_id, window, cx))
+        let side = Workspace::ensure_panel(&workspace, side_id, window, cx)
             .expect("the panel")
             .view();
         let project: Option<Entity<Project>> = workspace.read(cx).project().cloned();

@@ -66,8 +66,9 @@ above show.
 
 ## Point the app at it
 
-The mirror goes first and GitHub second, in `ENDPOINTS` of `crates/updater/src/lib.rs` (and in
-`plugins.updater.endpoints` of `src-tauri/tauri.conf.json` for the Tauri-built versions):
+The mirror goes first and GitHub second, in `ENDPOINTS` of `crates/updater/src/lib.rs` (the
+Tauri-built versions, 0.1.17 and earlier, have theirs in `plugins.updater.endpoints` of their
+`tauri.conf.json`):
 
 ```rust
 pub const ENDPOINTS: [&str; 2] = [

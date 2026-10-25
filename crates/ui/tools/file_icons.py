@@ -1,6 +1,6 @@
 """Copies the Material Icon Theme SVGs GitViber's lookup can reach into assets/file-icons and
-writes src/widgets/file_icon_map.rs. Run from the repo root with the npm package installed:
-python3 crates/ui/tools/file_icons.py node_modules/material-icon-theme"""
+writes src/widgets/file_icon_map.rs. Run from the repo root with the site's packages installed:
+python3 crates/ui/tools/file_icons.py site/node_modules/material-icon-theme"""
 import json, os, shutil, sys
 
 pkg = sys.argv[1]
