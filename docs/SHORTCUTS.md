@@ -8,7 +8,7 @@ While you type, only shortcuts with `⌘`, `⌃` or an F-key apply. `⌘` with a
 On Linux `⌘` is Ctrl, the views are on Alt+1–4, Ctrl+Tab / Ctrl+Shift+Tab switch tabs, link labels are Ctrl+Shift+Space, and the terminal's
 `⌘T` `⌘D` `⌘K` `⌘W` are Ctrl+Shift+T, D, K and W, since Ctrl+letter stays the shell's (split down is Ctrl+Alt+Shift+D,
 zooming a pane Ctrl+Shift+Enter, maximizing Ctrl+Alt+Shift+Enter, the previous / next pane Super+Alt+← / →, copy and paste Ctrl+Shift+C / V; focusing a pane by side has no default there, the shell and the desktop use those keys, and neither has renaming a pane, since Ctrl+R is the shell's history search).
-Reopening a closed tab, closing the other tabs, focusing the commit message, and fetch, pull and push have no default there either.
+Reopening a closed tab, closing the other tabs, focusing the commit message or the terminal's tabs, and fetch, pull and push have no default there either.
 
 | Keys | |
 | --- | --- |
@@ -36,7 +36,7 @@ Reopening a closed tab, closing the other tabs, focusing the commit message, and
 | `⌥S` `⌥C` `⌥W` `⌥Z` | Split view, collapse unchanged, ignore whitespace, word wrap |
 | `F12` or `⌘↵`, `⌥F12`, `⇧F12` | Go to definition (`⌘`-click too), peek it, find references (in the code view) |
 | `⌃G` | Go to line (in the code view) |
-| `=` `−` `0` | Zoom an image in, out, to fit (in the image view) |
+| `=` `−` `0`, also with `⌘` | Zoom an image in, out, to fit (in the image view) |
 | `⌘S` | Save the file you're editing |
 | `F2` | Rename the file, branch or worktree (in the explorer, branch picker or worktree picker) |
 | `T` `M` `⌫` | Open a terminal in the worktree, merge its branch, remove it (in the worktree picker) |
@@ -47,6 +47,7 @@ Reopening a closed tab, closing the other tabs, focusing the commit message, and
 | `F6` `⇧F6` | Focus the next / previous panel (not from the terminal, which keeps F-keys for its programs) |
 | `⌘J` or `⌃` `` ` `` | Toggle the terminal |
 | `⌘T` | New terminal |
+| `⌃⌘T` | Focus the terminal's tabs, where `←` `→` switch, `⌥←` `⌥→` move one, `⌘W` closes it and `↵` or `Esc` goes back (in the terminal) |
 | `⌘D` `⇧⌘D` `⌘K` | Split right, split down, clear (in the terminal) |
 | `⌘G` `⇧⌘G` | Next / previous match of the terminal's find (in the terminal) |
 | `⇧⌘←` `⇧⌘→` | Previous / next terminal pane by its number, wrapping around; zoomed, the pane shown (in the terminal) |

@@ -14,7 +14,7 @@ README leaves out. Keys are for macOS; [the shortcut list](SHORTCUTS.md) has the
 - [Commit messages from your agent](#commit-messages-from-your-agent)
 - [Git](#git)
 - [Looks and settings](#looks-and-settings)
-- [Memory](#memory)
+- [Size, memory and speed](#size-memory-and-speed)
 
 ---
 
@@ -103,7 +103,8 @@ Settings → Guided Review.
 - Diffs refresh the moment an agent saves, without losing your scroll position.
 - Unified or split, with word-level highlights. Unchanged lines are folded away until you want the
   whole file (`⌥C`).
-- A changed image shows side by side, as a swipe or as an onion skin.
+- A changed image shows side by side, as a swipe or as an onion skin, and both sides zoom and pan
+  together.
 - Diffs are computed in Rust and highlighted off the main thread, so big ones stay fast.
 
 ### Walking through changes
@@ -145,6 +146,8 @@ server or talk to the agent without leaving the change you're reading.
   `⇧⌘←` / `⇧⌘→` page through them, and `⌘R` names one.
 - A split's tab shows a dot per pane in its agent's state, so an agent at work in another pane
   stays in sight. Zoomed to one pane (`⇧⌘↵`), the toolbar shows which one it is.
+- In the terminal, `⌃⌘T` puts focus on the tab strip: `←` / `→` switch tabs, `⌥←` / `⌥→` move one, `⌘W` closes it,
+  and `↵` or `Esc` goes back to the pane.
 - The terminal has its own font, size, line height, cursor and scrollback in Settings. `⌘=` / `⌘−`
   in the terminal, a pinch or Ctrl+scroll over it size its text.
 - `⌘F` finds in the terminal and its scrollback, with match case, whole word and regex.
@@ -311,6 +314,9 @@ writes a skill for them while agent control is on:
 - Pick two files with `⌘`-click and Compare Selected from the right-click menu to see them as a diff.
 - Fix a line right in the file view and save it with `⌘S`. Go to Definition, references and `⌃G`
   for a line work there too.
+- Images fit the view: a pinch, `⌘`-scroll or a double-click zooms around the pointer, a drag pans,
+  and `=` `−` `0` zoom in, out and back to fit. On macOS PDFs, audio and video play in the tab; on
+  Linux they open in their default app.
 
 ### Markdown
 
@@ -324,7 +330,7 @@ Settings → Obsidian picks which vaults show.
 
 - Notes open in a tab the way Obsidian's reading view shows them: wikilinks that open the note they
   name, embedded notes and images, callouts, highlights, tags and properties. An embedded PDF,
-  audio or video file is a card that opens it in its app.
+  audio or video file plays in the note on macOS, and on Linux is a card that opens it in its app.
 - Canvases open as their board, to pan and zoom. Images open in the media viewer, and audio, video
   and PDFs in their default app.
 - Switch a note to Code to edit it and save it with `⌘S`.
@@ -409,22 +415,32 @@ worktree.
 - **Type and scale.** Your own interface font, code font, terminal font and interface scale.
 - **Transparency.** On macOS a see-through window, with its opacity yours to set and the desktop
   blurred behind it if you like; Terminal too lets it show through the terminal.
+- **Settings** (`⌘,`) has one search over every setting.
 - **Shortcuts.** Most actions have one, every one can be rebound in Settings (`⌘,`), and holding `⌘`
   shows the ones that work where you are. See [Shortcuts](SHORTCUTS.md).
 
 ---
 
-## Memory
+## Size, memory and speed
 
-Close a tab, a terminal or a panel and its memory comes back. Measured on macOS with debug builds
-started with `MallocLargeCache=0` (as the app starts itself), on GitViber's own repository:
+Measured on an M2 Pro. Memory is the footprint Activity Monitor shows, summed over GitViber and
+every process it starts, with a repository open in a window of about 1480×920 points. 0.1.17, the
+last release built on a web view, was measured the same way on the same Mac.
 
-| | |
-| --- | --- |
-| The whole window, every panel open | 29–46 MB |
-| A terminal, idle | 33 MB |
-| The same terminal after 100,000 lines of output | 78 MB |
-| Closed again | 38 MB, and 39 MB after 10 rounds of open, flood and close |
-| 10 browser tabs opened and closed, twice | 65 MB before, 82 MB after the first round, 81 MB after the second |
-| Open All on an 857-file commit | 56 MB, given back on close |
-| A 7 MB file opened and closed 12 times | Stays at 28 MB |
+| | 0.1.18 | 0.1.17 |
+| --- | --- | --- |
+| Download, Apple Silicon / Intel | 19.5 MB / 22.6 MB | 29 MB, one for both |
+| Memory at launch, the repository open | 95–100 MB | 317 MB |
+| With History and a file open | 104 MB | |
+| Minimized or covered by another window | 52–62 MB | |
+| Peak while paging through a 100,000-line file | 186 MB | 2.6 GB |
+| Cold start, until the repository shows | 0.76 s | 5.4 s |
+| `seq 1 2000000` in the terminal | 2.1 s | 9.9 s |
+| Command palette or file finder, until it shows | about 45 ms | |
+| One git call | 4 ms | 13 ms |
+| History reading its log | 25 ms | 118 ms |
+
+- **Closed is closed.** A tab, a terminal or a document gives its memory back when it closes.
+  0.1.17 went from 278 MB idle to 502 MB after a session with everything closed again.
+- **Hidden is light.** Minimized or covered, the window lets go of its GPU memory and takes it back
+  before the next frame you see.

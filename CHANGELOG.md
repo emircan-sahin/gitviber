@@ -6,28 +6,41 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-10-25
+
 ### Changed
 
-- **GitViber is a native app.** The window is drawn by Rust and GPUI on the GPU (Metal on macOS, Vulkan on Linux), with no web view under it: worktrees, diffs, the terminal, History, pull requests and issues, guided review, the explorer, markdown, the Obsidian vault and the browser are rebuilt on it. With every panel open, the whole window takes 29–46 MB, and closing a tab, a terminal, a document or a browser tab gives its memory back. The macOS app is 170 MB on disk, a 56.5 MB download.
+- **GitViber is a native app.** The window is drawn by Rust and GPUI on the GPU (Metal on macOS, Vulkan on Linux), with no web view under it. Worktrees, diffs, the terminal, History, pull requests and issues, guided review, the explorer, markdown, the Obsidian vault and the browser are all rebuilt on it, with the same themes, settings and shortcuts.
+- **A ~20 MB download.** macOS gets one disk image per chip: 19.5 MB for Apple Silicon and 22.6 MB for Intel, where 0.1.17's universal one was 29 MB. Homebrew and the updater pick the right one, and the website offers yours with a link to the other.
+- **About 100 MB of memory with a repo open,** every process counted, where 0.1.17 took 317 MB at launch. Minimized or behind another window, GitViber hands its GPU memory back and drops to 52–62 MB. Paging through a 100,000-line file peaks at 186 MB instead of 2.6 GB. Closing a tab, a terminal or a document gives its memory back, where 0.1.17 went from 278 MB idle to 502 MB with everything closed again. Measured on an M2 Pro.
+- **Faster from the first frame.** On the same Mac a cold start shows your repo in 0.76 s instead of 5.4 s, and `seq 1 2000000` in the terminal finishes in 2.1 s instead of 9.9 s. The command palette and the file finder open in about 45 ms, a git call returns in 4 ms instead of 13, and History reads its log in 25 ms instead of 118. A repository shows as soon as it's read, without waiting for its file watcher to start.
 - **Your setup comes along.** On its first launch GitViber reads the earlier app's settings, recent projects, commands and files, each worktree's tabs, panel sizes and terminals, commit drafts, guides, risks and review notes, once and without changing them. 0.1.17 updates to this release like to any other, and the new `.deb` and `.rpm` upgrade the old package.
-- **The terminal is drawn by the app,** on alacritty's emulation: it paints only the rows on screen, reuses the ones that didn't change, and draws a synchronized frame the moment it ends.
+- **The terminal is drawn by the app,** on alacritty's emulation: it paints only the rows on screen, reuses the ones that didn't change, and draws a synchronized frame the moment it ends. Nothing a program prints can freeze a pane.
 - **Mermaid diagrams and math are drawn by the app,** through mermaid-rs-renderer and RaTeX with the KaTeX fonts, off the main thread and in the theme's colors. A diagram or a formula that doesn't parse shows its source under a label.
 - **Syntax colors come from tree-sitter** in the code view and in diffs, with the same 24 syntax themes.
 - **Browser tabs are WebKit views laid over the window,** and agents drive tabs of their own as before. On Linux a tab no longer shows localhost pages; it offers to open the page in your browser.
-- **On Linux, GitViber needs a Vulkan driver instead of WebKitGTK.** The `.deb` and `.rpm` pull in what it links; the AppImage holds only the app.
+- **On Linux, GitViber needs a Vulkan driver instead of WebKitGTK.** The `.deb` and `.rpm` pull in what it links; the AppImage holds only the app. With no web view there, PDFs, audio and video open in their default app; on macOS they still play in GitViber.
 - **Updates are GitViber's own,** read from the same releases and checked against the same signing key. A `.deb` or `.rpm` install, or an app in a folder that needs a password to change, gets the Releases page instead of an update in place.
 - **Holding ⌘ shows only the shortcuts that work where focus is,** instead of dimming the rest.
 - **Quit asks only about what it would stop:** commands still running and agents mid-turn, not finished ones.
 - **Reload Window is gone** with the web view. Switch Project opens the top bar's project list.
+- **The top bar's project button shows just the project,** not the diff totals the status bar already shows.
+- **Dim text stays readable on hovered and selected rows,** at a contrast of at least 4.5:1 in every theme.
 
 ### Added
 
+- **Zoom into any image.** Pinch, ⌘-scroll or double-click zooms a PNG, a JPEG or any other picture around the pointer, and a drag pans it; `=`, `−` and `0`, with or without ⌘, zoom in, out and back to fit. Above 100% it stays sharp. In an image diff, both sides zoom and pan together.
+- **Search in Settings.** One field looks through every setting on every page.
+- **The terminal's tabs from the keyboard.** In the terminal, `⌃⌘T` puts focus on the tab strip, where ←/→ switch tabs, ⌥←/⌥→ move one, ⌘W closes it, and ↵ or Esc goes back to the pane.
 - **A running guided review shows the agent's last lines** as its CLI prints them, for a CLI that prints its progress.
 - **A commit that fails for want of a name and email opens the dialog to set them.**
 
 ### Fixed
 
 - **Merging or reviewing a pull request goes to the head GitViber showed you,** so commits pushed since aren't merged or approved unseen.
+- **A repository whose file watcher can't start opens anyway.** It opens without live updates and says so once, with Retry, where 0.1.17 refused to open it.
+- **Images in a pull request's line comments load on private repositories.**
+- **Stray text in an agent's prompt.** After minutes of switching tabs, panes and windows, 0.1.17's terminal could leave stray words in Claude Code's input, and a selection could bring back text that had gone. The native terminal passes a five-minute stress test of six agents in tabs and splits that checks every byte each one gets and what every pane draws. A pane also reports focus only when its own focus changes.
 
 ## [0.1.17] - 2026-10-18
 
@@ -682,7 +695,8 @@ with `.deb`, `.rpm` and AppImage builds for Linux.
   repository from the welcome screen.
 - Help → Show Logs and Copy Diagnostics for bug reports. No telemetry.
 
-[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.17...HEAD
+[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.18...HEAD
+[0.1.18]: https://github.com/emircan-sahin/gitviber/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/emircan-sahin/gitviber/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/emircan-sahin/gitviber/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/emircan-sahin/gitviber/compare/v0.1.14...v0.1.15

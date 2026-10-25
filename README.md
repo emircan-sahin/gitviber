@@ -31,7 +31,7 @@ window too.
 |  |  |
 | --- | --- |
 | **Agents get a browser** | On macOS, Claude Code and Codex open pages, click, type and read the console in tabs of their own, in the background. |
-| **29–46 MB** | The whole window with every panel open: native Rust, no web stack. Close a tab or a terminal and its memory comes back. [Measured](docs/FEATURES.md#memory). |
+| **~20 MB download** | Native Rust drawn on the GPU, with no web view under the window. About 100 MB of memory with a repo open, and a closed tab or terminal gives its memory back. [Measured](docs/FEATURES.md#size-memory-and-speed). |
 | **Waits for changes** | File changes come from the system's file events, not from scanning the disk. |
 | **Plain git, no telemetry** | Your own git, config, hooks and signing. No account, no API keys. [Details](docs/PRIVACY.md). |
 
@@ -171,16 +171,16 @@ you are ([the list](docs/SHORTCUTS.md)).
 
 ## Install
 
-**macOS 13 or later**, signed and notarized, for Apple Silicon and Intel:
+**A ~20 MB download** for macOS 13 or later, signed and notarized, for Apple Silicon and Intel:
 
 ```sh
 brew install --cask emircan-sahin/tap/gitviber
 ```
 
 Or grab the `.dmg` for your Mac from [Releases](https://github.com/emircan-sahin/gitviber/releases/latest):
-`GitViber_<version>_aarch64.dmg` for Apple Silicon, `GitViber_<version>_x64.dmg` for Intel (about
-28 MB each; Apple menu → About This Mac says which chip you have). The app takes about 85 MB on
-disk. Homebrew and the updater pick the right one themselves.
+`GitViber_<version>_aarch64.dmg` for Apple Silicon (19.5 MB), `GitViber_<version>_x64.dmg` for
+Intel (22.6 MB). Apple menu → About This Mac says which chip you have; Homebrew and the updater pick
+the right one themselves.
 
 **Linux x86_64** from the same page: `.deb` for Debian and Ubuntu, `.rpm` for Fedora, `.AppImage` for the rest.
 
