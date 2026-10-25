@@ -45,8 +45,9 @@ pub fn pty_write(core: &Core, id: u32, data: String, binary: bool) -> Res<()> {
 }
 
 /// On the main thread, where AppKit's pasteboard and GTK's clipboard belong. GTK's answers only
-/// where GTK runs: elsewhere on Linux this fails, and the app reads its own clipboard.
-pub fn terminal_paste(_core: &Core) -> Res<clipboard::Paste> {
+/// where GTK runs: elsewhere on Linux this finds nothing, and the app reads its own clipboard.
+/// An image is saved off it, with `Image::save`.
+pub fn terminal_paste(_core: &Core) -> clipboard::Clip {
     clipboard::read()
 }
 

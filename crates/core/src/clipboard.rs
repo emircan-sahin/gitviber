@@ -154,24 +154,82 @@ fn copy_dropped(path: &Path) -> Option<String> {
     Some(to.to_string_lossy().into_owned())
 }
 
+/// What ⌘V found on the pasteboard (`read`).
+pub enum Clip {
+    /// Files, text or nothing: pasted as they are.
+    Ready(Paste),
+    /// An image, still to be saved as a PNG: `Image::save`, off the main thread.
+    Image(Image),
+}
+
+/// A pasted image as the pasteboard held it.
+pub struct Image(Raw);
+
+enum Raw {
+    #[cfg(target_os = "macos")]
+    Png(pasteboard::Data),
+    /// Some apps put only TIFF.
+    #[cfg(target_os = "macos")]
+    Tiff(pasteboard::Data),
+    /// GTK's image, decoded: its pixels, as a Pixbuf can't leave its thread.
+    #[cfg(target_os = "linux")]
+    Pixels {
+        bytes: gtk::glib::Bytes,
+        colorspace: gtk::gdk_pixbuf::Colorspace,
+        alpha: bool,
+        bits: i32,
+        width: i32,
+        height: i32,
+        stride: i32,
+    },
+}
+
+impl Image {
+    /// Saved as a PNG in the paste folder; Empty when it won't encode. Off the main thread:
+    /// re-encoding a 5K TIFF took 190 ms.
+    pub fn save(self) -> Result<Paste, String> {
+        let path = new_paste_file("paste.png")?;
+        let written = match self.0 {
+            #[cfg(target_os = "macos")]
+            Raw::Png(png) => std::fs::write(&path, png.bytes()),
+            #[cfg(target_os = "macos")]
+            Raw::Tiff(tiff) => {
+                match objc2::rc::autoreleasepool(|_| unsafe { pasteboard::tiff_to_png(&tiff) }) {
+                    Some(png) => std::fs::write(&path, png),
+                    None => return Ok(Paste::Empty),
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Raw::Pixels {
+                bytes,
+                colorspace,
+                alpha,
+                bits,
+                width,
+                height,
+                stride,
+            } => {
+                let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_bytes(
+                    &bytes, colorspace, alpha, bits, width, height, stride,
+                );
+                match pixbuf.save_to_bufferv("png", &[]) {
+                    Ok(png) => std::fs::write(&path, png),
+                    Err(_) => return Ok(Paste::Empty),
+                }
+            }
+        };
+        written.map_err(|e| e.to_string())?;
+        Ok(Paste::Image {
+            path: path.to_string_lossy().into_owned(),
+        })
+    }
+}
+
 /// What ⌘V pastes into the terminal: copied files' paths first (a Finder copy also carries the
-/// file's name as text and its icon as an image), then text, then an image saved as a PNG.
-pub fn read() -> Result<Paste, String> {
-    let (files, text, png) = contents();
-    if !files.is_empty() {
-        return Ok(Paste::Files { paths: files });
-    }
-    if let Some(text) = text.filter(|t| !t.is_empty()) {
-        return Ok(Paste::Text { text });
-    }
-    let Some(png) = png else {
-        return Ok(Paste::Empty);
-    };
-    let path = new_paste_file("paste.png")?;
-    std::fs::write(&path, png).map_err(|e| e.to_string())?;
-    Ok(Paste::Image {
-        path: path.to_string_lossy().into_owned(),
-    })
+/// file's name as text and its icon as an image), then text, then an image. On the main thread,
+/// and quick: an image is only taken, `Image::save` makes it a file.
+pub fn read() -> Clip {
+    contents()
 }
 
 /// The clipboard's text alone, for Apply Patch from Clipboard: the webview's own read asks the
@@ -200,7 +258,7 @@ pub fn read_text() -> Result<String, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn contents() -> (Vec<String>, Option<String>, Option<Vec<u8>>) {
+fn contents() -> Clip {
     objc2::rc::autoreleasepool(|_| unsafe { pasteboard::read() })
 }
 
@@ -208,65 +266,139 @@ fn contents() -> (Vec<String>, Option<String>, Option<Vec<u8>>) {
 /// Asks once what's offered, then only for the first kind `read` takes: each request can wait
 /// GTK's 30 s on an owner that has hung.
 #[cfg(target_os = "linux")]
-fn contents() -> (Vec<String>, Option<String>, Option<Vec<u8>>) {
+fn contents() -> Clip {
+    let empty = Clip::Ready(Paste::Empty);
     // GTK panics off its thread; terminal_paste is sync so it runs there, but never crash on it.
     if !gtk::is_initialized_main_thread() {
-        return (vec![], None, None);
+        return empty;
     }
     let clipboard = gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD);
     let Some(targets) = clipboard.wait_for_targets() else {
-        return (vec![], None, None);
+        return empty;
     };
     if gtk::targets_include_uri(&targets) {
-        let files: Vec<String> = clipboard
+        let paths: Vec<String> = clipboard
             .wait_for_uris()
             .iter()
             .filter_map(|uri| gtk::glib::filename_from_uri(uri.as_str()).ok())
             .map(|(path, _)| path.to_string_lossy().into_owned())
             .collect();
-        if !files.is_empty() {
-            return (files, None, None);
+        if !paths.is_empty() {
+            return Clip::Ready(Paste::Files { paths });
         }
     }
     if gtk::targets_include_text(&targets) {
         let text = clipboard.wait_for_text().map(String::from);
-        if text.as_deref().is_some_and(|t| !t.is_empty()) {
-            return (vec![], text, None);
+        if let Some(text) = text.filter(|t| !t.is_empty()) {
+            return Clip::Ready(Paste::Text { text });
         }
     }
-    let png = gtk::targets_include_image(&targets, false)
+    let image = gtk::targets_include_image(&targets, false)
         .then(|| clipboard.wait_for_image())
-        .flatten()
-        .and_then(|image| image.save_to_bufferv("png", &[]).ok());
-    (vec![], None, png)
+        .flatten();
+    match image {
+        Some(p) => Clip::Image(Image(Raw::Pixels {
+            bytes: p.read_pixel_bytes(),
+            colorspace: p.colorspace(),
+            alpha: p.has_alpha(),
+            bits: p.bits_per_sample(),
+            width: p.width(),
+            height: p.height(),
+            stride: p.rowstride(),
+        })),
+        None => empty,
+    }
 }
 
 /// Elsewhere the terminal keeps the webview's own paste (terminals.ts), so this isn't called.
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn contents() -> (Vec<String>, Option<String>, Option<Vec<u8>>) {
-    (vec![], None, None)
+fn contents() -> Clip {
+    Clip::Ready(Paste::Empty)
 }
 
 #[cfg(target_os = "macos")]
 mod pasteboard {
+    use super::{Clip, Image, Paste, Raw};
     use crate::objc::{bytes, ns_string, rust_string};
     use objc2::msg_send;
+    use objc2::rc::Retained;
     use objc2::runtime::{AnyClass, AnyObject};
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
     use std::path::Path;
 
-    /// The general pasteboard's file paths, text and image (as PNG). Call inside an autorelease pool.
-    pub unsafe fn read() -> (Vec<String>, Option<String>, Option<Vec<u8>>) {
-        let (Some(pb_class), Some(url_class)) =
-            (AnyClass::get(c"NSPasteboard"), AnyClass::get(c"NSURL"))
-        else {
-            return (vec![], None, None);
-        };
-        let pb: *mut AnyObject = msg_send![pb_class, generalPasteboard];
-        if pb.is_null() {
-            return (vec![], None, None);
+    /// The pasteboard's data, kept for another thread to read.
+    pub struct Data(Retained<AnyObject>);
+
+    // SAFETY: an NSData the pasteboard handed out is a copy nothing changes, and NSData is safe
+    // to read from any thread.
+    unsafe impl Send for Data {}
+
+    impl Data {
+        /// None for nil or empty.
+        pub unsafe fn take(data: *mut AnyObject) -> Option<Data> {
+            if data.is_null() {
+                return None;
+            }
+            let len: usize = msg_send![data, length];
+            (len > 0)
+                .then(|| Retained::retain(data))
+                .flatten()
+                .map(Data)
         }
 
+        pub fn bytes(&self) -> &[u8] {
+            unsafe {
+                let len: usize = msg_send![&*self.0, length];
+                // `const void *`: objc2 checks the declared type in debug builds.
+                let ptr: *const std::ffi::c_void = msg_send![&*self.0, bytes];
+                if ptr.is_null() {
+                    return &[];
+                }
+                std::slice::from_raw_parts(ptr.cast::<u8>(), len)
+            }
+        }
+    }
+
+    /// The general pasteboard's files, else its text, else its image, taken as it is: a TIFF's
+    /// re-encoding waits for `Image::save`. Call inside an autorelease pool.
+    pub unsafe fn read() -> Clip {
+        let empty = Clip::Ready(Paste::Empty);
+        let Some(pb) = general() else {
+            return empty;
+        };
+        let paths = files(pb);
+        if !paths.is_empty() {
+            return Clip::Ready(Paste::Files { paths });
+        }
+        let text = rust_string(msg_send![pb, stringForType: ns_string(c"public.utf8-plain-text")]);
+        if let Some(text) = text.filter(|t| !t.is_empty()) {
+            return Clip::Ready(Paste::Text { text });
+        }
+        // Screenshots and most apps put PNG.
+        let raw = match data(pb, c"public.png") {
+            Some(png) => Raw::Png(png),
+            None => match data(pb, c"public.tiff") {
+                Some(tiff) => Raw::Tiff(tiff),
+                None => return empty,
+            },
+        };
+        Clip::Image(Image(raw))
+    }
+
+    pub unsafe fn data(pb: *mut AnyObject, kind: &CStr) -> Option<Data> {
+        Data::take(msg_send![pb, dataForType: ns_string(kind)])
+    }
+
+    pub unsafe fn general() -> Option<*mut AnyObject> {
+        let pb: *mut AnyObject = msg_send![AnyClass::get(c"NSPasteboard")?, generalPasteboard];
+        (!pb.is_null()).then_some(pb)
+    }
+
+    /// The paths of the files on the pasteboard.
+    pub unsafe fn files(pb: *mut AnyObject) -> Vec<String> {
+        let Some(url_class) = AnyClass::get(c"NSURL") else {
+            return vec![];
+        };
         let mut files = vec![];
         let items: *mut AnyObject = msg_send![pb, pasteboardItems];
         let count: usize = if items.is_null() {
@@ -289,27 +421,12 @@ mod pasteboard {
             };
             files.extend(rust_string(path));
         }
-
-        let text: *mut AnyObject =
-            msg_send![pb, stringForType: ns_string(c"public.utf8-plain-text")];
-        let text = rust_string(text);
-
-        // Screenshots and most apps put PNG; some only TIFF, which AppKit re-encodes.
-        let mut png = bytes(msg_send![pb, dataForType: ns_string(c"public.png")]);
-        if png.is_none() {
-            png = tiff_to_png(msg_send![pb, dataForType: ns_string(c"public.tiff")]);
-        }
-        (files, text, png)
+        files
     }
 
     /// The general pasteboard's text. Call inside an autorelease pool.
     pub unsafe fn read_text() -> Option<String> {
-        let pb_class = AnyClass::get(c"NSPasteboard")?;
-        let pb: *mut AnyObject = msg_send![pb_class, generalPasteboard];
-        if pb.is_null() {
-            return None;
-        }
-        rust_string(msg_send![pb, stringForType: ns_string(c"public.utf8-plain-text")])
+        rust_string(msg_send![general()?, stringForType: ns_string(c"public.utf8-plain-text")])
     }
 
     /// Extensions NSImage reads, whose picture goes on the pasteboard next to the file.
@@ -411,24 +528,22 @@ mod pasteboard {
             .ok_or_else(|| "Could not write to the pasteboard".into())
     }
 
-    unsafe fn ns_data(bytes: &[u8]) -> *mut AnyObject {
+    pub unsafe fn ns_data(bytes: &[u8]) -> *mut AnyObject {
         let Some(cls) = AnyClass::get(c"NSData") else {
             return std::ptr::null_mut();
         };
         msg_send![cls, dataWithBytes: bytes.as_ptr().cast::<std::ffi::c_void>(), length: bytes.len()]
     }
 
-    unsafe fn tiff_to_png(tiff: *mut AnyObject) -> Option<Vec<u8>> {
+    /// AppKit's PNG of it. Call inside an autorelease pool, on any thread.
+    pub unsafe fn tiff_to_png(tiff: &Data) -> Option<Vec<u8>> {
         let (Some(rep_class), Some(dict_class)) = (
             AnyClass::get(c"NSBitmapImageRep"),
             AnyClass::get(c"NSDictionary"),
         ) else {
             return None;
         };
-        if tiff.is_null() {
-            return None;
-        }
-        let rep: *mut AnyObject = msg_send![rep_class, imageRepWithData: tiff];
+        let rep: *mut AnyObject = msg_send![rep_class, imageRepWithData: &*tiff.0];
         if rep.is_null() {
             return None;
         }
@@ -475,13 +590,55 @@ mod tests {
         let _ = std::fs::remove_dir_all(Path::new(&path).parent().unwrap());
     }
 
+    /// A 1×1 PNG.
+    #[cfg(target_os = "macos")]
+    const PNG: [u8; 70] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52, 0,
+        0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89, 0, 0, 0, 0x0d, 0x49, 0x44,
+        0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0, 0x1f, 0, 0x05, 0, 0x01, 0xff, 0x89,
+        0x99, 0x3d, 0x1d, 0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    /// Taken on one thread, saved on another: a PNG as it was, a TIFF re-encoded as one.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_pasted_image_is_saved_off_the_thread_that_took_it() {
+        use objc2::msg_send;
+        use objc2::runtime::{AnyClass, AnyObject};
+        let (png, tiff) = objc2::rc::autoreleasepool(|_| unsafe {
+            let data = pasteboard::ns_data(&PNG);
+            let rep: *mut AnyObject = msg_send![
+                AnyClass::get(c"NSBitmapImageRep").unwrap(),
+                imageRepWithData: data
+            ];
+            let tiff: *mut AnyObject = msg_send![rep, TIFFRepresentation];
+            (
+                pasteboard::Data::take(data).unwrap(),
+                pasteboard::Data::take(tiff).unwrap(),
+            )
+        });
+        let save = |raw| {
+            let saved = std::thread::spawn(move || Image(raw).save());
+            match saved.join().unwrap().unwrap() {
+                Paste::Image { path } => {
+                    assert!(path.ends_with("-paste.png"), "{path}");
+                    let bytes = std::fs::read(&path).unwrap();
+                    let _ = std::fs::remove_file(&path);
+                    bytes
+                }
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(save(Raw::Png(png)), PNG);
+        assert!(save(Raw::Tiff(tiff)).starts_with(&PNG[..8]));
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "replaces the clipboard"]
     fn copied_text_pastes_back() {
         write_text("héllo ✅").unwrap();
-        let (_, text, _) = objc2::rc::autoreleasepool(|_| unsafe { pasteboard::read() });
-        assert_eq!(text.as_deref(), Some("héllo ✅"));
+        assert_eq!(read_text().unwrap(), "héllo ✅");
         // Through a C string, a NUL failed the copy.
         write_text("a\0b").unwrap();
     }
@@ -490,27 +647,30 @@ mod tests {
     #[test]
     #[ignore = "replaces the clipboard"]
     fn copied_files_paste_back_as_files_with_their_picture() {
-        // A 1×1 PNG.
-        let png = [
-            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52,
-            0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89, 0, 0, 0, 0x0d, 0x49,
-            0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0, 0x1f, 0, 0x05, 0, 0x01,
-            0xff, 0x89, 0x99, 0x3d, 0x1d, 0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60,
-            0x82,
-        ];
-        let image = save_named("a b.png", &png).unwrap();
+        let image = save_named("a b.png", &PNG).unwrap();
         let text = save_named("notes.txt", b"hi").unwrap();
-        let read = || objc2::rc::autoreleasepool(|_| unsafe { pasteboard::read() });
+        let read = || {
+            objc2::rc::autoreleasepool(|_| unsafe {
+                let pb = pasteboard::general().unwrap();
+                let picture = pasteboard::data(pb, c"public.png").map(|d| d.bytes().to_vec());
+                (pasteboard::files(pb), picture)
+            })
+        };
 
         copy_files(vec![image.clone()]).unwrap();
-        let (files, _, picture) = read();
+        let (files, picture) = read();
         assert_eq!(files, vec![image.clone()]);
-        assert_eq!(picture.as_deref(), Some(&png[..]));
+        assert_eq!(picture.as_deref(), Some(&PNG[..]));
+        // Files paste as files, not as their picture.
+        assert!(matches!(
+            super::read(),
+            Clip::Ready(Paste::Files { paths }) if paths == vec![image.clone()]
+        ));
 
         // Several files carry no picture, and a missing one is left out.
         let gone = format!("{text}.gone");
         copy_files(vec![image.clone(), gone, text.clone()]).unwrap();
-        let (files, _, picture) = read();
+        let (files, picture) = read();
         assert_eq!(files, vec![image.clone(), text.clone()]);
         assert_eq!(picture, None);
         for p in [image, text] {

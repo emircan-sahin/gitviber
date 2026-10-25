@@ -34,6 +34,18 @@ pub fn open_repo(core: &Core, path: String) -> Res<OpenedRepo> {
     Ok(OpenedRepo { root, main })
 }
 
+/// Starts the watcher of the repo at `root` again, after Event::RepoWatchFailed. Once it's up,
+/// one refresh catches up what changed meanwhile. A repo opened or closed since keeps its own.
+pub fn watch_again(core: &Core, root: String) {
+    let root = PathBuf::from(root);
+    let mut watcher = core.watcher.lock().unwrap_or_else(|e| e.into_inner());
+    if watcher.as_ref().is_some_and(|w| w.root() == root) {
+        let again = watch::start(core.events(), root);
+        again.opened();
+        *watcher = Some(again);
+    }
+}
+
 /// Closes the open repo: its watcher stops, and commands find no repo open until the next
 /// `open_repo`.
 pub fn close_repo(core: &Core) -> Res<()> {
@@ -294,6 +306,53 @@ mod open_tests {
             .recv_timeout(Duration::from_secs(20))
             .expect("the write heard");
         assert!(heard.worktree && !heard.git, "{heard:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A watcher that can't start (its folder went away before it was up): the repo stays open,
+    /// the app hears why, and watch_again starts it once there's something to watch.
+    #[test]
+    fn a_watcher_that_fails_says_so_and_starts_again() {
+        let Some(dir) = repo("failed-watcher") else {
+            return;
+        };
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        let core = Arc::new(Core::new(Arc::new(move |e| {
+            if matches!(e, Event::RepoChanged(_) | Event::RepoWatchFailed { .. }) {
+                let _ = tx.lock().unwrap().send(e);
+            }
+        })));
+        let held = watch::held::hold(&dir);
+        open(&core, &dir);
+        let away = dir.with_extension("away");
+        std::fs::rename(&dir, &away).unwrap();
+        drop(held);
+        match rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the failure")
+        {
+            Event::RepoWatchFailed { root, error } => {
+                assert_eq!(Path::new(&root), dir);
+                assert!(!error.is_empty() && !error.contains(&root), "{error}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(core.repo().is_ok());
+        std::fs::rename(&away, &dir).unwrap();
+        // Not the open repo: nothing starts. One that did would fail at once, and say so.
+        watch_again(&core, "/nowhere".into());
+        assert!(rx.recv_timeout(Duration::from_secs(1)).is_err());
+        watch_again(&core, dir.to_string_lossy().into_owned());
+        // Sent once the watcher is up.
+        match rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("a catch-up")
+        {
+            Event::RepoChanged(c) => assert!(c.git && c.worktree && Path::new(&c.root) == dir),
+            other => panic!("{other:?}"),
+        }
+        close_repo(&core).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

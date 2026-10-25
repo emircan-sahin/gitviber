@@ -7,6 +7,7 @@ mod instance;
 mod layout;
 #[cfg(test)]
 mod leaks;
+mod live_updates;
 mod menus;
 mod native_updater;
 mod open_in_button;
@@ -88,6 +89,7 @@ pub fn init(cx: &mut App) {
     install_bridges(cx);
     settings_window::install(cx);
     help::install(cx);
+    live_updates::install(cx);
     dialogs::install(cx);
     quit::install(cx);
     native_updater::install(cx);

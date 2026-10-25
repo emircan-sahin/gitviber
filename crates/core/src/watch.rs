@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 /// 23 s while builds kept it busy: neither opening a repo nor dropping this waits for them, so
 /// closing a repo or quitting doesn't either. Its events stop at once.
 pub struct Watching {
+    /// What it watches.
+    root: PathBuf,
     /// Empty while `start` is still bringing the watcher up.
     watcher: Arc<Mutex<Option<RecommendedWatcher>>>,
     /// What the watcher's thread checks before it tells the UI anything.
@@ -24,8 +26,9 @@ pub struct Watching {
 }
 
 impl Watching {
-    pub(crate) fn new(watcher: RecommendedWatcher, live: Arc<AtomicBool>) -> Self {
+    pub(crate) fn new(root: PathBuf, watcher: RecommendedWatcher, live: Arc<AtomicBool>) -> Self {
         Watching {
+            root,
             watcher: Arc::new(Mutex::new(Some(watcher))),
             live,
             shown: Arc::default(),
@@ -36,6 +39,10 @@ impl Watching {
     /// coming up has missed, so one that's up only later catches up with a refresh.
     pub(crate) fn opened(&self) {
         self.shown.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
     }
 }
 
@@ -253,6 +260,7 @@ pub(crate) fn debounce<T>(rx: mpsc::Receiver<T>, mut emit: impl FnMut(Vec<T>)) {
 /// up with one refresh (`Watching::opened`).
 pub fn start(events: EventSink, root: PathBuf) -> Watching {
     let watching = Watching {
+        root: root.clone(),
         watcher: Arc::default(),
         live: Arc::new(AtomicBool::new(true)),
         shown: Arc::default(),
@@ -260,6 +268,7 @@ pub fn start(events: EventSink, root: PathBuf) -> Watching {
     let slot = watching.watcher.clone();
     let live = watching.live.clone();
     let shown = watching.shown.clone();
+    let told = events.clone();
     let spawned = std::thread::Builder::new()
         .name("repo watcher".into())
         .spawn(move || {
@@ -272,9 +281,12 @@ pub fn start(events: EventSink, root: PathBuf) -> Watching {
             let (tx, rx) = mpsc::channel();
             let watcher = match watcher_for(&root, tx) {
                 Ok(w) => w,
-                Err(e) => {
-                    // The repo stays open, without live updates.
-                    errors::write("repo watcher", &format!("{}: {e}", root.display()));
+                Err(mut e) => {
+                    // The event names the repo; notify's " about [path]" would say it again.
+                    e.paths.clear();
+                    if live.load(Ordering::Relaxed) {
+                        failed(&events, &root, e.to_string());
+                    }
                     return;
                 }
             };
@@ -297,9 +309,18 @@ pub fn start(events: EventSink, root: PathBuf) -> Watching {
             relay(rx, &root, &live, &events);
         });
     if let Err(e) = spawned {
-        errors::write("repo watcher", &e.to_string());
+        failed(&told, &watching.root, e.to_string());
     }
     watching
+}
+
+/// The repo stays open, without live updates: the app says so and can `api::repo::watch_again`.
+fn failed(events: &EventSink, root: &Path, error: String) {
+    errors::write("repo watcher", &format!("{}: {error}", root.display()));
+    events(Event::RepoWatchFailed {
+        root: root.to_string_lossy().into_owned(),
+        error,
+    });
 }
 
 /// A watcher on the worktree and the git dirs outside it, started once for all of them: FSEvents

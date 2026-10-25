@@ -12,6 +12,9 @@ pub type EventSink = Arc<dyn Fn(Event) + Send + Sync>;
 pub enum Event {
     /// "repo-changed": the open repo's files or its git state changed on disk.
     RepoChanged(watch::RepoChanged),
+    /// The open repo's watcher didn't start: it stays open without live updates until
+    /// api::repo::watch_again. `root` as RepoChanged names it.
+    RepoWatchFailed { root: String, error: String },
     /// "vault-changed": the Obsidian vault the explorer shows changed.
     VaultChanged(obsidian::VaultChanged),
     /// "agent-state": a terminal's coding agent changed state (see api::app::pty_agents).

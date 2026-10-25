@@ -288,6 +288,7 @@ pub(crate) fn vault_event(
 pub fn watch(events: EventSink, vault: String) -> Result<Watching, String> {
     let root = PathBuf::from(&vault);
     let real = root.canonicalize().unwrap_or_else(|_| root.clone());
+    let watched = root.clone();
     let (tx, rx) = mpsc::channel::<(bool, Vec<String>)>();
     let mut watcher = recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Some(change) = res.ok().and_then(|e| vault_event(&root, &real, &e)) {
@@ -323,7 +324,7 @@ pub fn watch(events: EventSink, vault: String) -> Result<Watching, String> {
             }));
         })
     });
-    Ok(Watching::new(watcher, live))
+    Ok(Watching::new(watched, watcher, live))
 }
 
 #[cfg(test)]

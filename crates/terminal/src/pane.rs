@@ -13,7 +13,8 @@ use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::term::search::RegexSearch;
-use gitviber_core::{Core, api::app as pty, clipboard::Paste};
+use gitviber_core::clipboard::{Clip, Paste};
+use gitviber_core::{Core, api::app as pty};
 use gpui::{
     App, AppContext as _, Bounds, ClipboardItem, Context, Entity, EntityInputHandler, EventEmitter,
     ExternalPaths, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent,
@@ -923,7 +924,22 @@ impl TerminalPane {
         if self.exited {
             return;
         }
-        let got = pty::terminal_paste(self.session.core());
+        match pty::terminal_paste(self.session.core()) {
+            Clip::Ready(got) => self.pasted(Ok(got), window, cx),
+            // Encoded and written off the UI thread (Image::save).
+            Clip::Image(image) => {
+                let saved = cx.background_spawn(async move { image.save() });
+                cx.spawn_in(window, async move |this, cx| {
+                    let got = saved.await;
+                    let _ = this.update_in(cx, |pane, window, cx| pane.pasted(got, window, cx));
+                })
+                .detach();
+            }
+        }
+    }
+
+    /// With nothing from core (no GTK on Linux, an image that didn't save): GPUI's own text.
+    fn pasted(&mut self, got: Result<Paste, String>, window: &mut Window, cx: &mut Context<Self>) {
         let got = match got {
             Ok(Paste::Empty) | Err(_) => match cx.read_from_clipboard().and_then(|c| c.text()) {
                 Some(text) => Paste::Text { text },
