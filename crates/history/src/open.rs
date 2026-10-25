@@ -29,6 +29,28 @@ fn url_of(list: &CommitList, c: &Commit, cx: &App) -> Option<String> {
     crate::act::commit_url(list, c, cx)
 }
 
+/// A commit's tab; one GitHub doesn't have yet links its message's refs into origin's
+/// repository, read once the workspace that opens it is done (it can't be read meanwhile).
+fn commit_tab(of: Of, url: Option<String>, window: &mut Window, cx: &mut App) -> TabHandle {
+    let pushed = url.is_some();
+    let view = cx.new(|cx| CommitView::new(of, url, cx));
+    if !pushed {
+        let weak = view.downgrade();
+        window.defer(cx, move |window, cx| {
+            let web = (|| {
+                let project = Workspace::for_window(window, cx)?
+                    .read(cx)
+                    .project()?
+                    .clone();
+                let repo = RepoState::existing(&project, cx)?;
+                repo.read(cx).status.as_ref()?.web_url.clone().flatten()
+            })();
+            let _ = weak.update(cx, |v, cx| v.set_web(web, cx));
+        });
+    }
+    TabHandle::new(view)
+}
+
 fn open(
     workspace: &WeakEntity<Workspace>,
     sel: Selection,
@@ -306,7 +328,7 @@ pub fn file_action(
 
 /// History's openers: a commit's file, a commit's or a range's whole list, and Compare.
 pub fn register(cx: &mut App) {
-    register_opener(cx, "commit", |sel, _, cx| {
+    register_opener(cx, "commit", |sel, window, cx| {
         let Selection::Commit { commit, file, url } = sel else {
             return None;
         };
@@ -314,10 +336,9 @@ pub fn register(cx: &mut App) {
             commit: Rc::new(Commit::from_core(commit)),
             file: (**file).clone(),
         };
-        let url = url.clone();
-        Some(TabHandle::new(cx.new(|cx| CommitView::new(of, url, cx))))
+        Some(commit_tab(of, url.clone(), window, cx))
     });
-    register_opener(cx, "changes-commit", |sel, _, cx| {
+    register_opener(cx, "changes-commit", |sel, window, cx| {
         let Selection::Changes {
             of: ChangesOf::Commit { commit, url },
         } = sel
@@ -325,8 +346,7 @@ pub fn register(cx: &mut App) {
             return None;
         };
         let of = Of::Commit(Rc::new(Commit::from_core(commit)));
-        let url = url.clone();
-        Some(TabHandle::new(cx.new(|cx| CommitView::new(of, url, cx))))
+        Some(commit_tab(of, url.clone(), window, cx))
     });
     register_opener(cx, "changes-range", |sel, _, cx| {
         let Selection::Changes {

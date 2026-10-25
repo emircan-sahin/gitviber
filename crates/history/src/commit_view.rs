@@ -12,20 +12,24 @@ use gitviber_ui::ActiveAppTheme;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{
     ChangeKind, FileIcon, LineCounts, PathLabel, StatusLetter, full_date, now_unix, relative_time,
+    repaint_next_minute,
 };
 use gitviber_ui::workspace::{TabIcon, TabItem};
 use gpui_kit::assets::IconName;
+use gpui_kit::base::text::TextView;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, UniformListScrollHandle,
-    Window, div, prelude::FluentBuilder as _, px, rems, uniform_list,
+    HighlightStyle, InteractiveElement as _, InteractiveText, IntoElement, ParentElement as _,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, StyledText, Subscription,
+    Task, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, rems,
+    uniform_list,
 };
 
 use crate::commit::Commit;
+use crate::message;
 
 /// What the tab shows.
 #[derive(Clone)]
@@ -58,6 +62,11 @@ pub struct CommitView {
     wanted: Option<String>,
     diff: Option<Entity<DiffView>>,
     details: Option<git::CommitDetails>,
+    /// The subject's #123 and @login, by byte range, with the page each opens.
+    subject_links: Rc<[(std::ops::Range<usize>, String)]>,
+    /// The body as the selectable view takes it, built once: a new string each frame would be
+    /// parsed again.
+    body: Option<SharedString>,
     body_open: bool,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
@@ -135,7 +144,7 @@ impl CommitView {
             }
             None => Task::ready(()),
         };
-        CommitView {
+        let mut view = CommitView {
             of,
             commit,
             url,
@@ -145,6 +154,8 @@ impl CommitView {
             wanted: path,
             diff: None,
             details: None,
+            subject_links: Rc::from([]),
+            body: None,
             body_open: false,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
@@ -153,7 +164,32 @@ impl CommitView {
             _diff: None,
             _notes: None,
             _live: Live::new("CommitView"),
+        };
+        let repo = view
+            .url
+            .as_deref()
+            .and_then(message::repo_of)
+            .map(str::to_string);
+        view.link_message(repo.as_deref());
+        view
+    }
+
+    /// The commit isn't on GitHub yet: its message's refs link into origin's repository,
+    /// `web`, as GitHub will once it's pushed.
+    pub fn set_web(&mut self, web: Option<String>, cx: &mut Context<Self>) {
+        if self.url.is_none() && web.is_some() {
+            self.link_message(web.as_deref());
+            cx.notify();
         }
+    }
+
+    fn link_message(&mut self, repo: Option<&str>) {
+        let Some(c) = &self.commit else { return };
+        self.subject_links = match repo {
+            Some(r) => message::github_refs(&c.subject, r).into(),
+            None => Rc::from([]),
+        };
+        self.body = (!c.body.trim().is_empty()).then(|| message::body_html(&c.body, repo).into());
     }
 
     pub fn of(&self) -> &Of {
@@ -288,6 +324,8 @@ impl CommitView {
             .then(|| crate::commit_checks(&c.sha, true, window, cx))
             .flatten();
         let t = cx.app_theme().clone();
+        // "committed 5m ago by …" stays current along with the time beside it.
+        repaint_next_minute(window, cx);
         let now = now_unix();
         let written = relative_time(c.timestamp, now);
         let committed = relative_time(c.committed_at, now);
@@ -309,102 +347,124 @@ impl CommitView {
             .child(
                 div()
                     .flex()
-                    .items_center()
+                    .items_start()
                     .gap_2()
                     .min_w_0()
                     .child(
-                        Icon::new(IconName::GitCommitHorizontal)
-                            .small()
-                            .text_color(t.primary),
+                        div().flex_none().h(px(20.)).flex().items_center().child(
+                            Icon::new(IconName::GitCommitHorizontal)
+                                .small()
+                                .text_color(t.primary),
+                        ),
                     )
+                    // A narrow center puts the details on a line of their own rather than
+                    // squeeze the subject down to its first letters.
                     .child(
                         div()
-                            .min_w_0()
                             .flex_1()
-                            .truncate()
-                            .text_size(rems(0.78125))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(c.subject.clone()),
-                    )
-                    .child(
-                        div()
+                            .min_w_0()
                             .flex()
-                            .flex_none()
+                            .flex_wrap()
                             .items_center()
-                            .gap_2()
-                            .text_size(rems(0.71875))
-                            .text_color(t.muted_foreground)
-                            .child(c.author.clone())
-                            .child(div().text_color(t.subtle).child("·"))
-                            .child({
-                                let tip: SharedString = full_date(c.timestamp).into();
-                                div()
-                                    .id("written")
-                                    .child(written.clone())
-                                    .tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
-                            })
-                            // Rebased or cherry-picked: it landed later than it was written, maybe by someone else.
-                            .when(committed != written, |d| {
-                                let by = if c.committer != c.author {
-                                    format!(" by {}", c.committer)
-                                } else {
-                                    String::new()
-                                };
-                                let tip: SharedString = full_date(c.committed_at).into();
-                                d.child(div().text_color(t.subtle).child("·")).child(
-                                    div()
-                                        .id("committed")
-                                        .child(format!("committed {committed}{by}"))
-                                        .tooltip(move |w, cx| {
-                                            Tooltip::new(tip.clone()).build(w, cx)
-                                        }),
-                                )
-                            })
-                            .children(checks)
-                            .when_some(sig, |d, s| d.child(s))
+                            .gap_x_2()
                             .child(
                                 div()
-                                    .id("sha")
-                                    .px(px(6.))
-                                    .rounded(px(3.))
-                                    .bg(t.elevated)
-                                    .font_family(t.fonts.code.clone())
-                                    .cursor_pointer()
-                                    .hover(|s| s.text_color(t.foreground))
-                                    .child(c.short.clone())
-                                    .tooltip(|w, cx| {
-                                        Tooltip::new("Copy the commit's SHA").build(w, cx)
-                                    })
-                                    .on_click(move |_, window, cx| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(
-                                            sha.clone(),
-                                        ));
-                                        Note::success("Commit SHA copied").show(window, cx);
-                                    }),
+                                    .min_w(px(160.))
+                                    .flex_1()
+                                    .truncate()
+                                    .line_height(px(20.))
+                                    .text_size(rems(0.78125))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(subject(&c.subject, &self.subject_links, &t)),
                             )
-                            .when(!c.body.trim().is_empty(), |d| {
-                                d.child(
-                                    div()
-                                        .id("more")
-                                        .text_color(t.primary)
-                                        .cursor_pointer()
-                                        .child(if self.body_open { "less" } else { "more" })
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.body_open = !this.body_open;
-                                            cx.notify();
-                                        })),
-                                )
-                            })
-                            .when_some(url, |d, url| {
-                                d.child(
-                                    Button::new("github")
-                                        .ghost()
-                                        .xsmall()
-                                        .icon(IconName::ExternalLink)
-                                        .tooltip("Open on GitHub")
-                                        .on_click(move |_, _, cx| cx.open_url(&url)),
-                                )
-                            }),
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_none()
+                                    .max_w_full()
+                                    .flex_wrap()
+                                    .min_h(px(20.))
+                                    .items_center()
+                                    .gap_2()
+                                    .text_size(rems(0.71875))
+                                    .text_color(t.muted_foreground)
+                                    .child(c.author.clone())
+                                    .child(div().text_color(t.subtle).child("·"))
+                                    .child({
+                                        let tip: SharedString = full_date(c.timestamp).into();
+                                        div().id("written").child(written.clone()).tooltip(
+                                            move |w, cx| Tooltip::new(tip.clone()).build(w, cx),
+                                        )
+                                    })
+                                    // Rebased or cherry-picked: it landed later than it was written, maybe by someone else.
+                                    .when(committed != written, |d| {
+                                        let by = if c.committer != c.author {
+                                            format!(" by {}", c.committer)
+                                        } else {
+                                            String::new()
+                                        };
+                                        let tip: SharedString = full_date(c.committed_at).into();
+                                        d.child(div().text_color(t.subtle).child("·")).child(
+                                            div()
+                                                .id("committed")
+                                                .child(format!("committed {committed}{by}"))
+                                                .tooltip(move |w, cx| {
+                                                    Tooltip::new(tip.clone()).build(w, cx)
+                                                }),
+                                        )
+                                    })
+                                    .children(checks)
+                                    .when_some(sig, |d, s| d.child(s))
+                                    .child(
+                                        div()
+                                            .id("sha")
+                                            .h(px(20.))
+                                            .flex()
+                                            .items_center()
+                                            .px(px(6.))
+                                            .rounded(px(3.))
+                                            .bg(t.elevated)
+                                            .font_family(t.fonts.code.clone())
+                                            .cursor_pointer()
+                                            .hover(|s| s.text_color(t.foreground))
+                                            .child(c.short.clone())
+                                            .tooltip(|w, cx| {
+                                                Tooltip::new("Copy the commit's SHA").build(w, cx)
+                                            })
+                                            .on_click(move |_, window, cx| {
+                                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                                    sha.clone(),
+                                                ));
+                                                Note::success("Commit SHA copied").show(window, cx);
+                                            }),
+                                    )
+                                    .when(self.body.is_some(), |d| {
+                                        d.child(
+                                            div()
+                                                .id("more")
+                                                // A bigger target, laid out as the text alone.
+                                                .py(px(3.))
+                                                .my(px(-3.))
+                                                .text_color(t.primary)
+                                                .cursor_pointer()
+                                                .child(if self.body_open { "less" } else { "more" })
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.body_open = !this.body_open;
+                                                    cx.notify();
+                                                })),
+                                        )
+                                    })
+                                    .when_some(url, |d, url| {
+                                        d.child(
+                                            Button::new("github")
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(IconName::ExternalLink)
+                                                .tooltip("Open on GitHub")
+                                                .on_click(move |_, _, cx| cx.open_url(&url)),
+                                        )
+                                    }),
+                            ),
                     ),
             )
             .when(!trailers.is_empty(), |d| {
@@ -438,7 +498,7 @@ impl CommitView {
                         })),
                 )
             })
-            .when(self.body_open, |d| {
+            .when_some(self.body.clone().filter(|_| self.body_open), |d, body| {
                 d.child(
                     div()
                         .id("body")
@@ -448,7 +508,7 @@ impl CommitView {
                         .overflow_y_scroll()
                         .text_size(rems(0.75))
                         .text_color(t.muted_foreground)
-                        .child(c.body.clone()),
+                        .child(TextView::html("body-text", body).selectable(true)),
                 )
             })
             .into_any_element()
@@ -562,6 +622,28 @@ impl CommitView {
 }
 
 /// Nothing for an unsigned commit, unless commit.gpgSign says it should have been signed.
+/// The subject, its refs in the link color and opening their page.
+fn subject(
+    text: &SharedString,
+    links: &Rc<[(std::ops::Range<usize>, String)]>,
+    t: &gitviber_ui::AppTheme,
+) -> gpui_kit::AnyElement {
+    if links.is_empty() {
+        return text.clone().into_any_element();
+    }
+    let ranges: Vec<_> = links.iter().map(|(r, _)| r.clone()).collect();
+    let link = HighlightStyle {
+        color: Some(t.primary),
+        ..Default::default()
+    };
+    let styled =
+        StyledText::new(text.clone()).with_highlights(ranges.iter().map(|r| (r.clone(), link)));
+    let links = links.clone();
+    InteractiveText::new("subject", styled)
+        .on_click(ranges, move |ix, _, cx| cx.open_url(&links[ix].1))
+        .into_any_element()
+}
+
 fn signature(d: &git::CommitDetails, t: &gitviber_ui::AppTheme) -> Option<impl IntoElement> {
     let signer = if d.signer.is_empty() {
         "an unknown key".to_string()
@@ -750,5 +832,57 @@ impl Render for CommitView {
                             ),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::TestAppContext;
+
+    use super::*;
+
+    #[gpui_kit::test]
+    fn refs_link_into_the_commits_github_repo_or_origins_until_its_pushed(cx: &mut TestAppContext) {
+        let dir =
+            std::env::temp_dir().join(format!("gitviber-history-test-{}", std::process::id()));
+        // SAFETY: the tests that read the config dir all point it at a temporary folder.
+        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            gitviber_ui::install_core(cx);
+        });
+        let c = Rc::new(Commit {
+            subject: "Fix #12".into(),
+            body: "Thanks @octo".into(),
+            ..Default::default()
+        });
+        let hrefs = |v: &CommitView| -> Vec<String> {
+            v.subject_links.iter().map(|(_, h)| h.clone()).collect()
+        };
+        // Not on GitHub yet: nothing to link into until origin's page is known.
+        let local = cx.new(|cx| CommitView::new(Of::Commit(c.clone()), None, cx));
+        assert!(local.read_with(cx, |v, _| v.subject_links.is_empty()));
+        local.update(cx, |v, cx| {
+            v.set_web(Some("https://github.com/o/r".into()), cx)
+        });
+        local.read_with(cx, |v, _| {
+            assert_eq!(hrefs(v), ["https://github.com/o/r/issues/12"]);
+            assert!(
+                v.body
+                    .as_ref()
+                    .unwrap()
+                    .contains("href=\"https://github.com/octo\"")
+            );
+        });
+        // A fork's original has it: its page, not origin's.
+        let url = Some("https://github.com/up/r/commit/abc".to_string());
+        let pushed = cx.new(|cx| CommitView::new(Of::Commit(c.clone()), url, cx));
+        pushed.update(cx, |v, cx| {
+            v.set_web(Some("https://github.com/o/r".into()), cx)
+        });
+        assert_eq!(
+            pushed.read_with(cx, |v, _| hrefs(v)),
+            ["https://github.com/up/r/issues/12"]
+        );
     }
 }

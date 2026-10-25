@@ -10,7 +10,8 @@ use gitviber_core::{Res, api, git};
 use gitviber_refs::RepoState;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{
-    ChangeKind, FileIcon, LineCounts, PathLabel, StatusLetter, full_date, now_unix, relative_time,
+    ChangeKind, FileIcon, LineCounts, PathLabel, RelativeTime, StatusLetter, full_date, now_unix,
+    relative_time,
 };
 use gitviber_ui::{ActiveAppTheme, AppTheme, Workspace};
 use gpui_kit::assets::IconName;
@@ -212,8 +213,8 @@ pub struct CommitList {
     again: bool,
     /// HEAD as read with the list: what Undo, reset and rewrites start from.
     head_sha: Option<String>,
-    /// HEAD and the branch tips when last read: a change that moved none of them (a staged
-    /// file, an agent saving) doesn't read the log again.
+    /// HEAD, the branch tips and the tags when last read: a change that moved none of them (a
+    /// staged file, an agent saving) doesn't read the log again.
     tips: String,
     paging: Option<Task<()>>,
     items: Vec<Item>,
@@ -442,7 +443,8 @@ impl CommitList {
 
     fn tips_now(&self, cx: &App) -> String {
         let repo = self.repo.read(cx);
-        let mut tips = repo.head().unwrap_or_default().to_string();
+        // Tags badge their commits and the menus act on them.
+        let mut tips = format!("{:x} {}", repo.tags, repo.head().unwrap_or_default());
         for b in repo.branches.iter() {
             tips.push(' ');
             tips.push_str(&b.name);
@@ -1301,6 +1303,9 @@ impl CommitList {
             let (name, email) = (commit.author.to_string(), commit.email.to_string());
             div()
                 .id(("author", i))
+                // A bigger target, laid out as the text alone.
+                .py(px(4.))
+                .my(px(-4.))
                 .min_w_0()
                 .truncate()
                 .cursor_pointer()
@@ -1343,7 +1348,7 @@ impl CommitList {
             .id(("time", i))
             .flex_none()
             .when(moved, |d| d.underline())
-            .child(committed)
+            .child(RelativeTime::new(commit.committed_at))
             .when_some(time_tip, |d, tip| {
                 d.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             });
@@ -1557,6 +1562,9 @@ impl CommitList {
                 d.child(
                     div()
                         .id("open-all")
+                        .h(px(20.))
+                        .flex()
+                        .items_center()
                         .px_1()
                         .rounded(px(3.))
                         .text_color(t.primary)

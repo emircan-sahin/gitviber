@@ -17,6 +17,7 @@ mod fork;
 pub mod graph;
 pub mod list;
 mod menu;
+mod message;
 pub mod open;
 pub mod panel;
 mod picker;
@@ -475,6 +476,159 @@ mod tests {
         cx.update(|_, _| {});
         cx.run_until_parked();
         assert!(weak.upgrade().is_none(), "the original's pane is released");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn tags_made_moved_or_deleted_outside_show_on_the_next_refresh(cx: &mut TestAppContext) {
+        // The repo changes while open: core's watcher thread wakes the test.
+        cx.executor().allow_parking();
+        let config =
+            std::env::temp_dir().join(format!("gitviber-history-test-{}", std::process::id()));
+        // SAFETY: the tests that read the config dir all point it at a temporary folder.
+        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &config) };
+        let dir =
+            std::env::temp_dir().join(format!("gitviber-history-tags-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "two"]);
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            let core = gitviber_ui::install_core(cx);
+            gitviber_diff::init(cx);
+            gitviber_diff::set_core(core, cx);
+            gitviber_refs::init(cx);
+            super::init(cx);
+            super::set_all_branches(false, cx);
+        });
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        cx.update(|window, cx| {
+            Workspace::register_window(&ws, window, cx);
+            ws.update(cx, |ws, cx| ws.open_project(dir.clone(), window, cx));
+        });
+        cx.run_until_parked();
+        let project = cx
+            .update(|_, cx| ws.read(cx).project().cloned())
+            .expect("the project opened");
+        let panel = cx.update(|window, cx| {
+            let ctx = PanelContext {
+                workspace: ws.downgrade(),
+                project: Some(project.clone()),
+            };
+            cx.new(|cx| HistoryPanel::new(&ctx, project.clone(), window, cx))
+        });
+        cx.run_until_parked();
+        let list = panel.read_with(cx, |p, _| p.list().clone());
+        let tagged = |cx: &mut gpui_kit::VisualTestContext| {
+            list.read_with(cx, |l, _| {
+                l.commits
+                    .iter()
+                    .map(|c| c.refs.iter().any(|r| r == "tag: v1"))
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(tagged(cx), [false, false]);
+        // A terminal's tag, then the watcher's refresh: no branch moved, the badge shows anyway.
+        let step = |args: &[&str], want: [bool; 2], cx: &mut gpui_kit::VisualTestContext| {
+            git(&dir, args);
+            project.update(cx, |p, cx| p.repo_changed(cx));
+            cx.run_until_parked();
+            assert_eq!(tagged(cx), want, "after git {args:?}");
+        };
+        step(&["tag", "v1"], [true, false], cx);
+        step(&["tag", "-f", "v1", "HEAD~1"], [false, true], cx);
+        step(&["tag", "-d", "v1"], [false, false], cx);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    use gpui_kit::Styled as _;
+
+    /// The list inside a cached view, counting its draws: an idle frame reuses it.
+    struct Counted {
+        panel: Entity<HistoryPanel>,
+        renders: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+    impl Render for Counted {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.renders.set(self.renders.get() + 1);
+            div().size_full().child(self.panel.clone())
+        }
+    }
+    struct Cached(Entity<Workspace>, Option<Entity<Counted>>);
+    impl Render for Cached {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().children(self.1.clone().map(|c| {
+                gpui_kit::AnyView::from(c).cached(gpui_kit::StyleRefinement::default().size_full())
+            }))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn the_lists_times_stay_current_on_an_idle_window(cx: &mut TestAppContext) {
+        let config =
+            std::env::temp_dir().join(format!("gitviber-history-test-{}", std::process::id()));
+        // SAFETY: the tests that read the config dir all point it at a temporary folder.
+        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &config) };
+        let dir =
+            std::env::temp_dir().join(format!("gitviber-history-times-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            let core = gitviber_ui::install_core(cx);
+            gitviber_diff::init(cx);
+            gitviber_diff::set_core(core, cx);
+            gitviber_refs::init(cx);
+            super::init(cx);
+            super::set_all_branches(false, cx);
+        });
+        let (root, cx) = cx.add_window_view(|_, cx| Cached(cx.new(Workspace::new), None));
+        let ws = root.read_with(cx, |r, _| r.0.clone());
+        cx.update(|window, cx| {
+            Workspace::register_window(&ws, window, cx);
+            ws.update(cx, |ws, cx| ws.open_project(dir.clone(), window, cx));
+        });
+        cx.run_until_parked();
+        let project = cx
+            .update(|_, cx| ws.read(cx).project().cloned())
+            .expect("the project opened");
+        let renders = std::rc::Rc::new(std::cell::Cell::new(0));
+        let counted = cx.update(|window, cx| {
+            let ctx = PanelContext {
+                workspace: ws.downgrade(),
+                project: Some(project.clone()),
+            };
+            let panel = cx.new(|cx| HistoryPanel::new(&ctx, project.clone(), window, cx));
+            cx.new(|_| Counted {
+                panel,
+                renders: renders.clone(),
+            })
+        });
+        root.update(cx, |r, cx| {
+            r.1 = Some(counted);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let frame = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        };
+        frame(cx);
+        frame(cx);
+        let settled = renders.get();
+        frame(cx);
+        assert_eq!(renders.get(), settled, "an idle frame reuses the list");
+        // "just now" turns "1m ago" with nothing else happening.
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(61));
+        cx.run_until_parked();
+        frame(cx);
+        assert_eq!(renders.get(), settled + 1, "the next minute draws it again");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

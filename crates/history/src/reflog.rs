@@ -9,7 +9,7 @@ use gitviber_refs::repo::plain;
 use gitviber_refs::{GitAction, RepoState};
 use gitviber_ui::ActiveAppTheme;
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::{now_unix, relative_time};
+use gitviber_ui::widgets::RelativeTime;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::WindowExt as _;
@@ -163,7 +163,6 @@ impl Render for Reflog {
                     entries.len(),
                     cx.processor(move |_, range: std::ops::Range<usize>, _, cx| {
                         let t = cx.app_theme().clone();
-                        let now = now_unix();
                         range
                             .map(|i| {
                                 let e = &entries[i];
@@ -215,9 +214,10 @@ impl Render for Reflog {
                                                 .text_size(rems(0.6875))
                                                 .text_color(t.subtle)
                                                 .child(if i == 0 {
-                                                    "now".to_string()
+                                                    "now".into_any_element()
                                                 } else {
-                                                    relative_time(e.timestamp, now)
+                                                    RelativeTime::new(e.timestamp)
+                                                        .into_any_element()
                                                 }),
                                         )
                                     })

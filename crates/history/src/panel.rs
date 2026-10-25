@@ -571,6 +571,9 @@ impl HistoryPanel {
         let t = cx.app_theme().clone();
         div()
             .id("open-all")
+            .h(px(20.))
+            .flex()
+            .items_center()
             .px_1()
             .rounded(px(3.))
             .text_color(t.primary)
@@ -868,6 +871,9 @@ impl HistoryPanel {
                     div()
                         .id("show-all")
                         .flex_none()
+                        // A bigger target, laid out as the text alone.
+                        .py(px(3.))
+                        .my(px(-3.))
                         .px_1()
                         .text_color(t.primary)
                         .cursor_pointer()
@@ -1049,8 +1055,10 @@ impl HistoryPanel {
                     let on = pane == p;
                     div()
                         .id(id)
+                        .h(px(20.))
+                        .flex()
+                        .items_center()
                         .px_2()
-                        .py(px(2.))
                         .rounded(px(4.))
                         .cursor_pointer()
                         .when(on, |d| d.bg(t.active).text_color(t.foreground))
