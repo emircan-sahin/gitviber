@@ -89,6 +89,53 @@ fn closing_browser_tabs_gives_their_entities_back(cx: &mut TestAppContext) {
     });
 }
 
+/// ⇧⌘B's command comes while its window is busy with the key: it runs once that's over.
+#[gpui::test]
+fn a_command_from_a_key_runs_in_the_window_in_front(cx: &mut TestAppContext) {
+    use gitviber_ui::actions::browser as act;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let ran = Rc::new(Cell::new(0));
+    let seen = ran.clone();
+    cx.update(|cx| {
+        cx.bind_keys([gpui::KeyBinding::new("cmd-shift-b", act::Open, None)]);
+        cx.on_action(move |_: &act::Open, cx| {
+            let seen = seen.clone();
+            super::in_front(cx, move |_, _| seen.set(seen.get() + 1));
+        });
+    });
+    let (_, cx) = cx.add_window_view(|_, _| Host(None));
+    cx.update(|window, _| window.activate_window());
+    cx.simulate_keystrokes("cmd-shift-b");
+    cx.run_until_parked();
+    assert_eq!(ran.get(), 1);
+}
+
+struct Picture(std::sync::Arc<gpui::RenderImage>);
+
+impl Render for Picture {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        gpui::img(self.0.clone()).size(gpui::px(4.))
+    }
+}
+
+/// A page's picture dropped while its window is being updated (the page came back as it was
+/// drawn) leaves that window's atlas: dropped then, it stayed (90 MB over ten closed tabs).
+#[gpui::test]
+fn a_picture_dropped_in_its_windows_update_leaves_the_atlas(cx: &mut TestAppContext) {
+    let svg = cx.update(|cx| cx.svg_renderer());
+    let square = br#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4"/></svg>"#;
+    let image = gpui::Image::from_bytes(gpui::ImageFormat::Svg, square.to_vec())
+        .to_image_data(svg)
+        .unwrap();
+    let (_, cx) = cx.add_window_view(|_, _| Picture(image.clone()));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.update(|window, _| window.has_image_atlas_entry(&image)));
+    cx.update(|_, cx| super::tab::drop_picture(image.clone(), cx));
+    cx.run_until_parked();
+    assert!(!cx.update(|window, _| window.has_image_atlas_entry(&image)));
+}
+
 #[test]
 fn a_tab_saves_only_what_it_can_load_again() {
     let s = Saved::of(&Selection::Browser {

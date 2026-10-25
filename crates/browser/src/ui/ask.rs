@@ -23,14 +23,13 @@ fn toast(toast: Toast, window: &mut Window, cx: &mut App) {
 /// The window's terminal panel, when it has one built.
 pub fn terminal(window: &mut Window, cx: &mut App, show: bool) -> Option<Entity<TerminalPanel>> {
     let ws = Workspace::for_window(window, cx)?;
-    let panel = ws.update(cx, |ws, cx| {
-        if show {
-            ws.show_panel(TERMINAL, cx);
-            ws.panel(TERMINAL, window, cx)
-        } else {
-            ws.built_panel(TERMINAL).cloned()
-        }
-    })?;
+    let panel = if show {
+        ws.update(cx, |ws, cx| ws.show_panel(TERMINAL, cx));
+        // Built outside the workspace's update: the panel reads the workspace as it's made.
+        Workspace::ensure_panel(&ws, TERMINAL, window, cx)
+    } else {
+        ws.read(cx).built_panel(TERMINAL).cloned()
+    }?;
     panel.view().downcast::<TerminalPanel>().ok()
 }
 
@@ -45,6 +44,11 @@ pub fn ptys_in(root: &str, window: &mut Window, cx: &mut App) -> Vec<u32> {
         .filter(|p| p.read(cx).cwd().starts_with(root))
         .filter_map(|p| p.read(cx).pty_id())
         .collect()
+}
+
+/// A line the new terminal runs at its first prompt: typed alone, it waited there for an Enter.
+fn run(line: &str) -> String {
+    format!("{line}\r")
 }
 
 /// Claude Code's own names for its newest models of each size; Settings takes any id.
@@ -165,7 +169,9 @@ pub fn ask_agent(
             cx,
         );
         if let (Some(program), Some(panel)) = (session, terminal(window, cx, true)) {
-            panel.update(cx, |p, cx| p.open_terminal(root, Some(program), window, cx));
+            panel.update(cx, |p, cx| {
+                p.open_terminal(root, Some(run(&program)), window, cx)
+            });
         }
         return;
     }
@@ -188,9 +194,9 @@ pub fn ask_agent(
                 .await;
             let _ = cx.update(|window, cx| match line {
                 Ok(line) => match terminal(window, cx, true) {
-                    Some(panel) => {
-                        panel.update(cx, |p, cx| p.open_terminal(root, Some(line), window, cx))
-                    }
+                    Some(panel) => panel.update(cx, |p, cx| {
+                        p.open_terminal(root, Some(run(&line)), window, cx)
+                    }),
                     None => toast(
                         Toast::error("This window has no terminal.")
                             .title("Couldn't hand it to Claude Code"),
@@ -211,6 +217,60 @@ pub fn ask_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{div, Context, IntoElement, Render, TestAppContext};
+
+    struct Host;
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    /// Ask before any terminal was opened builds the panel; built inside the workspace's update,
+    /// its constructor reading the workspace panicked, which aborts the app in a key handler.
+    #[gpui::test]
+    fn ask_builds_the_terminal_panel_when_none_is_yet(cx: &mut TestAppContext) {
+        let base =
+            std::env::temp_dir().join(format!("gitviber-browser-ask-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("home")).unwrap();
+        // SAFETY: nextest gives each test its own process; nothing else reads these meanwhile.
+        unsafe {
+            std::env::set_var("GITVIBER_CONFIG_DIR", base.join("config"));
+            std::env::set_var("HOME", base.join("home"));
+        }
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            gitviber_ui::install_core(cx);
+            gitviber_terminal::init(cx);
+        });
+        let (_, cx) = cx.add_window_view(|_, _| Host);
+        let ws = cx.update(|window, cx| {
+            let ws = cx.new(Workspace::new);
+            Workspace::register_window(&ws, window, cx);
+            ws
+        });
+        let built = |cx: &mut gpui::VisualTestContext| {
+            ws.read_with(cx, |ws, _| ws.built_panel(TERMINAL).is_some())
+        };
+        assert!(!built(cx));
+        assert!(cx
+            .update(|window, cx| terminal(window, cx, false))
+            .is_none());
+        let panel = cx
+            .update(|window, cx| terminal(window, cx, true))
+            .expect("the terminal panel");
+        assert!(built(cx));
+        cx.run_until_parked();
+        panel.update(cx, |p, cx| p.close_all(cx));
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_handed_line_runs_at_the_prompt() {
+        assert_eq!(run("sh '/tmp/start.sh'"), "sh '/tmp/start.sh'\r");
+    }
 
     #[test]
     fn a_prompt_is_sent_only_with_a_question_and_carries_no_control_characters() {

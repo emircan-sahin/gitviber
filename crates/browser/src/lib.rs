@@ -166,12 +166,27 @@ impl Screen {
         (zoom.is_finite() && zoom > 0.0 && zoom <= 10.0).then_some(zoom)
     }
 
-    /// The rect as placed: its width (rounded by the page) sets the zoom, and its height follows
-    /// from it, so the page lays out at the viewport's height as exactly as its width.
+    /// The rect as placed. WebKit lays a page out in whole points of its view (an iPhone's 402 px
+    /// in 199.5 points came out 400), so the width is made whole and sets the zoom, and the height
+    /// is the whole points that lay out the viewport's height exactly; a point narrower where no
+    /// whole height would (the screen behind is as white as the page).
     pub fn fit(&self, rect: Rect) -> Rect {
-        match self.zoom(rect.w) {
+        let whole = rect.w.floor();
+        // Each try fits about as often as the zoom: a few points at the smallest devices.
+        for less in 0..64 {
+            let w = whole - f64::from(less);
+            let Some(zoom) = self.zoom(w) else {
+                break;
+            };
+            let h = (self.height * zoom - 1e-9).ceil();
+            if h < (self.height + 1.0) * zoom - 1e-9 {
+                return Rect { w, h, ..rect };
+            }
+        }
+        match self.zoom(whole) {
             Some(zoom) => Rect {
-                h: self.height * zoom,
+                w: whole,
+                h: (self.height * zoom).round(),
                 ..rect
             },
             None => rect,
@@ -863,17 +878,19 @@ mod tests {
             assert!(bad.check().is_err(), "{bad:?}");
         }
         let s = at(402.0, 31.0, Some(3.0));
-        // A view 300.5 points wide, rounded to the half point, still lays out at 402 × 778.
-        let zoom = s.zoom(300.5).unwrap();
-        assert!((300.5 / zoom - 402.0).abs() < 1e-9);
+        // Laid out 300.5 points wide, the view gets 300 of them, and still lays out 402 × 778.
         let placed = s.fit(Rect {
             x: 10.0,
             y: 20.0,
             w: 300.5,
             h: 581.0,
         });
-        assert_eq!((placed.x, placed.y, placed.w), (10.0, 20.0, 300.5));
-        assert!((placed.h / zoom - 778.0).abs() < 1e-9, "{placed:?}");
+        assert_eq!(
+            (placed.x, placed.y, placed.w, placed.h),
+            (10.0, 20.0, 300.0, 581.0)
+        );
+        let zoom = s.zoom(placed.w).unwrap();
+        assert_eq!((placed.w / zoom, (placed.h / zoom).floor()), (402.0, 778.0));
         let flat = Screen { height: 0.0, ..s };
         assert!(flat.check().is_err());
         assert_eq!(s.zoom(0.0), None);
@@ -904,26 +921,26 @@ mod tests {
             };
             let mut w = 20.0;
             while w <= 4000.0 {
-                let Some(zoom) = s.zoom(w) else {
+                if s.zoom(w).is_none() {
                     w += 0.5;
                     continue;
-                };
+                }
                 let placed = s.fit(Rect {
                     x: 0.0,
                     y: 0.0,
                     w,
                     h: 1.0,
                 });
-                // WebKit takes the layout size in whole CSS px: a hair under is a pixel short.
-                assert!(
-                    placed.w / zoom >= width - 1e-9 && (placed.w / zoom).round() == width,
-                    "{width} at {w}"
-                );
-                assert!(
-                    (placed.h / zoom).round() == height,
-                    "{height} at {w}: {}",
-                    placed.h / zoom
-                );
+                // WebKit takes the view's size in whole points and floors what they lay out.
+                assert_eq!((placed.w.fract(), placed.h.fract()), (0.0, 0.0), "{w}");
+                assert!(w - placed.w < 64.0, "{width} at {w}: {}", placed.w);
+                let zoom = s.zoom(placed.w).unwrap();
+                let laid = |side: f64| (side / zoom + 1e-9).floor();
+                assert_eq!(laid(placed.w), width, "{width} at {w}");
+                // Below the smallest a tab shows (devices.rs SMALLEST), nearly so.
+                if zoom >= 0.15 {
+                    assert_eq!(laid(placed.h), height, "{height} at {w}");
+                }
                 w += 0.5;
             }
         }

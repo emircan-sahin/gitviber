@@ -79,10 +79,14 @@ use std::time::{Duration, Instant};
 use url::Url;
 
 /// The browser's website data, apart from the app page's own (WebKit's default store), so
-/// clearing it can't touch the app's settings. A made-up id; macOS 14 keeps the store by it.
-const STORE: [u8; 16] = [
-    0x6f, 0x1d, 0x2a, 0x93, 0x5c, 0x4e, 0x4b, 0x7a, 0x9e, 0x31, 0x0b, 0x8d, 0x52, 0xc6, 0xa4, 0x17,
-];
+/// clearing it can't touch the app's settings. A made-up id; macOS 14 keeps the store by it, so
+/// it never changes: the user's logins are in it. From its text, as objc2's checks in a debug
+/// build refuse `initWithUUIDBytes:`'s argument (a user tab aborted the app there).
+const STORE: &str = "6F1D2A93-5C4E-4B7A-9E31-0B8D52C6A417";
+
+fn store_id() -> Retained<NSUUID> {
+    NSUUID::from_string(&NSString::from_str(STORE)).unwrap_or_else(|| unreachable!())
+}
 
 /// What the address bar and buttons show, observed on the web view.
 const OBSERVED: [&str; 6] = [
@@ -1165,7 +1169,7 @@ pub fn keep_data_in_memory() {
 
 fn data_store(mtm: MainThreadMarker) -> Retained<WKWebsiteDataStore> {
     if available!(macos = 14.0) && !IN_MEMORY.load(std::sync::atomic::Ordering::Relaxed) {
-        unsafe { WKWebsiteDataStore::dataStoreForIdentifier(&NSUUID::from_bytes(STORE), mtm) }
+        unsafe { WKWebsiteDataStore::dataStoreForIdentifier(&store_id(), mtm) }
     } else {
         EPHEMERAL.with(|s| {
             s.get_or_init(|| unsafe { WKWebsiteDataStore::nonPersistentDataStore(mtm) })
@@ -1934,6 +1938,14 @@ mod tests {
             .metaclass()
             .verify_sel::<(*mut SecTrust,), *mut NSURLCredential>(sel!(credentialForTrust:))
             .unwrap();
+    }
+
+    /// The user's tabs' store id, made as a debug build checks it (from its bytes, it panicked)
+    /// and still the one the old app kept the user's logins under.
+    #[test]
+    fn the_user_store_keeps_its_id() {
+        assert_eq!(store_id().UUIDString().to_string(), STORE);
+        assert_eq!(STORE, "6F1D2A93-5C4E-4B7A-9E31-0B8D52C6A417");
     }
 
     #[test]

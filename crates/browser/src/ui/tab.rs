@@ -217,6 +217,13 @@ fn handle() -> Option<&'static crate::Handle> {
     crate::installed()
 }
 
+/// A picture out of every window's atlas once the update running now is over: the window being
+/// updated isn't among the app's meanwhile, so dropping it then missed the one that drew it (ten
+/// tabs closed as their pages came back kept 90 MB of them).
+pub(super) fn drop_picture(image: Arc<RenderImage>, cx: &mut App) {
+    cx.defer(move |cx| cx.drop_image(image, None));
+}
+
 /// A JPEG data URL (a page's picture) as an image to draw; None for anything else.
 fn decode_picture(data_url: &str, svg: gpui::SvgRenderer) -> Option<Arc<RenderImage>> {
     let b64 = data_url.strip_prefix("data:image/jpeg;base64,")?;
@@ -270,8 +277,16 @@ impl BrowserTab {
                     saved.url.clone()
                 })
         });
+        let page_focus = cx.focus_handle();
         let mut subscriptions = vec![
             cx.subscribe_in(&address, window, Self::on_address),
+            // AppKit sends the keys to the page's view while it's first responder, whatever GPUI
+            // focuses: the page has them exactly while its area does (typing into the terminal or
+            // a field after a click in the page went to the page).
+            cx.on_focus(&page_focus, window, |this, _, cx| this.page_takes_keys(cx)),
+            cx.on_blur(&page_focus, window, |this, _, _| {
+                crate::focus(&this.saved.id, false)
+            }),
             cx.on_release(|this, cx| this.released(cx)),
             // Show agents' tabs switched: the strip asks `hidden` again.
             cx.observe_global::<gitviber_ui::Settings>(|_, cx| cx.notify()),
@@ -285,7 +300,7 @@ impl BrowserTab {
             workspace,
             hub,
             focus: cx.focus_handle(),
-            page_focus: cx.focus_handle(),
+            page_focus,
             address,
             editing: false,
             invalid: false,
@@ -349,6 +364,9 @@ impl BrowserTab {
     /// go only for memory, or its worktree switched away, it hides and parks in time; an
     /// agent's lives on out of sight.
     fn released(&mut self, cx: &mut App) {
+        // Its pictures leave the window's atlas with it: a texture stays there until dropped.
+        self.set_cover(None, cx);
+        self.set_restoring(None, cx);
         let id = self.saved.id.clone();
         let key = self.key();
         let agents = self
@@ -446,13 +464,13 @@ impl BrowserTab {
 
     fn set_restoring(&mut self, image: Option<Arc<RenderImage>>, cx: &mut App) {
         if let Some(old) = std::mem::replace(&mut self.restoring, image) {
-            cx.drop_image(old, None);
+            drop_picture(old, cx);
         }
     }
 
     fn set_cover(&mut self, image: Option<Arc<RenderImage>>, cx: &mut App) {
         if let Some(old) = std::mem::replace(&mut self.cover, image) {
-            cx.drop_image(old, None);
+            drop_picture(old, cx);
         }
     }
 
@@ -781,6 +799,14 @@ impl BrowserTab {
             return;
         }
         self.page_focus.focus(window, cx);
+        self.page_takes_keys(cx);
+    }
+
+    /// The page area focused: its view first responder, as the keys go there.
+    fn page_takes_keys(&mut self, cx: &mut Context<Self>) {
+        if self.state(cx).is_some_and(|s| s.failed.is_some()) {
+            return;
+        }
         self.page_had_keys = true;
         crate::focus(&self.saved.id, true);
     }
@@ -849,8 +875,31 @@ impl BrowserTab {
             super::store::set_last_device(next, cx);
         }
         self.saved.device = next.filter(|d| devices::device_of(d).is_some());
+        self.drop_size_fields(window, cx);
         self.apply_device();
         self.save(window, cx);
+    }
+
+    /// Responsive's fields go when it does; one typed in hands the keys to the page: a field no
+    /// longer drawn kept the focus, and with it the tab's keys (⇧⌘C did nothing).
+    fn drop_size_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .saved
+            .device
+            .as_ref()
+            .is_some_and(|d| d.name == devices::RESPONSIVE)
+        {
+            return;
+        }
+        let Some(f) = self.size_fields.take() else {
+            return;
+        };
+        if f.w.focus_handle(cx).contains_focused(window, cx)
+            || f.h.focus_handle(cx).contains_focused(window, cx)
+        {
+            self.focus.focus(window, cx);
+            self.keys_to_page(window, cx);
+        }
     }
 
     /// The device's user agent and touch: the page loads again under them.
@@ -878,6 +927,7 @@ impl BrowserTab {
         cx: &mut Context<Self>,
     ) {
         self.saved.device = device.filter(|d| devices::device_of(d).is_some());
+        self.drop_size_fields(window, cx);
         self.save(window, cx);
     }
 
@@ -1114,7 +1164,7 @@ impl BrowserTab {
         // Three lines, growing with what's typed to about sixteen; ↵ asks, ⇧↵ is a new line.
         let input = cx.new(|cx| {
             TextareaState::new(window, cx)
-                .placeholder("Your question (optional). ↵ asks, ⇧↵ is a new line.")
+                .placeholder("Your question (optional). ↵ asks")
                 .submit_on_enter(true)
                 .auto_grow(3, 16)
         });

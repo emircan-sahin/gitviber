@@ -151,6 +151,18 @@ pub struct Fitted {
     pub cutout: Option<(Box2, f64)>,
 }
 
+impl Fitted {
+    /// The screen in the frame's own px, as the frame's child is placed: both boxes are kept in
+    /// the area's, and the screen drawn at its area position landed a frame's offset away.
+    pub fn screen_in_frame(&self) -> Box2 {
+        Box2 {
+            x: self.screen.x - self.frame.x,
+            y: self.screen.y - self.frame.y,
+            ..self.screen
+        }
+    }
+}
+
 /// Below this a device is too small to read, and the tab says so instead.
 const SMALLEST: f64 = 0.15;
 
@@ -284,6 +296,23 @@ mod tests {
             ..Default::default()
         })
         .is_none());
+    }
+
+    #[test]
+    fn every_screen_lies_inside_its_frame_upright_and_turned() {
+        for device in DEVICES.iter() {
+            for rotated in [false, true] {
+                let f = fit(device, rotated, (900.0, 500.0));
+                let s = f.screen_in_frame();
+                let b = device.bezel * f.scale;
+                assert!(
+                    (s.x - b).abs() < 1e-9 && (s.y - b).abs() < 1e-9,
+                    "{}",
+                    device.name
+                );
+                assert!(s.x + s.w <= f.frame.w + 1e-9 && s.y + s.h <= f.frame.h + 1e-9);
+            }
+        }
     }
 
     #[test]

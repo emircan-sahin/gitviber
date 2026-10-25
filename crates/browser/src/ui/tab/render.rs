@@ -442,15 +442,15 @@ impl BrowserTab {
                                 rotated,
                                 ..DeviceChoice::default()
                             };
-                            let _ = weak.update(cx, |this, cx| {
-                                this.choose_device(Some(next), window, cx)
-                            });
+                            let _ = weak
+                                .update(cx, |this, cx| this.choose_device(Some(next), window, cx));
                         },
                     ));
                 }
-                menu.separator().label(
-                    "Not quite the device: no touch events beyond touch.js, <meta name=viewport> is ignored, hover still works.",
-                )
+                // Two lines: a menu's label doesn't wrap.
+                menu.separator()
+                    .label("Still your Mac's browser engine: <meta name=viewport>")
+                    .label("is ignored, :hover follows your pointer.")
             });
         let viewport = format!(
             "{}×{}{}",
@@ -1029,7 +1029,7 @@ impl BrowserTab {
                             None => div()
                                 .text_size(px(11.))
                                 .text_color(t.subtle)
-                                .child("↵ asks")
+                                .child("⇧↵ new line")
                                 .into_any_element(),
                         })
                         .child(div().flex_1())
@@ -1234,7 +1234,7 @@ impl BrowserTab {
         } else {
             gpui::rgb(0x1c1c1e)
         };
-        let s = f.screen;
+        let (s, frame) = (f.screen_in_frame(), f.frame);
         let (top, left, bottom) = f.bars;
         let mut screen = div()
             .absolute()
@@ -1289,7 +1289,6 @@ impl BrowserTab {
                     .bg(gpui::black()),
             );
         }
-        let frame = f.frame;
         let bezel = device.bezel * f.scale;
         div()
             .absolute()
@@ -1373,8 +1372,74 @@ impl Render for BrowserTab {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{BrowserTab, Saved};
     use super::{ask_edge, option_key, Edge};
-    use gpui::Keystroke;
+    use crate::ui::devices::{DeviceChoice, RESPONSIVE};
+    use gitviber_ui::workspace::{Selection, Workspace};
+    use gpui::{
+        div, AnyView, AppContext as _, Context, IntoElement, Keystroke, ParentElement as _, Render,
+        Styled as _, TestAppContext, WeakEntity, Window,
+    };
+
+    struct Host(AnyView);
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.0.clone())
+        }
+    }
+
+    /// Responsive left while its width field has the focus: the tab has it back, so its keys
+    /// work (a field no longer drawn kept it, and ⇧⌘C did nothing).
+    #[gpui::test]
+    fn leaving_responsive_mid_typing_gives_the_tab_its_keys(cx: &mut TestAppContext) {
+        let dir =
+            std::env::temp_dir().join(format!("gitviber-browser-size-{}", std::process::id()));
+        // SAFETY: nextest gives each test its own process; nothing else reads it meanwhile.
+        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            crate::ui::hub::install(cx, |_, _| {});
+        });
+        let responsive = serde_json::json!({ "name": RESPONSIVE, "w": 400.0, "h": 800.0 });
+        let saved = Saved::of(&Selection::Browser {
+            id: crate::ui::new_id(),
+            url: "http://127.0.0.1:9/".into(),
+            title: None,
+            device: Some(responsive),
+            zoom: None,
+            scheme: None,
+        })
+        .unwrap();
+        let mut tab = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let t = cx.new(|cx| {
+                BrowserTab::new(
+                    saved,
+                    "/tmp".into(),
+                    WeakEntity::<Workspace>::new_invalid(),
+                    window,
+                    cx,
+                )
+            });
+            tab = Some(t.clone());
+            Host(t.into())
+        });
+        let tab = tab.unwrap();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let field = tab.read_with(cx, |t, _| t.size_fields.as_ref().map(|f| f.w.clone()));
+        let field = field.expect("Responsive's fields");
+        cx.update(|window, cx| field.update(cx, |f, cx| f.focus(window, cx)));
+        tab.update_in(cx, |t, window, cx| {
+            t.choose_device(Some(DeviceChoice::default_device()), window, cx)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let back = tab.update_in(cx, |t, window, cx| {
+            t.size_fields.is_none() && t.focus.contains_focused(window, cx)
+        });
+        assert!(back, "the tab has the focus, the fields gone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn an_ask_box_that_grows_near_the_bottom_stays_in_the_page() {

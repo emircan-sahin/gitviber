@@ -92,7 +92,7 @@ pub fn init(cx: &mut App) {
     // A terminal pane's menu opens what its dev server serves, lowest port first.
     gitviber_terminal::set_ports_reader(
         cx,
-        std::rc::Rc::new(|shells| {
+        std::rc::Rc::new(|shells: &[u32]| {
             let mut ports: Vec<u16> = crate::ports::listening(shells)
                 .into_iter()
                 .map(|p| p.port)
@@ -108,22 +108,23 @@ pub fn init(cx: &mut App) {
         cx,
         BarItem::new("browser", BarSlot::TopActions, globe).order(6),
     );
-    cx.on_action(|_: &act::Open, cx| {
-        if let Some(w) = cx.active_window() {
-            let _ = w.update(cx, |_, window, cx| open_new_tab(window, cx));
-        }
-    });
-    cx.on_action(|_: &act::ClearData, cx| {
-        if let Some(w) = cx.active_window() {
-            let _ = w.update(cx, |_, window, cx| agents::clear_data(window, cx));
-        }
-    });
+    cx.on_action(|_: &act::Open, cx| in_front(cx, open_new_tab));
+    cx.on_action(|_: &act::ClearData, cx| in_front(cx, agents::clear_data));
     agents::watch(cx);
     // Picks' pictures from earlier sessions, past the day an agent might read them in.
     if let Some(cache) = gitviber_core::paths::cache_dir() {
         let folder = crate::picks::folder(&cache);
         std::thread::spawn(move || crate::picks::prune(&folder, std::time::SystemTime::now()));
     }
+}
+
+/// `f` in the window in front once the dispatch that asked is over: a key's command comes while
+/// its window is busy, and an update of it then does nothing (⇧⌘B opened no tab).
+fn in_front(cx: &mut App, f: impl FnOnce(&mut Window, &mut App) + 'static) {
+    let Some(w) = cx.active_window() else {
+        return;
+    };
+    cx.defer(move |cx| drop(w.update(cx, |_, window, cx| f(window, cx))));
 }
 
 /// The top bar's globe: a new browser tab beside the code.
