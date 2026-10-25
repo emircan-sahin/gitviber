@@ -92,13 +92,11 @@ pub(crate) struct Ports(pub PortsReader);
 
 impl gpui::Global for Ports {}
 
-/// A pane's right-click menu opens what its dev server serves, read through `read`. Taken in the
-/// `Rc` the browser crate hands it today; it needs only the closure.
-pub fn set_ports_reader<F>(cx: &mut App, read: std::rc::Rc<F>)
+/// A pane's right-click menu opens what its dev server serves, read through `read`.
+pub fn set_ports_reader<F>(cx: &mut App, read: F)
 where
-    F: Fn(&[u32]) -> Vec<u16> + Clone + Send + Sync + 'static,
+    F: Fn(&[u32]) -> Vec<u16> + Send + Sync + 'static,
 {
-    let read = std::rc::Rc::unwrap_or_clone(read);
     cx.set_global(Ports(std::sync::Arc::new(read)));
 }
 

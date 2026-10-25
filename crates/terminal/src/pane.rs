@@ -2155,13 +2155,10 @@ mod tests {
             gpui_kit::init(cx);
             crate::init(cx);
             let reads = reads.clone();
-            crate::set_ports_reader(
-                cx,
-                std::rc::Rc::new(move |_: &[u32]| {
-                    reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    vec![3000]
-                }),
-            );
+            crate::set_ports_reader(cx, move |_: &[u32]| {
+                reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                vec![3000]
+            });
         });
         let core = Arc::new(Core::new(Arc::new(|_| {})));
         let (one, cx) = cx.add_window_view(|window, cx| {

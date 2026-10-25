@@ -256,20 +256,33 @@ pub(super) struct Watch {
 
 impl Global for Watch {}
 
-/// Each agent's skill as the latest sync left it, None before the first is done. Only this side
-/// writes the skill: Settings shows this and hears it change, so what it shows is never read
-/// before a write it asked for has finished.
+/// Each agent's skill as the latest sync left it. Only this side writes the skill: Settings shows
+/// this and hears it change, so what it shows is never read before a write it asked for has
+/// finished.
 pub struct SkillStatus {
     pub skill: Option<crate::skill::Skill>,
     /// The sync going: a newer one replaces it.
     sync: Task<()>,
+    syncing: bool,
 }
 
 impl Global for SkillStatus {}
 
+impl Default for SkillStatus {
+    fn default() -> Self {
+        Self {
+            skill: None,
+            sync: Task::ready(()),
+            syncing: false,
+        }
+    }
+}
+
 impl SkillStatus {
+    /// None before the first sync is done and while one is going: what it had may be rewritten.
     pub fn get(cx: &App) -> Option<&crate::skill::Skill> {
-        cx.try_global::<Self>()?.skill.as_ref()
+        let status = cx.try_global::<Self>()?;
+        status.skill.as_ref().filter(|_| !status.syncing)
     }
 }
 
@@ -301,13 +314,15 @@ fn send_settings(was: &mut Option<(u32, u32, u32, bool, bool, bool, bool)>, cx: 
             let done = cx
                 .background_spawn(async move { crate::skill::sync(Some(skill)) })
                 .await;
-            cx.update(|cx| cx.global_mut::<SkillStatus>().skill = Some(done));
+            cx.update(|cx| {
+                let status = cx.global_mut::<SkillStatus>();
+                status.skill = Some(done);
+                status.syncing = false;
+            });
         });
-        if cx.has_global::<SkillStatus>() {
-            cx.global_mut::<SkillStatus>().sync = sync;
-        } else {
-            cx.set_global(SkillStatus { skill: None, sync });
-        }
+        let status = cx.default_global::<SkillStatus>();
+        status.sync = sync;
+        status.syncing = true;
     }
 }
 
@@ -440,6 +455,10 @@ mod tests {
             });
             send_settings(&mut sent, cx);
         });
+        assert!(
+            cx.update(|cx| SkillStatus::get(cx).is_none()),
+            "not while the next one is going"
+        );
         cx.run_until_parked();
         assert!(heard.get() > 0, "Settings hears the new sync");
         assert!(cx.update(|cx| SkillStatus::get(cx).is_some()));

@@ -90,18 +90,15 @@ pub fn init(cx: &mut App) {
         }
     }));
     // A terminal pane's menu opens what its dev server serves, lowest port first.
-    gitviber_terminal::set_ports_reader(
-        cx,
-        std::rc::Rc::new(|shells: &[u32]| {
-            let mut ports: Vec<u16> = crate::ports::listening(shells)
-                .into_iter()
-                .map(|p| p.port)
-                .collect();
-            ports.sort_unstable();
-            ports.dedup();
-            ports
-        }),
-    );
+    gitviber_terminal::set_ports_reader(cx, |shells: &[u32]| {
+        let mut ports: Vec<u16> = crate::ports::listening(shells)
+            .into_iter()
+            .map(|p| p.port)
+            .collect();
+        ports.sort_unstable();
+        ports.dedup();
+        ports
+    });
     register_opener(cx, "browser", open);
     // After the agents' menu, before the terminal and panel toggles, as the old top bar had it.
     register_bar_item(
