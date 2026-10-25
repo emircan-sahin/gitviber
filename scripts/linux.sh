@@ -63,7 +63,7 @@ deb() {
   # the renderer opens at run time, so no link shows it.
   local shlibs
   shlibs=$(mkdir -p "$OUT/shlibs/debian" && cd "$OUT/shlibs" &&
-    printf 'Source: %s\n\nPackage: %s\n' "$PACKAGE" "$PACKAGE" > debian/control &&
+    printf 'Source: %s\n\nPackage: %s\nArchitecture: amd64\n' "$PACKAGE" "$PACKAGE" > debian/control &&
     dpkg-shlibdeps -O "$OLDPWD/$root/usr/bin/gitviber" | sed -n 's/^shlibs:Depends=//p')
   rm -rf "$OUT/shlibs"
   [ -n "$shlibs" ] || die "dpkg-shlibdeps found no dependencies"
