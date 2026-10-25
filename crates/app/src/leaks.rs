@@ -27,10 +27,7 @@ fn draw(window: AnyWindowHandle, cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn dialogs_windows_and_the_overlay_give_their_entities_back(cx: &mut TestAppContext) {
-    let dir = std::env::temp_dir().join(format!("gitviber-app-leaks-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    // SAFETY: the tests that read the config dir all point it at a temporary folder.
-    unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+    gitviber_ui::test_support::config_dir("app-leaks");
     cx.update(gitviber_ui::init);
     // Updated through the untyped handle: the typed one would hold Root, which a dialog updates.
     let window: AnyWindowHandle = cx

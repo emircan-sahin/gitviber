@@ -237,9 +237,7 @@ mod tests {
     /// project: it would flash before it. Past LAUNCH_WAIT (a stalled volume), the welcome shows.
     #[gpui_kit::test]
     fn the_welcome_screen_waits_for_the_launch_to_say_what_opens(cx: &mut TestAppContext) {
-        let dir = std::env::temp_dir().join(format!("gitviber-launch-{}", std::process::id()));
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        gitviber_ui::test_support::config_dir("launch");
         cx.update(|cx| {
             gitviber_ui::init(cx);
             crate::placeholders::register(cx);

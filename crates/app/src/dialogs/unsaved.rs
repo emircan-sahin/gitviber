@@ -299,10 +299,7 @@ mod tests {
     }
 
     fn setup(saves: bool, cx: &mut TestAppContext) -> Setup {
-        let dir = std::env::temp_dir().join(format!("gitviber-unsaved-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        gitviber_ui::test_support::config_dir("unsaved");
         cx.update(|cx| {
             gitviber_ui::init(cx);
             install(cx);

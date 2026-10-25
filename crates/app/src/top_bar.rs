@@ -131,7 +131,7 @@ pub fn top_bar(
         .child(img(LOGO).size(px(18.)))
         .child(
             div()
-                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                .font_weight(t.semibold())
                 .text_size(rems(0.8125))
                 .child("GitViber"),
         );

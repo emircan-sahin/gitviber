@@ -12,8 +12,8 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _};
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, Entity, Focusable as _, IntoElement,
-    ParentElement as _, SharedString, Styled as _, Subscription, Window, div,
-    prelude::FluentBuilder as _, px, rems,
+    ParentElement as _, SharedString, Styled as _, Subscription, Window, div, font,
+    prelude::FluentBuilder as _, px, rems, transparent_black,
 };
 
 pub use super::shell::{Hint, Row};
@@ -61,7 +61,7 @@ pub fn toggle(
         .bg(if checked {
             t.primary.opacity(0.35)
         } else {
-            gpui_kit::transparent_black()
+            transparent_black()
         })
         .child(div().size(px(10.)).rounded_full().bg(if checked {
             t.primary_foreground
@@ -100,14 +100,33 @@ where
 /// A dropdown's (value, label) pairs, and what takes the value picked.
 type Choices = Rc<Vec<(SharedString, SharedString)>>;
 type Picked = Rc<dyn Fn(SharedString, &mut App)>;
+/// A font menu's family for a value, to draw its name in; None for one without a face (Custom).
+pub type Face = Rc<dyn Fn(&str, &App) -> Option<SharedString>>;
 
-/// A button showing `current`'s label that drops down `options`.
+/// Every dropdown is this wide, so the right column lines up: the old app's `w-52`.
+const DROPDOWN_WIDTH: f32 = 208.;
+
+/// Whether `family` draws as itself: a bundled one loads first. The text system keeps each
+/// answer, so the OS is asked once per name, when a font menu first opens.
+fn installed(family: &str, cx: &mut App) -> bool {
+    if family.starts_with('.') {
+        return true;
+    }
+    gitviber_ui::fonts::ensure(family, cx);
+    let text = cx.text_system();
+    text.get_font_for_id(text.resolve_font(&font(family.to_string())))
+        .is_some_and(|f| f.family.as_ref() == family)
+}
+
+/// A button showing `current`'s label that drops down `options`, each name in its own face
+/// with `face`.
 fn dropdown(
     title: SharedString,
     options: Choices,
     current: SharedString,
     disabled: bool,
     pick: Picked,
+    face: Option<Face>,
 ) -> AnyElement {
     let label = options
         .iter()
@@ -116,16 +135,34 @@ fn dropdown(
     Button::new("dropdown")
         .small()
         .outline()
+        .w(px(DROPDOWN_WIDTH))
         .accessibility_label(format!("{title}: {label}"))
         .label(label)
         .dropdown_caret(true)
         .disabled(disabled)
-        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
             let menu = options.iter().fold(menu, |menu, (value, label)| {
                 let (value, pick) = (value.clone(), pick.clone());
+                let face = face.as_ref().and_then(|f| f(&value, cx));
+                let item = match face {
+                    None => PopupMenuItem::new(label.clone()),
+                    Some(family) => {
+                        let (found, label) = (installed(&family, cx), label.clone());
+                        PopupMenuItem::element(move |_, cx| {
+                            let t = cx.app_theme();
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .when(found, |d| d.font_family(family.clone()))
+                                .when(!found, |d| d.text_color(t.subtle))
+                                .child(label.clone())
+                                .when(!found, |d| d.child("(not installed)"))
+                        })
+                    }
+                };
                 menu.item(
-                    PopupMenuItem::new(label.clone())
-                        .checked(value == current)
+                    item.checked(value == current)
                         .on_click(move |_, _, cx| pick(value.clone(), cx)),
                 )
             });
@@ -141,11 +178,21 @@ pub fn pick(
     get: impl Fn(&App) -> SharedString + 'static,
     set: impl Fn(SharedString, &mut App) + 'static,
 ) -> Row {
-    let title = title.into();
+    picker(title.into(), options, get, set, None)
+}
+
+fn picker(
+    title: SharedString,
+    options: Vec<(SharedString, SharedString)>,
+    get: impl Fn(&App) -> SharedString + 'static,
+    set: impl Fn(SharedString, &mut App) + 'static,
+    face: Option<Face>,
+) -> Row {
     let options = Rc::new(options);
     let set: Picked = Rc::new(set);
     Row::new(title.clone(), move |off, _, cx| {
-        dropdown(title.clone(), options.clone(), get(cx), off, set.clone())
+        let (options, set) = (options.clone(), set.clone());
+        dropdown(title.clone(), options, get(cx), off, set, face.clone())
     })
 }
 
@@ -157,17 +204,41 @@ pub fn choice(
     get: Get<String>,
     set: SetStr,
 ) -> Row {
+    setting_choice(title, hint, options, get, set, None)
+}
+
+/// A font dropdown: `face` gives the family each value draws its name in.
+pub fn font_choice(
+    title: &str,
+    hint: impl Into<Hint>,
+    options: Vec<(String, String)>,
+    face: impl Fn(&str, &App) -> Option<SharedString> + 'static,
+    get: Get<String>,
+    set: SetStr,
+) -> Row {
+    setting_choice(title, hint, options, get, set, Some(Rc::new(face)))
+}
+
+fn setting_choice(
+    title: &str,
+    hint: impl Into<Hint>,
+    options: Vec<(String, String)>,
+    get: Get<String>,
+    set: SetStr,
+    face: Option<Face>,
+) -> Row {
     let default = get(&Settings::default());
     let reset = default.clone();
     let options = options
         .into_iter()
         .map(|(v, l)| (SharedString::from(v), SharedString::from(l)))
         .collect();
-    pick(
-        title.to_string(),
+    picker(
+        title.to_string().into(),
         options,
         move |cx| get(Settings::get(cx)).into(),
         move |v, cx| Settings::update(cx, |s| set(s, &v)),
+        face,
     )
     .description(hint)
     .on_reset(
@@ -193,6 +264,7 @@ pub fn segmented(
             &get(Settings::get(cx)),
             off,
             move |v, _, cx| Settings::update(cx, |s| set(s, v)),
+            cx,
         )
     })
     .description(hint)
@@ -205,24 +277,31 @@ pub fn segmented(
     )
 }
 
-/// The buttons of a segmented control; `pick` gets the value clicked.
+/// The buttons of a segmented control; `pick` gets the value clicked. The chosen one is in a
+/// primary tint with primary text and the rest muted: a solid primary segment outshouted the row.
 pub fn segments(
     id: &'static str,
     options: &[(String, String)],
     current: &str,
     disabled: bool,
     pick: impl Fn(&str, &mut Window, &mut App) + 'static,
+    cx: &App,
 ) -> AnyElement {
+    let t = cx.app_theme();
     let values: Vec<String> = options.iter().map(|(v, _)| v.clone()).collect();
-    // The lit one in the accent: a selected outline button read as no different from the rest.
     ButtonGroup::new(id)
         .small()
+        .outline()
         .disabled(disabled)
         .children(options.iter().enumerate().map(|(i, (v, label))| {
-            let b = Button::new((id, i))
-                .label(label.clone())
-                .selected(v == current);
-            if v == current { b.primary() } else { b }
+            let on = v == current;
+            let b = Button::new((id, i)).label(label.clone()).selected(on);
+            match (on, disabled) {
+                (true, false) => b.bg(t.primary.opacity(0.15)).text_color(t.primary),
+                (true, true) => b.bg(t.primary.opacity(0.08)).text_color(t.subtle),
+                (false, false) => b.bg(transparent_black()).text_color(t.muted_foreground),
+                (false, true) => b.bg(transparent_black()).text_color(t.subtle),
+            }
         }))
         .on_click(move |clicked, window, cx| {
             if let Some(v) = clicked.first().and_then(|i| values.get(*i)) {

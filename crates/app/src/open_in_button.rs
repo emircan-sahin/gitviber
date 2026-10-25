@@ -104,7 +104,7 @@ impl Render for OpenInButton {
                         .px_2()
                         .pt_1()
                         .text_size(rems(0.65625))
-                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                        .font_weight(t.semibold())
                         .text_color(t.subtle)
                         .child(group.label())
                         .into_any_element(),

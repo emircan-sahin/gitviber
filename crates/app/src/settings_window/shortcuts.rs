@@ -333,7 +333,7 @@ pub fn page(w: &SettingsWindow, cx: &App) -> Page {
     let current = picked.map_or("all", |c| c.label()).to_string();
     Page::new()
         .resettable(false)
-        .pinned(move |_, _| {
+        .pinned(move |_, cx| {
             let pick = weak.clone();
             div()
                 .flex()
@@ -382,6 +382,7 @@ pub fn page(w: &SettingsWindow, cx: &App) -> Page {
                                     cx.notify();
                                 });
                             },
+                            cx,
                         ))),
                 )
                 .into_any_element()

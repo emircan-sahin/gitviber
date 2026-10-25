@@ -82,7 +82,7 @@ fn git_state(ctx: &PanelContext, cx: &mut App) -> Vec<AnyElement> {
         out.push(
             div()
                 .px(px(6.))
-                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                .font_weight(t.semibold())
                 .text_color(t.conflict)
                 .child(text)
                 .into_any_element(),

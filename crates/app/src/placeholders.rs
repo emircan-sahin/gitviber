@@ -115,7 +115,7 @@ pub fn chip(
         .children(icon)
         .child(
             div()
-                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                .font_weight(t.semibold())
                 .text_size(rems(0.8125))
                 .child(label),
         )

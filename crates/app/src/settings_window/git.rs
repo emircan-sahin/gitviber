@@ -33,10 +33,17 @@ pub fn git(w: &SettingsWindow, cx: &App) -> Page {
                     }
                 });
                 let current = Settings::get(cx).background_fetch.to_string();
-                segments("fetch", &list, &current, off, |v, _, cx| {
-                    let v = v.parse().unwrap_or(0);
-                    Settings::update(cx, |s| s.background_fetch = v)
-                })
+                segments(
+                    "fetch",
+                    &list,
+                    &current,
+                    off,
+                    |v, _, cx| {
+                        let v = v.parse().unwrap_or(0);
+                        Settings::update(cx, |s| s.background_fetch = v)
+                    },
+                    cx,
+                )
             })
             .description(
                 "Keeps ahead / behind and the remote branches current for the open repository. A \
@@ -145,6 +152,7 @@ fn identity(w: &SettingsWindow, _cx: &App) -> Row {
                 let own = v == "own";
                 let _ = pick.update(cx, |w, cx| w.set_identity_scope(own, window, cx));
             },
+            cx,
         );
         let form = inputs.clone().filter(|_| own).map(|(name, email)| {
             let save = weak.clone();
@@ -328,7 +336,7 @@ fn remotes(w: &SettingsWindow) -> Row {
                     .child(
                         div()
                             .flex_none()
-                            .font_weight(gpui_kit::FontWeight::MEDIUM)
+                            .font_weight(cx.app_theme().medium())
                             .child(r.name.clone()),
                     )
                     .child(
@@ -476,8 +484,9 @@ fn models_link(id: &'static str, (label, url): (&'static str, &'static str)) -> 
     super::fields::link(id, label, url).into_any_element()
 }
 
-/// The models field of a preset: an id typed, empty for the CLI's own default.
-fn model_field(p: &'static AgentPreset, which: Which) -> Row {
+/// The models field of a preset: an id typed, empty for the CLI's own default (or, for Guided
+/// Review, Commit Messages' model).
+fn model_field(p: &'static AgentPreset, which: Which, s: &Settings) -> Row {
     // The flags themselves are in the command shown under "Show what the command gets".
     let lean = if p.lean.is_none() {
         ""
@@ -490,9 +499,17 @@ fn model_field(p: &'static AgentPreset, which: Which) -> Row {
              the link has the current IDs.{lean}",
             p.model_flag, p.model
         ),
-        Which::Review => {
-            "Empty runs Commit Messages' model for it. The link has the current IDs.".to_string()
-        }
+        // Named in the hint, not the field: in a light theme a placeholder reads as typed text.
+        Which::Review => match p.model_in(&s.suggest_models) {
+            m if m.is_empty() => {
+                "Empty inherits Commit Messages' model, the CLI's default now. The \
+                                  link has the current IDs."
+                    .to_string()
+            }
+            m => format!(
+                "Empty inherits Commit Messages' model, {m} now. The link has the current IDs."
+            ),
+        },
     };
     Row::new("Model", move |_, window, cx| {
         let key = p.key;
@@ -516,16 +533,9 @@ fn model_field(p: &'static AgentPreset, which: Which) -> Row {
                 }),
             ),
         };
-        let placeholder: SharedString = match which {
-            Which::Suggest => "CLI default".into(),
-            Which::Review => {
-                let m = p.model_in(&Settings::get(cx).suggest_models);
-                format!(
-                    "Same as Commit Messages: {}",
-                    if m.is_empty() { "CLI default" } else { &m }
-                )
-                .into()
-            }
+        let placeholder = match which {
+            Which::Suggest => "CLI default",
+            Which::Review => "Same as Commit Messages",
         };
         let field_key: SharedString = format!("{which:?}-model-{key}").into();
         div()
@@ -651,7 +661,7 @@ pub fn commit(w: &SettingsWindow, cx: &App) -> Page {
     ];
     match preset {
         Some(p) => {
-            items.push(model_field(p, Which::Suggest));
+            items.push(model_field(p, Which::Suggest, s));
             items.extend(effort_field(p, Which::Suggest));
         }
         None => items.push(custom_model()),
@@ -786,7 +796,7 @@ pub fn review(w: &SettingsWindow, cx: &App) -> Page {
     }
     match preset {
         Some(p) => {
-            agent.push(model_field(p, Which::Review));
+            agent.push(model_field(p, Which::Review, s));
             agent.extend(effort_field(p, Which::Review));
         }
         None => agent.push(custom_model()),

@@ -127,8 +127,7 @@ mod tests {
 
     #[test]
     fn a_second_launch_hands_its_paths_over() {
-        let dir = std::env::temp_dir().join(format!("gitviber-instance-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = gitviber_ui::test_support::temp_dir("instance");
         let socket = dir.join("t.sock");
         // Nobody listening: this launch is the first.
         assert!(!hand_over(&socket, vec!["gitviber".into()], &dir));

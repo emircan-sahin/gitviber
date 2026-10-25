@@ -162,9 +162,7 @@ u UU N... 100644 100644 100644 100644 a b c c.rs\0\
     /// made elsewhere, a file edited again; a quick focus flicker asks nothing.
     #[gpui_kit::test]
     fn coming_back_rereads_only_what_changed_while_away(cx: &mut TestAppContext) {
-        let dir = std::env::temp_dir().join(format!("gitviber-wake-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = gitviber_ui::test_support::temp_dir("wake");
         git(&dir, &["init", "-q"]);
         std::fs::write(dir.join("a.txt"), "one\n").unwrap();
         git(&dir, &["add", "."]);

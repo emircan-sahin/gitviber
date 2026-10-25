@@ -21,7 +21,8 @@ use gpui_kit::{
 
 use super::SettingsWindow;
 use super::fields::{
-    action, choice, note, options, pre, segmented, stepper, switch, text, toggle, with_keys,
+    action, choice, font_choice, note, options, pre, segmented, stepper, switch, text, toggle,
+    with_keys,
 };
 use super::shell::{Group, Page, Row};
 
@@ -163,10 +164,15 @@ pub fn appearance(w: &SettingsWindow, cx: &App) -> Page {
         );
     }
     let t = cx.app_theme();
-    let mut interface = vec![choice(
+    let mut interface = vec![font_choice(
         "Interface font",
         "The code font is under Editor, the terminal's under Terminal.",
         names(UiFont::choices(), UiFont::as_str),
+        |v, _| match UiFont::parse(v)? {
+            UiFont::System => Some(".SystemUIFont".into()),
+            UiFont::Custom => None,
+            f => Some(f.as_str().into()),
+        },
         |s| s.ui_font.as_str().into(),
         |s, v| s.ui_font = UiFont::parse(v).unwrap_or(s.ui_font),
     )];
@@ -285,10 +291,11 @@ fn sample_text(text: &'static str, terminal: bool, colors: Option<Colors>, cx: &
 pub fn editor(w: &SettingsWindow, cx: &App) -> Page {
     let s = Settings::get(cx);
     let t = cx.app_theme();
-    let mut font = vec![choice(
+    let mut font = vec![font_choice(
         "Font",
         "",
         names(CodeFont::choices(), CodeFont::as_str),
+        |v, _| (v != CodeFont::Custom.as_str()).then(|| v.to_string().into()),
         |s| s.code_font.as_str().into(),
         |s, v| s.code_font = CodeFont::parse(v).unwrap_or(s.code_font),
     )];
@@ -463,10 +470,15 @@ pub fn terminal(cx: &App) -> Page {
             (f.as_str().to_string(), label.to_string())
         })
         .collect();
-    let mut font = vec![choice(
+    let mut font = vec![font_choice(
         "Font",
         "Same as editor follows the code font. The font weight is the editor's.",
         fonts,
+        |v, cx| match TerminalFont::parse(v)? {
+            TerminalFont::Editor => Some(cx.app_theme().fonts.code.clone()),
+            TerminalFont::Custom => None,
+            f => Some(f.as_str().into()),
+        },
         |s| s.terminal_font.as_str().into(),
         |s, v| s.terminal_font = TerminalFont::parse(v).unwrap_or(s.terminal_font),
     )];

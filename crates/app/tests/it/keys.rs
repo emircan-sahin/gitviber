@@ -202,10 +202,7 @@ impl Render for Shell {
 /// The app's keymap as `gitviber::init` builds it, from defaults: gitviber-ui's commands and
 /// gpui-component's fields, then the keys the feature crates add.
 fn setup(cx: &mut TestAppContext) -> (Entity<Shell>, Log, &mut VisualTestContext) {
-    let config = std::env::temp_dir().join(format!("gitviber-app-keys-{}", std::process::id()));
-    std::fs::create_dir_all(&config).unwrap();
-    // SAFETY: every test here points the config dir at the same temporary folder.
-    unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &config) };
+    gitviber_ui::test_support::config_dir("app-keys");
     cx.update(|cx| {
         gitviber_ui::init(cx);
         gitviber_ui::install_core(cx);

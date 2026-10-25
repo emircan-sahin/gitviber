@@ -390,6 +390,7 @@ pub fn tab_strip(
                             .id(("tab-close", i))
                             .flex_none()
                             .size(px(18.))
+                            .cursor_pointer()
                             .flex()
                             .items_center()
                             .justify_center()

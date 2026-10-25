@@ -141,10 +141,7 @@ mod tests {
     /// A launch as `run` makes it: installed, then the window opened in the same turn. Returns
     /// the marker and the window.
     fn launch(name: &str, crashed: bool, cx: &mut TestAppContext) -> (PathBuf, AnyWindowHandle) {
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-crash-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = gitviber_ui::test_support::temp_dir(&format!("crash-{name}"));
         if crashed {
             std::fs::write(dir.join("running"), "1").unwrap();
         }

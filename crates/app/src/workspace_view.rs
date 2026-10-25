@@ -36,7 +36,7 @@ use crate::open_repo::{self, Found, Request};
 use crate::overlay::ShortcutOverlay;
 use crate::palette::{Mode, Palette};
 use crate::status_bar::{STATUS_BAR_HEIGHT, status_bar};
-use crate::tab_strip::{StripKeys, tab_strip};
+use crate::tab_strip::{self, StripKeys, tab_strip};
 use crate::top_bar::top_bar;
 use crate::wake::Wake;
 use crate::welcome;
@@ -469,16 +469,12 @@ impl WorkspaceView {
                 .flex()
                 .items_center()
                 .gap(px(6.))
-                .h(px(26.))
+                .h(px(24.))
                 .px_2()
                 .rounded(px(4.))
-                .cursor_pointer()
-                .text_size(gpui_kit::rems(0.8125))
-                .text_color(if is_active {
-                    t.foreground
-                } else {
-                    t.muted_foreground
-                })
+                .text_size(t.ui_text())
+                .font_weight(t.medium())
+                .text_color(if is_active { t.foreground } else { t.subtle })
                 .when(is_active, |d| d.bg(t.active))
                 .when(!is_active, |d| {
                     d.hover(|s| s.bg(t.hover).text_color(t.foreground))
@@ -768,18 +764,26 @@ impl WorkspaceView {
     }
 
     fn center(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let view = self
-            .workspace
-            .update(cx, |ws, cx| ws.active_view(window, cx));
         let ws = self.workspace.read(cx);
-        reachable(ws.tabs().active().and_then(|t| t.item.focus_handle(cx)));
+        let visible = tab_strip::visible_tabs(ws, cx);
+        let shows = center_shows(&visible, ws.tabs().active_index());
+        let view = (shows == CenterShows::Active)
+            .then(|| {
+                self.workspace
+                    .update(cx, |ws, cx| ws.active_view(window, cx))
+            })
+            .flatten();
+        let ws = self.workspace.read(cx);
+        if shows == CenterShows::Active {
+            reachable(ws.tabs().active().and_then(|t| t.item.focus_handle(cx)));
+        }
         let t = cx.app_theme().clone();
         let focus = ws.center_focus().clone();
-        let has_tabs = !ws.tabs().is_empty();
-        let content = match view {
-            Some(view) => view.into_any_element(),
-            None if has_tabs => div().into_any_element(),
-            None => welcome::empty_center(cx),
+        let has_tabs = !visible.is_empty();
+        let content = match (shows, view) {
+            (CenterShows::Empty, _) => welcome::empty_center(cx),
+            (_, Some(view)) => view.into_any_element(),
+            (_, None) => div().into_any_element(),
         };
         let line = focus_line(&focus, window, cx);
         div()
@@ -1308,6 +1312,27 @@ impl WorkspaceView {
     }
 }
 
+/// What the center draws: the active tab, nothing (tabs in the strip, none of them active), or
+/// the empty state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CenterShows {
+    Active,
+    Blank,
+    Empty,
+}
+
+/// A tab out of the strip (an agent's page while Show agents' tabs is off) keeps running but
+/// counts as neither open nor active: alone, it left the center blank with no tab to click.
+fn center_shows(visible: &[usize], active: Option<usize>) -> CenterShows {
+    if visible.is_empty() {
+        CenterShows::Empty
+    } else if active.is_some_and(|a| visible.contains(&a)) {
+        CenterShows::Active
+    } else {
+        CenterShows::Blank
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1395,10 +1420,7 @@ mod tests {
 
     /// ⌘F with focus outside the tab: how many times the tab found, and whether focus is in it.
     fn find_with_focus_outside(finds: bool, cx: &mut TestAppContext) -> (usize, bool) {
-        let dir = std::env::temp_dir().join(format!("gitviber-app-find-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        gitviber_ui::test_support::config_dir("app-find");
         cx.update(gitviber_ui::init);
         let found = Rc::new(Cell::new(0));
         let mut host = None;
@@ -1478,10 +1500,7 @@ mod tests {
 
     #[gpui_kit::test]
     fn tab_reaches_the_strip_whose_keys_step_keep_and_close(cx: &mut TestAppContext) {
-        let dir = std::env::temp_dir().join(format!("gitviber-app-strip-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        gitviber_ui::test_support::config_dir("app-strip");
         cx.update(gitviber_ui::init);
         let mut host = None;
         let window: AnyWindowHandle = cx
@@ -1562,6 +1581,73 @@ mod tests {
         assert_eq!(find_with_focus_outside(false, cx), (0, false));
     }
 
+    /// An agent's page out of the strip.
+    struct AgentPage(FocusHandle);
+    impl Render for AgentPage {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().track_focus(&self.0)
+        }
+    }
+    impl TabItem for AgentPage {
+        fn tab_title(&self, _: &App) -> SharedString {
+            "agent".into()
+        }
+        fn tab_focus(&self, _: &App) -> Option<FocusHandle> {
+            Some(self.0.clone())
+        }
+        fn hidden(&self, _: &App) -> bool {
+            true
+        }
+    }
+
+    struct AgentPageHost(Entity<Workspace>);
+    impl Render for AgentPageHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_hidden_agent_tab_is_neither_open_nor_active_in_the_center(cx: &mut TestAppContext) {
+        gitviber_ui::test_support::config_dir("app-hidden");
+        cx.update(gitviber_ui::init);
+        let (host, cx) = cx.add_window_view(|_, cx| AgentPageHost(cx.new(Workspace::new)));
+        let ws = cx.update(|_, cx| host.read(cx).0.clone());
+        let shows = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|_, cx| {
+                let ws = ws.read(cx);
+                center_shows(&tab_strip::visible_tabs(ws, cx), ws.tabs().active_index())
+            })
+        };
+        // As the browser adds an agent's page: in the background.
+        cx.update(|_, cx| {
+            ws.update(cx, |ws, cx| {
+                let page = cx.new(|cx| AgentPage(cx.focus_handle()));
+                ws.add_tab("agent", page, None, cx)
+            })
+        });
+        assert_eq!(shows(cx), CenterShows::Empty, "the only tab is the agent's");
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                let tab = |_: &mut Window, cx: &mut Context<Workspace>| {
+                    cx.new(|cx| Tab {
+                        focus: cx.focus_handle(),
+                        finds: false,
+                        found: Rc::default(),
+                    })
+                };
+                ws.open_tab("mine", false, tab, window, cx)
+            })
+        });
+        assert_eq!(shows(cx), CenterShows::Active);
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.activate_tab("agent", window, cx)));
+        assert_eq!(
+            shows(cx),
+            CenterShows::Blank,
+            "the agent's page isn't drawn"
+        );
+    }
+
     /// The main window as the app lays it out: panels shown, hidden and sized only by the user.
     mod layout {
         use gitviber_ui::state::{self, UiState};
@@ -1582,9 +1668,7 @@ mod tests {
         /// A project folder (without core it's taken as open where it's asked) and a config dir
         /// of the test's own.
         fn setup(tag: &str, cx: &mut TestAppContext) -> PathBuf {
-            let dir = std::env::temp_dir()
-                .join(format!("gitviber-app-layout-{tag}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
+            let dir = gitviber_ui::test_support::temp_dir(&format!("app-layout-{tag}"));
             let project = dir.join("project");
             std::fs::create_dir_all(&project).unwrap();
             // SAFETY: the tests that read the config dir all point it at a temporary folder.
@@ -1998,8 +2082,7 @@ mod tests {
             project: Option<PathBuf>,
             cx: &mut TestAppContext,
         ) -> VisualTestContext {
-            let dir =
-                std::env::temp_dir().join(format!("gitviber-app-old-{tag}-{}", std::process::id()));
+            let dir = gitviber_ui::test_support::temp_dir(&format!("app-old-{tag}"));
             // SAFETY: the tests that read the config dir all point it at a temporary folder.
             unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", dir.join("config")) };
             cx.update(|cx| {
@@ -2042,11 +2125,8 @@ mod tests {
         /// goes, which opens it (opened.rs, open_repo.rs).
         #[gpui_kit::test]
         fn a_folder_dropped_on_the_window_is_opened_as_gitviber_path_is(cx: &mut TestAppContext) {
-            let dir =
-                std::env::temp_dir().join(format!("gitviber-app-drop-{}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
+            let dir = gitviber_ui::test_support::temp_dir("app-drop");
             let dir = dir.canonicalize().unwrap();
-            // No repo opens here: core's watcher thread would wake the test's executor.
             let core = cx.update(gitviber_ui::install_core);
             let cx = &mut launch("drop", None, cx);
             let at = point(px(700.), px(400.));
@@ -2064,9 +2144,7 @@ mod tests {
         /// The status bar's syntax theme opens Settings → Editor, where it's set.
         #[gpui_kit::test]
         fn the_syntax_item_opens_its_settings(cx: &mut TestAppContext) {
-            let project =
-                std::env::temp_dir().join(format!("gitviber-app-status-{}", std::process::id()));
-            std::fs::create_dir_all(&project).unwrap();
+            let project = gitviber_ui::test_support::temp_dir("app-status");
             let cx = &mut launch("status", Some(project), cx);
             let item = cx
                 .debug_bounds("status-syntax")

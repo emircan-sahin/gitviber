@@ -21,10 +21,10 @@ use gitviber_ui::keymap::{self, IS_MAC, edit::chord_of};
 use gitviber_ui::memory::Live;
 use gitviber_ui::settings::*;
 use gitviber_ui::theme::{self, appearance_floor};
+use gitviber_ui::widgets::Pressable as _;
 use gitviber_ui::workspace::Toast;
 use gitviber_ui::{ActiveAppTheme, Settings, windows};
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::highlighter::SyntaxHighlighter;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::slider::{SliderEvent, SliderState};
@@ -1107,8 +1107,14 @@ impl SettingsWindow {
         }
     }
 
-    fn sidebar(&self, shown: &[Section], cx: &mut Context<Self>) -> impl IntoElement {
+    fn sidebar(
+        &self,
+        shown: &[Section],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let t = cx.app_theme().clone();
+        let title = shell::drags_window("settings-title", window, cx);
         let groups = GROUPS.iter().filter_map(|(name, sections)| {
             let items: Vec<_> = sections
                 .iter()
@@ -1123,7 +1129,7 @@ impl SettingsWindow {
                         .items_center()
                         .gap_2()
                         .px_2()
-                        .rounded(px(6.))
+                        .rounded(px(4.))
                         .cursor_pointer()
                         .text_size(rems(shell::TITLE_TEXT))
                         .when(active, |d| d.bg(t.active).text_color(t.foreground))
@@ -1154,8 +1160,19 @@ impl SettingsWindow {
             .border_r_1()
             .border_color(t.border)
             .bg(t.chrome(t.sidebar))
+            // Under the traffic lights, and the window's drag handle there.
             .child(
-                div().flex_none().p_2().child(
+                title
+                    .flex_none()
+                    .pt(windows::TOP_BAR_HEIGHT - px(2.))
+                    .px_4()
+                    .pb(px(10.))
+                    .text_size(rems(0.84375))
+                    .font_weight(t.semibold())
+                    .child("Settings"),
+            )
+            .child(
+                div().flex_none().px_2().pb_1().child(
                     Input::new(&self.search)
                         .small()
                         .prefix(Icon::new(IconName::Search).xsmall())
@@ -1172,11 +1189,37 @@ impl SettingsWindow {
                     .pb_2()
                     .children(groups),
             )
+            // Rare and destructive: a quiet row at the foot rather than a button in view.
+            .child(
+                div()
+                    .flex_none()
+                    .p_2()
+                    .border_t_1()
+                    .border_color(t.border)
+                    .child(
+                        div()
+                            .id("reset-all-settings")
+                            .pressable(cx)
+                            .h(px(28.))
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_2()
+                            .rounded(px(4.))
+                            .text_color(t.muted_foreground)
+                            .hover(|s| s.bg(t.hover).text_color(t.foreground))
+                            .child(Icon::new(IconName::RotateCcw).xsmall())
+                            .child("Reset All Settings…")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.reset_all(window, cx)),
+                            ),
+                    ),
+            )
     }
 }
 
 impl Render for SettingsWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.app_theme().clone();
         let query = self.search.read(cx).value().trim().to_lowercase();
         // Only the open section is built, unless a search needs every row to look in.
@@ -1220,7 +1263,6 @@ impl Render for SettingsWindow {
             .on_key_down(cx.listener(Self::escape))
             .size_full()
             .flex()
-            .flex_col()
             .bg(t.chrome(t.elevated))
             .text_color(t.foreground)
             .font_family(t.fonts.ui.clone())
@@ -1235,42 +1277,8 @@ impl Render for SettingsWindow {
             .on_action(|_: &view::ZoomOut, _, cx| Settings::step_ui_scale(cx, -1))
             .on_action(|_: &view::ZoomReset, _, cx| Settings::step_ui_scale(cx, 0))
             .map(to_main::send_on)
-            .child(
-                div()
-                    .h(windows::TOP_BAR_HEIGHT)
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .pl(px(84.))
-                    .pr_2()
-                    .border_b_1()
-                    .border_color(t.border)
-                    .bg(t.chrome(t.sidebar))
-                    .child(
-                        div()
-                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                            .child("Settings"),
-                    )
-                    .child(
-                        Button::new("reset-all-settings")
-                            .ghost()
-                            .small()
-                            .icon(IconName::RotateCcw)
-                            .label("Reset All Settings…")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.reset_all(window, cx)),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .child(self.sidebar(&shown, cx))
-                    .child(content),
-            )
+            .child(self.sidebar(&shown, window, cx))
+            .child(content)
     }
 }
 
@@ -1317,11 +1325,7 @@ mod tests {
     /// pick and runs in the main window; its key pressed in Settings does nothing behind it.
     #[gpui_kit::test]
     fn the_main_windows_menu_items_work_with_settings_in_front(cx: &mut gpui_kit::TestAppContext) {
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-settings-menu-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        let dir = gitviber_ui::test_support::config_dir("settings-menu");
         cx.update(|cx| {
             gitviber_ui::init(cx);
             crate::placeholders::register(cx);
@@ -1376,10 +1380,7 @@ mod tests {
     /// dropped. Esc in a filled filter empties it first.
     #[gpui_kit::test]
     fn cmd_w_and_escape_close_the_window_and_drop_it(cx: &mut gpui_kit::TestAppContext) {
-        let dir = std::env::temp_dir().join(format!("gitviber-settings-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        gitviber_ui::test_support::config_dir("settings");
         cx.update(gitviber_ui::init);
         let main: AnyWindowHandle = cx
             .add_window(|window, cx| gpui_kit::base::Root::new(cx.new(|_| Main), window, cx))

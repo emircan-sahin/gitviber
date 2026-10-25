@@ -74,7 +74,7 @@ pub fn no_project(window: &mut Window, cx: &mut App) -> AnyElement {
                                 .child(
                                     div()
                                         .text_size(rems(1.25))
-                                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                                        .font_weight(t.semibold())
                                         .child("GitViber"),
                                 )
                                 .child(
@@ -135,7 +135,7 @@ pub fn no_project(window: &mut Window, cx: &mut App) -> AnyElement {
                                 div()
                                     .mb_1p5()
                                     .text_size(rems(0.65625))
-                                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                                    .font_weight(t.semibold())
                                     .text_color(t.subtle)
                                     .child("RECENT"),
                             )

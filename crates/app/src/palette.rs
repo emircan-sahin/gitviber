@@ -4,8 +4,10 @@
 //! Terminal in Project…). Built when it opens and dropped when it closes. What was picked runs once
 //! the dialog is gone, from where focus was, so it lands where the user was working.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gitviber_core::git::{FileChange, GitInfo};
@@ -156,6 +158,8 @@ pub struct Palette {
     projects: Vec<String>,
     error: Option<SharedString>,
     rows: Vec<Row>,
+    /// The row lit, as the list last said: drawn by the row itself, in the primary color.
+    current: Rc<Cell<usize>>,
     focus_return: Option<FocusHandle>,
     _load: Option<Task<()>>,
     /// Quick open's lists, observed once files were asked for: a listing landing shows up.
@@ -328,6 +332,7 @@ impl Palette {
                 projects,
                 error: None,
                 rows: Vec::new(),
+                current: Rc::default(),
                 focus_return,
                 _load: None,
                 _listed: None,
@@ -690,10 +695,10 @@ pub fn open_terminal(ws: &Entity<Workspace>, cwd: PathBuf, window: &mut Window, 
     panel.update(cx, |p, cx| p.open_terminal(cwd, None, window, cx));
 }
 
-/// `text` with the matched characters (char indices) in semibold.
-fn highlighted(text: &SharedString, hits: &[usize]) -> StyledText {
+/// `text` with the matched characters (char indices) in `bold`.
+fn highlighted(text: &SharedString, hits: &[usize], bold: FontWeight) -> StyledText {
     let bold = HighlightStyle {
-        font_weight: Some(FontWeight::SEMIBOLD),
+        font_weight: Some(bold),
         ..Default::default()
     };
     let ranges: Vec<_> = text
@@ -708,10 +713,15 @@ fn highlighted(text: &SharedString, hits: &[usize]) -> StyledText {
 impl Render for Palette {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.app_theme().clone();
+        // The list puts the highlight back on the first row when the one lit is gone.
+        if self.current.get() >= self.rows.len() {
+            self.current.set(0);
+        }
         let items: Vec<CommandItem> = self
             .rows
             .iter()
-            .map(|row| {
+            .enumerate()
+            .map(|(i, row)| {
                 let (label, hits, hint, path, status) = (
                     row.label.clone(),
                     row.hits.clone(),
@@ -719,30 +729,43 @@ impl Render for Palette {
                     row.path,
                     row.status.clone(),
                 );
-                let mono = t.fonts.code.clone();
+                let (mono, current) = (t.fonts.code.clone(), self.current.clone());
                 CommandItem::new().label(label.clone()).child(move |_, cx| {
                     let t = cx.app_theme();
+                    let lit = current.get() == i;
+                    // Over the list's own row padding and its gray highlight: 28px at 12.5px,
+                    // lit solid in the primary color.
                     div()
                         .flex()
+                        .flex_1()
+                        .min_w_0()
                         .items_center()
                         .gap_2()
-                        .w_full()
-                        .min_w_0()
+                        .mx(px(-8.))
+                        .my(px(-6.))
+                        .px_2()
+                        .py(px(6.))
+                        .rounded(px(4.))
+                        .text_size(gpui_kit::rems(0.78125))
+                        .line_height(px(16.))
+                        .when(lit, |d| d.bg(t.primary).text_color(t.primary_foreground))
                         .when(path, |d| d.child(FileIcon::file(&label)))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(highlighted(&label, &hits)),
-                        )
+                        .child(div().flex_1().min_w_0().truncate().child(highlighted(
+                            &label,
+                            &hits,
+                            t.semibold(),
+                        )))
                         .when_some(hint.clone(), |d, hint| {
                             d.child(
                                 div()
                                     .flex_none()
                                     .font_family(mono.clone())
                                     .text_size(gpui_kit::rems(0.6875))
-                                    .text_color(t.muted_foreground)
+                                    .text_color(if lit {
+                                        t.primary_foreground.opacity(0.75)
+                                    } else {
+                                        t.muted_foreground
+                                    })
                                     .child(hint),
                             )
                         })
@@ -753,6 +776,7 @@ impl Render for Palette {
                 })
             })
             .collect();
+        let current = self.current.clone();
         let this = cx.entity().downgrade();
         let this_confirm = this.clone();
         let empty = self.empty_text(cx);
@@ -792,6 +816,7 @@ impl Render for Palette {
                             cx.notify();
                         });
                     })
+                    .on_select(move |index, _, _| current.set(index.row))
                     .on_confirm(move |index, window, cx| {
                         let _ = this_confirm.update(cx, |p, cx| p.confirm(index.row, window, cx));
                     }),
@@ -913,11 +938,7 @@ mod tests {
         name: &str,
         cx: &'a mut TestAppContext,
     ) -> (Entity<Host>, &'a mut VisualTestContext) {
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-palette-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        gitviber_ui::test_support::config_dir(&format!("palette-{name}"));
         cx.update(gitviber_ui::init);
         let mut host = None;
         let (_, cx) = cx.add_window_view(|window, cx| {
@@ -1020,12 +1041,7 @@ mod tests {
     /// A committed repository holding `a.rs` and `b.md`, opened in `host`'s workspace with the
     /// files crate's quick open; nothing has listed its files yet.
     fn open_repo(name: &str, host: &Entity<Host>, cx: &mut VisualTestContext) -> PathBuf {
-        let repo = std::env::temp_dir().join(format!(
-            "gitviber-palette-repo-{name}-{}",
-            std::process::id()
-        ));
-        _ = std::fs::remove_dir_all(&repo);
-        std::fs::create_dir_all(&repo).unwrap();
+        let repo = gitviber_ui::test_support::temp_dir(&format!("palette-repo-{name}"));
         std::fs::write(repo.join("a.rs"), "fn main() {}\n").unwrap();
         std::fs::write(repo.join("b.md"), "# b\n").unwrap();
         let git = |args: &[&str]| {

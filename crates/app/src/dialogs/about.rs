@@ -146,7 +146,7 @@ impl Render for AboutView {
                 div()
                     .mt_4()
                     .text_size(rems(1.25))
-                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                    .font_weight(t.semibold())
                     .child("GitViber"),
             )
             .child(

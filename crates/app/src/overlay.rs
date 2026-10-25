@@ -4,6 +4,7 @@
 
 use std::time::Duration;
 
+use gitviber_ui::AppTheme;
 use gitviber_ui::keymap::edit::winner;
 use gitviber_ui::keymap::{self, Category, IS_MAC, bindings_for, chord_keys};
 use gitviber_ui::memory::Live;
@@ -11,9 +12,10 @@ use gitviber_ui::workspace::{Part, Slot, Workspace};
 use gitviber_ui::{ActiveAppTheme, Settings};
 use gpui_kit::{
     AnyElement, App, Context, Entity, InteractiveElement as _, IntoElement, KeyDownEvent,
-    Modifiers, ModifiersChangedEvent, MouseButton, MouseMoveEvent, ParentElement as _, Render,
-    ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _, Task, Window,
-    deferred, div, prelude::FluentBuilder as _, px, rems,
+    Modifiers, ModifiersChangedEvent, MouseButton, MouseMoveEvent, ParentElement as _, Point,
+    Render, ScrollHandle, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Task, TextAlign, TextRun, Window, canvas, deferred, div, fill, linear_color_stop,
+    linear_gradient, point, prelude::FluentBuilder as _, px, rems,
 };
 
 /// Off macOS "cmd" is Ctrl (the keymap's rule), so that's the key to hold there.
@@ -175,12 +177,14 @@ pub fn groups(
         .collect()
 }
 
-/// `groups` laid out in `n` columns, each next one into the shortest so far.
+/// `groups` laid out in `n` columns, each next one into the shortest so far, by height drawn
+/// in half rows: a row naming its place takes a second, smaller line.
 pub fn columns(groups: Vec<Group>, n: usize) -> Vec<Vec<Group>> {
     let n = n.max(1);
     let mut cols: Vec<(usize, Vec<Group>)> = (0..n).map(|_| (0, Vec::new())).collect();
     for g in groups {
-        let height = g.rows.len() + 2;
+        let places = g.rows.iter().filter(|r| r.place.is_some()).count();
+        let height = 2 * g.rows.len() + places + 4;
         let shortest = cols
             .iter_mut()
             .min_by_key(|(h, _)| *h)
@@ -198,6 +202,8 @@ pub struct ShortcutOverlay {
     workspace: Entity<Workspace>,
     shown: Option<Shown>,
     hold: Option<Task<()>>,
+    /// The list's scroll: whether more is below, and back to the top each time it shows.
+    scroll: ScrollHandle,
     _live: Live,
 }
 
@@ -207,12 +213,16 @@ impl ShortcutOverlay {
             workspace,
             shown: None,
             hold: None,
+            scroll: ScrollHandle::new(),
             _live: Live::new("ShortcutOverlay"),
         }
     }
 
     fn set(&mut self, shown: Option<Shown>, cx: &mut Context<Self>) {
         if self.shown != shown {
+            if self.shown.is_none() {
+                self.scroll.set_offset(Point::default());
+            }
             self.shown = shown;
             cx.notify();
         }
@@ -347,6 +357,52 @@ fn keys(row: &Row, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
+/// A fade over the list's foot and a cue in it, while more of the list is below. Painted, not
+/// laid out: the list's scroll is only known once it's laid out, in this same frame.
+fn more_below(scroll: ScrollHandle, t: &AppTheme) -> impl IntoElement {
+    const CUE: &str = "↓ Scroll for more";
+    let (bg, ink) = (t.elevated, t.muted_foreground);
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, cx| {
+            if scroll.max_offset().y + scroll.offset().y <= px(1.) {
+                return;
+            }
+            window.paint_quad(fill(
+                bounds,
+                linear_gradient(
+                    0.,
+                    linear_color_stop(bg, 0.4),
+                    linear_color_stop(bg.opacity(0.), 1.),
+                ),
+            ));
+            let size = rems(0.6875).to_pixels(window.rem_size());
+            let run = TextRun {
+                len: CUE.len(),
+                font: window.text_style().font(),
+                color: ink,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let line = window
+                .text_system()
+                .shape_line(CUE.into(), size, &[run], None);
+            let height = size * 1.4;
+            let origin = point(
+                bounds.center().x - line.width / 2.,
+                bounds.bottom() - height - px(4.),
+            );
+            let _ = line.paint(origin, height, TextAlign::Left, None, window, cx);
+        },
+    )
+    .absolute()
+    .left_0()
+    .right_0()
+    .bottom_0()
+    .h(px(FADE))
+}
+
 impl Render for ShortcutOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(shown) = self.shown else {
@@ -384,7 +440,7 @@ impl Render for ShortcutOverlay {
                             div()
                                 .mb_1()
                                 .text_size(rems(0.65625))
-                                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                                .font_weight(t.semibold())
                                 .text_color(t.subtle)
                                 .child(g.title.to_uppercase()),
                         )
@@ -465,11 +521,7 @@ impl Render for ShortcutOverlay {
                                 .py_3()
                                 .border_b_1()
                                 .border_color(t.border)
-                                .child(
-                                    div()
-                                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                                        .child("Keyboard Shortcuts"),
-                                )
+                                .child(div().font_weight(t.semibold()).child("Keyboard Shortcuts"))
                                 .child(
                                     div().text_size(rems(0.71875)).text_color(t.subtle).child(
                                         "Change any of them in Settings → Keyboard Shortcuts",
@@ -483,8 +535,8 @@ impl Render for ShortcutOverlay {
                                         .child(hint),
                                 ),
                         )
-                        // No scrollbar shows: in a short window the fade says there's more below.
-                        // Scrolled to the end, or with all of it in view, it only covers padding.
+                        // No scrollbar, as a click anywhere closes it: while more is below, a
+                        // fade and a cue over the list's foot say so.
                         .child(
                             div()
                                 .relative()
@@ -495,27 +547,19 @@ impl Render for ShortcutOverlay {
                                     div()
                                         .id("shortcut-overlay-list")
                                         .flex()
+                                        // Columns at their own heights: stretched to the
+                                        // list's, they left nothing to scroll and cut the foot.
+                                        .items_start()
                                         .gap_8()
                                         .min_h_0()
                                         .overflow_y_scroll()
+                                        .track_scroll(&self.scroll)
                                         .px_5()
                                         .pt_3()
                                         .pb(px(FADE))
                                         .children(cols),
                                 )
-                                .child(
-                                    div()
-                                        .absolute()
-                                        .left_0()
-                                        .right_0()
-                                        .bottom_0()
-                                        .h(px(FADE))
-                                        .bg(gpui_kit::linear_gradient(
-                                            0.,
-                                            gpui_kit::linear_color_stop(t.elevated, 0.),
-                                            gpui_kit::linear_color_stop(t.elevated.opacity(0.), 1.),
-                                        )),
-                                ),
+                                .child(more_below(self.scroll.clone(), &t)),
                         ),
                 ),
         )

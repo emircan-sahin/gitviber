@@ -384,9 +384,7 @@ mod tests {
     fn a_key_the_terminal_passes_never_reaches_the_menu_and_fields_keep_their_undo(
         cx: &mut TestAppContext,
     ) {
-        let dir = std::env::temp_dir().join(format!("gitviber-menu-keys-{}", std::process::id()));
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        gitviber_ui::test_support::config_dir("menu-keys");
         cx.update(|cx| {
             gitviber_ui::init(cx);
             keep_keys_from_menu(cx);

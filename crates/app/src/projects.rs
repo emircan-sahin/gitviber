@@ -531,7 +531,7 @@ pub fn list(
                         div()
                             .truncate()
                             .text_size(rems(0.78125))
-                            .font_weight(gpui_kit::FontWeight::MEDIUM)
+                            .font_weight(t.medium())
                             .when(missing, |d| d.text_color(t.muted_foreground))
                             .child(name.clone()),
                     )

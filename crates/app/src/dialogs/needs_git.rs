@@ -145,7 +145,7 @@ pub fn screen(info: &GitInfo, cx: &App) -> AnyElement {
                                 .child(
                                     div()
                                         .text_size(rems(1.25))
-                                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                                        .font_weight(t.semibold())
                                         .child("GitViber needs git"),
                                 )
                                 .child(

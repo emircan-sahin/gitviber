@@ -13,9 +13,9 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{
-    AnyElement, App, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    RenderOnce, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-    div, prelude::FluentBuilder as _, px, relative, rems,
+    AnyElement, App, Div, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
+    RenderOnce, ScrollHandle, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
+    Window, div, prelude::FluentBuilder as _, px, relative, rems,
 };
 
 /// A titled row's control; `true` while the row is disabled.
@@ -150,14 +150,15 @@ impl Row {
         let row = div()
             .id(("row", ix))
             .w_full()
-            .py(px(if self.tight { 0. } else { 12. }))
+            .py(px(if self.tight { 0. } else { 14. }))
             .when(!last, |d| d.border_b_1().border_color(t.border));
         let control = match &self.body {
             Body::Custom(render) => return row.child(render(window, cx)).into_any_element(),
             Body::Control(control) => control.clone(),
         };
         let off = self.disabled.is_some();
-        let text = |size: f32| div().text_size(rems(size)).line_height(relative(1.5));
+        let text =
+            |size: f32, height: f32| div().text_size(rems(size)).line_height(relative(height));
         let keys: Vec<AnyElement> = self
             .hint
             .keys
@@ -184,8 +185,8 @@ impl Row {
                             .gap_x_2()
                             .gap_y_1()
                             .child(
-                                text(TITLE_TEXT)
-                                    .font_weight(FontWeight::MEDIUM)
+                                text(TITLE_TEXT, 1.5)
+                                    .font_weight(t.medium())
                                     .text_color(if off {
                                         t.muted_foreground
                                     } else {
@@ -197,13 +198,13 @@ impl Row {
                     )
                     .when(!self.hint.text.is_empty(), |d| {
                         d.child(
-                            text(HINT_TEXT)
+                            text(HINT_TEXT, 1.6)
                                 .text_color(if off { t.subtle } else { t.muted_foreground })
                                 .child(self.hint.text.clone()),
                         )
                     })
                     .when_some(self.disabled.clone(), |d, why| {
-                        d.child(text(HINT_TEXT).text_color(t.muted_foreground).child(why))
+                        d.child(text(HINT_TEXT, 1.6).text_color(t.subtle).child(why))
                     }),
             )
             .child(div().flex_none().child(control(off, window, cx)))
@@ -263,7 +264,7 @@ impl Group {
                 div().children(rows)
             } else {
                 div()
-                    .rounded(px(6.))
+                    .rounded(px(4.))
                     .border_1()
                     .border_color(t.border)
                     .px(px(14.))
@@ -273,11 +274,39 @@ impl Group {
     }
 }
 
+/// A part of the window's top that moves the window when dragged and zooms it on a double
+/// click, as a title bar does: the window draws its own top and owns the drag, so nothing else
+/// would move it.
+pub fn drags_window(id: &'static str, window: &mut Window, cx: &mut App) -> Stateful<Div> {
+    // Started on the first move, not the press, so a click on a button inside still lands.
+    let pressed = window.use_keyed_state(id, cx, |_, _| false);
+    let (down, moved) = (pressed.clone(), pressed);
+    div()
+        .id(id)
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            down.update(cx, |p, _| *p = true)
+        })
+        .on_mouse_move(move |e, window, cx| {
+            if *moved.read(cx) {
+                moved.update(cx, |p, _| *p = false);
+                // A button let go elsewhere left it set: only a drag moves the window.
+                if e.dragging() {
+                    window.start_window_move();
+                }
+            }
+        })
+        .on_click(|e, window, _| {
+            if e.click_count() == 2 {
+                window.titlebar_double_click();
+            }
+        })
+}
+
 /// The small capitals over a group of rows, or of sections in the sidebar.
 pub fn heading(text: SharedString, t: &gitviber_ui::theme::AppTheme) -> gpui_kit::Div {
     div()
         .text_size(rems(0.65625))
-        .font_weight(FontWeight::SEMIBOLD)
+        .font_weight(t.semibold())
         .text_color(t.subtle)
         .child(SharedString::from(text.to_uppercase()))
 }
@@ -375,7 +404,7 @@ impl Page {
             .flex()
             .flex_col()
             .child(
-                div()
+                drags_window("page-header", window, cx)
                     .h(px(44.))
                     .flex_none()
                     .flex()
@@ -388,7 +417,7 @@ impl Page {
                     .child(
                         div()
                             .text_size(rems(0.84375))
-                            .font_weight(FontWeight::SEMIBOLD)
+                            .font_weight(t.semibold())
                             .child(title),
                     )
                     .when(!resets.is_empty(), |d| {
