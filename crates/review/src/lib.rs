@@ -13,6 +13,7 @@ mod code_notes;
 pub mod model;
 pub mod note_store;
 mod notes_ui;
+mod stacked_notes;
 pub mod store;
 mod view;
 
@@ -29,6 +30,7 @@ use gpui_kit::{App, AppContext as _, Global, Window};
 
 pub use note_store::ReviewNotes;
 pub use notes_ui::{DiffNotes, NotesSection, attach_notes};
+pub use stacked_notes::{StackedNotes, attach_stacked_notes};
 pub use store::{Guides, RunKind, SavedRun};
 pub use view::GuideView;
 

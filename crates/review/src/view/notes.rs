@@ -10,14 +10,16 @@ use gitviber_core::api;
 use gitviber_diff::{Annotation, DiffSource, LinePos, LineRange, Side};
 use gitviber_ui::ActiveAppTheme as _;
 use gpui_kit::component::input::{InputEvent, TextareaState};
-use gpui_kit::{AppContext as _, Context, Entity, Subscription, Task, Window};
+use gpui_kit::{AppContext as _, Context, Entity, Focusable as _, Subscription, Task, Window};
 
 use super::GuideView;
 use crate::model::notes::{
     Anchor, ReviewNote, Shown, anchor_at, find_note, note_lines, place_notes,
 };
 use crate::note_store::ReviewNotes;
-use crate::notes_ui::{COMPOSER_HEIGHT, OnNote, composer, note_card, note_card_height, note_input};
+use crate::notes_ui::{
+    COMPOSER_HEIGHT, OnNote, composer, focus_soon, note_card, note_card_height, note_input,
+};
 
 /// A file's two sides, as lines; None for a side it doesn't have.
 type Sides = (Option<Vec<String>>, Option<Vec<String>>);
@@ -177,6 +179,7 @@ impl GuideView {
     fn cancel_note(&mut self, cx: &mut Context<Self>) {
         self.notes.draft = None;
         self.annotate(cx);
+        focus_soon(self.stacked.read(cx).focus_handle(cx), cx);
     }
 
     fn add_note(&mut self, cx: &mut Context<Self>) {
@@ -202,6 +205,7 @@ impl GuideView {
         let root = self.root.to_string_lossy().into_owned();
         ReviewNotes::add(cx, &root, note);
         self.annotate(cx);
+        focus_soon(self.stacked.read(cx).focus_handle(cx), cx);
     }
 
     /// The user's open notes on `path` and the composer, where its sides have their lines; a

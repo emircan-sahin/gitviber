@@ -14,10 +14,10 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, Font, IndentAdjustment,
-    InteractiveElement as _, IntoElement, LineFragment, ParentElement as _, Pixels, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity,
-    Window, div, font, prelude::FluentBuilder as _, px, rems,
+    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable as _,
+    Font, IndentAdjustment, InteractiveElement as _, IntoElement, LineFragment, ParentElement as _,
+    Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+    WeakEntity, Window, div, font, prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::model::notes::{
@@ -154,6 +154,13 @@ impl DiffNotes {
     fn cancel(&mut self, cx: &mut Context<Self>) {
         self.draft = None;
         self.redraw(cx);
+        self.refocus(cx);
+    }
+
+    fn refocus(&self, cx: &mut Context<Self>) {
+        if let Some(diff) = self.diff.upgrade() {
+            focus_soon(diff.read(cx).focus_handle(cx), cx);
+        }
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
@@ -184,6 +191,7 @@ impl DiffNotes {
         self.draft = None;
         ReviewNotes::add(cx, &self.root.clone(), note);
         self.redraw(cx);
+        self.refocus(cx);
     }
 
     /// The open notes under their lines, where the diff's versions have them, and the composer.
@@ -468,6 +476,18 @@ pub(crate) fn composer(
                 ),
         )
         .into_any_element()
+}
+
+/// The keys back to a view once a box drawn in it goes (J/K/V/C answer without a click): on
+/// the window in front, once the key or click that closed it is done.
+pub(crate) fn focus_soon(focus: FocusHandle, cx: &mut App) {
+    // The first window when none is in front (a test's).
+    let Some(window) = cx.active_window().or_else(|| cx.windows().first().copied()) else {
+        return;
+    };
+    cx.defer(move |cx| {
+        _ = window.update(cx, |_, window, cx| focus.focus(window, cx));
+    });
 }
 
 pub(crate) fn toast(toast: Toast, window: &mut Window, cx: &mut App) {

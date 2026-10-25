@@ -292,12 +292,9 @@ impl GuideView {
         let send = input.clone();
         Some(
             div()
-                .on_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, _, cx| {
+                .on_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
                     match e.keystroke.key.as_str() {
-                        "escape" => {
-                            this.asking = None;
-                            cx.notify();
-                        }
+                        "escape" => this.close_ask(window, cx),
                         // The box's ↵ asked: where an unhandled key is typed as text (Linux),
                         // it would add a line to the box too.
                         "enter" if !e.keystroke.modifiers.shift => cx.stop_propagation(),

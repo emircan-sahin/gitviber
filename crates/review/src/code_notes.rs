@@ -54,7 +54,7 @@ pub struct CodeNotes {
 }
 
 /// The open worktree's root, whose notes these are; None without a repository.
-fn repo_root(cx: &App) -> Option<String> {
+pub(crate) fn repo_root(cx: &App) -> Option<String> {
     gitviber_ui::has_core(cx)
         .then(|| gitviber_ui::core(cx).repo().ok())
         .flatten()
@@ -194,14 +194,9 @@ impl CodeNotes {
 
     /// The keys back to the code once the composer goes.
     fn refocus(&self, cx: &mut Context<Self>) {
-        let window = cx.active_window().or_else(|| cx.windows().first().copied());
-        let (Some(code), Some(window)) = (self.code.upgrade(), window) else {
-            return;
-        };
-        let focus = code.read(cx).editor_focus(cx);
-        cx.defer(move |cx| {
-            _ = window.update(cx, |_, window, cx| focus.focus(window, cx));
-        });
+        if let Some(code) = self.code.upgrade() {
+            crate::notes_ui::focus_soon(code.read(cx).editor_focus(cx), cx);
+        }
     }
 
     /// The text typed into is on disk now: the notes (and the composer) take the lines the

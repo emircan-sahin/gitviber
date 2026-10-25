@@ -1017,7 +1017,8 @@ impl GuideView {
         };
         let input = self.handoff(about, &saved.run, cx);
         let worktrees = self.worktrees(cx);
-        self.asking = None;
+        // Before the agent's terminal, which takes them when it opens.
+        self.close_ask(window, cx);
         let model = Self::ask_models(cx).map(|(_, m)| m);
         crate::agent::ask_agent(&self.root, &worktrees, input, &question, model, window, cx);
         cx.notify();
@@ -1025,9 +1026,7 @@ impl GuideView {
 
     fn open_ask(&mut self, at: AskAt, window: &mut Window, cx: &mut Context<Self>) {
         if self.asking.as_ref().is_some_and(|a| a.at == at) {
-            self.asking = None;
-            cx.notify();
-            return;
+            return self.close_ask(window, cx);
         }
         // Three lines, growing with what's typed up to about sixteen; ↵ asks, ⇧↵ is a new line.
         let input = cx.new(|cx| {
@@ -1055,6 +1054,13 @@ impl GuideView {
             input,
             _events: events,
         });
+        cx.notify();
+    }
+
+    /// The box goes, and the keys go back to the diffs, for J/K/V/C.
+    pub(super) fn close_ask(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.asking = None;
+        self.stacked.read(cx).focus_handle(cx).focus(window, cx);
         cx.notify();
     }
 

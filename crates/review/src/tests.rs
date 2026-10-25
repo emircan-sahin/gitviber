@@ -338,7 +338,7 @@ fn a_cancel_kills_the_agent_and_what_it_started(cx: &mut TestAppContext) {
         .success();
     assert!(!alive, "the agent CLI was killed");
     let sleeping = Command::new("pgrep")
-        .args(["-f", "sleep 30"])
+        .args(["-fx", "sleep 30"])
         .output()
         .unwrap();
     assert!(
@@ -979,4 +979,106 @@ fn a_branch_guide_shares_viewed_marks_with_branch_review(cx: &mut TestAppContext
     );
     assert!(!marks.contains(&format!("branch:{base}:src/retry.ts")));
     assert_eq!(view.read_with(cx, |v, _| v.viewed_count()), 2);
+}
+
+#[gpui_kit::test]
+fn open_all_takes_c_for_a_note_and_its_box_gives_the_keys_back(cx: &mut TestAppContext) {
+    use gitviber_diff::{Compare, DiffSource, StackedDiff, StackedFile};
+    use gpui_kit::Focusable as _;
+    let (repo, agent) = setup("open-all-notes");
+    boot(cx, &agent);
+    let (host, cx) = cx.add_window_view(|_, cx| Drawn(cx.new(Workspace::new), None));
+    let ws = host.read_with(cx, |h, _| h.0.clone());
+    open_project(&ws, &repo, cx);
+    let source = DiffSource::new(Compare::Unstaged, "src/retry.ts");
+    let file = StackedFile::new(source.clone());
+    let stacked = cx.update(|_, cx| cx.new(|cx| StackedDiff::new(vec![file], cx)));
+    host.update(cx, |h, cx| {
+        h.1 = Some(stacked.clone().into());
+        cx.notify();
+    });
+    draw(cx);
+    let notes = cx.update(|_, cx| crate::attach_stacked_notes(&stacked, cx));
+    let focus = cx.update(|_, cx| stacked.read(cx).focus_handle(cx));
+    cx.update(|window, cx| focus.focus(window, cx));
+    draw(cx);
+    let focused = |cx: &mut VisualTestContext| cx.update(|window, _| focus.is_focused(window));
+    let drafting = |cx: &mut VisualTestContext| notes.read_with(cx, |n, _| n.has_draft());
+    // C: a note on the first changed line in view, the line 3 became 5 on.
+    cx.simulate_keystrokes("c");
+    cx.run_until_parked();
+    assert!(drafting(cx), "C opened the composer");
+    assert!(!focused(cx), "its box has the keys");
+    draw(cx);
+    cx.simulate_input("Why 5?");
+    cx.simulate_keystrokes("cmd-enter");
+    cx.run_until_parked();
+    let root = repo.to_string_lossy().into_owned();
+    let kept = cx.update(|_, cx| crate::ReviewNotes::get(cx, &root));
+    assert_eq!(kept.len(), 1);
+    let n = &kept[0];
+    assert_eq!(
+        (n.path.as_str(), n.anchor.start, n.at.as_deref(), n.old),
+        ("src/retry.ts", 1, None, true)
+    );
+    assert_eq!(n.anchor.code, ["export const tries = 3;"]);
+    let drawn = stacked.read_with(cx, |s, _| s.annotation_ids(&source.key()));
+    assert_eq!(drawn, [n.id.as_str()], "drawn under its line, the box gone");
+    assert!(focused(cx), "the keys back on the diffs");
+    // C again, no click needed; Esc closes the box and gives them back too.
+    cx.simulate_keystrokes("c");
+    cx.run_until_parked();
+    assert!(drafting(cx));
+    draw(cx);
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!drafting(cx) && focused(cx));
+    // Resolved, it leaves the diffs.
+    let id = n.id.clone();
+    cx.update(|_, cx| crate::ReviewNotes::update(cx, &root, &id, |n| n.resolved = true));
+    cx.run_until_parked();
+    assert!(
+        stacked
+            .read_with(cx, |s, _| s.annotation_ids(&source.key()))
+            .is_empty()
+    );
+}
+
+#[gpui_kit::test]
+fn a_guides_note_and_ask_boxes_give_the_keys_back_to_its_diffs(cx: &mut TestAppContext) {
+    use gitviber_diff::{LineRange, Side, StackedEvent};
+    use gpui_kit::Focusable as _;
+    let (repo, agent) = setup("guide-keys");
+    boot(cx, &agent);
+    let (_host, _ws, view, cx) = drawn_guide(cx, &repo, head_commit);
+    let stacked = view.read_with(cx, |v, _| v.stacked().clone());
+    let focus = cx.update(|_, cx| stacked.read(cx).focus_handle(cx));
+    let focused = |cx: &mut VisualTestContext| cx.update(|window, _| focus.is_focused(window));
+    // The Ask box: Esc closes it.
+    view.update_in(cx, |v, window, cx| v.open_ask_box(window, cx));
+    draw(cx);
+    assert!(!focused(cx));
+    cx.simulate_keystrokes("escape");
+    assert!(!view.read_with(cx, |v, _| v.asking()) && focused(cx));
+    // A note's box on the commit's lines: added with ⌘↵.
+    let source = stacked.read_with(cx, |s, _| {
+        s.files()
+            .find(|f| f.source.path == "src/retry.ts")
+            .map(|f| f.source.clone())
+            .expect("its diff")
+    });
+    let range = LineRange {
+        side: Side::New,
+        start: 1,
+        end: 1,
+    };
+    stacked.update(cx, |_, cx| cx.emit(StackedEvent::AddNote { source, range }));
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |v, _| v.has_note_draft()) && !focused(cx));
+    draw(cx);
+    cx.simulate_input("Why 3?");
+    cx.simulate_keystrokes("cmd-enter");
+    cx.run_until_parked();
+    assert!(!view.read_with(cx, |v, _| v.has_note_draft()));
+    assert!(focused(cx), "the keys back on the diffs");
 }
