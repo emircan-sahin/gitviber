@@ -35,10 +35,9 @@ fn folder_name(path: &Path) -> String {
 /// The window's terminal panel, shown.
 fn terminal(window: &mut Window, cx: &mut App) -> Option<Entity<TerminalPanel>> {
     let ws = Workspace::for_window(window, cx)?;
-    let panel = ws.update(cx, |ws, cx| {
-        ws.show_panel(TERMINAL, cx);
-        ws.panel(TERMINAL, window, cx)
-    })?;
+    ws.update(cx, |ws, cx| ws.show_panel(TERMINAL, cx));
+    // Built outside the workspace's update: the terminal panel reads the workspace as it's made.
+    let panel = Workspace::ensure_panel(&ws, TERMINAL, window, cx)?;
     panel.view().downcast::<TerminalPanel>().ok()
 }
 
