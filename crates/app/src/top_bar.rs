@@ -6,14 +6,14 @@ use gitviber_ui::actions::{terminal, view, workbench};
 use gitviber_ui::assets::LOGO;
 use gitviber_ui::keymap::{self, shortcut_label};
 use gitviber_ui::widgets::{Look, StatusDot};
-use gitviber_ui::workspace::{BarSlot, PanelContext, Registry};
+use gitviber_ui::workspace::{BarSlot, PanelContext, Registry, Slot};
 use gitviber_ui::{ActiveAppTheme, windows};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Disableable as _, Sizable as _, TitleBar};
 use gpui_kit::{
-    Action, AnyElement, App, IntoElement, ParentElement as _, Styled as _, Window, div, img,
-    prelude::*, px, rems,
+    Action, AnyElement, App, IntoElement, ParentElement as _, SharedString, Styled as _, Window,
+    div, img, prelude::*, px, rems,
 };
 
 /// What the buttons need to know to draw: the commands that apply where focus is (None before
@@ -55,6 +55,22 @@ impl Bar<'_> {
             .disabled(!self.enabled(&action))
             .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
     }
+
+    /// A panel's button: a screen reader hears the panel's name and whether it's shown, where
+    /// the tooltip says the command and its keys.
+    fn panel_button(
+        &self,
+        id: &'static str,
+        icon: IconName,
+        name: impl Into<SharedString>,
+        command: &str,
+        action: impl Action + Clone,
+        shown: bool,
+    ) -> Button {
+        self.icon_button(id, icon, command, action)
+            .accessibility_label(name)
+            .toggled(shown)
+    }
 }
 
 fn divider(cx: &App) -> AnyElement {
@@ -67,19 +83,24 @@ fn divider(cx: &App) -> AnyElement {
 }
 
 /// The terminal's button; while it's hidden, a dot for an agent that asked or news not looked at
-/// (`news`), which its tooltip names too.
-fn terminal_button(bar: &Bar, news: Option<Look>) -> AnyElement {
-    let mut button = bar.icon_button(
+/// (`news`), which its tooltip and name say too.
+fn terminal_button(bar: &Bar, shown: bool, news: Option<Look>) -> AnyElement {
+    let what = news.map(|look| match look {
+        Look::Needs => "needs you",
+        _ => "not viewed",
+    });
+    let mut button = bar.panel_button(
         "toggle-terminal",
         IconName::PanelBottom,
+        what.map_or_else(
+            || "Terminal".into(),
+            |what| format!("Terminal, a terminal {what}"),
+        ),
         "terminal.toggle",
         terminal::Toggle,
+        shown,
     );
-    if let Some(look) = news {
-        let what = match look {
-            Look::Needs => "needs you",
-            _ => "not viewed",
-        };
+    if let Some(what) = what {
         button = button.tooltip(format!(
             "{} · a terminal: {what}",
             bar.tip("terminal.toggle")
@@ -143,6 +164,11 @@ pub fn top_bar(
             .collect()
     });
     let bar = Bar { available, cx };
+    let shown = |slot| {
+        ctx.workspace
+            .upgrade()
+            .is_some_and(|ws| ws.read(cx).is_open(slot))
+    };
     let right = div()
         .flex()
         .flex_none()
@@ -151,18 +177,22 @@ pub fn top_bar(
         .pr_2()
         .children(actions)
         .child(divider(cx))
-        .child(terminal_button(&bar, terminal_news))
-        .child(bar.icon_button(
+        .child(terminal_button(&bar, shown(Slot::Bottom), terminal_news))
+        .child(bar.panel_button(
             "toggle-git",
             IconName::PanelLeft,
+            "Git Panel",
             "view.toggleGitPanel",
             view::ToggleGitPanel,
+            shown(Slot::Left),
         ))
-        .child(bar.icon_button(
+        .child(bar.panel_button(
             "toggle-explorer",
             IconName::PanelRight,
+            "Explorer",
             "view.toggleExplorer",
             view::ToggleExplorer,
+            shown(Slot::Right),
         ))
         .child(bar.icon_button(
             "settings",
@@ -189,4 +219,31 @@ pub fn top_bar(
         )
         .child(right)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A screen reader names a panel's button by its panel, not by the tooltip's command and keys.
+    #[gpui_kit::test]
+    fn a_panels_button_is_named_by_its_panel(cx: &mut gpui_kit::TestAppContext) {
+        gitviber_ui::test_support::config_dir("top-bar");
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            let bar = Bar {
+                available: None,
+                cx,
+            };
+            let button = bar.panel_button(
+                "toggle-git",
+                IconName::PanelLeft,
+                "Git Panel",
+                "view.toggleGitPanel",
+                view::ToggleGitPanel,
+                true,
+            );
+            assert_eq!(button.accessibility_name().as_deref(), Some("Git Panel"));
+        });
+    }
 }

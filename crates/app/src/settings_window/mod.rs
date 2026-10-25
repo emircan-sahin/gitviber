@@ -14,6 +14,8 @@ mod to_main;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use gitviber_browser::skill::{Skill, Status};
+use gitviber_browser::ui::SkillStatus;
 use gitviber_core::api;
 use gitviber_core::notifications::Permission;
 use gitviber_ui::actions::{help, tab, view, workbench};
@@ -297,6 +299,31 @@ pub struct SkillInfo {
     pub note: String,
 }
 
+/// Each agent's skill, a line each: with the skill off, only those that couldn't be removed.
+fn skill_info(skill: &Skill, on: bool) -> SkillInfo {
+    let mut lines: Vec<String> = skill
+        .targets
+        .iter()
+        .filter(|t| on || matches!(t.status, Status::Failed))
+        .map(|t| {
+            let state = match t.status {
+                Status::Written => "written",
+                Status::Absent => "not written",
+                Status::Newer => "a newer GitViber's, kept",
+                Status::NoAgent => "agent not installed",
+                Status::Theirs => "yours, left alone",
+                Status::Failed => "couldn't be written",
+            };
+            format!("{}: {} ({state})", t.agent, t.path)
+        })
+        .collect();
+    lines.extend(skill.why.clone());
+    SkillInfo {
+        lines,
+        note: gitviber_browser::skill::note(),
+    }
+}
+
 #[derive(Default)]
 pub struct Data {
     pub permission: Option<Permission>,
@@ -373,13 +400,18 @@ impl SettingsWindow {
                 Settings::update(cx, |s| s.window_opacity = v);
             }
         }));
-        let mut last_agent = s.browser_agent_control;
+        let mut last_agent = (s.browser_agent_control, s.browser_agent_skill);
         subs.push(cx.observe_global::<Settings>(move |this, cx| {
-            let on = Settings::get(cx).browser_agent_control;
+            let s = Settings::get(cx);
+            let on = (s.browser_agent_control, s.browser_agent_skill);
             if on != last_agent {
                 last_agent = on;
-                this.load_skill(cx);
+                this.show_skill(cx);
             }
+            cx.notify();
+        }));
+        subs.push(cx.observe_global::<SkillStatus>(|this, cx| {
+            this.show_skill(cx);
             cx.notify();
         }));
         subs.push(cx.observe_global::<gitviber_ui::open_in::Found>(|_, cx| cx.notify()));
@@ -433,8 +465,8 @@ impl SettingsWindow {
             this.load_permission(cx);
             this.load_vaults(cx);
             this.load_git(cx);
-            this.load_skill(cx);
         }
+        this.show_skill(cx);
         this.load_sample(cx);
         this
     }
@@ -509,41 +541,15 @@ impl SettingsWindow {
         );
     }
 
-    fn load_skill(&mut self, cx: &mut Context<Self>) {
-        if !IS_MAC || !Settings::get(cx).browser_agent_control {
+    /// The skill as the browser's latest sync left it. While a sync is going (the browser hears
+    /// a Settings change first, registered at launch) the lines shown stay till its end tells.
+    fn show_skill(&mut self, cx: &mut Context<Self>) {
+        let s = Settings::get(cx);
+        if !IS_MAC || !s.browser_agent_control {
             self.data.skill = None;
-            return;
+        } else if let Some(skill) = SkillStatus::get(cx) {
+            self.data.skill = Some(skill_info(skill, s.browser_agent_skill));
         }
-        let on = Settings::get(cx).browser_agent_skill;
-        self.load(
-            "skill",
-            move |_| {
-                let skill = gitviber_browser::skill::sync(None);
-                let mut lines: Vec<String> = skill
-                    .targets
-                    .iter()
-                    .filter(|t| on || matches!(t.status, gitviber_browser::skill::Status::Failed))
-                    .map(|t| {
-                        let state = match t.status {
-                            gitviber_browser::skill::Status::Written => "written",
-                            gitviber_browser::skill::Status::Absent => "not written",
-                            gitviber_browser::skill::Status::Newer => "a newer GitViber's, kept",
-                            gitviber_browser::skill::Status::NoAgent => "agent not installed",
-                            gitviber_browser::skill::Status::Theirs => "yours, left alone",
-                            gitviber_browser::skill::Status::Failed => "couldn't be written",
-                        };
-                        format!("{}: {} ({state})", t.agent, t.path)
-                    })
-                    .collect();
-                lines.extend(skill.why);
-                SkillInfo {
-                    lines,
-                    note: gitviber_browser::skill::note(),
-                }
-            },
-            |this, skill, _| this.data.skill = Some(skill),
-            cx,
-        );
     }
 
     fn load_git(&mut self, cx: &mut Context<Self>) {
@@ -1367,6 +1373,58 @@ mod tests {
         gpui_kit::VisualTestContext::from_window(handle, cx).simulate_keystrokes("cmd-b");
         cx.run_until_parked();
         assert_eq!(left(cx), !before, "a key in Settings stays there");
+    }
+
+    /// The skill's lines are the browser's latest sync's, redrawn as it or the switches change:
+    /// Settings ran a sync of its own, read before the main window's write was done.
+    #[cfg(target_os = "macos")]
+    #[gpui_kit::test]
+    fn the_skill_shown_is_the_browsers_latest_sync(cx: &mut gpui_kit::TestAppContext) {
+        use gitviber_browser::skill::Target;
+        gitviber_ui::test_support::config_dir("settings-skill");
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            Settings::update(cx, |s| s.browser_agent_control = true);
+        });
+        let (_, view) = opened(cx);
+        let view = view.upgrade().unwrap();
+        let lines = |cx: &mut gpui_kit::TestAppContext| {
+            view.read_with(cx, |w, _| w.data.skill.as_ref().map(|s| s.lines.clone()))
+        };
+        let synced = |status, cx: &mut gpui_kit::TestAppContext| {
+            cx.update(|cx| {
+                cx.default_global::<SkillStatus>().skill = Some(Skill {
+                    targets: vec![Target {
+                        agent: "Claude Code",
+                        path: "~/.claude/skills/gitviber/SKILL.md".into(),
+                        status,
+                        error: None,
+                    }],
+                    why: None,
+                })
+            });
+            cx.run_until_parked();
+        };
+        let line = |state: &str| {
+            vec![format!(
+                "Claude Code: ~/.claude/skills/gitviber/SKILL.md ({state})"
+            )]
+        };
+        assert_eq!(lines(cx), None, "none before the first sync");
+        synced(Status::Written, cx);
+        assert_eq!(lines(cx), Some(line("written")));
+        cx.update(|cx| Settings::update(cx, |s| s.browser_agent_skill = false));
+        cx.run_until_parked();
+        assert_eq!(
+            lines(cx),
+            Some(Vec::new()),
+            "off: only what couldn't be removed"
+        );
+        synced(Status::Failed, cx);
+        assert_eq!(lines(cx), Some(line("couldn't be written")));
+        cx.update(|cx| Settings::update(cx, |s| s.browser_agent_control = false));
+        cx.run_until_parked();
+        assert_eq!(lines(cx), None);
     }
 
     struct Main;
