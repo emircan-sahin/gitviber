@@ -16,7 +16,7 @@ use crate::model::tree::folders_of;
 use crate::store;
 use crate::toasts::{git_error, tracked, with_undo};
 use gitviber_core::api;
-use gitviber_core::git::{Commit, ExternalTools, FileChange, Side as GitSide};
+use gitviber_core::git::{Commit, ExternalTools, FileChange, HeadMessage, Side as GitSide};
 use gitviber_core::network::CANCELLED;
 use gitviber_diff::{Compare, DiffSource};
 use gitviber_history::BisectBar;
@@ -301,7 +301,7 @@ pub struct ChangesPanel {
     error: Option<String>,
     root: String,
     branch: Option<String>,
-    head: Option<Arc<Commit>>,
+    head: Option<Arc<HeadMessage>>,
     pushed: bool,
     operation: Option<Op>,
     /// A bisect under way: History's bar where a merge's banner goes.
@@ -550,7 +550,7 @@ impl ChangesPanel {
     // MARK: Reading the repo
 
     /// Status, stashes and submodules side by side, one read at a time; changes during a read
-    /// make one more. HEAD's commit follows on its own, once HEAD moved.
+    /// make one more. HEAD's message follows on its own, once HEAD moved.
     fn read(&mut self, cx: &mut Context<Self>) {
         if !self.repo_open(cx) {
             return;
@@ -620,19 +620,13 @@ impl ChangesPanel {
                         this.error = None;
                         this.root = status.root.clone();
                         this.branch = status.branch.clone();
-                        match &status.head {
+                        match &status.head_oid {
                             None => {
                                 this.head = None;
                                 this._head = Task::ready(());
                             }
-                            // Status gives HEAD's first 7 digits.
-                            Some(short)
-                                if !this
-                                    .head
-                                    .as_ref()
-                                    .is_some_and(|h| h.sha.starts_with(short)) =>
-                            {
-                                this.load_head(short.clone(), cx)
+                            Some(oid) if this.head.as_ref().is_none_or(|h| &h.sha != oid) => {
+                                this.load_head(cx)
                             }
                             Some(_) => {}
                         }
@@ -695,12 +689,12 @@ impl ChangesPanel {
         });
     }
 
-    /// HEAD's commit, whose message Amend puts in the box. Nothing shown waits for it.
-    fn load_head(&mut self, sha: String, cx: &mut Context<Self>) {
+    /// HEAD's message, which Amend puts in the box. Nothing shown waits for it.
+    fn load_head(&mut self, cx: &mut Context<Self>) {
         let core = crate::core(cx);
         self._head = cx.spawn(async move |this, cx| {
             let head = cx
-                .background_spawn(async move { api::history::find_commit(&core, sha) })
+                .background_spawn(async move { api::history::head_message(&core) })
                 .await;
             // A failed read keeps the last one; the next read asks again.
             if let Ok(Some(head)) = head {
@@ -3784,10 +3778,7 @@ mod tests {
 
     /// A throwaway repo: a.txt and b.txt changed, c.txt new.
     fn repo(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-changes-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = gitviber_ui::test_support::temp_dir(&format!("changes-{name}"));
         git(&dir, &["init", "-q", "-b", "main"]);
         git(&dir, &["config", "user.name", "Test"]);
         git(&dir, &["config", "user.email", "test@example.com"]);
@@ -3818,16 +3809,10 @@ mod tests {
     }
 
     fn setup(cx: &mut TestAppContext) {
-        let config =
-            std::env::temp_dir().join(format!("gitviber-changes-config-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&config);
-        // SAFETY: these tests point the config dir at a temporary folder, as gitviber-ui's do.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &config) };
+        gitviber_ui::test_support::config_dir("changes-config");
         cx.update(|cx| {
             gitviber_ui::init(cx);
-            // Its events go nowhere: the app's would come in on the watcher's thread.
-            let core = Arc::new(gitviber_core::Core::new(Arc::new(|_| {})));
-            cx.set_global(crate::TestCore(core));
+            gitviber_ui::install_core(cx);
             crate::init(cx);
         });
     }
@@ -4175,10 +4160,7 @@ mod tests {
     /// A throwaway repo mid-merge, a.txt conflicted in git's default style: `ours` and `theirs`
     /// are each side's file.
     fn conflicted(name: &str, ours: &str, theirs: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-changes-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = gitviber_ui::test_support::temp_dir(&format!("changes-{name}"));
         git(&dir, &["init", "-q", "-b", "main"]);
         git(&dir, &["config", "user.name", "Test"]);
         git(&dir, &["config", "user.email", "test@example.com"]);
@@ -4317,9 +4299,7 @@ mod tests {
     fn a_deleted_side_keeps_or_deletes_the_whole_file(cx: &mut TestAppContext) {
         use crate::conflict::TestAct;
         // Theirs deletes the file, ours changes it: UD.
-        let dir = std::env::temp_dir().join(format!("gitviber-changes-ud-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = gitviber_ui::test_support::temp_dir("changes-ud");
         git(&dir, &["init", "-q", "-b", "main"]);
         git(&dir, &["config", "user.name", "Test"]);
         git(&dir, &["config", "user.email", "test@example.com"]);
@@ -4641,11 +4621,6 @@ mod tests {
     fn a_panel_built_while_the_repo_opens_reads_once_open(cx: &mut TestAppContext) {
         let dir = repo("launch");
         setup(cx);
-        cx.update(|cx| {
-            // Only the app's core opens a project: the panel reads that one too.
-            let core = gitviber_ui::install_core(cx);
-            cx.set_global(crate::TestCore(core));
-        });
         let ws = cx.update(|cx| cx.new(Workspace::new));
         let (host, cx) = cx.add_window_view(|_, _| Host {
             panel: None,

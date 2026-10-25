@@ -14,7 +14,7 @@ use crate::model::{Kind, Lists};
 use crate::store::{self, Draft};
 use crate::toasts::{git_error, tracked, with_undo};
 use gitviber_core::api;
-use gitviber_core::git::{CANCELLED_STASHED, Commit, CommitOptions};
+use gitviber_core::git::{CANCELLED_STASHED, CommitOptions, HeadMessage};
 use gitviber_core::network::CANCELLED;
 use gitviber_core::suggest::{Kind as SuggestKind, Scope};
 use gitviber_refs::errors::GitFix;
@@ -75,7 +75,7 @@ pub struct RepoFacts {
     /// The main worktree: sign-off is kept per repository, across its worktrees.
     pub main: String,
     pub branch: Option<String>,
-    pub head: Option<Arc<Commit>>,
+    pub head: Option<Arc<HeadMessage>>,
     pub lists: Lists,
     /// Set while git has left a message for the next commit (a squash merge, `cherry-pick -n`).
     pub prepared: Option<String>,
