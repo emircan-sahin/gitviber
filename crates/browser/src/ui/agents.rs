@@ -423,15 +423,17 @@ mod tests {
         cx.update(gitviber_ui::init);
         let mut sent = None;
         cx.update(|cx| send_settings(&mut sent, cx));
-        assert!(cx.update(|cx| SkillStatus::get(cx).is_none()), "not before it's done");
+        assert!(
+            cx.update(|cx| SkillStatus::get(cx).is_none()),
+            "not before it's done"
+        );
         cx.run_until_parked();
         let first = cx.update(|cx| SkillStatus::get(cx).cloned()).unwrap();
         assert!(!first.targets.is_empty());
         let heard = std::rc::Rc::new(std::cell::Cell::new(0));
         let count = heard.clone();
-        let _watch = cx.update(|cx| {
-            cx.observe_global::<SkillStatus>(move |_| count.set(count.get() + 1))
-        });
+        let _watch =
+            cx.update(|cx| cx.observe_global::<SkillStatus>(move |_| count.set(count.get() + 1)));
         cx.update(|cx| {
             Settings::update(cx, |s| {
                 s.browser_agent_control = !s.browser_agent_control;

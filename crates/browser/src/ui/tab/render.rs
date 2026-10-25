@@ -952,8 +952,9 @@ impl BrowserTab {
     /// What shows of the page, which a pick's mark stays inside: its screen in device mode, else
     /// the whole area (a mark ran off the device's screen).
     pub(super) fn mark_room(&self) -> (f32, f32) {
-        self.fitted()
-            .map_or(self.area.get(), |(_, _, f)| (f.page.w as f32, f.page.h as f32))
+        self.fitted().map_or(self.area.get(), |(_, _, f)| {
+            (f.page.w as f32, f.page.h as f32)
+        })
     }
 
     fn marks(&self, t: &AppTheme) -> Vec<AnyElement> {
