@@ -77,7 +77,9 @@ impl Diagrams {
         cx.observe_release(&diagrams, |d, cx| {
             for (_, entry) in d.entries.drain() {
                 if let Entry::Done(Drawn::Ready { image, .. }) = entry {
-                    cx.drop_image(image, None);
+                    // Dropped once this update is over: the window it runs in is out of the app's
+                    // list until then, and would keep the picture.
+                    cx.defer(move |cx| cx.drop_image(image, None));
                 }
             }
         })
@@ -138,7 +140,7 @@ impl Diagrams {
                 break;
             };
             if let Some(Entry::Done(Drawn::Ready { image, .. })) = self.entries.remove(&old) {
-                cx.drop_image(image, None);
+                cx.defer(move |cx| cx.drop_image(image, None));
             }
         }
         None

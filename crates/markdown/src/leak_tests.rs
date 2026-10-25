@@ -19,9 +19,7 @@ const DOC: &str = "---\ntitle: Notes\ntags: a\n---\n# Title\n\n> [!NOTE]\n> An *
 
 #[gpui_kit::test]
 fn closing_a_document_gives_its_entities_back(cx: &mut TestAppContext) {
-    let dir = std::env::temp_dir().join(format!("gitviber-markdown-test-{}", std::process::id()));
-    // SAFETY: the tests that read the config dir all point it at a temporary folder.
-    unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+    gitviber_ui::test_support::config_dir("markdown-test");
     cx.update(gitviber_ui::init);
     let (host, cx) = cx.add_window_view(|_, _| Host(None));
     let snapshot = cx.update(|_, cx| cx.leak_detector_snapshot());
@@ -73,9 +71,7 @@ fn closing_a_document_gives_its_entities_back(cx: &mut TestAppContext) {
 /// paths come relative to the repo, and the view still goes with its tab.
 #[gpui_kit::test]
 fn a_reader_gives_the_images_instead_of_the_disk(cx: &mut TestAppContext) {
-    let dir = std::env::temp_dir().join(format!("gitviber-markdown-test-{}", std::process::id()));
-    // SAFETY: the tests that read the config dir all point it at a temporary folder.
-    unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+    gitviber_ui::test_support::config_dir("markdown-test");
     cx.update(gitviber_ui::init);
     let (host, cx) = cx.add_window_view(|_, _| Host(None));
     let snapshot = cx.update(|_, cx| cx.leak_detector_snapshot());
@@ -177,9 +173,7 @@ fn prose(i: usize) -> String {
 #[test]
 fn closed_documents_leave_no_shaped_text_behind() {
     use gpui_kit::{HeadlessAppContext, px, size};
-    let dir = std::env::temp_dir().join(format!("gitviber-markdown-test-{}", std::process::id()));
-    // SAFETY: the tests that read the config dir all point it at a temporary folder.
-    unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+    gitviber_ui::test_support::config_dir("markdown-test");
     let text_system = std::sync::Arc::new(gpui_apple::AppleTextSystem::new());
     let mut cx = HeadlessAppContext::with_platform(
         text_system,

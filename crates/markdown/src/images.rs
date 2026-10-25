@@ -66,7 +66,9 @@ impl BoundedImageCache {
         cx.observe_release(&cache, |cache, cx| {
             for (_, entry) in cache.entries.drain() {
                 if let Some(Ok(image)) = entry.loaded() {
-                    cx.drop_image(image, None);
+                    // Dropped once this update is over: the window it runs in is out of the app's
+                    // list until then, and would keep the picture.
+                    cx.defer(move |cx| cx.drop_image(image, None));
                 }
             }
         })

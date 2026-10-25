@@ -370,10 +370,7 @@ mod tests {
     fn a_view_finds_steps_and_follows_its_text(cx: &mut gpui_kit::TestAppContext) {
         use std::cell::RefCell;
         use std::rc::Rc;
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-markdown-test-{}", std::process::id()));
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        gitviber_ui::test_support::config_dir("markdown-test");
         cx.update(gitviber_ui::init);
         let doc = "# Foo\n\nfoo **bar** foo\n\n- a foo item\n";
         let (host, cx) = cx.add_window_view(|window, cx| {
@@ -443,10 +440,7 @@ mod tests {
     fn find_next_and_previous_keys_step_from_the_box(cx: &mut gpui_kit::TestAppContext) {
         use std::cell::RefCell;
         use std::rc::Rc;
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-markdown-test-{}", std::process::id()));
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        gitviber_ui::test_support::config_dir("markdown-test");
         cx.update(gitviber_ui::init);
         let git = Rc::new(std::cell::Cell::new(false));
         let (host, cx) = cx.add_window_view(|window, cx| {
