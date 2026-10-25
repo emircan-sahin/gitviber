@@ -549,9 +549,10 @@ impl Os {
             full_screen: cx
                 .try_global::<FullScreen>()
                 .is_some_and(|f| !f.0.is_empty()),
-            #[cfg(target_os = "macos")]
+            // Tests don't read the machine's setting: a CI runner may have it on.
+            #[cfg(all(target_os = "macos", not(test)))]
             reduce_transparency: display::reduce_transparency(),
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(any(not(target_os = "macos"), test))]
             reduce_transparency: false,
         }
     }
@@ -842,6 +843,7 @@ impl Global for FullScreen {}
 
 /// `window` (an NSWindow) starts entering full screen (`on`) or leaving it, or closes: the theme
 /// turns solid while one is in full screen, and see-through again after.
+#[cfg(any(target_os = "macos", test))]
 fn full_screen(window: usize, on: bool, cx: &mut App) {
     let set = &mut cx.default_global::<FullScreen>().0;
     let changed = if on {
