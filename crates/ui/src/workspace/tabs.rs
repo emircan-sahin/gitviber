@@ -18,6 +18,8 @@ pub struct TabEntry<T> {
     pub key: SharedString,
     /// Shown in italics; the next preview open replaces it.
     pub preview: bool,
+    /// The tab whose page opened this one (a popup): closed while active, it hands back to it.
+    pub opener: Option<SharedString>,
     pub item: T,
 }
 
@@ -109,6 +111,7 @@ impl<T> Tabs<T> {
         let entry = TabEntry {
             key: key.clone(),
             preview,
+            opener: None,
             item: make(),
         };
         self.active = Some(key);
@@ -124,12 +127,45 @@ impl<T> Tabs<T> {
         }
     }
 
+    /// A popup's tab, kept and active, right after its opener `beside` and the popups that one
+    /// opened before, as browsers place it; at the end when `beside` isn't open. Open already:
+    /// it's made active where it is.
+    pub fn open_beside(
+        &mut self,
+        key: SharedString,
+        beside: SharedString,
+        make: impl FnOnce() -> T,
+    ) -> Opened {
+        if self.position(&key).is_some() {
+            return self.open(key, false, make);
+        }
+        let at = self.position(&beside).map_or(self.tabs.len(), |at| {
+            let kin = self.tabs[at + 1..]
+                .iter()
+                .take_while(|t| t.opener.as_ref() == Some(&beside))
+                .count();
+            at + 1 + kin
+        });
+        self.tabs.insert(
+            at,
+            TabEntry {
+                key: key.clone(),
+                preview: false,
+                opener: Some(beside),
+                item: make(),
+            },
+        );
+        self.active = Some(key);
+        Opened::Added
+    }
+
     /// A tab at the end, the active one left as it is: one opened in the background.
     pub fn add(&mut self, key: SharedString, make: impl FnOnce() -> T) {
         if self.position(&key).is_none() {
             self.tabs.push(TabEntry {
                 key,
                 preview: false,
+                opener: None,
                 item: make(),
             });
         }
@@ -158,15 +194,25 @@ impl<T> Tabs<T> {
     }
 
     /// Closes `keys`, remembering where each was for Reopen Closed Tab (unless `remember` is
-    /// false: a tab that can't come back as it was). The active one hands over to its right
-    /// neighbour, else its left. Returns the closed tabs' items, for the caller to drop.
-    pub fn close(&mut self, keys: &[SharedString], remember: bool) -> Vec<T> {
+    /// false: a tab that can't come back as it was). The active one hands over to its opener
+    /// (a popup's), else its right neighbour, else its left, never to a `hidden` tab: with only
+    /// those left, none is active. Returns the closed tabs' items, for the caller to drop.
+    pub fn close(
+        &mut self,
+        keys: &[SharedString],
+        remember: bool,
+        hidden: impl Fn(&T) -> bool,
+    ) -> Vec<T> {
         let was_active = self.active_index();
+        let mut opener = None;
         let mut closed_now = Vec::new();
         let mut removed = Vec::new();
         let mut slots: Vec<Option<TabEntry<T>>> = Vec::with_capacity(self.tabs.len());
         for (index, tab) in std::mem::take(&mut self.tabs).into_iter().enumerate() {
             if keys.contains(&tab.key) {
+                if was_active == Some(index) {
+                    opener = tab.opener.clone();
+                }
                 if remember {
                     closed_now.push(ClosedTab {
                         key: tab.key.clone(),
@@ -186,9 +232,12 @@ impl<T> Tabs<T> {
         let overflow = self.closed.len().saturating_sub(CLOSED_CAP);
         self.closed.drain(..overflow);
         if let Some(at) = was_active.filter(|i| slots[*i].is_none()) {
-            let right = slots[at..].iter().flatten().next();
-            let left = slots[..at].iter().rev().flatten().next();
-            self.active = right.or(left).map(|t| t.key.clone());
+            let shown = |t: &&TabEntry<T>| !hidden(&t.item);
+            let back =
+                opener.and_then(|o| slots.iter().flatten().filter(shown).find(|t| t.key == o));
+            let right = slots[at..].iter().flatten().find(shown);
+            let left = slots[..at].iter().rev().flatten().find(shown);
+            self.active = back.or(right).or(left).map(|t| t.key.clone());
         }
         self.tabs = slots.into_iter().flatten().collect();
         removed
@@ -212,10 +261,10 @@ impl<T> Tabs<T> {
                 self.tabs.remove(at).item
             }
             None => {
-                let preview = self.tabs[at].preview;
                 let entry = TabEntry {
                     key: new_key.clone(),
-                    preview,
+                    preview: self.tabs[at].preview,
+                    opener: self.tabs[at].opener.clone(),
                     item: make(),
                 };
                 std::mem::replace(&mut self.tabs[at], entry).item
@@ -241,6 +290,7 @@ impl<T> Tabs<T> {
                 TabEntry {
                     key: key.clone(),
                     preview: false,
+                    opener: None,
                     item,
                 },
             );
@@ -325,6 +375,112 @@ mod tests {
         SharedString::from(s.to_string())
     }
 
+    fn none_hidden(_: &u32) -> bool {
+        false
+    }
+
+    fn open_all(tabs: &mut Tabs<u32>, keys: &[&str]) {
+        for (i, key) in keys.iter().enumerate() {
+            tabs.open(k(key), false, || i as u32);
+        }
+    }
+
+    #[test]
+    fn a_popup_opens_after_its_opener_and_the_popups_it_opened_before() {
+        let mut tabs: Tabs<u32> = Tabs::default();
+        open_all(&mut tabs, &["a", "b", "c"]);
+        assert_eq!(tabs.open_beside(k("p1"), k("a"), || 9), Opened::Added);
+        assert_eq!(keys(&tabs), ["a", "p1", "b", "c"]);
+        assert_eq!(tabs.active_key().unwrap(), "p1");
+        tabs.open_beside(k("p2"), k("a"), || 9);
+        assert_eq!(keys(&tabs), ["a", "p1", "p2", "b", "c"]);
+        // Open already: shown where it is.
+        tabs.activate("c");
+        assert_eq!(
+            tabs.open_beside(k("p1"), k("a"), || unreachable!()),
+            Opened::Existing
+        );
+        assert_eq!(keys(&tabs), ["a", "p1", "p2", "b", "c"]);
+        assert_eq!(tabs.active_key().unwrap(), "p1");
+    }
+
+    #[test]
+    fn another_openers_popup_beside_it_isnt_kin() {
+        let mut tabs: Tabs<u32> = Tabs::default();
+        open_all(&mut tabs, &["a", "b"]);
+        tabs.open_beside(k("q1"), k("b"), || 9);
+        tabs.move_tab(2, 1);
+        assert_eq!(keys(&tabs), ["a", "q1", "b"]);
+        tabs.open_beside(k("p1"), k("a"), || 9);
+        assert_eq!(keys(&tabs), ["a", "p1", "q1", "b"]);
+    }
+
+    #[test]
+    fn a_popup_whose_opener_is_gone_goes_to_the_end() {
+        let mut tabs: Tabs<u32> = Tabs::default();
+        open_all(&mut tabs, &["a"]);
+        tabs.open_beside(k("p"), k("zzz"), || 9);
+        assert_eq!(keys(&tabs), ["a", "p"]);
+    }
+
+    #[test]
+    fn a_closed_popup_hands_back_to_its_opener_while_that_is_open() {
+        let mut tabs: Tabs<u32> = Tabs::default();
+        open_all(&mut tabs, &["a", "b"]);
+        tabs.open_beside(k("p"), k("a"), || 9);
+        tabs.close(&[k("p")], true, none_hidden);
+        assert_eq!(tabs.active_key().unwrap(), "a", "not its right neighbour b");
+
+        // Its opener closed first: the usual neighbour.
+        tabs.open_beside(k("p"), k("a"), || 9);
+        tabs.close(&[k("a")], true, none_hidden);
+        assert_eq!(tabs.active_key().unwrap(), "p", "still open");
+        tabs.close(&[k("p")], true, none_hidden);
+        assert_eq!(tabs.active_key().unwrap(), "b");
+
+        // Not active when it closed: what is stays.
+        tabs.open(k("a"), false, || 0);
+        tabs.open_beside(k("p"), k("a"), || 9);
+        tabs.activate("b");
+        tabs.close(&[k("p")], true, none_hidden);
+        assert_eq!(tabs.active_key().unwrap(), "b");
+
+        // Not a popup: its neighbour, not anyone's opener.
+        tabs.close(&[k("b")], true, none_hidden);
+        assert_eq!(tabs.active_key().unwrap(), "a");
+
+        // Closed with its opener in one go: the usual neighbour.
+        open_all(&mut tabs, &["c"]);
+        tabs.open_beside(k("p"), k("a"), || 9);
+        tabs.close(&[k("a"), k("p")], true, none_hidden);
+        assert_eq!(tabs.active_key().unwrap(), "c");
+    }
+
+    #[test]
+    fn closing_never_hands_over_to_a_hidden_tab() {
+        let hidden = |item: &u32| *item == 99;
+        let mut tabs: Tabs<u32> = Tabs::default();
+        open_all(&mut tabs, &["a", "b"]);
+        tabs.add(k("h"), || 99);
+        // Its right neighbour is hidden: the left one.
+        tabs.close(&[k("b")], true, hidden);
+        assert_eq!(tabs.active_key().unwrap(), "a");
+        // Past a hidden one to the next shown.
+        tabs.open(k("c"), false, || 3);
+        tabs.activate("a");
+        tabs.close(&[k("a")], true, hidden);
+        assert_eq!(tabs.active_key().unwrap(), "c");
+        // Only hidden ones left: none active, so the center shows its empty state.
+        tabs.close(&[k("c")], true, hidden);
+        assert_eq!(keys(&tabs), ["h"]);
+        assert!(tabs.active_key().is_none());
+        // A hidden opener isn't handed back to either.
+        open_all(&mut tabs, &["d"]);
+        tabs.open_beside(k("p"), k("h"), || 9);
+        tabs.close(&[k("p")], true, hidden);
+        assert_eq!(tabs.active_key().unwrap(), "d");
+    }
+
     #[test]
     fn open_dedupes_and_reuses_the_preview() {
         let mut tabs: Tabs<u32> = Tabs::default();
@@ -355,12 +511,12 @@ mod tests {
             tabs.open(k(key), false, || i as u32);
         }
         tabs.activate("b");
-        let gone = tabs.close(&[k("b")], true);
+        let gone = tabs.close(&[k("b")], true, none_hidden);
         assert_eq!(gone, [1]);
         assert_eq!(tabs.active_key().unwrap(), "c");
-        tabs.close(&[k("c")], true);
+        tabs.close(&[k("c")], true, none_hidden);
         assert_eq!(tabs.active_key().unwrap(), "a");
-        tabs.close(&[k("a")], false);
+        tabs.close(&[k("a")], false, none_hidden);
         assert!(tabs.is_empty());
         assert!(tabs.active_key().is_none());
         assert_eq!(tabs.take_reopen().unwrap().key, "c");
@@ -372,7 +528,7 @@ mod tests {
         for (i, key) in ["a", "b", "c", "d"].iter().enumerate() {
             tabs.open(k(key), false, || i as u32);
         }
-        tabs.close(&[k("b"), k("d")], true);
+        tabs.close(&[k("b"), k("d")], true, none_hidden);
         assert_eq!(keys(&tabs), ["a", "c"]);
         let first = tabs.take_reopen().unwrap();
         assert_eq!((first.key.as_ref(), first.index), ("b", 1));

@@ -632,7 +632,22 @@ mod tests {
             ))
         );
         let gone = next_agent(Some(&claude(Some(Working))), None, false);
-        assert!(gone.agent.is_none() && gone.note.is_none() && gone.changed);
+        assert!(gone.agent.is_none() && gone.note.is_none() && gone.changed && !gone.first);
+    }
+
+    #[test]
+    fn an_unchanged_read_changes_nothing() {
+        let prev = claude(Some(Working));
+        for next in [
+            next_agent(Some(&prev), Some(claude(Some(Working))), false),
+            live(&prev, claude(Some(Working))),
+        ] {
+            assert_eq!(next.agent.as_ref(), Some(&prev));
+            assert!(!next.changed);
+        }
+        let idle = live(&prev, claude(Some(Idle)));
+        assert_eq!(idle.agent, Some(claude(Some(Idle))));
+        assert!(idle.changed);
     }
 
     #[test]
@@ -816,6 +831,25 @@ mod tests {
             })
             .collect();
         assert_eq!(agents_waiting(&many), 250);
+        assert!(by_tab(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_badge_counts_each_agent_once_and_drops_to_0_as_panes_close() {
+        use Shown::*;
+        // A question not looked at yet is both waiting and unseen: one agent, one count.
+        let all = [
+            entry(1, 1, 1, Waiting, 0., true),
+            entry(2, 1, 1, Finished, 0., true),
+            entry(3, 1, 1, Working, 0., false),
+            entry(4, 1, 1, Running, 0., true),
+            entry(5, 1, 1, Finished, 0., false),
+        ];
+        assert_eq!(agents_waiting(&all), 3);
+        for n in (0..=all.len()).rev() {
+            assert!(agents_waiting(&all[..n]) <= n);
+        }
+        assert_eq!(agents_waiting(&all[2..3]), 0);
     }
 
     #[test]
@@ -847,6 +881,24 @@ mod tests {
     }
 
     #[test]
+    fn a_quit_counts_each_pane_once_agents_before_commands() {
+        let (w, q, n) = (claude(Some(Working)), claude(Some(Waiting)), claude(None));
+        assert!(quit_stops(&[(false, None), (false, None), (false, Some(&n))]).is_empty());
+        // An agent asking for permission is mid-turn: quitting stops it.
+        assert_eq!(quit_stops(&[(true, Some(&q))]), ["1 agent working"]);
+        assert_eq!(
+            quit_stops(&[
+                (true, None),
+                (true, None),
+                (true, Some(&w)),
+                (true, Some(&w)),
+                (true, Some(&w))
+            ]),
+            ["3 agents working", "2 commands running"]
+        );
+    }
+
+    #[test]
     fn text_for_a_worktrees_agent() {
         assert_eq!(handoff_to(None), Handoff::Start);
         assert_eq!(handoff_to(Some(&claude(Some(Idle)))), Handoff::Paste);
@@ -865,6 +917,269 @@ mod tests {
                 working: false
             }
         );
+    }
+
+    #[test]
+    fn each_state_has_its_look_and_an_unseen_finish_is_told_apart() {
+        use Shown::*;
+        assert_eq!(look_of(Some(Working), false), Some(Look::Working));
+        assert_eq!(look_of(Some(Waiting), false), Some(Look::Needs));
+        assert_eq!(look_of(Some(Finished), true), Some(Look::Unread));
+        assert_eq!(look_of(Some(Finished), false), Some(Look::Done));
+        // An agent that doesn't say its state shows nothing until it sends news.
+        assert_eq!(look_of(Some(Running), false), None);
+        assert_eq!(look_of(Some(Running), true), Some(Look::Unread));
+        // A question outranks news, and new work makes the news old.
+        assert_eq!(look_of(Some(Waiting), true), Some(Look::Needs));
+        assert_eq!(look_of(Some(Working), true), Some(Look::Working));
+    }
+
+    #[test]
+    fn a_state_as_the_list_says_it_idle_is_finished() {
+        assert_eq!(shown_state(Some(Working)), Shown::Working);
+        assert_eq!(shown_state(Some(Waiting)), Shown::Waiting);
+        assert_eq!(shown_state(Some(Idle)), Shown::Finished);
+        assert_eq!(shown_state(None), Shown::Running);
+    }
+
+    #[test]
+    fn every_agent_state_with_and_without_news_and_no_agent_reads_one_look() {
+        // (agent and its state file, needs you, look)
+        let table: [(Option<Option<AgentState>>, bool, Option<Look>); 10] = [
+            (None, false, None),
+            (None, true, Some(Look::Unread)),
+            (Some(None), false, None),
+            (Some(None), true, Some(Look::Unread)),
+            (Some(Some(Working)), false, Some(Look::Working)),
+            (Some(Some(Working)), true, Some(Look::Working)),
+            (Some(Some(Waiting)), false, Some(Look::Needs)),
+            (Some(Some(Waiting)), true, Some(Look::Needs)),
+            (Some(Some(Idle)), false, Some(Look::Done)),
+            (Some(Some(Idle)), true, Some(Look::Unread)),
+        ];
+        for (agent, needs_you, look) in table {
+            let pane = agent.map(claude);
+            assert_eq!(
+                pane_look(pane.as_ref(), needs_you),
+                look,
+                "{agent:?} {needs_you}"
+            );
+            // The agents list reads the same pane the same way.
+            if let Some(state) = agent {
+                assert_eq!(look_of(Some(shown_state(state)), needs_you), look);
+            }
+        }
+    }
+
+    #[test]
+    fn the_most_urgent_look_is_the_first_in_all_present_whatever_the_order() {
+        assert_eq!(
+            most_urgent([Some(Look::Working), Some(Look::Unread)]),
+            Some(Look::Unread)
+        );
+        assert_eq!(
+            most_urgent([Some(Look::Unread), Some(Look::Needs), Some(Look::Done)]),
+            Some(Look::Needs)
+        );
+        assert_eq!(most_urgent([None, None]), None);
+        assert_eq!(most_urgent([]), None);
+        let all: Vec<Option<Look>> = Look::ALL.into_iter().map(Some).chain([None]).collect();
+        let rank = |l: Look| Look::ALL.iter().position(|&x| x == l).unwrap();
+        for &a in &all {
+            for &b in &all {
+                for &c in &all {
+                    let looks = [a, b, c];
+                    let want = Look::ALL.into_iter().find(|l| looks.contains(&Some(*l)));
+                    let got = most_urgent(looks);
+                    assert_eq!(got, want, "{looks:?}");
+                    for l in looks.into_iter().flatten() {
+                        assert!(rank(got.unwrap()) <= rank(l));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_question_or_unseen_news_is_news() {
+        let news: Vec<bool> = Look::ALL.into_iter().map(Look::is_news).collect();
+        assert_eq!(news, [true, true, false, false]);
+    }
+
+    #[test]
+    fn an_agent_its_shell_wakes_before_its_finish_is_seen_counts_as_its_dot_shows() {
+        // Busy, then its shell (finished, marked unseen out of sight), then the shell exits.
+        let agent = claude(Some(Working));
+        let agent = live(&agent, claude(Some(Idle))).agent.unwrap();
+        let agent = live(&agent, claude(Some(Working))).agent.unwrap();
+        let look = pane_look(Some(&agent), true);
+        assert_eq!(look, Some(Look::Working));
+        let entry = AgentEntry {
+            state: shown_state(agent.state),
+            ..entry(1, 1, 1, Shown::Working, 0., true)
+        };
+        // The Dock badge, the Agents button and the list's order all read this one.
+        assert_eq!(
+            agents_waiting(&[entry]),
+            usize::from(look.is_some_and(Look::is_news))
+        );
+    }
+
+    #[test]
+    fn a_label_names_the_agent_only_in_the_agents_own_looks() {
+        let claude = Some("Claude Code");
+        assert_eq!(Look::Working.label(claude), "Claude Code working");
+        assert_eq!(Look::Done.label(claude), "Claude Code finished");
+        assert_eq!(Look::Unread.label(claude), "Not viewed");
+        assert_eq!(Look::Needs.label(claude), "Needs you");
+        assert_eq!(Look::Working.label(None), "Agent working");
+        assert_eq!(Look::Done.label(None), "Agent finished");
+    }
+
+    /// Random events across 50 panes in 10 tabs, applied as the panes apply them: an agent's
+    /// state file changing, a bell, the pane looked at, the agent exiting or starting.
+    mod stress {
+        use super::*;
+
+        struct Sim {
+            id: u64,
+            tab: u64,
+            cwd: String,
+            agent: Option<PaneAgent>,
+            needs_you: bool,
+        }
+
+        const STATES: [Option<AgentState>; 4] = [Some(Working), Some(Waiting), Some(Idle), None];
+
+        /// mulberry32: the same runs every time, no dependency.
+        fn rng(mut seed: u32) -> impl FnMut() -> f64 {
+            move || {
+                seed = seed.wrapping_add(0x6d2b_79f5);
+                let mut t = (seed ^ (seed >> 15)).wrapping_mul(1 | seed);
+                t = t.wrapping_add((t ^ (t >> 7)).wrapping_mul(61 | t)) ^ t;
+                f64::from(t ^ (t >> 14)) / 4_294_967_296.0
+            }
+        }
+
+        fn look(p: &Sim) -> Option<Look> {
+            pane_look(p.agent.as_ref(), p.needs_you)
+        }
+
+        fn entries(panes: &[Sim]) -> Vec<AgentEntry> {
+            panes
+                .iter()
+                .filter_map(|p| {
+                    let a = p.agent.as_ref()?;
+                    Some(AgentEntry {
+                        pane: p.id,
+                        name: a.name.clone(),
+                        state: shown_state(a.state),
+                        unseen: p.needs_you,
+                        cwd: p.cwd.clone(),
+                        since: 0.,
+                        tab: p.tab,
+                        at: 1,
+                        of: 1,
+                        pane_name: None,
+                        tab_name: None,
+                        tab_cwd: p.cwd.clone(),
+                    })
+                })
+                .collect()
+        }
+
+        fn run(seed: u32, check: impl Fn(&[Sim])) {
+            let mut r = rng(seed);
+            let mut panes: Vec<Sim> = (0..50)
+                .map(|id| Sim {
+                    id,
+                    tab: id % 10,
+                    cwd: format!("/repo/wt{}", id % 4),
+                    agent: None,
+                    needs_you: false,
+                })
+                .collect();
+            for _ in 0..10_000 {
+                let p = &mut panes[(r() * 50.) as usize];
+                let state = STATES[(r() * 4.) as usize];
+                // Looked at while it happens: no mark.
+                let focused = r() < 0.2;
+                let ev = r();
+                match &p.agent {
+                    Some(a) if ev < 0.5 => {
+                        let next = live(a, PaneAgent { state, ..a.clone() });
+                        p.agent = next.agent;
+                        p.needs_you |= next.note.is_some() && !focused;
+                    }
+                    _ if ev < 0.6 => p.needs_you |= !focused,
+                    _ if ev < 0.8 => p.needs_you = false,
+                    _ if ev < 0.9 => p.agent = next_agent(p.agent.as_ref(), None, true).agent,
+                    None => p.agent = next_agent(None, Some(claude(state)), false).agent,
+                    Some(_) => {}
+                }
+                check(&panes);
+            }
+        }
+
+        #[test]
+        fn a_tabs_and_a_worktrees_dot_is_never_calmer_than_any_of_its_panes() {
+            run(1, |panes| {
+                for tab in 0..10 {
+                    let mine: Vec<_> = panes.iter().filter(|p| p.tab == tab).map(look).collect();
+                    let shown = most_urgent(mine.iter().copied());
+                    assert_eq!(shown.is_none(), mine.iter().all(Option::is_none));
+                    for l in mine.into_iter().flatten() {
+                        assert!(shown.unwrap() <= l);
+                    }
+                }
+                // Folded pane by pane, as the worktree picker does: the same as all at once.
+                let mut by_worktree: HashMap<&str, Look> = HashMap::new();
+                for p in panes {
+                    if let Some(l) = look(p) {
+                        let was = by_worktree.get(p.cwd.as_str()).copied();
+                        by_worktree.insert(&p.cwd, most_urgent([was, Some(l)]).unwrap());
+                    }
+                }
+                for (cwd, l) in by_worktree {
+                    let all = panes.iter().filter(|p| p.cwd == cwd).map(look);
+                    assert_eq!(Some(l), most_urgent(all));
+                }
+            });
+        }
+
+        #[test]
+        fn the_dock_badge_counts_the_agents_whose_dot_is_a_question_or_news() {
+            run(2, |panes| {
+                let shown: Vec<u64> = panes
+                    .iter()
+                    .filter(|p| p.agent.is_some() && look(p).is_some_and(Look::is_news))
+                    .map(|p| p.id)
+                    .collect();
+                let list = entries(panes);
+                let counted: Vec<u64> = list
+                    .iter()
+                    .filter(|e| agents_waiting(std::slice::from_ref(e)) == 1)
+                    .map(|e| e.pane)
+                    .collect();
+                assert_eq!(counted, shown);
+                assert_eq!(agents_waiting(&list), shown.len());
+            });
+        }
+
+        #[test]
+        fn the_agents_list_puts_every_row_with_news_above_every_row_without() {
+            run(3, |panes| {
+                let mut list = entries(panes);
+                list.sort_by(by_urgency);
+                let news: Vec<bool> = list
+                    .iter()
+                    .map(|e| look(&panes[e.pane as usize]).is_some_and(Look::is_news))
+                    .collect();
+                if let Some(first_calm) = news.iter().position(|n| !n) {
+                    assert!(!news[first_calm..].contains(&true), "{news:?}");
+                }
+            });
+        }
     }
 
     #[test]

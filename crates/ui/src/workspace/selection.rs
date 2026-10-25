@@ -235,6 +235,19 @@ pub fn page_label(url: &str) -> String {
     }
 }
 
+/// The host and port a page is on ("localhost:5173", "[::1]:3000"), as the URL parser wrote its
+/// address; "" for a blank tab or anything that isn't a web page's.
+pub fn page_host(url: &str) -> &str {
+    let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    else {
+        return "";
+    };
+    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    authority.rsplit('@').next().unwrap_or(authority)
+}
+
 impl Selection {
     /// The kind openers are registered under ("unstaged", "pr-file", "changes"…).
     pub fn kind(&self) -> &'static str {
@@ -330,6 +343,13 @@ impl Selection {
 
     /// The tab's title before its view is built: the file's name, else what `selection_path` says.
     pub fn title(&self) -> SharedString {
+        if let Self::Browser {
+            title: Some(title), ..
+        } = self
+            && !title.is_empty()
+        {
+            return title.clone().into();
+        }
         let path = selection_path(self);
         if self.is_file_like() {
             path.rsplit('/').next().unwrap_or(&path).to_string().into()
@@ -373,6 +393,14 @@ impl Selection {
                 format!("{}{dots}{}", base.label, head.label).into()
             }
             Self::External { .. } => "read-only".into(),
+            // A page named by its title has its host beside it.
+            Self::Browser {
+                url,
+                title: Some(title),
+                ..
+            } if !title.is_empty() && !page_host(url).is_empty() => {
+                page_host(url).to_string().into()
+            }
             _ => return None,
         })
     }
@@ -996,6 +1024,47 @@ mod tests {
         assert_eq!(selection_path(&at("tab-1", "about:blank")), "New Tab");
         assert!(at("tab-1", "x").file().is_none());
         assert!(at("tab-1", "x").edit_path().is_none());
+        // Restored with its title: named by it, its host beside.
+        let titled = Selection::Browser {
+            id: "tab-1".into(),
+            url: "http://localhost:5173/a".into(),
+            title: Some("Docs".into()),
+            device: None,
+            zoom: None,
+            scheme: None,
+        };
+        assert_eq!(titled.title(), "Docs");
+        assert_eq!(titled.detail().as_deref(), Some("localhost:5173"));
+        let untitled = at("tab-1", "http://localhost:5173/a");
+        assert_eq!(untitled.title(), "localhost:5173/a");
+        assert_eq!(untitled.detail(), None);
+    }
+
+    #[test]
+    fn a_page_is_named_by_its_address_without_the_scheme() {
+        assert_eq!(page_label("http://localhost:5173/"), "localhost:5173");
+        assert_eq!(page_label("https://example.dev/docs/"), "example.dev/docs/");
+        assert_eq!(
+            page_label("http://localhost:5173/a?b=1"),
+            "localhost:5173/a?b=1"
+        );
+        assert_eq!(page_label(BLANK), "New Tab");
+        assert_eq!(page_host("http://localhost:5173/a"), "localhost:5173");
+        assert_eq!(page_host(BLANK), "");
+    }
+
+    #[test]
+    fn labels_and_hosts_of_unusual_pages() {
+        assert_eq!(page_label(""), "New Tab");
+        assert_eq!(page_label("http://[::1]:3000/"), "[::1]:3000");
+        assert_eq!(page_label("https://example.com//"), "example.com//");
+        assert_eq!(page_host("http://[::1]:3000/a"), "[::1]:3000");
+        assert_eq!(page_host("not a url"), "");
+        assert_eq!(page_host(""), "");
+        assert_eq!(page_host("https://example.com?q=1"), "example.com");
+        assert_eq!(page_host("http://localhost:3000#top"), "localhost:3000");
+        assert_eq!(page_host("javascript:alert(1)"), "");
+        assert_eq!(page_host("file:///tmp/x.html"), "");
     }
 
     #[test]

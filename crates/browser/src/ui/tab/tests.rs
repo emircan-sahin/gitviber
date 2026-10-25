@@ -302,3 +302,35 @@ fn keys_in_a_page_are_the_apps_only_for_its_commands(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("cmd-w alt-cmd-u");
     assert_eq!(*ran.borrow(), ["close", "close"]);
 }
+
+/// A page named by its title has its host beside it; by its address till it has one.
+#[gpui::test]
+fn a_titled_pages_tab_shows_its_host_beside_the_title(cx: &mut TestAppContext) {
+    setup(cx);
+    let ws = cx.update(|cx| cx.new(Workspace::new));
+    let (_, cx) = cx.add_window_view(|_, _| Host {
+        tab: None,
+        menu: false,
+    });
+    let tab = |title: Option<&str>, cx: &mut VisualTestContext| {
+        let saved = Saved::of(&Selection::Browser {
+            id: super::super::new_id(),
+            url: "http://localhost:5173/docs".into(),
+            title: title.map(Into::into),
+            device: None,
+            zoom: None,
+            scheme: None,
+        })
+        .unwrap();
+        let ws = ws.downgrade();
+        let tab = cx.update(|window, cx| {
+            cx.new(|cx| BrowserTab::new(saved, "/tmp".into(), ws, window, cx))
+        });
+        tab.read_with(cx, |t, cx| (t.tab_title(cx), t.tab_detail(cx)))
+    };
+    assert_eq!(
+        tab(Some("Docs"), cx),
+        ("Docs".into(), Some("localhost:5173".into()))
+    );
+    assert_eq!(tab(None, cx), ("localhost:5173/docs".into(), None));
+}

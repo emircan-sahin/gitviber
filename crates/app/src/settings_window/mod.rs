@@ -14,7 +14,7 @@ mod to_main;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use gitviber_browser::skill::{Skill, Status};
+use gitviber_browser::skill::{Skill, Status, Target};
 use gitviber_browser::ui::SkillStatus;
 use gitviber_core::api;
 use gitviber_core::notifications::Permission;
@@ -299,23 +299,37 @@ pub struct SkillInfo {
     pub note: String,
 }
 
-/// Each agent's skill, a line each: with the skill off, only those that couldn't be removed.
+/// One agent's skill line: where it is, or why it isn't (a failure with the reason it gave).
+fn skill_line(t: &Target, on: bool) -> String {
+    let (agent, path) = (t.agent, &t.path);
+    match t.status {
+        Status::Written => format!("{agent}: {path}"),
+        Status::Absent => format!("{agent}: not written ({path})"),
+        Status::Newer => format!("{agent}: {path}, kept as a newer GitViber wrote it"),
+        Status::NoAgent => format!("{agent} not found"),
+        Status::Theirs => {
+            format!("A gitviber-browser skill of your own is at {path}; GitViber leaves it")
+        }
+        Status::Failed => {
+            let act = if on { "write" } else { "remove" };
+            let why = t
+                .error
+                .as_deref()
+                .map(|e| format!(": {e}"))
+                .unwrap_or_default();
+            format!("Couldn't {act} {path}{why}")
+        }
+    }
+}
+
+/// Each agent's skill, a line each: with the skill off, only those that couldn't be removed, so
+/// no path reads as written.
 fn skill_info(skill: &Skill, on: bool) -> SkillInfo {
     let mut lines: Vec<String> = skill
         .targets
         .iter()
         .filter(|t| on || matches!(t.status, Status::Failed))
-        .map(|t| {
-            let state = match t.status {
-                Status::Written => "written",
-                Status::Absent => "not written",
-                Status::Newer => "a newer GitViber's, kept",
-                Status::NoAgent => "agent not installed",
-                Status::Theirs => "yours, left alone",
-                Status::Failed => "couldn't be written",
-            };
-            format!("{}: {} ({state})", t.agent, t.path)
-        })
+        .map(|t| skill_line(t, on))
         .collect();
     lines.extend(skill.why.clone());
     SkillInfo {
@@ -1292,6 +1306,71 @@ impl Render for SettingsWindow {
 mod tests {
     use super::*;
 
+    const CLAUDE: &str = "~/.claude/skills/gitviber-browser/SKILL.md";
+
+    fn claude(status: Status, error: Option<&str>) -> Target {
+        Target {
+            agent: "Claude Code",
+            path: CLAUDE.into(),
+            status,
+            error: error.map(String::from),
+        }
+    }
+
+    #[test]
+    fn each_agents_skill_line_names_the_path_or_why_theres_no_skill_there() {
+        let line = |status, error| skill_line(&claude(status, error), true);
+        assert_eq!(
+            line(Status::Written, None),
+            format!("Claude Code: {CLAUDE}")
+        );
+        assert_eq!(
+            line(Status::Absent, None),
+            format!("Claude Code: not written ({CLAUDE})")
+        );
+        assert_eq!(
+            line(Status::Newer, None),
+            format!("Claude Code: {CLAUDE}, kept as a newer GitViber wrote it")
+        );
+        assert_eq!(line(Status::NoAgent, None), "Claude Code not found");
+        assert_eq!(
+            line(Status::Theirs, None),
+            format!("A gitviber-browser skill of your own is at {CLAUDE}; GitViber leaves it")
+        );
+        assert_eq!(
+            line(Status::Failed, Some("Permission denied (os error 13)")),
+            format!("Couldn't write {CLAUDE}: Permission denied (os error 13)")
+        );
+        assert_eq!(
+            skill_line(&claude(Status::Failed, None), false),
+            format!("Couldn't remove {CLAUDE}")
+        );
+    }
+
+    #[test]
+    fn with_the_skill_off_only_a_failure_to_remove_it_shows() {
+        let skill = Skill {
+            targets: vec![
+                claude(Status::Written, None),
+                Target {
+                    agent: "Codex",
+                    path: "~/.agents/skills/gitviber-browser/SKILL.md".into(),
+                    status: Status::Failed,
+                    error: Some("busy".into()),
+                },
+            ],
+            why: Some("No HOME".into()),
+        };
+        assert_eq!(
+            skill_info(&skill, false).lines,
+            [
+                "Couldn't remove ~/.agents/skills/gitviber-browser/SKILL.md: busy",
+                "No HOME"
+            ]
+        );
+        assert_eq!(skill_info(&skill, true).lines.len(), 3);
+    }
+
     #[test]
     fn the_window_is_never_a_full_screen_one() {
         // Managed (1 << 2) and FullScreenPrimary (1 << 7), as a new window has them.
@@ -1380,7 +1459,6 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[gpui_kit::test]
     fn the_skill_shown_is_the_browsers_latest_sync(cx: &mut gpui_kit::TestAppContext) {
-        use gitviber_browser::skill::Target;
         gitviber_ui::test_support::config_dir("settings-skill");
         cx.update(|cx| {
             gitviber_ui::init(cx);
@@ -1405,14 +1483,14 @@ mod tests {
             });
             cx.run_until_parked();
         };
-        let line = |state: &str| {
-            vec![format!(
-                "Claude Code: ~/.claude/skills/gitviber/SKILL.md ({state})"
-            )]
-        };
         assert_eq!(lines(cx), None, "none before the first sync");
         synced(Status::Written, cx);
-        assert_eq!(lines(cx), Some(line("written")));
+        assert_eq!(
+            lines(cx),
+            Some(vec![
+                "Claude Code: ~/.claude/skills/gitviber/SKILL.md".into()
+            ])
+        );
         cx.update(|cx| Settings::update(cx, |s| s.browser_agent_skill = false));
         cx.run_until_parked();
         assert_eq!(
@@ -1421,7 +1499,12 @@ mod tests {
             "off: only what couldn't be removed"
         );
         synced(Status::Failed, cx);
-        assert_eq!(lines(cx), Some(line("couldn't be written")));
+        assert_eq!(
+            lines(cx),
+            Some(vec![
+                "Couldn't remove ~/.claude/skills/gitviber/SKILL.md".into()
+            ])
+        );
         cx.update(|cx| Settings::update(cx, |s| s.browser_agent_control = false));
         cx.run_until_parked();
         assert_eq!(lines(cx), None);

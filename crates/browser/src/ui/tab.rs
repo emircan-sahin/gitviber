@@ -14,7 +14,7 @@ use crate::{Go, Look, Screen};
 use gitviber_ui::actions::browser as act;
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{
-    page_label, Selection, TabIcon, TabItem, Toast, Workspace, WorkspaceEvent,
+    page_host, page_label, Selection, TabIcon, TabItem, Toast, Workspace, WorkspaceEvent,
 };
 use gitviber_ui::{ActiveAppTheme as _, AppTheme};
 use gpui::prelude::FluentBuilder as _;
@@ -395,6 +395,14 @@ impl BrowserTab {
 
     fn page_info<'a>(&self, cx: &'a App) -> Option<&'a super::hub::Page> {
         self.hub.as_ref()?.read(cx).page(&self.saved.id)
+    }
+
+    /// The page's title as it said, else as the tab was left; None till it has one.
+    fn page_title(&self, cx: &App) -> Option<String> {
+        self.state(cx)
+            .map(|s| s.title.clone())
+            .filter(|t| !t.is_empty())
+            .or_else(|| self.saved.title.clone().filter(|t| !t.is_empty()))
     }
 
     /// Where the page is now: as it said, else where the tab was left.

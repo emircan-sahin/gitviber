@@ -219,8 +219,8 @@ fn open_agent_tab(id: String, url: String, root: String, show: bool, cx: &mut Ap
     });
 }
 
-/// A popup of a user's tab joins its opener's workspace and comes forward, as a browser does;
-/// light or dark as the opener shows (a device's user agent would load it again).
+/// A popup of a user's tab joins its opener's workspace beside it and comes forward, as a browser
+/// does; light or dark as the opener shows (a device's user agent would load it again).
 fn open_popup(id: String, opener: String, url: String, cx: &mut App) {
     let Some((w, ws, _)) = tab_of(&opener, cx) else {
         // Its opener went before the tab could be made: nothing would ever show or close it.
@@ -242,8 +242,9 @@ fn open_popup(id: String, opener: String, url: String, cx: &mut App) {
         zoom: None,
         scheme: scheme.map(|s| if s == Scheme::Dark { "dark" } else { "light" }.to_string()),
     };
+    let beside = key_of(&opener).into();
     let _ = w.update(cx, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.open(selection, false, window, cx))
+        ws.update(cx, |ws, cx| ws.open_beside(selection, beside, window, cx))
     });
 }
 

@@ -1834,6 +1834,35 @@ mod tests {
     }
 
     #[test]
+    fn a_dev_servers_address_is_this_machines_another_is_not() {
+        for url in [
+            "http://localhost:3000/",
+            "https://localhost/",
+            "http://127.0.0.1:5173/a?b#c",
+            "http://app.localhost:3000/",
+            "http://0.0.0.0:8080/",
+            "http://[::1]:3000/",
+            "HTTP://LOCALHOST:3000/",
+        ] {
+            assert!(is_local_url(url), "{url}");
+        }
+        for url in [
+            "https://example.dev/",
+            "http://192.168.1.5:3000/",
+            "http://localhost.evil.example/",
+            "http://127.0.0.1.evil.example/",
+            "http://localhost:3000@evil.example/",
+            "ws://localhost:3000/",
+            "file:///tmp/x",
+            "javascript:alert(1)",
+            "nope",
+            "",
+        ] {
+            assert!(!is_local_url(url), "{url}");
+        }
+    }
+
+    #[test]
     fn local_pages_and_the_folders_a_line_names() {
         assert!(is_local_url("http://localhost:1420/"));
         assert!(is_local_url("http://127.0.0.1:3000/x"));

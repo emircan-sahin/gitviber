@@ -4,7 +4,7 @@
 
 use gitviber_ui::actions::{browser, file, tab};
 use gitviber_ui::widgets::FileIcon;
-use gitviber_ui::workspace::{Selection, TabIcon, Workspace, selection_path};
+use gitviber_ui::workspace::{Selection, TabIcon, Workspace, page_host, selection_path};
 use gitviber_ui::{ActiveAppTheme, AppTheme};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
@@ -56,13 +56,13 @@ fn icon(icon: TabIcon, t: &AppTheme) -> Option<AnyElement> {
 }
 
 /// The tabs the strip shows, by index: an agent's browser page while Show agents' tabs is off
-/// keeps running out of it. A tab with no view yet has nothing to hide.
+/// keeps running out of it.
 pub fn visible_tabs(ws: &Workspace, cx: &App) -> Vec<usize> {
     ws.tabs()
         .tabs()
         .iter()
         .enumerate()
-        .filter(|(_, e)| !e.item.handle().is_some_and(|h| h.hidden(cx)))
+        .filter(|(_, e)| !e.item.hidden(cx))
         .map(|(i, _)| i)
         .collect()
 }
@@ -204,7 +204,7 @@ fn tab_menu(
     if let Selection::Browser { url, .. } = selection {
         let ws = workspace.clone();
         let url = url.clone();
-        let has_host = url.starts_with("http://") || url.starts_with("https://");
+        let has_host = !page_host(&url).is_empty();
         return menu
             .separator()
             .item(

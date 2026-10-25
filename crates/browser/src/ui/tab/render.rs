@@ -200,14 +200,17 @@ impl Focusable for BrowserTab {
 
 impl TabItem for BrowserTab {
     fn tab_title(&self, cx: &App) -> SharedString {
-        let title = self
-            .state(cx)
-            .map(|s| s.title.clone())
-            .filter(|t| !t.is_empty())
-            .or_else(|| self.saved.title.clone().filter(|t| !t.is_empty()));
-        title
+        self.page_title(cx)
             .unwrap_or_else(|| page_label(&self.current_url(cx)))
             .into()
+    }
+
+    /// A page named by its title has its host beside it.
+    fn tab_detail(&self, cx: &App) -> Option<SharedString> {
+        self.page_title(cx)?;
+        let url = self.current_url(cx);
+        let host = page_host(&url);
+        (!host.is_empty()).then(|| host.to_string().into())
     }
 
     fn tab_icon(&self, cx: &App) -> TabIcon {

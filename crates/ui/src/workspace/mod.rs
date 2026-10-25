@@ -36,8 +36,8 @@ pub use registry::{
     register_panel_default, register_quick_open,
 };
 pub use selection::{
-    ChangeList, ChangesOf, ComparePoint, GuideOf, Opener, PullRange, Selection, opener, page_label,
-    register_opener, selection_key, selection_path,
+    ChangeList, ChangesOf, ComparePoint, GuideOf, Opener, PullRange, Selection, opener, page_host,
+    page_label, register_opener, selection_key, selection_path,
 };
 pub use tabs::{ClosedTab, Opened, TabEntry, TabGroup, Tabs};
 pub use toast::{Toast, ToastAction, ToastKind, ToastRun};
@@ -569,6 +569,29 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.open_at(selection, preview, None, window, cx)
+    }
+
+    /// Opens a popup's `selection` kept, right after its opener's tab `beside` and the popups
+    /// that one opened before; closed while active, it hands back to `beside`.
+    pub fn open_beside(
+        &mut self,
+        selection: Selection,
+        beside: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.open_at(selection, false, Some(beside), window, cx)
+    }
+
+    fn open_at(
+        &mut self,
+        selection: Selection,
+        preview: bool,
+        beside: Option<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let key: SharedString = selection_key(&selection).into();
         if self.tabs.get(&key).is_some() {
             self.tabs.open(key.clone(), preview, || unreachable!());
@@ -583,10 +606,14 @@ impl Workspace {
         let Some(handle) = open(&selection, window, cx) else {
             return false;
         };
-        self.tabs.open(key.clone(), preview, || Tab {
+        let tab = || Tab {
             handle: Some(handle),
             selection: Some(selection),
-        });
+        };
+        match beside {
+            Some(beside) => self.tabs.open_beside(key.clone(), beside, tab),
+            None => self.tabs.open(key.clone(), preview, tab),
+        };
         self.shown_now(&key, window, cx);
         self.changed(WorkspaceEvent::TabsChanged, cx);
         true
@@ -856,8 +883,9 @@ impl Workspace {
             .filter_map(|k| Some((k.clone(), self.tabs.get(k)?.item.selection.clone()?)))
             .collect();
         // The views go here: nothing keeps a closed tab's entity.
-        drop(self.tabs.close(&again, true));
-        drop(self.tabs.close(&once, false));
+        let hidden = |t: &Tab| t.hidden(app);
+        drop(self.tabs.close(&again, true, hidden));
+        drop(self.tabs.close(&once, false, hidden));
         self.closed.retain(|(k, _)| !keys.contains(k));
         self.closed.extend(kept);
         let overflow = self.closed.len().saturating_sub(CLOSED_KEPT);
@@ -1542,6 +1570,61 @@ mod tests {
                         .count();
                     assert!(built <= LIVE_TABS, "{built} views built");
                 }
+            })
+        });
+    }
+
+    /// An agent's page out of the strip.
+    struct AgentPage;
+    impl Render for AgentPage {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+    impl TabItem for AgentPage {
+        fn tab_title(&self, _: &App) -> SharedString {
+            "agent".into()
+        }
+        fn hidden(&self, _: &App) -> bool {
+            true
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_close_skips_hidden_tabs_and_a_popup_hands_back_to_its_opener(cx: &mut TestAppContext) {
+        setup(cx);
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        register_file_opener(cx, std::rc::Rc::new(std::cell::Cell::new(0)));
+        let key = |path: &str| SharedString::from(selection_key(&file_tab(path)));
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_project(PathBuf::from("/tmp/gitviber-project-hidden"), window, cx);
+                ws.open(file_tab("a"), false, window, cx);
+                ws.open(file_tab("b"), false, window, cx);
+                let page = cx.new(|_| AgentPage);
+                ws.add_tab("agent", page, None, cx);
+                ws.close_active_tab(cx);
+                assert_eq!(
+                    ws.tabs().active_key(),
+                    Some(&key("a")),
+                    "past the agent's page"
+                );
+                ws.open(file_tab("c"), false, window, cx);
+                ws.open_beside(file_tab("p"), key("a"), window, cx);
+                let order: Vec<_> = ws.tabs().tabs().iter().map(|t| t.key.clone()).collect();
+                assert_eq!(order, [key("a"), key("p"), "agent".into(), key("c")]);
+                ws.close_active_tab(cx);
+                assert_eq!(
+                    ws.tabs().active_key(),
+                    Some(&key("a")),
+                    "back to its opener"
+                );
+                ws.close_tabs(&[key("a"), key("c")], cx);
+                assert!(
+                    ws.tabs().active_key().is_none(),
+                    "only the agent's page is left"
+                );
             })
         });
     }

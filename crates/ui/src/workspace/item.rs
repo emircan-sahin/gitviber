@@ -319,6 +319,11 @@ impl Tab {
         self.selection.as_ref()
     }
 
+    /// Left out of the tab strip (`TabItem::hidden`); a tab with no view yet has nothing to hide.
+    pub fn hidden(&self, cx: &App) -> bool {
+        self.handle.as_ref().is_some_and(|h| h.hidden(cx))
+    }
+
     pub fn title(&self, cx: &App) -> SharedString {
         match (&self.handle, &self.selection) {
             (Some(h), _) => h.title(cx),
