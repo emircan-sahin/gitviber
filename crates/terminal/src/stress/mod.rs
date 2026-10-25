@@ -151,6 +151,8 @@ struct Run {
     typed_nowhere: usize,
     actions: usize,
     checkpoints: usize,
+    /// The real time the app's clock has been brought up to.
+    clock: Instant,
 }
 
 fn key(cx: &mut HeadlessAppContext, window: AnyWindowHandle, keys: &str) {
@@ -170,7 +172,12 @@ impl Run {
         let until = Instant::now() + Duration::from_millis(ms);
         loop {
             std::thread::sleep(FRAME);
-            self.cx.advance_clock(FRAME);
+            // By the time that passed, not a frame's worth: each frame's work kept the app's
+            // clock behind, and on a loaded CI runner the 700 ms pane number outlived the
+            // checkpoint's 800 ms wait and covered the cells it checked.
+            let now = Instant::now();
+            self.cx.advance_clock(now - self.clock);
+            self.clock = now;
             self.cx.run_until_parked();
             if Instant::now() >= until {
                 break;
@@ -933,6 +940,7 @@ fn panes_get_only_their_input_and_paint_their_grid() {
         typed_nowhere: 0,
         actions: 0,
         checkpoints: 0,
+        clock: Instant::now(),
     };
     run.pump(50);
 
