@@ -314,6 +314,28 @@ mod tests {
         assert_eq!(child.try_wait().unwrap().and_then(|s| s.code()), Some(3));
     }
 
+    /// Spawned by the path `resolve` found (posix_spawn), the program still runs; one found
+    /// nowhere stays bare and fails as it did by name.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_spawned_by_its_resolved_path_runs() {
+        let sh = resolve("sh");
+        assert!(sh.is_absolute() && sh.is_file(), "{sh:?}");
+        let out = Command::new(&sh)
+            .env("PATH", search_path())
+            .args(["-c", "echo found"])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "found");
+        let missing = resolve("gitviber-no-such-program");
+        assert_eq!(missing, PathBuf::from("gitviber-no-such-program"));
+        let err = Command::new(&missing)
+            .env("PATH", search_path())
+            .output()
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
     fn split(s: &str) -> Vec<String> {
         split_command(s).unwrap()
     }

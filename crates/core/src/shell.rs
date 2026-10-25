@@ -312,13 +312,18 @@ pub fn probe_path(shell: &Path, timeout: Duration) -> Result<OsString, String> {
     }
 }
 
-/// A new session with no controlling terminal. An interactive
-/// shell started from a terminal (a dev build's) would otherwise take it over, or stop.
+/// A new session with no controlling terminal, when the app has one (a dev build run from a
+/// terminal): an interactive shell would otherwise take it over, or stop. Launched from Finder
+/// there's none, and a pre_exec would make std fork the whole app instead of posix_spawn.
 #[cfg(unix)]
 fn detach(cmd: &mut Command) {
     use std::os::unix::process::CommandExt;
     extern "C" {
         fn setsid() -> i32;
+    }
+    // Opens only while the process has a controlling terminal (ENXIO otherwise).
+    if std::fs::File::open("/dev/tty").is_err() {
+        return;
     }
     // SAFETY: setsid is async-signal-safe, so it may run between fork and exec.
     unsafe {
