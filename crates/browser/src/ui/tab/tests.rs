@@ -4,8 +4,10 @@
 use super::*;
 #[cfg(target_os = "macos")]
 use gitviber_ui::actions::{changes, terminal, view, window};
+#[cfg(target_os = "macos")]
 use gitviber_ui::actions::{git, review, tab as tabs};
 use gitviber_ui::keymap::ROOT_CONTEXT;
+#[cfg(target_os = "macos")]
 use gitviber_ui::Settings;
 use gpui::{AnyView, KeyContext, TestAppContext, VisualTestContext};
 use std::cell::RefCell;
