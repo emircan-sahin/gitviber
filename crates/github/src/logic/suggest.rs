@@ -65,10 +65,13 @@ pub fn parse_suggestion(output: &str) -> Option<(String, String)> {
         }
     }
     let (first, rest) = text.split_once('\n').unwrap_or((&text, ""));
-    let mut summary = first.trim_start_matches('#').to_string();
-    if summary.len() != first.len() {
-        summary = summary.trim_start().to_string();
-    }
+    // A heading's hashes go; "#123 Fix" is an issue number.
+    let hashes = first.trim_start_matches('#');
+    let mut summary = if hashes.len() != first.len() && hashes.starts_with(char::is_whitespace) {
+        hashes.trim_start().to_string()
+    } else {
+        first.to_string()
+    };
     for wrap in ["**", "__"] {
         if summary.len() > 4 && summary.starts_with(wrap) && summary.ends_with(wrap) {
             summary = summary[2..summary.len() - 2].to_string();
@@ -84,7 +87,7 @@ pub fn parse_suggestion(output: &str) -> Option<(String, String)> {
     let mut body = rest.trim().to_string();
     for label in ["body:", "description:"] {
         if body.to_lowercase().starts_with(label) {
-            body = body[label.len()..].to_string();
+            body = body[label.len()..].trim_start().to_string();
             break;
         }
     }
@@ -140,6 +143,51 @@ mod tests {
         assert_eq!(
             parse_suggestion(code).unwrap().1,
             "```rust\nfn main() {}\n```"
+        );
+    }
+
+    #[test]
+    fn labels_go_with_the_space_after_them_and_an_issue_number_stays() {
+        assert_eq!(
+            parse_suggestion("Title: Add x\n\nDescription: Because."),
+            Some(("Add x".into(), "Because.".into()))
+        );
+        assert_eq!(
+            parse_suggestion("#123 Fix login\n\nBody"),
+            Some(("#123 Fix login".into(), "Body".into()))
+        );
+        assert_eq!(
+            parse_suggestion("## Fix login"),
+            Some(("Fix login".into(), String::new()))
+        );
+    }
+
+    #[test]
+    fn a_markdown_description_keeps_its_code_blocks() {
+        let answer = "Add x\n\n## Why\nBecause.\n\n```ts\nx();\n```";
+        let plain = Some((
+            "Add x".to_string(),
+            "## Why\nBecause.\n\n```ts\nx();\n```".to_string(),
+        ));
+        assert_eq!(parse_suggestion(answer), plain);
+        let inner = format!("```markdown\n{answer}\n```");
+        assert_eq!(parse_suggestion(&inner), plain);
+        // Words around the fence, or code right under the title.
+        assert_eq!(
+            parse_suggestion(&format!("Here's the pull request:\n\n{inner}")),
+            plain
+        );
+        assert_eq!(
+            parse_suggestion(&format!("{inner}\n\nLet me know if you want changes.")),
+            plain
+        );
+        assert_eq!(
+            parse_suggestion(&format!("Here it is:\n{inner}\nAnything else?")),
+            plain
+        );
+        assert_eq!(
+            parse_suggestion("Add x\n\n```\nx();\n```"),
+            Some(("Add x".into(), "```\nx();\n```".into()))
         );
     }
 }

@@ -1,7 +1,10 @@
 //! A markdown document shown rendered: gpui-component's text view (GFM: tables, task lists,
-//! code blocks colored with the syntax theme), our alerts and diagram blocks, frontmatter as a
-//! table, links followed the way the old viewer did, and images through a cache the view owns.
+//! code blocks colored with the syntax theme), our alerts and diagram blocks, `<details>` that
+//! open and shut, frontmatter as properties, links followed the way the old viewer did, and
+//! images through a cache the view owns.
 
+use std::collections::HashSet;
+use std::hash::{Hash as _, Hasher as _};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,7 +16,6 @@ use gpui_kit::base::text::{
     InlineElement, InlineRenderContext, MarkdownExtensions, MarkdownNode, MarkdownParseContext,
     MarkdownPlugin, RangeHighlight, RenderedText, TextView, TextViewState, markdown_ast,
 };
-use gpui_kit::component::text::FrontmatterPlugin;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     App, AppContext as _, Bounds, ClipboardItem, Context, ElementId, Entity, EventEmitter,
@@ -23,11 +25,12 @@ use gpui_kit::{
     image_cache, point, prelude::FluentBuilder as _, px, rems,
 };
 
-use crate::blocks::{self, Callout, Callouts, DiagramKind, SourceBlock};
+use crate::blocks::{self, Callout, Callouts, Details, DiagramKind, SourceBlock};
 use crate::diagrams::{Diagrams, Drawn, Look};
 use crate::find::{self, FindQuery};
 use crate::images::BoundedImageCache;
 use crate::links::{self, Link};
+use crate::properties::{self, Value};
 
 /// Where a document is, for its links and images.
 #[derive(Clone, Debug, Default)]
@@ -44,13 +47,17 @@ impl MarkdownBase {
         Self {
             root: Some(root.into()),
             file: Some(file.into()),
-            callouts: Callouts::GitHub,
+            callouts: Callouts::Repo,
         }
     }
 
-    /// An image's source: a relative path inside the repo from disk, web and data URLs as they are.
+    /// An image's source: a relative path inside the repo from disk, web and data URLs as they
+    /// are. A pull request's text loads only from GitHub's own hosts, whatever its markdown says.
     fn image(&self, uri: &SharedUri) -> ImageSource {
         let href = uri.as_ref();
+        if self.callouts == Callouts::GitHub && !links::is_github_hosted(href) {
+            return ImageSource::Resource(Resource::Path(Arc::from(std::path::Path::new(""))));
+        }
         let lower = href.to_ascii_lowercase();
         if lower.starts_with("http://")
             || lower.starts_with("https://")
@@ -104,6 +111,10 @@ pub struct MarkdownView {
     found: Option<Found>,
     /// The scrolling div an inline view sits in, for revealing a match.
     reveal_in: Option<ScrollHandle>,
+    /// A source range to scroll to once the text it's in is parsed.
+    reveal: Option<Range<usize>>,
+    /// Details and folding callouts opened or shut away from how they start, by `toggle_key`.
+    toggled: HashSet<u64>,
     focus: FocusHandle,
     _text: Subscription,
     _live: Live,
@@ -153,7 +164,10 @@ impl MarkdownView {
             })
         });
         let extensions = extensions(cx.weak_entity(), base.clone(), true);
-        let text = cx.observe(&state, |this: &mut Self, _, cx| this.find_again(cx));
+        let text = cx.observe(&state, |this: &mut Self, _, cx| {
+            this.find_again(cx);
+            this.reveal_pending(cx);
+        });
         MarkdownView {
             state,
             base,
@@ -163,6 +177,8 @@ impl MarkdownView {
             inline,
             found: None,
             reveal_in: None,
+            reveal: None,
+            toggled: HashSet::new(),
             focus: cx.focus_handle(),
             _text: text,
             _live: Live::new("MarkdownView"),
@@ -171,8 +187,52 @@ impl MarkdownView {
 
     /// Shows other text (the file changed on disk); the scroll position stays where it can.
     pub fn set_source(&mut self, source: &str, cx: &mut Context<Self>) {
+        self.reveal = None;
+        self.toggled.clear();
         self.state
             .update(cx, |state, cx| state.set_text(source, cx));
+    }
+
+    /// Scrolls to where `range` of the markdown renders (an inline view: the `gpui::list` it's
+    /// in, once its row is laid out), now or once the text is parsed.
+    pub fn reveal_source(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
+        self.reveal = Some(range);
+        self.reveal_pending(cx);
+    }
+
+    fn reveal_pending(&mut self, cx: &mut Context<Self>) {
+        let Some(range) = self.reveal.clone() else {
+            return;
+        };
+        let done = self.state.update(cx, |state, cx| {
+            let rendered = state.rendered_text();
+            match rendered.range_for_source(range) {
+                Some(r) => {
+                    _ = state.reveal_range(r, cx);
+                    true
+                }
+                // Parsed and still not there: it renders no text.
+                None => !rendered.source().is_empty(),
+            }
+        });
+        if done {
+            self.reveal = None;
+        }
+    }
+
+    /// Whether the details or callout `key` shows its body, `open` being how it starts.
+    fn is_open(&self, key: u64, open: bool) -> bool {
+        open != self.toggled.contains(&key)
+    }
+
+    fn toggle(&mut self, key: u64, cx: &mut Context<Self>) {
+        if !self.toggled.remove(&key) {
+            self.toggled.insert(key);
+        }
+        // A scrolling view measured the block's height.
+        self.state
+            .update(cx, |s, cx| s.invalidate_inline_layout(cx));
+        cx.notify();
     }
 
     pub fn base(&self) -> &MarkdownBase {
@@ -347,11 +407,15 @@ impl MarkdownView {
         });
     }
 
-    /// Scrolls to the heading `anchor` names (GitHub's slug); false if there's none.
+    /// Scrolls to the footnote or the heading `anchor` names (GitHub's anchors); false if
+    /// there's none.
     pub fn scroll_to_anchor(&mut self, anchor: &str, cx: &mut Context<Self>) -> bool {
         self.state.update(cx, |state, cx| {
             let rendered = state.rendered_text();
-            let Some(range) = links::heading_range(rendered.source(), anchor) else {
+            let source = rendered.source();
+            let Some(range) = links::footnote_range(source, anchor)
+                .or_else(|| links::heading_range(source, anchor))
+            else {
                 return false;
             };
             let Some(range) = rendered.range_for_source(range) else {
@@ -571,8 +635,56 @@ fn kind_icon(kind: &str) -> IconName {
     }
 }
 
-/// The parsers and renderers for our blocks. `top`: the document itself; a callout's body gets
-/// the same minus frontmatter.
+/// A details' or a callout's key in `MarkdownView::toggled`: where it starts and what it says,
+/// so one in a nested view (its offsets its own) doesn't take another's.
+fn toggle_key(at: usize, a: &str, b: &str) -> u64 {
+    let mut h = std::hash::DefaultHasher::new();
+    (at, a, b).hash(&mut h);
+    h.finish()
+}
+
+fn is_open(view: &WeakEntity<MarkdownView>, key: u64, open: bool, cx: &App) -> bool {
+    view.upgrade()
+        .map_or(open, |v| v.read(cx).is_open(key, open))
+}
+
+/// A line that opens and shuts what's under it, its chevron in front.
+fn toggle_row(
+    id: ElementId,
+    view: &WeakEntity<MarkdownView>,
+    key: u64,
+    open: bool,
+    cx: &App,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let view = view.clone();
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap_1()
+        .cursor_pointer()
+        .on_click(move |_, _, cx| {
+            _ = view.update(cx, |v, cx| v.toggle(key, cx));
+        })
+        .child(
+            Icon::new(if open {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronRight
+            })
+            .small()
+            .text_color(cx.app_theme().muted_foreground),
+        )
+}
+
+/// Whether a callout's title is written in markdown, drawn as such; a plain one keeps the
+/// callout's color and weight.
+fn has_markup(title: &str) -> bool {
+    title.contains(['*', '_', '`', '[', '<', '~', '=', '$', '\\'])
+}
+
+/// The parsers and renderers for our blocks. `top`: the document itself; a callout's or a
+/// details' parts get the same minus frontmatter.
 fn extensions(
     view: WeakEntity<MarkdownView>,
     base: Arc<MarkdownBase>,
@@ -580,8 +692,30 @@ fn extensions(
 ) -> MarkdownExtensions {
     let flavor = base.callouts;
     let mut ext = MarkdownExtensions::default().parser_revision(1);
-    if top {
-        ext = ext.frontmatter().plugin(FrontmatterPlugin::new());
+    // GitHub reads no frontmatter in a pull request's text: its `---` is a rule.
+    if top && flavor != Callouts::GitHub {
+        ext = ext
+            .frontmatter()
+            .block_parser(|node, cx| {
+                let markdown_ast::Node::Yaml(_) = node else {
+                    return None;
+                };
+                let props = properties::parse(cx.node_source(node)?);
+                let text = props
+                    .iter()
+                    .map(|(key, value)| format!("{key}: {}", value.text()))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Some(MarkdownNode::new("gv-properties", props).text(text))
+            })
+            .block_renderer("gv-properties", |node, _, cx| {
+                match node.data::<Vec<(String, Value)>>() {
+                    Some(props) if !props.is_empty() => {
+                        properties::element(props, cx).into_any_element()
+                    }
+                    _ => div().into_any_element(),
+                }
+            });
     }
     ext = ext
         .block_parser(|node, _| {
@@ -610,8 +744,70 @@ fn extensions(
             let callout = blocks::parse_callout(cx.node_source(node)?, flavor)?;
             let text = format!("{}\n{}", callout.title, callout.body);
             Some(MarkdownNode::new("gv-callout", callout).text(text))
+        })
+        .block_parser(|node, _| {
+            let markdown_ast::Node::Html(html) = node else {
+                return None;
+            };
+            let details = blocks::parse_details(&html.value)?;
+            let text = format!(
+                "{}\n{}",
+                blocks::html_text(&details.summary),
+                blocks::html_text(&details.body)
+            );
+            Some(MarkdownNode::new("gv-details", details).text(text))
         });
     let nested = (top).then(|| extensions(view.clone(), base.clone(), false));
+    let nested_view = {
+        let (view, base, nested) = (view.clone(), base.clone(), nested.clone());
+        move |id: String, source: &str| {
+            text_view(
+                ElementId::Name(id.into()),
+                Some(source.to_string().into()),
+                None,
+                &view,
+                &base,
+                nested.clone().unwrap_or_default(),
+            )
+        }
+    };
+    ext = ext.block_renderer("gv-details", {
+        let (view, nested_view) = (view.clone(), nested_view.clone());
+        move |node, _window, cx| {
+            let Some(d) = node.data::<Details>() else {
+                return div().into_any_element();
+            };
+            let at = node.source_range().map_or(0, |r| r.start);
+            let key = toggle_key(at, &d.summary, &d.body);
+            let open = is_open(&view, key, d.open, cx);
+            let part = |name: &str, source: &str| {
+                (!source.trim().is_empty())
+                    .then(|| nested_view(format!("gv-details-{at}-{name}"), source))
+            };
+            div()
+                .flex()
+                .flex_col()
+                .children(part("before", &d.before))
+                .child(
+                    toggle_row(
+                        ElementId::Name(format!("gv-details-{at}").into()),
+                        &view,
+                        key,
+                        open,
+                        cx,
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .children(part("summary", &d.summary)),
+                    ),
+                )
+                .children(part("body", &d.body).filter(|_| open))
+                .children(part("after", &d.after))
+                .into_any_element()
+        }
+    });
     ext.block_renderer("gv-callout", move |node, _window, cx| {
         let Some(callout) = node.data::<Callout>() else {
             return div().into_any_element();
@@ -619,19 +815,43 @@ fn extensions(
         let t = cx.app_theme();
         let color = kind_color(&callout.kind, t.dark);
         let github = callout.kind.starts_with("gh-");
-        let id = ElementId::Name(
-            format!("gv-callout-{}", node.source_range().map_or(0, |r| r.start)).into(),
-        );
-        let body = (!callout.body.trim().is_empty()).then(|| {
-            text_view(
-                id,
-                Some(callout.body.clone().into()),
-                None,
+        let at = node.source_range().map_or(0, |r| r.start);
+        // `-` starts shut, `+` open; without either it doesn't fold.
+        let key = toggle_key(at, &callout.title, &callout.body);
+        let folds = !callout.fold.is_empty();
+        let open = !folds || is_open(&view, key, callout.fold == "+", cx);
+        let body = (open && !callout.body.trim().is_empty())
+            .then(|| nested_view(format!("gv-callout-{at}"), &callout.body));
+        let title = if !github && has_markup(&callout.title) {
+            nested_view(format!("gv-callout-{at}-title"), &callout.title).into_any_element()
+        } else {
+            callout.title.clone().into_any_element()
+        };
+        let header = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .text_color(color)
+            .font_weight(if github {
+                gpui_kit::FontWeight::MEDIUM
+            } else {
+                gpui_kit::FontWeight::SEMIBOLD
+            })
+            .child(Icon::new(kind_icon(&callout.kind)).small())
+            .child(div().flex_1().min_w_0().child(title));
+        let header = if folds {
+            toggle_row(
+                ElementId::Name(format!("gv-callout-{at}-fold").into()),
                 &view,
-                &base,
-                nested.clone().unwrap_or_default(),
+                key,
+                open,
+                cx,
             )
-        });
+            .child(header)
+            .into_any_element()
+        } else {
+            header.into_any_element()
+        };
         div()
             .my_2()
             .when(github, |d| {
@@ -648,20 +868,7 @@ fn extensions(
             .flex()
             .flex_col()
             .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_color(color)
-                    .font_weight(if github {
-                        gpui_kit::FontWeight::MEDIUM
-                    } else {
-                        gpui_kit::FontWeight::SEMIBOLD
-                    })
-                    .child(Icon::new(kind_icon(&callout.kind)).small())
-                    .child(callout.title.clone()),
-            )
+            .child(header)
             .children(body)
             .into_any_element()
     })
@@ -731,4 +938,203 @@ pub fn is_markdown(path: &str) -> bool {
     [".md", ".markdown", ".mdown", ".mkd"]
         .iter()
         .any(|ext| lower.ends_with(ext))
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::{AnyView, TestAppContext, VisualTestContext};
+
+    use super::*;
+
+    struct Host(Option<AnyView>);
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().children(self.0.clone())
+        }
+    }
+
+    fn window(cx: &mut TestAppContext) -> (Entity<Host>, &mut VisualTestContext) {
+        gitviber_ui::test_support::config_dir("markdown-test");
+        cx.update(gitviber_ui::init);
+        cx.add_window_view(|_, _| Host(None))
+    }
+
+    /// `text` shown inline as `callouts` reads it, drawn and parsed.
+    fn show(
+        host: &Entity<Host>,
+        text: &str,
+        callouts: Callouts,
+        cx: &mut VisualTestContext,
+    ) -> Entity<MarkdownView> {
+        let view = cx.update(|window, cx| {
+            let base = MarkdownBase {
+                root: None,
+                file: None,
+                callouts,
+            };
+            let view = cx.new(|cx| MarkdownView::inline(text, base, window, cx));
+            host.update(cx, |h, cx| {
+                h.0 = Some(view.clone().into());
+                cx.notify();
+            });
+            view
+        });
+        draw(cx);
+        view
+    }
+
+    fn draw(cx: &mut VisualTestContext) {
+        for _ in 0..2 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        }
+    }
+
+    fn rendered(view: &Entity<MarkdownView>, cx: &mut VisualTestContext) -> String {
+        view.read_with(cx, |v, cx| {
+            v.state.read(cx).rendered_text().as_str().to_string()
+        })
+    }
+
+    #[gpui_kit::test]
+    fn obsidians_syntax_stays_text_outside_a_vault(cx: &mut TestAppContext) {
+        let (host, cx) = window(cx);
+        for callouts in [Callouts::Repo, Callouts::GitHub] {
+            let view = show(&host, "[[Note]] ==hi== #tag %%c%%", callouts, cx);
+            assert_eq!(rendered(&view, cx).trim_end(), "[[Note]] ==hi== #tag %%c%%");
+        }
+    }
+
+    #[gpui_kit::test]
+    fn frontmatter_is_a_files_not_a_pull_requests(cx: &mut TestAppContext) {
+        let (host, cx) = window(cx);
+        let text = "---\ntags: [a, b]\nnested:\n  k: v\n---\nBody";
+        let file = rendered(&show(&host, text, Callouts::Repo, cx), cx);
+        assert!(
+            file.contains("tags: a, b") && file.contains("nested: k: v") && !file.contains('['),
+            "{file}"
+        );
+        // GitHub reads a rule, then a heading.
+        let pr = rendered(&show(&host, text, Callouts::GitHub, cx), cx);
+        assert!(
+            pr.contains("tags: [a, b]") && !pr.contains("tags: a, b"),
+            "{pr}"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn raw_html_reads_as_on_github(cx: &mut TestAppContext) {
+        let (host, cx) = window(cx);
+        let text = "a <mark>m</mark> <a href=\"https://x.dev\">link</a> <script>alert(1)</script>b";
+        let view = show(&host, text, Callouts::GitHub, cx);
+        assert_eq!(rendered(&view, cx).trim_end(), "a m link b");
+    }
+
+    #[gpui_kit::test]
+    fn details_open_and_shut(cx: &mut TestAppContext) {
+        let (host, cx) = window(cx);
+        let run = "<details><summary>Shot</summary>\n\nHidden **text**\n\n</details>";
+        let text = format!(
+            "Intro\n\n{run}\n\n<details open>\n<summary>Open <b>one</b></summary>\nshown\n</details>\n\nAfter"
+        );
+        let view = show(&host, &text, Callouts::GitHub, cx);
+        let shown = rendered(&view, cx);
+        // The run is one block: its markdown isn't drawn as the document's own.
+        assert!(
+            shown.contains("Shot") && shown.contains("After") && !shown.contains("Hidden text"),
+            "{shown}"
+        );
+        let shut = blocks::parse_details(run).unwrap();
+        let shut = (toggle_key(7, &shut.summary, &shut.body), shut.open);
+        assert!(!shut.1);
+        let open = blocks::parse_details(&text[7 + run.len() + 2..]).unwrap();
+        assert!(open.open && open.summary == "<p>Open <b>one</b></p>");
+        view.update(cx, |v, cx| {
+            assert!(!v.is_open(shut.0, shut.1));
+            v.toggle(shut.0, cx);
+            assert!(v.is_open(shut.0, shut.1));
+        });
+        // Drawn open; a new text starts over.
+        draw(cx);
+        view.update(cx, |v, cx| {
+            v.set_source("other", cx);
+            assert!(!v.is_open(shut.0, shut.1));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn callouts_fold_and_their_titles_are_markdown(cx: &mut TestAppContext) {
+        let (host, cx) = window(cx);
+        let text = "> [!faq]- Why **this** [Plan](Plan.md)?\n> Because.\n\n> [!tip]+ Open\n> Body";
+        let view = show(&host, text, Callouts::Obsidian, cx);
+        let faq = blocks::parse_callout(
+            "> [!faq]- Why **this** [Plan](Plan.md)?\n> Because.",
+            Callouts::Obsidian,
+        )
+        .unwrap();
+        assert!(has_markup(&faq.title) && !has_markup("Open"));
+        let key = toggle_key(0, &faq.title, &faq.body);
+        view.update(cx, |v, cx| {
+            assert!(!v.is_open(key, faq.fold == "+"));
+            v.toggle(key, cx);
+        });
+        draw(cx);
+        assert!(view.read_with(cx, |v, _| v.is_open(key, false)));
+    }
+
+    #[gpui_kit::test]
+    fn footnotes_link_to_their_note_and_back(cx: &mut TestAppContext) {
+        let (host, cx) = window(cx);
+        let view = show(&host, "Claim[^1].\n\n[^1]: Source.", Callouts::GitHub, cx);
+        let shown = rendered(&view, cx);
+        assert!(
+            shown.contains("Claim[1].") && shown.contains("[1]: Source. \u{21a9}"),
+            "{shown}"
+        );
+        view.update(cx, |v, cx| {
+            assert!(v.scroll_to_anchor("user-content-fn-1", cx));
+            assert!(v.scroll_to_anchor("user-content-fnref-1", cx));
+            assert!(!v.scroll_to_anchor("user-content-fn-2", cx));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_reveal_waits_for_its_text(cx: &mut TestAppContext) {
+        let (host, cx) = window(cx);
+        // Past what's parsed at once, so it lands later.
+        let text = format!("{}\n\nthe end", "word ".repeat(2000));
+        let view = show(&host, "", Callouts::Repo, cx);
+        view.update(cx, |v, cx| {
+            v.set_source(&text, cx);
+            v.reveal_source(text.len() - 7..text.len(), cx);
+            assert!(v.reveal.is_some());
+        });
+        draw(cx);
+        assert!(view.read_with(cx, |v, _| v.reveal.is_none()));
+    }
+
+    #[test]
+    fn a_pull_requests_images_load_only_from_github() {
+        let blocked = |base: &MarkdownBase, uri: &'static str| {
+            matches!(
+                base.image(&SharedUri::from(uri)),
+                ImageSource::Resource(Resource::Path(p)) if p.as_os_str().is_empty()
+            )
+        };
+        let pr = MarkdownBase {
+            callouts: Callouts::GitHub,
+            ..Default::default()
+        };
+        assert!(blocked(&pr, "https://img.shields.io/b.svg"));
+        assert!(blocked(&pr, "data:image/png;base64,AAAA"));
+        assert!(!blocked(
+            &pr,
+            "https://github.com/user-attachments/assets/x"
+        ));
+        assert!(!blocked(
+            &MarkdownBase::default(),
+            "https://img.shields.io/b.svg"
+        ));
+    }
 }

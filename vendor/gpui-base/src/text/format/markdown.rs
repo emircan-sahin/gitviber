@@ -25,7 +25,27 @@ pub(crate) fn parse(source: &str, cx: &mut NodeContext) -> Result<ParsedDocument
     prose.constructs.math_text = false;
     prose.constructs.math_flow = false;
     flatten_unclaimed_math(&mut root, source, &prose, cx);
+    number_footnotes(&root, &mut cx.footnotes);
     Ok(ast_to_document(source, root, cx))
+}
+
+/// Footnotes are numbered in the order the text first refers to them, as GitHub numbers them.
+fn number_footnotes(node: &Node, numbers: &mut std::collections::HashMap<String, usize>) {
+    if let Node::FootnoteReference(foot) = node {
+        let next = numbers.len() + 1;
+        numbers.entry(foot.identifier.clone()).or_insert(next);
+    }
+    for child in node.children().into_iter().flatten() {
+        number_footnotes(child, numbers);
+    }
+}
+
+/// A footnote's anchors, GitHub's: its reference links to the note, the note back to it.
+fn footnote_link(prefix: &str, identifier: &str) -> TextMark {
+    TextMark::default().link(LinkMark {
+        url: format!("#user-content-{prefix}-{identifier}").into(),
+        ..Default::default()
+    })
 }
 
 /// Math parsing is on by default, so prose that merely contains two dollar
@@ -140,13 +160,20 @@ fn inline_groups(children: &[Node]) -> Vec<InlineGroup<'_>> {
     let mut groups = Vec::with_capacity(children.len());
     let mut ix = 0;
     while ix < children.len() {
-        if let Some((false, name, attrs)) = inline_html_tag(&children[ix])
-            && let Some(mark) = inline_html_mark(&name, attrs)
-            && let Some(close) = matching_close_tag(children, ix, &name)
-        {
-            groups.push(InlineGroup::Marked(mark, &children[ix + 1..close]));
-            ix = close + 1;
-            continue;
+        if let Some((false, name, attrs)) = inline_html_tag(&children[ix]) {
+            // A script's or a style's body is never text; unclosed, it runs to the end, as
+            // in a browser.
+            if matches!(name.as_str(), "script" | "style") {
+                ix = matching_close_tag(children, ix, &name).map_or(children.len(), |c| c + 1);
+                continue;
+            }
+            if let Some(mark) = inline_html_mark(&name, attrs)
+                && let Some(close) = matching_close_tag(children, ix, &name)
+            {
+                groups.push(InlineGroup::Marked(mark, &children[ix + 1..close]));
+                ix = close + 1;
+                continue;
+            }
         }
         groups.push(InlineGroup::Node(&children[ix]));
         ix += 1;
@@ -219,6 +246,12 @@ fn inline_html_mark(name: &str, attrs: &str) -> Option<TextMark> {
         "em" | "i" => TextMark::default().italic(),
         "u" => TextMark::default().underline(),
         "s" | "del" | "strike" => TextMark::default().strikethrough(),
+        "code" => TextMark::default().code(),
+        "a" => TextMark::default().link(LinkMark {
+            url: decode_entities(inline_html_attr(attrs, "href")?).into(),
+            title: inline_html_attr(attrs, "title").map(|t| decode_entities(t).into()),
+            ..Default::default()
+        }),
         "mark" => {
             let color = super::html::mark_color_from_values(
                 inline_html_attr(attrs, "color"),
@@ -229,6 +262,28 @@ fn inline_html_mark(name: &str, attrs: &str) -> Option<TextMark> {
         }
         _ => return None,
     })
+}
+
+/// An attribute's value as the browser reads it: character references decoded.
+fn decode_entities(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        match decoded_entity(rest) {
+            Some((decoded, len)) => {
+                out.push_str(&decoded);
+                rest = &rest[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn matching_close_tag(children: &[Node], open: usize, name: &str) -> Option<usize> {
@@ -912,14 +967,29 @@ fn parse_paragraph(
             }
         },
         Node::FootnoteReference(foot) => {
-            let prefix = format!("[{}]", foot.identifier);
-            paragraph.push(mapped_inline(source, prefix.clone(), node, cx).marks(vec![(
-                0..prefix.len(),
-                TextMark {
-                    italic: true,
-                    ..Default::default()
-                },
-            )]));
+            let number = cx
+                .footnotes
+                .get(&foot.identifier)
+                .copied()
+                .unwrap_or_default();
+            let label = format!("[{number}]");
+            // The number stands for the whole `[^id]`.
+            let segments = span
+                .map(|span| SourceSegment {
+                    rendered: 0..label.len(),
+                    source: span.start..span.end,
+                    linear: false,
+                })
+                .into_iter()
+                .collect();
+            paragraph.push(
+                InlineNode::new(label.clone())
+                    .source_segments(segments)
+                    .marks(vec![(
+                        0..label.len(),
+                        footnote_link("fn", &foot.identifier),
+                    )]),
+            );
         }
         Node::LinkReference(link) => {
             let link_mark = LinkMark {
@@ -955,15 +1025,97 @@ fn ast_to_document(source: &str, root: mdast::Node, cx: &mut NodeContext) -> Par
         _ => panic!("expected root node"),
     };
 
-    let blocks = root
-        .children
-        .into_iter()
-        .map(|c| ast_to_node(source, c, cx))
-        .collect();
+    let blocks = top_blocks(source, root.children, cx);
     ParsedDocument {
         source: source.to_string().into(),
         blocks: Arc::new(blocks),
     }
+}
+
+/// The document's blocks. A `<details>` opened in one HTML block and closed in a later one,
+/// with markdown between (GitHub's collapsed section), is offered to the block parsers as one
+/// HTML node over the run, so one can draw it whole; unclaimed, its blocks stay apart.
+fn top_blocks(source: &str, children: Vec<Node>, cx: &mut NodeContext) -> Vec<BlockNode> {
+    let mut claimed = Vec::new();
+    let mut ix = 0;
+    while ix < children.len() {
+        match details_end(&children, ix)
+            .and_then(|end| claim_run(source, &children[ix..=end], cx).map(|block| (end, block)))
+        {
+            Some((end, block)) => {
+                claimed.push((ix, end, block));
+                ix = end + 1;
+            }
+            None => ix += 1,
+        }
+    }
+    let mut claimed = claimed.into_iter().peekable();
+    let mut blocks = Vec::with_capacity(children.len());
+    for (ix, child) in children.into_iter().enumerate() {
+        match claimed.peek() {
+            Some((start, end, _)) if ix >= *start => {
+                if ix == *end {
+                    blocks.extend(claimed.next().map(|(_, _, block)| block));
+                }
+            }
+            _ => blocks.push(ast_to_node(source, child, cx)),
+        }
+    }
+    blocks
+}
+
+/// `<details>` tags an HTML node opens, less those it closes.
+fn details_balance(node: &Node) -> isize {
+    let Node::Html(html) = node else {
+        return 0;
+    };
+    let lower = html.value.to_ascii_lowercase();
+    let tags = |tag: &str| {
+        lower
+            .match_indices(tag)
+            .filter(|(at, _)| {
+                lower[at + tag.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(|c| c.is_ascii_whitespace() || c == '>' || c == '/')
+            })
+            .count() as isize
+    };
+    tags("<details") - tags("</details")
+}
+
+/// The sibling that closes the `<details>` the HTML node at `ix` leaves open.
+fn details_end(children: &[Node], ix: usize) -> Option<usize> {
+    let mut open = details_balance(&children[ix]);
+    if open <= 0 {
+        return None;
+    }
+    for (end, child) in children.iter().enumerate().skip(ix + 1) {
+        open += details_balance(child);
+        if open <= 0 {
+            return Some(end);
+        }
+    }
+    None
+}
+
+fn claim_run(source: &str, run: &[Node], cx: &mut NodeContext) -> Option<BlockNode> {
+    let start = run.first()?.position()?.start.clone();
+    let end = run.last()?.position()?.end.clone();
+    let value = source.get(start.offset..end.offset)?.to_string();
+    let position = markdown::unist::Position { start, end };
+    let span = new_span(Some(position.clone()), cx);
+    let merged = Node::Html(mdast::Html {
+        value,
+        position: Some(position),
+    });
+    let parse_cx = MarkdownParseContext::new(source, cx.offset);
+    let mut node = cx.markdown_extensions.parse_block(&merged, &parse_cx)?;
+    node.set_span(span);
+    Some(BlockNode::Custom {
+        node,
+        state: Default::default(),
+    })
 }
 
 fn new_span(pos: Option<markdown::unist::Position>, cx: &NodeContext) -> Option<Span> {
@@ -1126,7 +1278,9 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
         }
         Node::FootnoteDefinition(def) => {
             let mut paragraph = Paragraph::default();
-            let prefix = format!("[{}]: ", def.identifier);
+            let number = cx.footnotes.get(&def.identifier).copied();
+            let label = number.map_or_else(|| def.identifier.clone(), |n| n.to_string());
+            let prefix = format!("[{label}]: ");
             paragraph.push(InlineNode::new(&prefix).marks(vec![(
                 0..prefix.len(),
                 TextMark {
@@ -1136,6 +1290,14 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
             )]));
 
             parse_inline_children(source, &mut paragraph, &def.children, cx);
+            // Back to where the text refers to it; a note nothing refers to has nowhere to go.
+            if number.is_some() {
+                let back = " \u{21a9}";
+                paragraph.push(InlineNode::new(back).marks(vec![(
+                    1..back.len(),
+                    footnote_link("fnref", &def.identifier),
+                )]));
+            }
             paragraph.span = new_span(def.position, cx);
             BlockNode::Paragraph(paragraph)
         }
@@ -1567,11 +1729,12 @@ mod tests {
 
     #[test]
     fn selected_source_range_maps_footnote_reference_syntax() {
+        // The reference reads as its number.
         let source = "before[^note] after\n\n[^note]: body";
         assert_eq!(selected_rendered_range(source, 0..6), Some(0..6));
-        assert_eq!(selected_rendered_range(source, 6..12), Some(6..13));
-        assert_eq!(selected_rendered_range(source, 13..18), Some(14..19));
-        assert_eq!(selected_rendered_range(source, 4..15), Some(4..16));
+        assert_eq!(selected_rendered_range(source, 6..9), Some(6..13));
+        assert_eq!(selected_rendered_range(source, 10..15), Some(14..19));
+        assert_eq!(selected_rendered_range(source, 4..11), Some(4..15));
     }
 
     #[test]
@@ -2531,5 +2694,120 @@ mod tests {
                 symbol: "TSLA.US".to_string()
             })
         );
+    }
+
+    /// Text runs of `paragraph` whose mark `pick` reads, with what it read.
+    fn runs<T>(paragraph: &Paragraph, pick: impl Fn(&TextMark) -> Option<T>) -> Vec<(String, T)> {
+        paragraph
+            .children
+            .iter()
+            .flat_map(|node| {
+                node.marks
+                    .iter()
+                    .filter_map(|(range, mark)| {
+                        pick(mark).map(|v| (node.text[range.clone()].to_string(), v))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    fn link_runs(paragraph: &Paragraph) -> Vec<(String, String)> {
+        runs(paragraph, |mark| {
+            mark.link.as_ref().map(|l| l.url.to_string())
+        })
+    }
+
+    #[test]
+    fn inline_html_links_and_code_keep_their_meaning() {
+        let source = r#"see <a href="https://x.dev/?a=1&amp;b=2" title="T">the docs</a>, <code>@b #5</code> and <a name="top">no link</a>"#;
+        let document = parse(source, &mut NodeContext::default()).unwrap();
+        assert_eq!(document.text(), "see the docs, @b #5 and no link\n");
+        let BlockNode::Paragraph(paragraph) = &document.blocks[0] else {
+            panic!()
+        };
+        assert_eq!(
+            link_runs(paragraph),
+            [("the docs".to_string(), "https://x.dev/?a=1&b=2".to_string())]
+        );
+        assert_eq!(
+            runs(paragraph, |mark| mark.code.then_some(())),
+            [("@b #5".to_string(), ())]
+        );
+    }
+
+    #[test]
+    fn script_and_style_bodies_never_show() {
+        for (source, text) in [
+            (
+                "a <script>alert(1)</script>b <style>p {}</style>c",
+                "a b c\n",
+            ),
+            ("a <SCRIPT>alert(1)", "a \n"),
+            ("<h2>a<script>alert(1)</script>b</h2>", "ab\n"),
+            ("<p>a<style>p {}</style>b</p>", "ab\n"),
+        ] {
+            let document = parse(source, &mut NodeContext::default()).unwrap();
+            assert_eq!(document.text().trim_end(), text.trim_end(), "{source}");
+        }
+    }
+
+    #[test]
+    fn footnotes_number_in_reading_order_and_link_both_ways() {
+        let source = "B[^b], A[^a], B[^b].\n\n[^a]: Alpha.\n\n[^b]: Beta.\n\n[^c]: Unused.";
+        let document = parse(source, &mut NodeContext::default()).unwrap();
+        assert_eq!(
+            document.text(),
+            "B[1], A[2], B[1].\n[2]: Alpha. \u{21a9}\n[1]: Beta. \u{21a9}\n[c]: Unused.\n"
+        );
+        let paragraph = |ix: usize| match &document.blocks[ix] {
+            BlockNode::Paragraph(paragraph) => paragraph,
+            _ => panic!(),
+        };
+        let links = |ix| {
+            link_runs(paragraph(ix))
+                .into_iter()
+                .map(|(text, url)| format!("{text} {url}"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            links(0),
+            [
+                "[1] #user-content-fn-b",
+                "[2] #user-content-fn-a",
+                "[1] #user-content-fn-b"
+            ]
+        );
+        assert_eq!(links(1), ["\u{21a9} #user-content-fnref-a"]);
+        assert!(links(3).is_empty());
+    }
+
+    #[test]
+    fn details_over_several_blocks_are_offered_as_one() {
+        let source = "<details><summary>S</summary>\n\nbody *x*\n\n</details>\n\nafter";
+        let plain = parse(source, &mut NodeContext::default()).unwrap();
+        assert_eq!(plain.blocks.len(), 4);
+        let mut cx = NodeContext {
+            markdown_extensions: Arc::new(MarkdownExtensions::default().block_parser(|node, _| {
+                let Node::Html(html) = node else { return None };
+                html.value
+                    .contains("<details")
+                    .then(|| MarkdownNode::new("details", html.value.clone()))
+            })),
+            ..Default::default()
+        };
+        let document = parse(source, &mut cx).unwrap();
+        assert_eq!(document.blocks.len(), 2);
+        let BlockNode::Custom { node, .. } = &document.blocks[0] else {
+            panic!()
+        };
+        assert_eq!(
+            node.data::<String>().map(String::as_str),
+            Some("<details><summary>S</summary>\n\nbody *x*\n\n</details>")
+        );
+        assert_eq!(node.source_range(), Some(0..51));
+        // One closed in the same block, or never, is that block's alone.
+        let document = parse("<details>a</details>\n\n<details>\n\nb", &mut cx).unwrap();
+        assert_eq!(document.blocks.len(), 3);
     }
 }

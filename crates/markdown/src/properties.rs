@@ -1,6 +1,7 @@
-//! A note's properties (its frontmatter) as Obsidian shows them above the text: one row per
+//! A document's properties (its frontmatter) as Obsidian shows them above the text: one row per
 //! key, lists as pills. Read from the YAML Obsidian writes (`key: value`, `key: [a, b]`, and
-//! `key:` with `- item` lines under it); anything fancier shows as written.
+//! `key:` with `- item` lines under it); anything fancier shows as written. A repo file's
+//! frontmatter shows the same way.
 
 use gitviber_ui::ActiveAppTheme as _;
 use gpui_kit::{App, IntoElement, ParentElement as _, SharedString, Styled as _, div, px};
@@ -49,11 +50,15 @@ pub fn parse(front: &str) -> Vec<(String, Value)> {
         }
         if indented {
             // A nested map or a folded string: shown as it's written, after the key it's under.
-            if let Some((_, Value::Text(v))) = out.last_mut() {
-                if !v.is_empty() {
-                    v.push(' ');
+            match out.last_mut() {
+                Some((_, Value::Text(v))) => {
+                    if !v.is_empty() {
+                        v.push(' ');
+                    }
+                    v.push_str(t);
                 }
-                v.push_str(t);
+                Some((_, v)) if *v == Value::List(vec![]) => *v = Value::Text(t.to_string()),
+                _ => {}
             }
             continue;
         }
@@ -79,7 +84,17 @@ pub fn parse(front: &str) -> Vec<(String, Value)> {
     out
 }
 
-/// The properties as rows above the note.
+impl Value {
+    /// As it reads: a list's items with commas between.
+    pub fn text(&self) -> String {
+        match self {
+            Value::Text(s) => s.clone(),
+            Value::List(items) => items.join(", "),
+        }
+    }
+}
+
+/// The properties as rows above the text.
 pub fn element(props: &[(String, Value)], cx: &App) -> impl IntoElement + use<> {
     let t = cx.app_theme();
     let rows = props.iter().map(|(key, value)| {
@@ -164,7 +179,7 @@ mod tests {
                 ),
                 ("status".into(), Value::Text("draft".into())),
                 ("up".into(), Value::Text("The plan".into())),
-                ("nested".into(), Value::List(vec![])),
+                ("nested".into(), Value::Text("a: 1".into())),
                 ("empty".into(), Value::List(vec![])),
             ]
         );

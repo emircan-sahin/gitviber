@@ -29,8 +29,8 @@ use gpui_kit::{
 
 use crate::links::{LinkIndex, note_name, split_target};
 use crate::markup::{self, Part, Target};
-use crate::properties;
 use crate::vaults::{Vaults, VaultsEvent};
+use gitviber_markdown::properties;
 
 /// Notes embedded in notes embedded in…: deeper than this shows a link, as a cycle does.
 const MAX_DEPTH: usize = 4;
@@ -193,6 +193,8 @@ pub(crate) struct Doc {
     find: Option<(FindQuery, Option<(usize, usize)>)>,
     /// The current match's part wasn't built yet: it scrolls to the match once it is.
     reveal: bool,
+    /// A ^block to scroll to in a part (its index) once that part is built.
+    block: Option<(usize, String)>,
 }
 
 impl Doc {
@@ -207,6 +209,7 @@ impl Doc {
             frame: 0,
             find: None,
             reveal: false,
+            block: None,
         }
     }
 
@@ -244,6 +247,7 @@ impl Doc {
     ) -> (usize, usize, usize) {
         let parts = markup::parts(&markup::strip_comments(src), self.by_heading);
         let (old, new) = (self.parts.len(), parts.len());
+        self.block = None;
         let prefix = self
             .parts
             .iter()
@@ -377,8 +381,32 @@ impl Doc {
         let reveal = self.reveal && self.current_part() == Some(ix);
         self.reveal &= !reveal;
         self.mark(ix, reveal, cx);
+        if self.block.as_ref().is_some_and(|(at, _)| *at == ix) {
+            self.reveal_built_block(cx);
+        }
         self.evict();
         element
+    }
+
+    /// Scrolls the part at `ix` (the list shows it already, or soon) to its block `^id`, once
+    /// the part is built: now, if it is.
+    pub fn reveal_block(&mut self, ix: usize, id: &str, cx: &mut App) {
+        self.block = Some((ix, id.to_string()));
+        if self.built.contains_key(&ix) {
+            self.reveal_built_block(cx);
+        }
+    }
+
+    fn reveal_built_block(&mut self, cx: &mut App) {
+        let Some((ix, id)) = self.block.take() else {
+            return;
+        };
+        if let (Some((Built::Text { view, markdown, .. }, _)), Some(Part::Text { source, .. })) =
+            (self.built.get(&ix), self.parts.get(ix))
+            && let Some(range) = markup::block_range(source, markdown, &id)
+        {
+            view.update(cx, |v, cx| v.reveal_source(range, cx));
+        }
     }
 
     /// Past MAX_BUILT, the views drawn longest ago go; never one drawn this frame.
@@ -740,7 +768,7 @@ impl NoteView {
         Some((f.current, f.hits.len()))
     }
 
-    /// Scrolls to the part a #heading or #^block names.
+    /// Scrolls to the part a #heading names, or to the #^block in its part.
     pub fn reveal(&mut self, anchor: &str, cx: &mut Context<Self>) {
         if self.index.is_none() {
             self.pending = Some(anchor.to_string());
@@ -751,6 +779,14 @@ impl NoteView {
                 item_ix: ix,
                 offset_in_item: px(0.),
             });
+            // A block may sit anywhere in its part: its view scrolls on to it.
+            if let Some(id) = anchor
+                .split('#')
+                .rfind(|s| !s.is_empty())
+                .and_then(|s| s.strip_prefix('^'))
+            {
+                self.doc.reveal_block(ix, id, cx);
+            }
             cx.notify();
         }
     }
@@ -762,6 +798,11 @@ impl NoteView {
     #[cfg(test)]
     pub(crate) fn doc(&self) -> &Doc {
         &self.doc
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scroll_top(&self) -> ListOffset {
+        self.list.logical_scroll_top()
     }
 
     fn render_part(

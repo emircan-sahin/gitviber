@@ -535,6 +535,23 @@ fn find_in_a_rendered_note(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_link_to_a_block_scrolls_to_the_block(cx: &mut TestAppContext) {
+    let vault = setup("block", cx);
+    // No headings: the whole note is one part, its block near the end.
+    let long = format!("{}para ^b1\n", "line\n\n".repeat(300));
+    std::fs::write(Path::new(&vault).join("Long.md"), long).unwrap();
+    let (host, cx) = cx.add_window_view(|_, _| Host(None));
+    let view = cx.update(|window, cx| tab(&vault, "Long.md", window, cx));
+    show(&host, Some(view.clone().into()), cx);
+    let note = cx.update(|_, cx| view.read(cx).note().expect("the note"));
+    cx.update(|_, cx| note.update(cx, |n, cx| n.reveal("^b1", cx)));
+    show(&host, Some(view.clone().into()), cx);
+    let top = cx.update(|_, cx| note.read(cx).scroll_top());
+    assert_eq!(top.item_ix, 0);
+    assert!(top.offset_in_item > gpui_kit::px(1000.), "{top:?}");
+}
+
+#[gpui_kit::test]
 fn an_svgs_preview_shows_what_was_typed(cx: &mut TestAppContext) {
     let vault = setup("svg", cx);
     let on_disk = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>"#;

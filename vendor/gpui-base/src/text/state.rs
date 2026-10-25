@@ -1093,6 +1093,7 @@ impl Render for TextViewState {
         let node_cx = NodeContext {
             offset: self.parsed_content.node_cx.offset,
             link_refs: self.parsed_content.node_cx.link_refs.clone(),
+            footnotes: Default::default(),
             style: self.text_view_style.clone(),
             code_block_actions: self.code_block_actions.clone(),
             code_block_highlighter: self.code_block_highlighter.clone(),

@@ -197,9 +197,118 @@ pub fn heading_range(source: &str, anchor: &str) -> Option<Range<usize>> {
     None
 }
 
+/// Hosts GitHub serves images from; a pull request's or issue's text loads no others. The
+/// host is letters, digits, dots and dashes only: an escape or a reference in it could make
+/// the browser's host another than the one checked.
+pub fn is_github_hosted(src: &str) -> bool {
+    let Some(rest) = src.strip_prefix("https://") else {
+        return false;
+    };
+    let host = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    host.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+        && (host == "github.com" || host.ends_with(".githubusercontent.com"))
+}
+
+/// The source byte range a footnote anchor names, GitHub's: `user-content-fn-<id>` its note
+/// (`[^id]: …`), `user-content-fnref-<id>` where the text first refers to it. Outside code
+/// fences; ids compare as markdown's labels do, case aside.
+pub fn footnote_range(source: &str, anchor: &str) -> Option<Range<usize>> {
+    let (id, note) = match anchor.strip_prefix("user-content-fnref-") {
+        Some(id) => (id, false),
+        None => (anchor.strip_prefix("user-content-fn-")?, true),
+    };
+    let want = format!("[^{}]", id.to_lowercase());
+    let mut fence: Option<&str> = None;
+    let mut at = 0;
+    for line in source.split_inclusive('\n') {
+        let start = at;
+        at += line.len();
+        let trimmed = line.trim_start_matches([' ', '>']);
+        let marker = ["```", "~~~"].into_iter().find(|m| trimmed.starts_with(m));
+        if let Some(m) = marker {
+            match fence {
+                Some(open) if open == m => fence = None,
+                None => fence = Some(m),
+                _ => {}
+            }
+            continue;
+        }
+        if fence.is_some() {
+            continue;
+        }
+        let lower = line.to_lowercase();
+        if lower.len() != line.len() {
+            // Lowercase that changes lengths can't be mapped back; ids are ASCII as a rule.
+            continue;
+        }
+        let end = start + line.trim_end_matches(['\n', '\r']).len();
+        if note {
+            let lead = line.len() - trimmed.len();
+            if lower[lead..].starts_with(&want) && lower[lead + want.len()..].starts_with(':') {
+                return Some(start + lead..end);
+            }
+        } else if let Some(i) = lower
+            .match_indices(&want)
+            .map(|(i, _)| i)
+            .find(|i| !lower[i + want.len()..].starts_with(':'))
+        {
+            return Some(start + i..start + i + want.len());
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn footnotes_link_both_ways() {
+        let src = "Claim[^1] and more[^Big].\n\n```\n[^1]: not this\n```\n[^1]: The source.\n> [^big]: Quoted.\n";
+        let note = footnote_range(src, "user-content-fn-1").unwrap();
+        assert_eq!(&src[note], "[^1]: The source.");
+        let back = footnote_range(src, "user-content-fnref-1").unwrap();
+        assert_eq!((back.start, &src[back]), (5, "[^1]"));
+        assert_eq!(
+            &src[footnote_range(src, "user-content-fn-big").unwrap()],
+            "[^big]: Quoted."
+        );
+        assert_eq!(
+            &src[footnote_range(src, "user-content-fnref-big").unwrap()],
+            "[^Big]"
+        );
+        assert_eq!(footnote_range(src, "user-content-fn-2"), None);
+        assert_eq!(footnote_range(src, "install"), None);
+    }
+
+    #[test]
+    fn only_githubs_own_image_hosts_load_without_asking() {
+        for src in [
+            "https://github.com/user-attachments/assets/012a2451-fa01-4fe5-8736-33f4a4d179f1",
+            "https://camo.githubusercontent.com/abc",
+            "https://private-user-images.githubusercontent.com/1/2-x.png?jwt=y",
+        ] {
+            assert!(is_github_hosted(src), "{src}");
+        }
+        for src in [
+            "https://img.shields.io/badge/x",
+            "https://github.com.evil.example/a.png",
+            "http://github.com/a.png",
+            // What a browser decodes or splits reads as another host.
+            "https://evil.example&#47;.githubusercontent.com/a.png",
+            "https://evil.example%2F.githubusercontent.com/a.png",
+            "https://evil.example\\.githubusercontent.com/a.png",
+            "https://github.com@evil.example/a.png",
+            "https://x.githubusercontent.com:1@evil.example/a.png",
+        ] {
+            assert!(!is_github_hosted(src), "{src}");
+        }
+    }
 
     #[test]
     fn relative_links_resolve_against_the_files_folder() {

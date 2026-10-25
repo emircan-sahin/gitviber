@@ -407,6 +407,8 @@ fn parse_paragraph(paragraph: &mut HtmlParagraph, node: &Rc<Node>) {
             local_name!("u") => {
                 merge_children_with_mark(node, paragraph, Some(TextMark::default().underline()));
             }
+            // Never text, inline as much as on their own.
+            local_name!("script") | local_name!("style") => {}
             local_name!("code") => {
                 merge_children_with_mark(node, paragraph, Some(TextMark::default().code()));
             }

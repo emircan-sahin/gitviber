@@ -26,13 +26,16 @@ const ALIASES: &[(&str, &str)] = &[
     ("cite", "quote"),
 ];
 
-/// Which callouts a blockquote can be.
+/// Which markdown a document is: what its blockquotes can be, and what else it reads.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Callouts {
-    /// GitHub's five, `[!TYPE]` alone on the first line.
-    #[default]
+    /// A pull request's or an issue's text, as GitHub shows it: its five alerts (`[!TYPE]` alone
+    /// on the first line), no frontmatter, and images only from GitHub's own hosts.
     GitHub,
-    /// Obsidian's: any type, a title after it, `+`/`-` folding.
+    /// A file in a repo: GitHub's alerts, and frontmatter as its properties.
+    #[default]
+    Repo,
+    /// An Obsidian note's: any type, a title after it, `+`/`-` folding.
     Obsidian,
 }
 
@@ -102,7 +105,7 @@ pub fn parse_callout(quote_source: &str, flavor: Callouts) -> Option<Callout> {
     let title_text = after.trim();
     let body = lines[1..].join("\n");
     match flavor {
-        Callouts::GitHub => {
+        Callouts::GitHub | Callouts::Repo => {
             if !GITHUB_ALERTS.contains(&written.as_str())
                 || !fold.is_empty()
                 || !title_text.is_empty()
@@ -135,6 +138,123 @@ pub fn parse_callout(quote_source: &str, flavor: Callouts) -> Option<Callout> {
             })
         }
     }
+}
+
+/// An HTML block holding a `<details>`, GitHub's collapsed section: shut unless it says `open`,
+/// its summary a line that opens it. The HTML around it is drawn above and below.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Details {
+    pub before: String,
+    /// The summary's HTML, as a paragraph; "Details" when it has none, as browsers say.
+    pub summary: String,
+    /// What it hides: markdown and HTML.
+    pub body: String,
+    pub after: String,
+    pub open: bool,
+}
+
+/// Where the tag `name` (lowercase) next opens or closes in `lower` from `from`: (at, closing).
+fn next_tag(lower: &str, name: &str, from: usize) -> Option<(usize, bool)> {
+    let mut at = from;
+    while let Some(i) = lower[at..].find('<') {
+        let start = at + i;
+        let rest = &lower[start + 1..];
+        let (closing, rest) = match rest.strip_prefix('/') {
+            Some(r) => (true, r),
+            None => (false, rest),
+        };
+        if rest.strip_prefix(name).is_some_and(|r| {
+            r.chars()
+                .next()
+                .is_none_or(|c| c.is_ascii_whitespace() || c == '>' || c == '/')
+        }) {
+            return Some((start, closing));
+        }
+        at = start + 1;
+    }
+    None
+}
+
+/// The end of the tag starting at `at`: past its `>`, or the end.
+fn tag_end(html: &str, at: usize) -> usize {
+    html[at..].find('>').map_or(html.len(), |i| at + i + 1)
+}
+
+/// The first `<details>` element in an HTML block, and what's around it.
+pub fn parse_details(html: &str) -> Option<Details> {
+    let lower = html.to_ascii_lowercase();
+    let (start, _) = std::iter::successors(next_tag(&lower, "details", 0), |(at, _)| {
+        next_tag(&lower, "details", at + 1)
+    })
+    .find(|(_, closing)| !closing)?;
+    let open_end = tag_end(html, start);
+    let open = lower[start + "<details".len()..open_end]
+        .trim_end_matches(['>', '/'])
+        .split(|c: char| c.is_ascii_whitespace())
+        .any(|attr| attr == "open" || attr.starts_with("open="));
+    // Its own closing tag, past any nested ones; unclosed, it runs to the end.
+    let mut depth = 0usize;
+    let mut at = open_end;
+    let (close, close_end) = loop {
+        match next_tag(&lower, "details", at) {
+            Some((i, true)) if depth == 0 => break (i, tag_end(html, i)),
+            Some((i, closing)) => {
+                if closing {
+                    depth -= 1;
+                } else {
+                    depth += 1;
+                }
+                at = i + 1;
+            }
+            None => break (html.len(), html.len()),
+        }
+    };
+    let inner = &html[open_end..close];
+    let lead = inner.len() - inner.trim_start().len();
+    let summary = next_tag(&lower[open_end..close], "summary", 0)
+        .filter(|(i, closing)| *i == lead && !closing)
+        .map(|(i, _)| {
+            let text_start = tag_end(inner, i);
+            let text_end = next_tag(&lower[open_end..close], "summary", text_start)
+                .filter(|(_, closing)| *closing)
+                .map_or(inner.len(), |(e, _)| e);
+            (
+                text_start,
+                text_end,
+                tag_end(inner, text_end).min(inner.len()),
+            )
+        });
+    let (summary, body) = match summary {
+        Some((s, e, past)) => (inner[s..e].trim(), &inner[past..]),
+        None => ("", inner),
+    };
+    let summary = if summary.is_empty() {
+        "Details"
+    } else {
+        summary
+    };
+    Some(Details {
+        before: html[..start].to_string(),
+        summary: format!("<p>{}</p>", summary.replace(['\n', '\r'], " ")),
+        body: body.to_string(),
+        after: html[close_end..].to_string(),
+        open,
+    })
+}
+
+/// HTML's text with its tags taken out, for find.
+pub fn html_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            c if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// A diagram or a formula: its picture once drawn, its source under a label until then (and
@@ -223,6 +343,32 @@ mod tests {
         );
         let c = parse_callout("> [!my-type|wide]\n> x", Callouts::Obsidian).unwrap();
         assert_eq!((c.kind.as_str(), c.title.as_str()), ("my-type", "My type"));
+    }
+
+    #[test]
+    fn details_split_into_summary_body_and_what_is_around() {
+        let d = parse_details(
+            "<p>x</p>\n<DETAILS Open>\n<summary>Commits <b>3</b></summary>\n<ul><li>a</li></ul>\n<details><summary>In</summary>i</details>\n</details>\n<br>",
+        )
+        .unwrap();
+        assert_eq!(
+            d,
+            Details {
+                before: "<p>x</p>\n".into(),
+                summary: "<p>Commits <b>3</b></p>".into(),
+                body: "\n<ul><li>a</li></ul>\n<details><summary>In</summary>i</details>\n".into(),
+                after: "\n<br>".into(),
+                open: true,
+            }
+        );
+        // No summary: the browser's word; never closed: to the end.
+        let d = parse_details("<details>\nbody").unwrap();
+        assert_eq!(
+            (d.summary.as_str(), d.body.as_str(), d.open),
+            ("<p>Details</p>", "\nbody", false)
+        );
+        assert!(parse_details("<detailsx>no</detailsx>").is_none());
+        assert_eq!(html_text("<p>a <b>b</b>\n c</p>"), "a b c");
     }
 
     #[test]

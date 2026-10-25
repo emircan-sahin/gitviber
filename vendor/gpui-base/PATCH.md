@@ -1,12 +1,14 @@
 # gpui-base 0.8.0, patched
 
-The crates.io release of gpui-base 0.8.0, byte for byte, except three changes and this file:
+The crates.io release of gpui-base 0.8.0, byte for byte, except four changes and this file:
 1. `src/text/inline.rs`: closed markdown documents' shaped text is swept (below). Drop it once
    an upstream release sweeps the table itself.
 2. Line blocks in the code editor (the second half of this file). Drop it once upstream has
    blocks between lines.
 3. Two read-only accessors the code view's editing commands need (the end of this file). Drop
    them once upstream exposes the selections and the syntax context.
+4. Raw HTML and footnotes in markdown as GitHub shows them (the end of this file). Drop the
+   parts upstream takes.
 
 Wired in through `[patch.crates-io]` in the workspace Cargo.toml (and excluded from the
 workspace). The whole patch: `diff -ru ~/.cargo/registry/src/index.crates.io-*/gpui-base-0.8.0
@@ -107,3 +109,34 @@ skips brackets in strings and comments; the editor kept both to itself.
 - `src/input/editor/mod.rs`: `EditorState::syntax_context_at` is `pub` (was `pub(crate)`).
 
 Tested from crates/files (`edit::tests`, `tests::oldbugs::the_old_editors_keys_edit_the_code`).
+
+## 4. Raw HTML and footnotes: why and the change
+
+Pull request and issue text is GitHub-flavored markdown with raw HTML in it: Dependabot's
+`<details>` lists, `<a href>` written inline, footnotes. Upstream dropped an inline link's
+target, showed an inline `<script>`'s body as text, gave footnotes no way to their note and back,
+and handed a `<details>` with markdown inside it over as separate blocks, so it could only ever
+show open.
+
+- `src/text/format/markdown.rs`:
+  - Inline `<a href>` pairs with its `</a>` like `<strong>` does and marks its text as a link
+    (the href's character references decoded); inline `<code>` marks code. An inline
+    `<script>` or `<style>` and what's up to its closing tag (the paragraph's end when none)
+    are dropped.
+  - Footnotes are numbered in the order the text first refers to them (`number_footnotes`,
+    into `NodeContext::footnotes`), as GitHub numbers them. A reference reads `[n]`, the whole
+    `[^id]` behind it for selection, and links to `#user-content-fn-<id>`; a note referred to
+    ends in `↩`, linked to `#user-content-fnref-<id>`. GitViber's markdown view scrolls to them.
+  - `top_blocks`: a `<details>` opened in one top-level HTML block and closed in a later one is
+    offered to the block parsers as one `Html` node over the run's source; one that takes it
+    becomes a custom block over the run. Unclaimed, the blocks stay as they were.
+- `src/text/format/html.rs`: a `<script>` or `<style>` inside text (a heading, a table cell) is
+  dropped, as one standing alone already was.
+- `src/text/node.rs` (`NodeContext::footnotes`), `src/text/state.rs` (its empty value in the
+  per-frame context).
+
+Tested here (`markdown::tests::inline_html_links_and_code_keep_their_meaning`,
+`script_and_style_bodies_never_show`, `footnotes_number_in_reading_order_and_link_both_ways`,
+`details_over_several_blocks_are_offered_as_one`, and the footnote selection mapping), run with
+`cargo nextest run --manifest-path vendor/gpui-base/Cargo.toml --features test-support --lib`
+and its own target directory; and from crates/markdown (details, footnote anchors).

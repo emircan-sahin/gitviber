@@ -5,6 +5,10 @@
 //! part at a time and an embedded note can show in its own box. The rules follow Obsidian's
 //! documented ones, as the old app's remark plugins did.
 
+use std::cell::{Cell, OnceCell};
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
+
 use gitviber_files::media::{MediaKind, media_kind};
 
 use crate::links::{LinkIndex, note_name, split_target};
@@ -134,7 +138,7 @@ fn heading_text(line: &str) -> String {
             continue;
         }
         if c == '['
-            && let Some(link) = parse_link(rest, 0)
+            && let Some(link) = parse_link(&Line::new(rest), 0)
         {
             out.push_str(&rest[1..1 + link.text_len]);
             rest = &rest[link.end..];
@@ -412,14 +416,16 @@ pub fn parts(src: &str, by_heading: bool) -> Vec<Part> {
 }
 
 /// Reference link definitions or footnotes (`[x]: …`, `[^1]: …`): they name text elsewhere.
+/// Inline footnotes (`^[…]`) too: their notes, numbered through the note, go after all of it.
 fn has_definitions(body: &str) -> bool {
-    body.lines().any(|l| {
-        let t = l.trim_start();
-        l.len() - t.len() <= 3
-            && t.starts_with('[')
-            && t.find("]:")
-                .is_some_and(|i| i > 1 && !t[1..i].contains(']'))
-    })
+    body.contains("^[")
+        || body.lines().any(|l| {
+            let t = l.trim_start();
+            l.len() - t.len() <= 3
+                && t.starts_with('[')
+                && t.find("]:")
+                    .is_some_and(|i| i > 1 && !t[1..i].contains(']'))
+        })
 }
 
 /// What an embed of `src` shows: for `Heading` the heading and what's under it, to the next
@@ -434,41 +440,8 @@ pub fn section(src: &str, anchor: &str) -> Result<String, String> {
     let mut fences = Fences::default();
     let code: Vec<bool> = lines.iter().map(|l| fences.code(l)).collect();
     if let Some(id) = anchor.strip_prefix('^') {
-        let missing = || format!("Unable to find block ^{id}");
-        let at = (0..lines.len())
-            .find(|&i| !code[i] && block_id(lines[i]).is_some_and(|(_, b)| b == id))
-            .ok_or_else(missing)?;
-        let blank = |i: usize| lines[i].trim().is_empty();
-        // An id alone on its line names the block before it (a table, a list).
-        let end = if block_id(lines[at]).is_some_and(|(len, _)| len == 0) {
-            let mut e = at;
-            while e > 0 && blank(e - 1) {
-                e -= 1;
-            }
-            e
-        } else {
-            at + 1
-        };
-        let is_item = |l: &str| {
-            let t = l.trim_start();
-            t.starts_with(['-', '*', '+']) && t[1..].starts_with([' ', '\t'])
-                || t.split_once(['.', ')']).is_some_and(|(n, r)| {
-                    !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && r.starts_with(' ')
-                })
-        };
-        let start = if end == at + 1 && is_item(lines[at]) {
-            at
-        } else {
-            let mut s = end.saturating_sub(1);
-            while s > 0 && !blank(s - 1) {
-                s -= 1;
-            }
-            s
-        };
-        if start >= end {
-            return Err(missing());
-        }
-        return Ok(lines[start..end].concat());
+        let block = block_lines(&lines, &code, id).ok_or(format!("Unable to find block ^{id}"))?;
+        return Ok(lines[block].concat());
     }
     let want = heading_key(anchor.split('#').rfind(|s| !s.is_empty()).unwrap_or(""));
     let found = (0..lines.len()).find_map(|i| {
@@ -480,6 +453,59 @@ pub fn section(src: &str, anchor: &str) -> Result<String, String> {
         .find(|&i| !code[i] && heading(lines[i]).is_some_and(|(l, _)| l <= level))
         .unwrap_or(lines.len());
     Ok(lines[start..end].concat())
+}
+
+/// The lines of the block `^id` names: the one it ends, a list item's own line, or the block
+/// before an id alone on its line (a table, a list). `code`: which lines are in code fences.
+fn block_lines(lines: &[&str], code: &[bool], id: &str) -> Option<Range<usize>> {
+    let at =
+        (0..lines.len()).find(|&i| !code[i] && block_id(lines[i]).is_some_and(|(_, b)| b == id))?;
+    let blank = |i: usize| lines[i].trim().is_empty();
+    let end = if block_id(lines[at]).is_some_and(|(len, _)| len == 0) {
+        let mut e = at;
+        while e > 0 && blank(e - 1) {
+            e -= 1;
+        }
+        e
+    } else {
+        at + 1
+    };
+    let is_item = |l: &str| {
+        let t = l.trim_start();
+        t.starts_with(['-', '*', '+']) && t[1..].starts_with([' ', '\t'])
+            || t.split_once(['.', ')']).is_some_and(|(n, r)| {
+                !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && r.starts_with(' ')
+            })
+    };
+    let start = if end == at + 1 && is_item(lines[at]) {
+        at
+    } else {
+        let mut s = end.saturating_sub(1);
+        while s > 0 && !blank(s - 1) {
+            s -= 1;
+        }
+        s
+    };
+    (start < end).then_some(start..end)
+}
+
+/// Where the block `^id` is in a part's markdown (`to_markdown` keeps its lines), as a byte
+/// range of its `source`.
+pub fn block_range(source: &str, markdown: &str, id: &str) -> Option<Range<usize>> {
+    let lines: Vec<&str> = source.split_inclusive('\n').collect();
+    let mut fences = Fences::default();
+    let code: Vec<bool> = lines.iter().map(|l| fences.code(l)).collect();
+    let want = block_lines(&lines, &code, id)?;
+    let mut at = 0;
+    let mut range = None::<Range<usize>>;
+    for (n, line) in markdown.split_inclusive('\n').enumerate().take(want.end) {
+        let end = at + line.trim_end_matches(['\n', '\r']).len();
+        if n >= want.start {
+            range = Some(range.map_or(at..end, |r| r.start..end));
+        }
+        at += line.len();
+    }
+    range.filter(|r| !r.is_empty())
 }
 
 /// What the rewriting needs to know: the vault's files and the note being drawn.
@@ -561,10 +587,12 @@ fn not_here(name: &str) -> String {
     format!("*“{}” isn't in this vault*", escape(name))
 }
 
-/// A part's Obsidian markdown as gitviber-markdown renders it, its properties in front as they are.
+/// A part's Obsidian markdown as gitviber-markdown renders it, its properties in front as they
+/// are. Line for line, but for its inline footnotes, which go after it as markdown's.
 pub fn to_markdown(front: &str, source: &str, cx: &Context) -> String {
     let mut out = String::with_capacity(front.len() + source.len() + source.len() / 8);
     out.push_str(front);
+    let mut notes = Notes::new(source);
     let mut fences = Fences::default();
     let mut math = false;
     let mut prev_blank = true;
@@ -611,8 +639,33 @@ pub fn to_markdown(front: &str, source: &str, cx: &Context) -> String {
             Some((len, _)) => &body[..len],
             None => body,
         };
-        inline(body, cx, &mut out);
+        match task_status(body) {
+            // Its status in a box (Obsidian's themes draw it as an icon); `-` is dropped.
+            Some((lead, status, text)) => {
+                let status = match status {
+                    '<' => "&lt;".to_string(),
+                    '&' => "&amp;".to_string(),
+                    c => c.to_string(),
+                };
+                out.push_str(&format!("{lead}<code>{status}</code> "));
+                let dropped = status == "-";
+                if dropped {
+                    out.push_str("<s>");
+                }
+                inline(text, cx, &mut notes, &mut out);
+                if dropped {
+                    out.push_str("</s>");
+                }
+            }
+            None => inline(body, cx, &mut notes, &mut out),
+        }
         out.push_str(eol);
+    }
+    if !notes.list.is_empty() {
+        out.push_str(if out.ends_with('\n') { "\n" } else { "\n\n" });
+        for (id, note) in notes.list {
+            out.push_str(&format!("[^{id}]: {note}\n"));
+        }
     }
     out
 }
@@ -628,8 +681,86 @@ fn is_list_item(t: &str) -> bool {
         && matches!(t.as_bytes().get(digits + 1), Some(b' ' | b'\t') | None)
 }
 
-/// A markdown link or image at `s[at..]` (at its `[`): where its text ends, its destination and
-/// title as written, and where it ends.
+/// A line read for links, its brackets matched up once and the next `)` or `>` remembered, so
+/// a line full of unclosed ones costs no more to read than a plain one.
+struct Line<'a> {
+    s: &'a str,
+    /// The `]` closing each `[`, by their byte offsets.
+    close: OnceCell<HashMap<usize, usize>>,
+    /// The last `)` and `>` looked for: from where, and where the first one is (the line's
+    /// length: none), which answers any later look from between the two.
+    paren: Cell<(usize, usize)>,
+    gt: Cell<(usize, usize)>,
+}
+
+impl<'a> Line<'a> {
+    fn new(s: &'a str) -> Line<'a> {
+        Line {
+            s,
+            close: OnceCell::new(),
+            paren: Cell::new((usize::MAX, 0)),
+            gt: Cell::new((usize::MAX, 0)),
+        }
+    }
+
+    /// The `]` closing the `[` at `at`, past escapes, code spans and nested pairs.
+    fn close(&self, at: usize) -> Option<usize> {
+        let close = self.close.get_or_init(|| {
+            let (s, b) = (self.s, self.s.as_bytes());
+            let mut close = HashMap::new();
+            let mut open = Vec::new();
+            let mut i = 0;
+            while let Some(c) = b.get(i) {
+                match c {
+                    b'\\' => i += 2,
+                    b'`' => i += code_span(&s[i..]),
+                    b'[' => {
+                        open.push(i);
+                        i += 1;
+                    }
+                    b']' => {
+                        if let Some(o) = open.pop() {
+                            close.insert(o, i);
+                        }
+                        i += 1;
+                    }
+                    _ => i += 1,
+                }
+            }
+            close
+        });
+        close.get(&at).copied()
+    }
+
+    fn next(&self, memo: &Cell<(usize, usize)>, c: u8, from: usize) -> Option<usize> {
+        let len = self.s.len();
+        let (was, found) = memo.get();
+        let at = if was <= from && from <= found {
+            found
+        } else {
+            let at = self.s.as_bytes()[from.min(len)..]
+                .iter()
+                .position(|b| *b == c)
+                .map_or(len, |p| from + p);
+            memo.set((from, at));
+            at
+        };
+        (at < len).then_some(at)
+    }
+
+    /// The first `)` at or after `from`.
+    fn paren(&self, from: usize) -> Option<usize> {
+        self.next(&self.paren, b')', from)
+    }
+
+    /// The first `>` at or after `from`.
+    fn gt(&self, from: usize) -> Option<usize> {
+        self.next(&self.gt, b'>', from)
+    }
+}
+
+/// A markdown link or image in a line, at its `[`: where its text ends, its destination and
+/// title as written, and where it ends (byte offsets in the line).
 struct MdLink<'a> {
     text_len: usize,
     dest: &'a str,
@@ -637,29 +768,12 @@ struct MdLink<'a> {
     end: usize,
 }
 
-fn parse_link(s: &str, at: usize) -> Option<MdLink<'_>> {
-    let b = s.as_bytes();
+fn parse_link<'a>(line: &Line<'a>, at: usize) -> Option<MdLink<'a>> {
+    let (s, b) = (line.s, line.s.as_bytes());
     if b.get(at) != Some(&b'[') {
         return None;
     }
-    let mut depth = 0usize;
-    let mut i = at + 1;
-    let close = loop {
-        match b.get(i)? {
-            b'\\' => i += 2,
-            b'`' => i += code_span(&s[i..]),
-            b'[' => {
-                depth += 1;
-                i += 1;
-            }
-            b']' if depth == 0 => break i,
-            b']' => {
-                depth -= 1;
-                i += 1;
-            }
-            _ => i += 1,
-        }
-    };
+    let close = line.close(at)?;
     if b.get(close + 1) != Some(&b'(') {
         return None;
     }
@@ -667,8 +781,8 @@ fn parse_link(s: &str, at: usize) -> Option<MdLink<'_>> {
     while b.get(j) == Some(&b' ') {
         j += 1;
     }
-    let (dest, mut k) = if b.get(j) == Some(&b'<') {
-        let end = j + 1 + s[j + 1..].find('>')?;
+    let (dest, k) = if b.get(j) == Some(&b'<') {
+        let end = line.gt(j + 1)?;
         (&s[j + 1..end], end + 1)
     } else {
         let mut parens = 0usize;
@@ -686,27 +800,82 @@ fn parse_link(s: &str, at: usize) -> Option<MdLink<'_>> {
         }
         (&s[j..k.min(s.len())], k)
     };
-    let title_start = k;
-    while b.get(k).is_some_and(|c| *c != b')') {
-        k += 1;
-    }
-    b.get(k)?;
+    let title_end = line.paren(k)?;
     Some(MdLink {
         text_len: close - at - 1,
         dest,
-        title: s[title_start..k].trim(),
-        end: k + 1,
+        title: s[k..title_end].trim(),
+        end: title_end + 1,
     })
 }
 
-/// Rewrites one line's inline syntax into `out`.
-fn inline(line: &str, cx: &Context, out: &mut String) {
-    let b = line.as_bytes();
+/// Inline footnotes (`^[…]`) met in a part, as markdown's, under ids no written one has.
+struct Notes {
+    taken: HashSet<String>,
+    next: usize,
+    list: Vec<(String, String)>,
+}
+
+impl Notes {
+    fn new(source: &str) -> Notes {
+        let taken = source
+            .match_indices("[^")
+            .filter_map(|(at, _)| {
+                let rest = &source[at + 2..];
+                rest.find(']').map(|end| rest[..end].to_lowercase())
+            })
+            .collect();
+        Notes {
+            taken,
+            next: 0,
+            list: Vec::new(),
+        }
+    }
+
+    /// A note's id, its markdown kept for the end of the part.
+    fn add(&mut self, markdown: String) -> String {
+        loop {
+            self.next += 1;
+            let id = format!("inline-{}", self.next);
+            if !self.taken.contains(&id) {
+                self.list.push((id.clone(), markdown));
+                return id;
+            }
+        }
+    }
+}
+
+/// `- [/] item`: a task with a status past done and to do, which GFM leaves as text: the list
+/// marker, the status, the text after it.
+fn task_status(body: &str) -> Option<(&str, char, &str)> {
+    let t = body.trim_start_matches([' ', '\t']);
+    if !is_list_item(t) {
+        return None;
+    }
+    let after = t[t.find([' ', '\t'])?..].trim_start_matches([' ', '\t']);
+    let mut chars = after.chars();
+    let (Some('['), Some(status), Some(']')) = (chars.next(), chars.next(), chars.next()) else {
+        return None;
+    };
+    let rest = chars.as_str();
+    if matches!(status, ' ' | 'x' | 'X') || !(rest.is_empty() || rest.starts_with([' ', '\t'])) {
+        return None;
+    }
+    Some((&body[..body.len() - after.len()], status, rest.trim_start()))
+}
+
+/// Rewrites one line's inline syntax into `out`; inline footnotes go to `notes`.
+fn inline(text: &str, cx: &Context, notes: &mut Notes, out: &mut String) {
+    let line = Line::new(text);
+    let b = text.as_bytes();
     let mut i = 0;
-    while i < line.len() {
-        let rest = &line[i..];
+    // No ==highlight== closes after here: one that opened here found none, and a later one
+    // would look over the same text.
+    let mut no_highlight = usize::MAX;
+    while i < text.len() {
+        let rest = &text[i..];
         let c = rest.chars().next().unwrap_or(' ');
-        let prev_space = i == 0 || line[..i].ends_with(char::is_whitespace);
+        let prev_space = i == 0 || text[..i].ends_with(char::is_whitespace);
         match c {
             '\\' => {
                 let n = 1 + rest[1..].chars().next().map_or(0, char::len_utf8);
@@ -725,9 +894,9 @@ fn inline(line: &str, cx: &Context, out: &mut String) {
                 .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'/' || *c == b'!') =>
             {
                 // Raw HTML or an autolink: as written.
-                let n = rest.find('>').map_or(1, |e| e + 1);
-                out.push_str(&rest[..n]);
-                i += n;
+                let end = line.gt(i).map_or(i + 1, |e| e + 1);
+                out.push_str(&text[i..end]);
+                i = end;
                 continue;
             }
             '!' if rest.starts_with("![[") => {
@@ -746,22 +915,35 @@ fn inline(line: &str, cx: &Context, out: &mut String) {
                     continue;
                 }
             }
+            '^' if rest.starts_with("^[") => {
+                if let Some(close) = line.close(i + 1) {
+                    let mut note = String::new();
+                    inline(&text[i + 2..close], cx, notes, &mut note);
+                    out.push_str(&format!("[^{}]", notes.add(note)));
+                    i = close + 1;
+                    continue;
+                }
+            }
             '!' | '[' => {
-                let at = if c == '!' { 1 } else { 0 };
-                if let Some(link) = parse_link(rest, at) {
-                    let text = &rest[at + 1..at + 1 + link.text_len];
-                    out.push_str(&md_link(c == '!', text, &link, cx));
-                    i += link.end;
+                let at = i + usize::from(c == '!');
+                if let Some(link) = parse_link(&line, at) {
+                    let label = &text[at + 1..at + 1 + link.text_len];
+                    out.push_str(&md_link(c == '!', label, &link, cx));
+                    i = link.end;
                     continue;
                 }
             }
             '=' if rest.starts_with("==") => {
-                if let Some(n) = highlight_end(rest) {
-                    out.push_str(&format!("<mark color=\"{HIGHLIGHT}\">"));
-                    inline(&rest[2..n - 2], cx, out);
-                    out.push_str("</mark>");
-                    i += n;
-                    continue;
+                match (i < no_highlight).then(|| highlight_end(rest)).flatten() {
+                    Some(n) => {
+                        out.push_str(&format!("<mark color=\"{HIGHLIGHT}\">"));
+                        inline(&rest[2..n - 2], cx, notes, out);
+                        out.push_str("</mark>");
+                        i += n;
+                        continue;
+                    }
+                    None if opens_highlight(rest) => no_highlight = no_highlight.min(i),
+                    None => {}
                 }
                 // A run of ='s is text: the next one mustn't open a highlight.
                 let n = rest.bytes().take_while(|b| *b == b'=').count();
@@ -786,21 +968,28 @@ fn inline(line: &str, cx: &Context, out: &mut String) {
     }
 }
 
-/// `[[inner]]` at the start of `s`: inner, and the length of it all.
+/// `[[inner]]` at the start of `s`: inner, and the length of it all. Inner holds no bracket,
+/// so the first one after `[[` ends it.
 fn wiki_inner(s: &str) -> Option<(&str, usize)> {
     let after = s.strip_prefix("[[")?;
-    let end = after.find("]]")?;
-    let inner = &after[..end];
-    (!inner.is_empty() && !inner.contains(['[', ']'])).then_some((inner, end + 4))
+    let end = after.find(['[', ']'])?;
+    (end > 0 && after[end..].starts_with("]]")).then(|| (&after[..end], end + 4))
+}
+
+/// Whether the `==` at the start of `s` can open a highlight: text right after it.
+fn opens_highlight(s: &str) -> bool {
+    s[2..]
+        .chars()
+        .next()
+        .is_some_and(|c| !c.is_whitespace() && c != '=')
 }
 
 /// `==text==` at the start of `s`: its length. Neither end may touch a space.
 fn highlight_end(s: &str) -> Option<usize> {
-    let inner = &s[2..];
-    let first = inner.chars().next()?;
-    if first.is_whitespace() || first == '=' {
+    if !opens_highlight(s) {
         return None;
     }
+    let inner = &s[2..];
     let mut from = 0;
     while let Some(at) = inner[from..].find("==") {
         let end = from + at;
@@ -921,8 +1110,12 @@ pub fn plain(source: &str) -> String {
                     .map_or("", |(_, r)| r)
                     .trim_start();
             }
-            for box_ in ["[ ] ", "[x] ", "[X] "] {
-                t = t.strip_prefix(box_).unwrap_or(t);
+            // A task's box, whatever its status.
+            let mut chars = t.chars();
+            if let (Some('['), Some(_), Some(']'), Some(' ')) =
+                (chars.next(), chars.next(), chars.next(), chars.next())
+            {
+                t = chars.as_str();
             }
             if t == before {
                 break;
@@ -939,6 +1132,7 @@ pub fn plain(source: &str) -> String {
 }
 
 fn plain_inline(line: &str, out: &mut String) {
+    let scan = Line::new(line);
     let mut i = 0;
     while i < line.len() {
         let rest = &line[i..];
@@ -954,17 +1148,23 @@ fn plain_inline(line: &str, out: &mut String) {
                 i += n;
                 continue;
             }
+        } else if rest.starts_with("^[") {
+            if let Some(close) = scan.close(i + 1) {
+                plain_inline(&line[i + 2..close], out);
+                i = close + 1;
+                continue;
+            }
         } else if c == '!' || c == '[' {
-            let at = usize::from(c == '!');
-            if let Some(link) = parse_link(rest, at) {
+            let at = i + usize::from(c == '!');
+            if let Some(link) = parse_link(&scan, at) {
                 if c == '[' {
-                    plain_inline(&rest[1..1 + link.text_len], out);
+                    plain_inline(&line[at + 1..at + 1 + link.text_len], out);
                 }
-                i += link.end;
+                i = link.end;
                 continue;
             }
         } else if c == '<' && rest[1..].starts_with(|c: char| c.is_ascii_alphabetic() || c == '/') {
-            i += rest.find('>').map_or(1, |e| e + 1);
+            i = scan.gt(i).map_or(i + 1, |e| e + 1);
             continue;
         } else if c == '\\' {
             if let Some(next) = rest[1..].chars().next() {
@@ -1224,6 +1424,7 @@ mod tests {
         );
         // Footnotes need their definitions in the same part: no split at headings then.
         assert_eq!(parts("# A\nx[^1]\n# B\n[^1]: note", true).len(), 1);
+        assert_eq!(parts("# A\nx^[note]\n# B\ny^[two]", true).len(), 1);
         assert_eq!(parts("# A\nx\n# B\ny", false).len(), 1);
     }
 
@@ -1274,6 +1475,121 @@ mod tests {
             plain(src),
             "Goals\n[!tip] See the plan and docs\nbold mark code snake_case\n  x\n# kept *as is*\n"
         );
+    }
+
+    #[test]
+    fn inline_footnotes_become_markdowns_under_ids_of_their_own() {
+        let out = md("x ^[a [b] note with [[Note]]] and y^[two]\n- item ^[three]");
+        assert_eq!(
+            out,
+            format!(
+                "x [^inline-1] and y[^inline-2]\n- item [^inline-3]\n\n[^inline-1]: a [b] note with [Note]({})\n[^inline-2]: two\n[^inline-3]: three\n",
+                href("Note.md", "")
+            )
+        );
+        // A written id is never taken.
+        let out = md("Written[^inline-1] and inline^[mine].\n\n[^inline-1]: The user's.");
+        assert!(out.contains("inline[^inline-2]."), "{out}");
+        assert!(out.ends_with("[^inline-2]: mine\n"), "{out}");
+        // Unclosed, or in code, it's text.
+        assert_eq!(md("x ^[open and `^[code]`"), "x ^[open and `^[code]`");
+        assert_eq!(plain("a ^[b] c"), "a b c\n");
+    }
+
+    #[test]
+    fn task_statuses_past_done_show_their_mark() {
+        let out = md(
+            "- [/] half\n- [-] dropped [[Note]]\n- [x] done\n- [ ] open\n  1. [<] later\n- [/]x",
+        );
+        assert_eq!(
+            out,
+            format!(
+                "- <code>/</code> half\n- <code>-</code> <s>dropped [Note]({})</s>\n- [x] done\n- [ ] open\n  1. <code>&lt;</code> later\n- [/]x",
+                href("Note.md", "")
+            )
+        );
+        assert_eq!(plain("- [/] half\n- [x] done"), "half\ndone\n");
+    }
+
+    #[test]
+    fn a_wikilink_whose_name_has_two_prices_is_one_link() {
+        // Its dollars are escaped, so math can't start in one price and end in the other.
+        let out = md("See [[Budget $5k vs $10k]] and [[Note|$5 or $6]].");
+        assert_eq!(
+            out,
+            format!(
+                "See [Budget \\$5k vs \\$10k]({}) and [\\$5 or \\$6]({}).",
+                missing_href("Budget $5k vs $10k"),
+                href("Note.md", "")
+            )
+        );
+    }
+
+    #[test]
+    fn a_block_is_found_in_its_parts_markdown() {
+        let src = "intro\n\nfirst line\nsecond ^p1\n\n- one\n- two ^i2\n\n| a |\n| - |\n\n^t1\n";
+        let index = index();
+        let cx = Context {
+            index: &index,
+            note: "Home.md",
+        };
+        let markdown = to_markdown("", src, &cx);
+        let at = |id: &str| block_range(src, &markdown, id).map(|r| &markdown[r]);
+        assert_eq!(at("p1"), Some("first line\nsecond"));
+        assert_eq!(at("i2"), Some("- two"));
+        assert_eq!(at("t1"), Some("| a |\n| - |"));
+        assert_eq!(at("gone"), None);
+    }
+
+    /// The best of three runs of `f`, in seconds.
+    fn best(f: impl Fn()) -> f64 {
+        (0..3)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                f();
+                start.elapsed().as_secs_f64()
+            })
+            .fold(f64::MAX, f64::min)
+    }
+
+    #[test]
+    fn a_long_line_costs_in_proportion_to_its_length() {
+        // Each unit opens something that never closes. Four times the text may take about
+        // four times as long; quadratic work would take sixteen.
+        for unit in [
+            "a ==b ", "#t [x ", "x ^[a ", "`` y ", "<a b ", "[[x ", "$5 [[a ", "[x]( ", "[x](<y ",
+        ] {
+            let time = |n: usize| {
+                let line = unit.repeat(n);
+                best(|| {
+                    md(&line);
+                })
+            };
+            let (small, big) = (time(2000), time(8000));
+            assert!(
+                big < small * 9. + 0.005,
+                "{unit:?}: {small:.4}s -> {big:.4}s"
+            );
+        }
+    }
+
+    #[test]
+    fn a_long_note_written_line_by_line_costs_little() {
+        let lines: String = (0..2000)
+            .map(|i| {
+                format!(
+                    "{i} met [[Person {}]] about ==this== #project/{} ^[n{i}]\n",
+                    i % 50,
+                    i % 7
+                )
+            })
+            .collect();
+        let out = md(&lines);
+        assert!(out.contains("Person 49"), "{}", &out[..200]);
+        let took = best(|| {
+            md(&lines);
+        });
+        assert!(took < 0.5, "{took:.3}s");
     }
 
     #[test]

@@ -19,6 +19,7 @@ pub mod diagrams;
 pub mod find;
 pub mod images;
 pub mod links;
+pub mod properties;
 mod view;
 
 pub use blocks::{Callout, Callouts, DiagramKind};
