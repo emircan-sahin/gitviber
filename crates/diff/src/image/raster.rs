@@ -32,12 +32,20 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
-/// A file's size as its bar shows it: "812 B", "34.5 KB", "2.1 MB".
+/// A file's size as its bar shows it: "812 B", "3.4 KB", "35 KB", "2.1 GB": binary units, a
+/// decimal under 10. Never "1024 KB": past 1023.5 it's the next unit's.
 pub fn file_size(n: u64) -> String {
-    match n {
-        n if n >= 1 << 20 => format!("{:.1} MB", n as f64 / (1 << 20) as f64),
-        n if n >= 1 << 10 => format!("{:.1} KB", n as f64 / 1024.),
-        n => format!("{n} B"),
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let (mut v, mut i) = (n as f64, 0);
+    while v >= if i == 0 { 1024. } else { 1023.5 } && i < UNITS.len() - 1 {
+        v /= 1024.;
+        i += 1;
+    }
+    match i {
+        0 => format!("{n} B"),
+        // Halves round up, not to even: 34.5 KB is "35 KB".
+        _ if v < 9.95 => format!("{:.1} {}", (v * 10.).round() / 10., UNITS[i]),
+        _ => format!("{} {}", v.round(), UNITS[i]),
     }
 }
 
@@ -300,6 +308,21 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sizes_read_as_the_unit_they_are_nearly() {
+        assert_eq!(file_size(9), "9 B");
+        assert_eq!(file_size(4002), "3.9 KB");
+        assert_eq!(file_size(35_328), "35 KB");
+        assert_eq!(file_size(312 * 1024 * 1024), "312 MB");
+        assert_eq!(file_size(1023), "1023 B");
+        assert_eq!(file_size(1024), "1.0 KB");
+        assert_eq!(file_size(1_048_575), "1.0 MB");
+        assert_eq!(file_size(10 * 1024 - 1), "10 KB");
+        assert_eq!(file_size(5 << 30), "5.0 GB");
+        assert_eq!(file_size(3 << 40), "3.0 TB");
+        assert_eq!(file_size(u64::MAX), "16777216 TB");
+    }
 
     fn png(image: &RgbaImage) -> Vec<u8> {
         let mut out = Cursor::new(Vec::new());

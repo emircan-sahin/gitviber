@@ -2,6 +2,9 @@
 //! (definitions/*.scm); a name resolves to the definition in scope where it's used, else to the
 //! top-level ones in other files `git grep` finds it in. By name, so it can offer several; there's
 //! no index to build or keep, and a commit's tree reads the same as the worktree.
+//! A path or module string goes to the file it names first (links.rs).
+
+mod links;
 
 use crate::{fs, git, process};
 use serde::{Deserialize, Serialize};
@@ -451,8 +454,31 @@ fn byte_at(src: &str, line: u32, column: u32) -> Option<usize> {
 }
 
 pub fn find(repo: &Path, req: &Request) -> Result<Vec<Location>, String> {
+    find_at(repo, req).map(|f| f.places)
+}
+
+/// What Go to Definition found.
+#[derive(Debug, PartialEq)]
+pub struct Found {
+    pub places: Vec<Location>,
+    /// When a path or module string was asked about (links.rs): its UTF-16 columns on the
+    /// request's line, for the editor to underline it whole.
+    pub link: Option<(u32, u32)>,
+}
+
+/// `find`, saying when it went by a path rather than a name: an import's file, then the name.
+pub fn find_at(repo: &Path, req: &Request) -> Result<Found, String> {
     let id = begin(req)?;
-    definitions(repo, req, id)
+    if let Some((place, span)) = links::follow(repo, req) {
+        return Ok(Found {
+            places: vec![place],
+            link: Some(span),
+        });
+    }
+    Ok(Found {
+        places: definitions(repo, req, id)?,
+        link: None,
+    })
 }
 
 /// Where the name at the request's place is used, its definition and imports included: the

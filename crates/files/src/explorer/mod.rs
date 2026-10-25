@@ -1477,6 +1477,8 @@ impl ExplorerPanel {
             .flex()
             .items_center()
             .gap(px(6.))
+            // The whole row is the target and the hover, not just its name.
+            .w_full()
             .h(px(ROW_HEIGHT))
             .pl(px(pad))
             .pr_2()

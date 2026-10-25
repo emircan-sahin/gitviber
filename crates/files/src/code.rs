@@ -16,6 +16,8 @@ use std::time::Duration;
 
 use gitviber_core::definitions::{self, Location};
 use gitviber_core::{Core, api};
+/// The widening rules, for the vault's editor too.
+pub use gitviber_diff::model::indent;
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::keymap::{self, editor, file, find, review, search};
 use gitviber_ui::memory::Live;
@@ -30,10 +32,10 @@ use gpui_kit::component::input::{
 };
 use gpui_kit::component::{input as edit, native_menu::NativeMenu};
 use gpui_kit::{
-    App, AppContext as _, Bounds, ClickEvent, Context, Entity, FocusHandle, Focusable as _,
-    InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Pixels, PromptLevel,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
-    WeakEntity, Window, actions, canvas, div, fill, point, prelude::FluentBuilder as _, px,
+    App, AppContext as _, Bounds, ClickEvent, ClipboardItem, Context, Entity, FocusHandle,
+    Focusable as _, InteractiveElement, IntoElement, KeyBinding, ParentElement as _, Pixels,
+    PromptLevel, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
+    Task, WeakEntity, Window, actions, canvas, div, fill, point, prelude::FluentBuilder as _, px,
     relative, size,
 };
 
@@ -123,6 +125,94 @@ fn select(s: &mut EditorState, selections: &[Range<usize>], cx: &mut Context<Edi
     }
 }
 
+/// The non-empty selections' text in document order, as Copy joins it, with the file's own
+/// indentation.
+fn selection_text(s: &EditorState, wide: usize) -> Option<String> {
+    let mut ranges: Vec<Range<usize>> = s
+        .selected_ranges()
+        .into_iter()
+        .filter(|r| !r.is_empty())
+        .collect();
+    ranges.sort_by_key(|r| r.start);
+    let texts: Vec<String> = ranges
+        .into_iter()
+        .map(|r| indent::narrow(&s.text().slice(r).to_string(), wide))
+        .collect();
+    (!texts.is_empty()).then(|| texts.join("\n"))
+}
+
+/// Deletes every selection as one step to undo, a caret left at each.
+fn delete_selections(s: &mut EditorState, window: &mut Window, cx: &mut Context<EditorState>) {
+    let mut ranges = s.selected_ranges();
+    ranges.sort_by_key(|r| r.start);
+    let (Some(first), Some(last)) = (ranges.first(), ranges.last()) else {
+        return;
+    };
+    let span = first.start..last.end.max(first.end);
+    let (mut kept, mut carets, mut at) = (String::new(), vec![], span.start);
+    for r in &ranges {
+        let start = r.start.max(at);
+        kept.push_str(&s.text().slice(at..start).to_string());
+        carets.push(span.start + kept.len()..span.start + kept.len());
+        at = r.end.max(at);
+    }
+    s.set_selected_range(span, cx);
+    s.replace(kept, window, cx);
+    select(s, &carets, cx);
+}
+
+/// Copy, Cut and Paste in an editor that shows a file's `wide`-space levels 4 wide (see
+/// `indent::widen`): what leaves has the file's own indentation, and what comes in is widened
+/// where it lands. A paste at several carets is the editor's own, as it shares out lines.
+pub fn indent_clipboard<E: InteractiveElement>(
+    el: E,
+    state: &Entity<EditorState>,
+    wide: usize,
+) -> E {
+    if wide == 0 {
+        return el;
+    }
+    let (copy, cut, paste) = (state.clone(), state.clone(), state.clone());
+    el.capture_action(move |_: &edit::Copy, _, cx| {
+        if let Some(text) = selection_text(copy.read(cx), wide) {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            cx.stop_propagation();
+        }
+    })
+    .capture_action(move |_: &edit::Cut, window, cx| {
+        let s = cut.read(cx);
+        let Some(text) = selection_text(s, wide).filter(|_| s.is_editable()) else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        cx.stop_propagation();
+        cut.update(cx, |s, cx| delete_selections(s, window, cx));
+    })
+    .capture_action(move |_: &edit::Paste, window, cx| {
+        let s = paste.read(cx);
+        let ranges = s.selected_ranges();
+        let ([range], true) = (ranges.as_slice(), s.is_editable()) else {
+            return;
+        };
+        let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else {
+            return;
+        };
+        let row = s.text().offset_to_point(range.start).row;
+        let before = s.text().slice(s.text().line_start_offset(row)..range.start);
+        let widened = indent::widen_paste(&text, &before.to_string(), wide);
+        if widened == text {
+            return;
+        }
+        cx.stop_propagation();
+        paste.update(cx, |s, cx| {
+            s.replace(widened, window, cx);
+            // Shown where it ends, as the editor's own paste.
+            let at = s.cursor_position();
+            s.set_cursor_position(at, window, cx);
+        });
+    })
+}
+
 /// Where the text comes from, for saving and for definitions.
 #[derive(Clone, Debug)]
 pub struct CodeSource {
@@ -187,6 +277,9 @@ pub struct CodeView {
     state: Entity<EditorState>,
     readonly: bool,
     crlf: bool,
+    /// Spaces a level the file is indented with that show 4 wide (`indent::widen`); 0 when it
+    /// shows as it is. The provider reads it too.
+    wide: Rc<std::cell::Cell<usize>>,
     /// The file's language, highlighted or not (the status bar names it).
     lang: &'static str,
     /// HEAD's text, for the bars once the file is typed into; None: no bars (new, outside).
@@ -285,6 +378,8 @@ struct Definitions {
     core: Arc<Core>,
     path: String,
     root: PathBuf,
+    /// The view's widening (`CodeView::wide`), as it was when the file was shown.
+    wide: Rc<std::cell::Cell<usize>>,
 }
 
 /// The 0-based UTF-16 column of `offset` in its line, as core counts columns.
@@ -293,6 +388,31 @@ fn utf16_column(text: &Rope, offset: usize) -> (u32, u32) {
     let start = text.line_start_offset(p.row);
     let line: String = text.slice(start..offset).to_string();
     (p.row as u32 + 1, line.encode_utf16().count() as u32)
+}
+
+/// Line `row` (0-based) of `text`.
+fn line_text(text: &Rope, row: usize) -> String {
+    let row = row.min(text.lines_len().saturating_sub(1));
+    text.slice(text.line_start_offset(row)..text.line_end_offset(row))
+        .to_string()
+}
+
+/// A lookup at `offset` of the shown `text`, in the file's own text and columns.
+fn request(path: String, text: &Rope, offset: usize, wide: usize) -> definitions::Request {
+    let (line, column) = utf16_column(text, offset);
+    let shown = line_text(text, line as usize - 1);
+    definitions::Request {
+        path,
+        text: indent::narrow(&text.to_string(), wide),
+        line,
+        column: indent::narrow_column(&shown, column as usize, wide) as u32,
+        rev: None,
+    }
+}
+
+/// Line `line` (1-based) of `text` as the file has it.
+fn file_line(text: &str, line: u32) -> &str {
+    text.split('\n').nth(line.max(1) as usize - 1).unwrap_or("")
 }
 
 /// A UTF-16 column of `line` (1-based) as a byte offset.
@@ -339,28 +459,30 @@ impl DefinitionProvider for Definitions {
         _: &mut Window,
         cx: &mut App,
     ) -> Task<gpui_kit::Result<Vec<lsp_types::LocationLink>>> {
-        let (core, path, root, text) = (
+        let (core, path, root, text, wide) = (
             self.core.clone(),
             self.path.clone(),
             self.root.clone(),
             text.clone(),
+            self.wide.get(),
         );
         cx.background_spawn(async move {
-            let (line, column) = utf16_column(&text, offset);
-            let request = definitions::Request {
-                path,
-                text: text.to_string(),
-                line,
-                column,
-                rev: None,
-            };
-            let found = api::files::definitions(&core, request)
+            let request = request(path, &text, offset, wide);
+            let found = core
+                .in_repo(|r| definitions::find_at(r, &request))
                 .map_err(gpui_kit::private::anyhow::Error::msg)?;
+            // A path or module string is underlined whole, at its columns as shown.
+            let origin = found.link.map(|(start, end)| {
+                let line = file_line(&request.text, request.line);
+                let at = |c: u32| indent::widen_column(line, c as usize, wide) as u32;
+                lsp_range(request.line, at(start), at(end))
+            });
             Ok(found
+                .places
                 .into_iter()
                 .filter_map(|l| {
                     Some(lsp_types::LocationLink {
-                        origin_selection_range: None,
+                        origin_selection_range: origin,
                         target_uri: file_uri(&root, &l.path)?,
                         target_range: lsp_range(l.line, l.column, l.end_column),
                         target_selection_range: lsp_range(l.line, l.column, l.end_column),
@@ -377,6 +499,34 @@ fn path_of_uri(root: &std::path::Path, uri: &str) -> Option<String> {
     let decoded = gitviber_markdown::links::decode(encoded);
     let rel = std::path::Path::new(&decoded).strip_prefix(root).ok()?;
     Some(rel.to_string_lossy().into_owned())
+}
+
+/// The Tab key's step: a level as shown, which is 4 for a widened file.
+fn tab_size(text: &str, wide: usize) -> TabSize {
+    let unit = text::indent_unit(text);
+    TabSize {
+        tab_size: if wide > 0 || unit == 0 {
+            indent::TAB
+        } else {
+            unit
+        },
+        hard_tabs: false,
+    }
+}
+
+/// A file's text as the editor holds it: lines joined with \n (the file's \r\n goes back on at
+/// save), and its indentation widened.
+fn shown(text: String, crlf: bool, wide: usize) -> String {
+    let text = if crlf {
+        text.replace("\r\n", "\n")
+    } else {
+        text
+    };
+    if wide > 0 {
+        indent::widen(&text, wide)
+    } else {
+        text
+    }
 }
 
 impl CodeView {
@@ -401,34 +551,29 @@ impl CodeView {
         let crlf = text::uses_crlf(&text);
         // Past this the bars aren't worked out again, so HEAD's text isn't kept either.
         let head = head.filter(|_| text.len() <= MAX_LIVE_BARS_BYTES);
-        let unit = text::indent_unit(&text);
         let wrap = gitviber_ui::Settings::get(cx).word_wrap;
         let big = text.len() > MAX_HIGHLIGHT_BYTES;
         let base = text_hash(&text);
-        // The editor joins lines with \n; the file's \r\n goes back on at save.
-        let text = if crlf {
-            text.replace("\r\n", "\n")
-        } else {
-            text
-        };
+        let wide = indent::indent_unit([text.as_str()]);
+        let tab = tab_size(&text, wide);
+        let text = shown(text, crlf, wide);
         let state = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language(language)
                 .line_number(true)
                 .folding(!big)
                 .soft_wrap(wrap)
-                .tab_size(TabSize {
-                    tab_size: if unit == 0 { 4 } else { unit },
-                    hard_tabs: false,
-                })
+                .tab_size(tab)
                 .default_value(text)
         });
+        let wide = Rc::new(std::cell::Cell::new(wide));
         let core = backend::core(cx);
         if let Some(root) = source.root.clone() {
             let provider = Definitions {
                 core: core.clone(),
                 path: source.path.clone(),
                 root: root.clone(),
+                wide: wide.clone(),
             };
             let ws = workspace.clone();
             let me = cx.weak_entity();
@@ -502,6 +647,7 @@ impl CodeView {
             state,
             readonly,
             crlf,
+            wide,
             lang,
             head: head.map(Arc::new),
             bars: Arc::new(bars),
@@ -765,8 +911,14 @@ impl CodeView {
         self.state.read(cx).focus_handle(cx)
     }
 
-    pub fn text<'a>(&self, cx: &'a App) -> &'a Rope {
-        self.state.read(cx).text()
+    /// The text as the file has it, typing included, lines joined with \n: a preview and
+    /// review notes read the file's own indentation, not the one shown.
+    pub fn text(&self, cx: &App) -> Rope {
+        let shown = self.state.read(cx).text();
+        match self.wide.get() {
+            0 => shown.clone(),
+            wide => Rope::from(indent::narrow(&shown.to_string(), wide).as_str()),
+        }
     }
 
     /// The file changed on disk: shown as it is now, unless there's typing to keep. Kept typing
@@ -783,14 +935,17 @@ impl CodeView {
             .filter(|_| text.len() <= MAX_LIVE_BARS_BYTES)
             .map(Arc::new);
         let hash = text_hash(&text);
-        let text = if self.crlf {
-            text.replace("\r\n", "\n")
+        // Typing is kept as shown; the file as read again shows by its own indentation.
+        let wide = if self.dirty {
+            self.wide.get()
         } else {
-            text
+            indent::indent_unit([text.as_str()])
         };
+        let tab = (wide != self.wide.get()).then(|| tab_size(&text, wide));
+        let text = shown(text, self.crlf, wide);
         let same = {
-            let shown = self.state.read(cx).text();
-            shown.len() == text.len() && *shown == text.as_str()
+            let now = self.state.read(cx).text();
+            now.len() == text.len() && *now == text.as_str()
         };
         if self.dirty && !same {
             let changed = hash != self.base && self.saving != Some(hash);
@@ -808,6 +963,11 @@ impl CodeView {
             self.dirty = false;
             self.disk_changed = false;
             cx.emit(CodeEvent::DirtyChanged);
+        }
+        // The same as shown can still be another step: 4 spaces a level shown as 2 widened.
+        self.wide.set(wide);
+        if let Some(tab) = tab {
+            self.state.update(cx, |s, cx| s.set_tab_size(tab, cx));
         }
         if !same {
             self.state.update(cx, |s, cx| s.set_value(text, window, cx));
@@ -842,11 +1002,12 @@ impl CodeView {
         if rope.len() > MAX_LIVE_BARS_BYTES {
             return;
         }
+        let wide = self.wide.get();
         self._bars = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SETTLE).await;
             let bars = cx
                 .background_spawn(async move {
-                    let now = rope.to_string();
+                    let now = indent::narrow(&rope.to_string(), wide);
                     let (rows, _) = gitviber_core::diff::rows(
                         &head,
                         &now,
@@ -875,10 +1036,7 @@ impl CodeView {
         }
         let (done, answer) = gitviber_ui::workspace::save_signal(cx);
         let at = self.edits;
-        let mut content = self.state.read(cx).text().to_string();
-        if self.crlf {
-            content = content.replace('\n', "\r\n");
-        }
+        let content = self.content(cx);
         let written = text_hash(&content);
         let (core, path) = (self.core.clone(), self.source.path.clone());
         let name = path.rsplit('/').next().unwrap_or(&path).to_string();
@@ -950,10 +1108,14 @@ impl CodeView {
 
     /// Shows a line: a link's at its column, or a search result's with its match selected.
     pub fn reveal(&mut self, reveal: Reveal, window: &mut Window, cx: &mut Context<Self>) {
+        let wide = self.wide.get();
         self.state.update(cx, |s, cx| {
             let text = s.text().clone();
             match reveal {
                 Reveal::Line { line, column } => {
+                    let shown = line_text(&text, line.max(1) as usize - 1);
+                    let own = indent::narrow(&shown, wide);
+                    let column = indent::widen_column(&own, column as usize, wide) as u32;
                     let offset = offset_of(&text, line, column);
                     let pos = text.offset_to_position(offset);
                     s.unfold_at(pos, cx);
@@ -1026,18 +1188,11 @@ impl CodeView {
             let s = self.state.read(cx);
             (s.text().clone(), s.cursor())
         };
-        let (core, path) = (self.core.clone(), self.source.path.clone());
+        let (core, path, wide) = (self.core.clone(), self.source.path.clone(), self.wide.get());
         self._lookup = cx.spawn_in(window, async move |this, cx| {
             let found = cx
                 .background_spawn(async move {
-                    let (line, column) = utf16_column(&text, offset);
-                    let request = definitions::Request {
-                        path,
-                        text: text.to_string(),
-                        line,
-                        column,
-                        rev: None,
-                    };
+                    let request = request(path, &text, offset, wide);
                     if references {
                         api::files::references(&core, request)
                     } else {
@@ -1112,7 +1267,17 @@ impl CodeView {
     pub fn selected_text(&self, cx: &App) -> String {
         let s = self.state.read(cx);
         let range = s.selected_range();
-        s.text().slice(range).to_string()
+        indent::narrow(&s.text().slice(range).to_string(), self.wide.get())
+    }
+
+    /// The text as the file would hold it: its own indentation and line endings.
+    fn content(&self, cx: &App) -> String {
+        let text = self.text(cx).to_string();
+        if self.crlf {
+            text.replace('\n', "\r\n")
+        } else {
+            text
+        }
     }
 
     /// A line command's edit, made as one step to undo. Read-only code lets the key go on.
@@ -1517,6 +1682,7 @@ impl Render for CodeView {
             .relative()
             .size_full()
             .bg(t.code(t.background))
+            .map(|el| indent_clipboard(el, &self.state, self.wide.get()))
             .on_action(cx.listener(|this, _: &file::Save, window, cx| this.save(window, cx)))
             .on_action(cx.listener(|this, _: &GoToLine, window, cx| this.open_goto(window, cx)))
             .on_action(cx.listener(|this, _: &CloseOverlay, window, cx| {
@@ -1660,5 +1826,219 @@ impl Render for CodeView {
                     .child(Input::new(&input).small())
             }))
             .children(places)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::{AnyView, TestAppContext, VisualTestContext};
+
+    struct Host(Option<AnyView>);
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().children(self.0.clone())
+        }
+    }
+
+    fn setup(cx: &mut TestAppContext) {
+        gitviber_ui::test_support::config_dir("files-code-test");
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            crate::init(cx);
+        });
+    }
+
+    /// A code view of `text`, drawn, its editor focused.
+    fn code_view<'a>(
+        cx: &'a mut TestAppContext,
+        text: &str,
+    ) -> (Entity<CodeView>, &'a mut VisualTestContext) {
+        let (host, cx) = cx.add_window_view(|_, _| Host(None));
+        let code = cx.update(|window, cx| {
+            let source = CodeSource {
+                path: "src/a.ts".into(),
+                root: None,
+            };
+            let text = text.to_string();
+            let code = cx.new(|cx| {
+                CodeView::new(
+                    WeakEntity::<Workspace>::new_invalid(),
+                    source,
+                    text,
+                    None,
+                    vec![],
+                    false,
+                    window,
+                    cx,
+                )
+            });
+            host.update(cx, |h, cx| {
+                h.0 = Some(code.clone().into());
+                cx.notify();
+            });
+            code
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| code.read(cx).editor_focus(cx).focus(window, cx));
+        cx.run_until_parked();
+        (code, cx)
+    }
+
+    fn shown_text(cx: &mut VisualTestContext, code: &Entity<CodeView>) -> String {
+        cx.update(|_, cx| code.read(cx).state().read(cx).text().to_string())
+    }
+
+    fn put(cx: &mut VisualTestContext, code: &Entity<CodeView>, at: Range<usize>) {
+        cx.update(|_, cx| {
+            let state = code.read(cx).state().clone();
+            state.update(cx, |s, cx| s.set_selected_range(at, cx));
+        });
+    }
+
+    fn clipboard(cx: &mut VisualTestContext) -> Option<String> {
+        cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text()))
+    }
+
+    /// A file indented 2 spaces a level shows 4 wide, as its diff does; what leaves the view
+    /// (a save, Copy, Cut, a lookup) has the file's own indentation, and a paste is widened.
+    #[gpui_kit::test]
+    fn two_space_code_shows_four_wide_and_leaves_as_it_is(cx: &mut TestAppContext) {
+        setup(cx);
+        let file = "fn a() {\n  if x {\n    y();\n  }\n}\n";
+        let (code, cx) = code_view(cx, file);
+        let wide = "fn a() {\n    if x {\n        y();\n    }\n}\n";
+        assert_eq!(shown_text(cx, &code), wide);
+        assert_eq!(cx.update(|_, cx| code.read(cx).content(cx)), file);
+        // A preview or a review note reads the file's lines.
+        assert_eq!(cx.update(|_, cx| code.read(cx).text(cx).to_string()), file);
+        // Tab steps a level as shown.
+        assert_eq!(tab_size(file, 2).tab_size, indent::TAB);
+        assert_eq!(tab_size(file, 0).tab_size, 2);
+
+        // Copy: lines 2 and 3 as the file has them.
+        let line2 = wide.find("    if").unwrap();
+        let line4 = wide.find("    }").unwrap();
+        put(cx, &code, line2..line4);
+        cx.dispatch_action(edit::Copy);
+        assert_eq!(clipboard(cx).as_deref(), Some("  if x {\n    y();\n"));
+        assert_eq!(
+            cx.update(|_, cx| code.read(cx).selected_text(cx)),
+            "  if x {\n    y();\n"
+        );
+
+        // Cut: the line goes, the clipboard has it as the file does.
+        let line3 = wide.find("        y").unwrap();
+        put(cx, &code, line3..line4);
+        cx.dispatch_action(edit::Cut);
+        assert_eq!(clipboard(cx).as_deref(), Some("    y();\n"));
+        assert_eq!(shown_text(cx, &code), "fn a() {\n    if x {\n    }\n}\n");
+
+        // Paste after `{`: the new line's level is widened; saved, it's the file's 2 again.
+        let end1 = "fn a() {\n    if x {".len();
+        put(cx, &code, end1..end1);
+        cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("\n    z();".into())));
+        cx.dispatch_action(edit::Paste);
+        assert_eq!(
+            shown_text(cx, &code),
+            "fn a() {\n    if x {\n        z();\n    }\n}\n"
+        );
+        assert_eq!(
+            cx.update(|_, cx| code.read(cx).content(cx)),
+            "fn a() {\n  if x {\n    z();\n  }\n}\n"
+        );
+        // Undo takes the paste back in one step.
+        cx.dispatch_action(edit::Undo);
+        assert_eq!(shown_text(cx, &code), "fn a() {\n    if x {\n    }\n}\n");
+    }
+
+    /// Code indented 4 a level, or with tabs, shows as it is; read again from disk with another
+    /// step, the file shows by its new one.
+    #[gpui_kit::test]
+    fn other_indentation_shows_as_it_is(cx: &mut TestAppContext) {
+        setup(cx);
+        let file = "fn a() {\n    b();\n}\n";
+        let (code, cx) = code_view(cx, file);
+        assert_eq!(shown_text(cx, &code), file);
+        put(cx, &code, 0..file.len());
+        cx.dispatch_action(edit::Copy);
+        assert_eq!(clipboard(cx).as_deref(), Some(file));
+        let two = "fn a() {\n  b();\n}\n";
+        cx.update(|window, cx| {
+            code.update(cx, |c, cx| {
+                c.file_changed(two.into(), None, vec![], window, cx)
+            })
+        });
+        assert_eq!(shown_text(cx, &code), file);
+        assert_eq!(cx.update(|_, cx| code.read(cx).content(cx)), two);
+        assert!(!cx.update(|_, cx| code.read(cx).is_dirty()));
+    }
+
+    /// ⌘-click on an import or a `path:line` in a comment goes to that file, the whole string
+    /// underlined at its columns as shown.
+    #[gpui_kit::test]
+    fn an_import_or_a_path_goes_to_its_file(cx: &mut TestAppContext) {
+        setup(cx);
+        let repo = std::env::temp_dir().join(format!("gitviber-code-links-{}", std::process::id()));
+        _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        let file = "import { u } from \"./util\";\nif (u) {\n  // see src/util.ts:3\n}\n";
+        std::fs::write(repo.join("src/a.ts"), file).unwrap();
+        std::fs::write(repo.join("src/util.ts"), "export const u = 1;\n").unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q"]);
+        let core = Arc::new(Core::new(Arc::new(|_| {})));
+        api::repo::open_repo(&core, repo.to_string_lossy().into_owned()).unwrap();
+        let provider = Definitions {
+            core,
+            path: "src/a.ts".into(),
+            root: repo.clone(),
+            wide: Rc::new(std::cell::Cell::new(2)),
+        };
+        let (_, cx) = cx.add_window_view(|_, _| Host(None));
+        let shown = indent::widen(file, 2);
+        let rope = Rope::from(shown.as_str());
+        let ask = |cx: &mut VisualTestContext, at: usize| {
+            let task = cx.update(|window, cx| provider.definitions(&rope, at, window, cx));
+            let out = Rc::new(RefCell::new(None));
+            let o = out.clone();
+            cx.update(|_, cx| {
+                cx.spawn(async move |_| *o.borrow_mut() = Some(task.await.unwrap()))
+                    .detach()
+            });
+            cx.run_until_parked();
+            let links = out.borrow_mut().take().unwrap();
+            links
+                .into_iter()
+                .map(|l| {
+                    let path = path_of_uri(&repo, l.target_uri.as_str()).unwrap();
+                    (path, l.target_range.start.line, l.origin_selection_range)
+                })
+                .collect::<Vec<_>>()
+        };
+        let import = shown.find("./util").unwrap() + 2;
+        assert_eq!(
+            ask(cx, import),
+            [("src/util.ts".into(), 0, Some(lsp_range(1, 19, 25)))]
+        );
+        let comment = shown.find("src/util").unwrap() + 4;
+        let at = shown[..comment].rfind('\n').unwrap() + 1;
+        let start = (shown.find("src/util").unwrap() - at) as u32;
+        assert_eq!(
+            ask(cx, comment),
+            [(
+                "src/util.ts".into(),
+                2,
+                Some(lsp_range(3, start, start + 13))
+            )]
+        );
+        _ = std::fs::remove_dir_all(&repo);
     }
 }

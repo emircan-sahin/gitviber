@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gitviber_core::{Core, api};
+use gitviber_files::code::indent;
 use gitviber_files::text;
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::keymap::{editor, file};
@@ -21,7 +22,7 @@ use gpui_kit::component::input::{Editor, EditorState, InputEvent, TabSize};
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable as _,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _, Subscription,
-    Task, WeakEntity, Window, div, relative,
+    Task, WeakEntity, Window, div, prelude::FluentBuilder as _, relative,
 };
 
 use crate::edits::{self, Edit};
@@ -48,6 +49,8 @@ pub struct NoteEditor {
     lossy: bool,
     readonly: bool,
     crlf: bool,
+    /// Spaces a level the text is indented with that show 4 wide (`indent::widen`); 0: as it is.
+    wide: usize,
     dirty: bool,
     /// A write is on its way: another ⌘S waits for it rather than racing it.
     saving: bool,
@@ -65,6 +68,21 @@ impl EventEmitter<EditorEvent> for NoteEditor {}
 
 fn readonly_for(lossy: bool, text: &str) -> bool {
     lossy || !text::keeps_line_endings(text)
+}
+
+/// A file's text as the editor holds it: lines joined with \n (the file's \r\n goes back on at
+/// save), its indentation widened by `wide`.
+fn held(text: &str, crlf: bool, wide: usize) -> String {
+    let text = if crlf {
+        text.replace("\r\n", "\n")
+    } else {
+        text.to_string()
+    };
+    if wide > 0 {
+        indent::widen(&text, wide)
+    } else {
+        text
+    }
 }
 
 impl NoteEditor {
@@ -97,14 +115,11 @@ impl NoteEditor {
         let readonly = readonly_for(lossy, &shown);
         let crlf = text::uses_crlf(&shown);
         let unit = text::indent_unit(&shown);
+        // 2-space levels show 4 wide, as in the code view; saves get the file's own back.
+        let wide = indent::indent_unit([shown.as_str()]);
         let wrap = gitviber_ui::Settings::get(cx).word_wrap;
         let dirty = shown != base;
-        // The editor joins lines with \n; the file's \r\n goes back on at save.
-        let value = if crlf {
-            shown.replace("\r\n", "\n")
-        } else {
-            shown
-        };
+        let value = held(&shown, crlf, wide);
         let state = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language(language)
@@ -112,7 +127,11 @@ impl NoteEditor {
                 .folding(!big)
                 .soft_wrap(wrap)
                 .tab_size(TabSize {
-                    tab_size: if unit == 0 { 4 } else { unit },
+                    tab_size: if wide > 0 || unit == 0 {
+                        indent::TAB
+                    } else {
+                        unit
+                    },
                     hard_tabs: false,
                 })
                 .default_value(value)
@@ -144,6 +163,7 @@ impl NoteEditor {
             lossy,
             readonly,
             crlf,
+            wide,
             dirty,
             saving: false,
             forgotten: false,
@@ -173,9 +193,9 @@ impl NoteEditor {
         self.state.read(cx).focus_handle(cx)
     }
 
-    /// The text as the file would hold it (its line endings back on).
+    /// The text as the file would hold it (its indentation and line endings back on).
     pub fn content(&self, cx: &App) -> String {
-        let text = self.state.read(cx).text().to_string();
+        let text = indent::narrow(&self.state.read(cx).text().to_string(), self.wide);
         if self.crlf {
             text.replace('\n', "\r\n")
         } else {
@@ -236,11 +256,8 @@ impl NoteEditor {
         if !self.dirty {
             if self.content(cx) != text {
                 self.crlf = text::uses_crlf(text);
-                let value = if self.crlf {
-                    text.replace("\r\n", "\n")
-                } else {
-                    text.to_string()
-                };
+                // Kept as shown before: the Tab key's step stays, and it saves back exactly.
+                let value = held(text, self.crlf, self.wide);
                 // set_value says nothing of its own: it isn't typing.
                 self.state
                     .update(cx, |s, cx| s.set_value(value, window, cx));
@@ -389,6 +406,7 @@ impl Render for NoteEditor {
             .track_focus(&self.focus)
             .size_full()
             .bg(t.code(t.background))
+            .map(|el| gitviber_files::code::indent_clipboard(el, &self.state, self.wide))
             .on_action(cx.listener(|this, _: &file::Save, window, cx| this.save(window, cx)))
             .on_action(cx.listener(|this, _: &editor::Find, _, cx| {
                 this.state.update(cx, |s, cx| s.open_search(false, cx))
@@ -405,5 +423,61 @@ impl Render for NoteEditor {
                     .text_size(t.fonts.code_size)
                     .line_height(relative(t.fonts.code_line_height)),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::{AnyView, TestAppContext};
+
+    struct Host(Option<AnyView>);
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().children(self.0.clone())
+        }
+    }
+
+    /// 2-space levels show 4 wide, as in the code view and the diff; a save, what's kept and a
+    /// copy have the file's own.
+    #[gpui_kit::test]
+    fn two_space_levels_show_four_wide_and_save_as_they_were(cx: &mut TestAppContext) {
+        gitviber_ui::test_support::config_dir("obsidian-editor-indent");
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            gitviber_ui::install_core(cx);
+        });
+        let file = "{\r\n  \"nodes\": [\r\n    1\r\n  ]\r\n}\r\n";
+        let (host, cx) = cx.add_window_view(|_, _| Host(None));
+        let editor = cx.update(|window, cx| {
+            let editor = cx.new(|cx| {
+                NoteEditor::new(
+                    WeakEntity::new_invalid(),
+                    "vault".into(),
+                    "Board.canvas".into(),
+                    file.into(),
+                    false,
+                    window,
+                    cx,
+                )
+            });
+            host.update(cx, |h, _| h.0 = Some(editor.clone().into()));
+            editor
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let shown = cx.update(|_, cx| editor.read(cx).state.read(cx).text().to_string());
+        assert_eq!(shown, "{\n    \"nodes\": [\n        1\n    ]\n}\n");
+        assert_eq!(cx.update(|_, cx| editor.read(cx).content(cx)), file);
+        assert!(!cx.update(|_, cx| editor.read(cx).is_dirty()));
+        cx.update(|window, cx| {
+            let state = editor.read(cx).state.clone();
+            state.update(cx, |s, cx| s.set_selected_range(2..shown.len(), cx));
+            editor.read(cx).editor_focus(cx).focus(window, cx);
+        });
+        cx.run_until_parked();
+        cx.dispatch_action(gpui_kit::component::input::Copy);
+        let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text()));
+        assert_eq!(copied.as_deref(), Some("  \"nodes\": [\n    1\n  ]\n}\n"));
     }
 }
