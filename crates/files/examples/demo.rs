@@ -1,13 +1,14 @@
 //! The explorer beside a file tab of a repo, for screenshots.
 //!
-//! files-demo [REPO] [--file PATH] [--md] [--search TEXT] [--reveal LINE]
+//! files-demo [REPO] [--file PATH] [--md] [--search TEXT] [--reveal LINE] [--image FILE [--zoom N]]
 //!
 //! Opens PATH (crates/core/src/patch.rs) once the repo is open; `--md` opens README.md after it,
-//! rendered; `--search` shows the Search panel with TEXT searched instead of the explorer.
+//! rendered; `--search` shows the Search panel with TEXT searched instead of the explorer;
+//! `--image` shows FILE's image preview in place of the tabs, at N% (fitted without `--zoom`).
 //! GITVIBER_BACKGROUND=1 opens the window behind the others without taking the keyboard. Memory
 //! over open-close cycles: examples/cycles.rs.
 
-use gitviber_files::{OpenOptions, Reveal, SearchPanel};
+use gitviber_files::{ImagePreview, OpenOptions, Reveal, SearchPanel};
 use gitviber_ui::workspace::{Project, ProjectEvent, Workspace};
 use gitviber_ui::{ActiveAppTheme as _, dev};
 use gpui_kit::{
@@ -21,6 +22,8 @@ struct Args {
     md: bool,
     search: Option<String>,
     reveal: Option<u32>,
+    image: Option<String>,
+    zoom: Option<f32>,
 }
 
 fn args() -> Args {
@@ -29,6 +32,8 @@ fn args() -> Args {
         md: false,
         search: None,
         reveal: None,
+        image: None,
+        zoom: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -37,6 +42,8 @@ fn args() -> Args {
             "--md" => a.md = true,
             "--search" => a.search = it.next(),
             "--reveal" => a.reveal = it.next().and_then(|n| n.parse().ok()),
+            "--image" => a.image = it.next(),
+            "--zoom" => a.zoom = it.next().and_then(|n| n.parse().ok()),
             _ => {}
         }
     }
@@ -46,6 +53,7 @@ fn args() -> Args {
 struct Host {
     workspace: Entity<Workspace>,
     side: AnyView,
+    image: Option<Entity<ImagePreview>>,
     _subs: Vec<Subscription>,
 }
 
@@ -89,11 +97,14 @@ impl Render for Host {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.app_theme().clone();
         let ws = self.workspace.read(cx);
-        let active = ws
-            .tabs()
-            .active()
-            .and_then(|tab| tab.item.handle())
-            .map(|h| h.view());
+        let active = match &self.image {
+            Some(image) => Some(image.clone().into()),
+            None => ws
+                .tabs()
+                .active()
+                .and_then(|tab| tab.item.handle())
+                .map(|h| h.view()),
+        };
         let titles: Vec<_> = ws
             .tabs()
             .tabs()
@@ -175,6 +186,7 @@ fn main() {
             .view();
         let project: Option<Entity<Project>> = workspace.read(cx).project().cloned();
         let a2 = a.clone();
+        let (image_path, zoom) = (a.image.clone(), a.zoom);
         cx.new(|cx| {
             let mut subs = Vec::new();
             if let Some(project) = &project {
@@ -189,9 +201,16 @@ fn main() {
                 ));
             }
             subs.push(cx.observe(&workspace, |_, _, cx| cx.notify()));
+            let image = image_path.map(|path| {
+                let image = cx.new(|cx| ImagePreview::new(path.into(), cx));
+                let scale = zoom.map(|n| n / 100.);
+                image.update(cx, |i, cx| i.zoom_to(scale, cx));
+                image
+            });
             Host {
                 workspace: workspace.clone(),
                 side,
+                image,
                 _subs: subs,
             }
         })

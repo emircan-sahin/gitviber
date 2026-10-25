@@ -517,9 +517,13 @@ impl FileView {
         if let Some(kind) =
             kind.filter(|k| *k != MediaKind::Image || !path.to_ascii_lowercase().ends_with(".svg"))
         {
-            if !matches!(self.content, Content::Media(_)) {
-                let abs = self.abs_path();
-                self.content = Content::Media(cx.new(|cx| MediaView::new(abs, kind, window, cx)));
+            match &self.content {
+                Content::Media(media) => media.update(cx, |m, cx| m.reload(cx)),
+                _ => {
+                    let abs = self.abs_path();
+                    let media = cx.new(|cx| MediaView::new(abs, kind, window, cx));
+                    self.content = Content::Media(media);
+                }
             }
             cx.notify();
             return;

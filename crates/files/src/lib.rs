@@ -18,9 +18,11 @@ pub mod media;
 #[cfg(target_os = "macos")]
 pub mod native_media;
 pub mod quick_open;
+mod raster;
 pub mod search;
 mod svg;
 pub mod text;
+mod zoom;
 
 use std::sync::Arc;
 
@@ -37,6 +39,7 @@ pub use compare::CompareTab;
 pub use explorer::ExplorerPanel;
 pub use file_view::{FileSource, FileView, set_code_attacher};
 pub use media::MediaView;
+pub use raster::ImagePreview;
 pub use search::SearchPanel;
 
 /// A line to show once a file is open: a link's at its column (0-based, UTF-16), or a search
@@ -322,10 +325,9 @@ pub fn reveal_in_explorer(
     let Some(ws) = workspace.upgrade() else {
         return;
     };
-    let panel = ws.update(cx, |ws, cx| {
-        ws.show_panel(explorer::PANEL_ID, cx);
-        ws.panel(explorer::PANEL_ID, window, cx)
-    });
+    ws.update(cx, |ws, cx| ws.show_panel(explorer::PANEL_ID, cx));
+    // Built outside the workspace's update: a panel may read the workspace as it's made.
+    let panel = Workspace::ensure_panel(&ws, explorer::PANEL_ID, window, cx);
     if let Some(panel) = panel.and_then(|p| p.view().downcast::<ExplorerPanel>().ok()) {
         panel.update(cx, |p, cx| p.reveal(path, true, window, cx));
     }
@@ -341,10 +343,8 @@ pub fn find_in_files(
     let Some(ws) = workspace.upgrade() else {
         return;
     };
-    let panel = ws.update(cx, |ws, cx| {
-        ws.show_panel(search::PANEL_ID, cx);
-        ws.panel(search::PANEL_ID, window, cx)
-    });
+    ws.update(cx, |ws, cx| ws.show_panel(search::PANEL_ID, cx));
+    let panel = Workspace::ensure_panel(&ws, search::PANEL_ID, window, cx);
     if let Some(panel) = panel.and_then(|p| p.view().downcast::<SearchPanel>().ok()) {
         panel.update(cx, |p, cx| p.ask(seed, window, cx));
     }

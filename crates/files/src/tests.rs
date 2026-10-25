@@ -96,6 +96,64 @@ fn closing_code_and_media_views_gives_their_entities_back(cx: &mut TestAppContex
     cx.update(|_, cx| cx.assert_no_new_leaks(&snapshot));
 }
 
+/// A big image opened and closed again and again keeps nothing: while open only a picture
+/// the size it's shown is held, and closing gives back the views and their pictures.
+#[gpui_kit::test]
+fn a_large_image_opened_and_closed_again_and_again_keeps_nothing(cx: &mut TestAppContext) {
+    setup(cx);
+    let png = std::env::temp_dir().join(format!("gitviber-files-big-{}.png", std::process::id()));
+    image::RgbaImage::from_fn(3000, 2000, |x, y| {
+        image::Rgba([(x % 251) as u8, (y % 241) as u8, 90, 255])
+    })
+    .save(&png)
+    .unwrap();
+    let live = |kind: &str| {
+        gitviber_ui::memory::live_counts()
+            .iter()
+            .find(|(k, _)| *k == kind)
+            .map_or(0, |(_, n)| *n)
+    };
+    let (host, cx) = cx.add_window_view(|_, _| Host(None));
+    // Smaller than the image even on a 2× display.
+    cx.simulate_resize(gpui_kit::size(gpui_kit::px(900.), gpui_kit::px(600.)));
+    let snapshot = cx.update(|_, cx| cx.leak_detector_snapshot());
+    let settle = |cx: &mut gpui_kit::VisualTestContext| {
+        for _ in 0..3 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(200));
+            cx.run_until_parked();
+        }
+    };
+    for _ in 0..6 {
+        let png = png.clone();
+        let view =
+            cx.update(|window, cx| cx.new(|cx| MediaView::new(png, MediaKind::Image, window, cx)));
+        host.update(cx, |h, cx| {
+            h.0 = Some(view.clone().into());
+            cx.notify();
+        });
+        settle(cx);
+        let (size, sf) = cx.update(|window, _| (window.viewport_size(), window.scale_factor()));
+        let (held, crop) = view.read_with(cx, |m, cx| m.image().unwrap().read(cx).held());
+        let (w, h) = held.expect("drawn");
+        assert!(!crop);
+        assert!(w < 3000 && w as f32 <= f32::from(size.width) * sf, "{w}");
+        assert!(h as f32 <= f32::from(size.height) * sf, "{h}");
+        assert_eq!(live("ImagePreview"), 1);
+        host.update(cx, |h, cx| {
+            h.0 = None;
+            cx.notify();
+        });
+        drop(view);
+        settle(cx);
+        assert_eq!((live("ImagePreview"), live("MediaView")), (0, 0));
+    }
+    cx.update(|_, cx| cx.assert_no_new_leaks(&snapshot));
+    std::fs::remove_file(png).ok();
+}
+
 /// A repo in a temporary folder with one big file, committed, then changed.
 fn temp_repo(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("gitviber-files-{name}-{}", std::process::id()));
@@ -785,6 +843,127 @@ fn search_panel_keys_move_through_results_and_back(cx: &mut TestAppContext) {
         explorer
             .focus_handle(cx)
             .is_some_and(|f| f.is_focused(window))
+    });
+    assert!(focused);
+    _ = std::fs::remove_dir_all(&repo);
+}
+
+/// Reveal in Explorer and Find in Files build their panel the first time outside the
+/// workspace's update: a panel that reads the workspace as it's made would abort the app.
+#[gpui_kit::test]
+fn reveal_and_find_in_files_build_their_panels_the_first_time(cx: &mut TestAppContext) {
+    use gitviber_ui::workspace::Slot;
+    setup(cx);
+    let repo = small_repo("panels");
+    cx.update(gitviber_ui::install_core);
+    let (host, cx) = cx.add_window_view(|_, cx| PanelHost(cx.new(Workspace::new), None));
+    let ws = host.read_with(cx, |h, _| h.0.clone());
+    cx.update(|window, cx| {
+        Workspace::register_window(&ws, window, cx);
+        ws.update(cx, |ws, cx| ws.open_project(repo.clone(), window, cx));
+    });
+    cx.run_until_parked();
+    let weak = ws.downgrade();
+    cx.update(|window, cx| crate::reveal_in_explorer(&weak, "src/b.rs", window, cx));
+    cx.run_until_parked();
+    let shown = cx.update(|_, cx| ws.read(cx).active_panel(Slot::Right, cx));
+    assert_eq!(shown, Some(crate::explorer::PANEL_ID));
+    let explorer = cx
+        .update(|window, cx| Workspace::ensure_panel(&ws, crate::explorer::PANEL_ID, window, cx))
+        .and_then(|p| p.view().downcast::<crate::ExplorerPanel>().ok())
+        .expect("built by the reveal");
+    let rows = cx.update(|_, cx| explorer.read(cx).row_paths());
+    assert!(rows.contains(&"src/b.rs".to_string()), "{rows:?}");
+    cx.update(|window, cx| crate::find_in_files(&weak, Some("b".into()), window, cx));
+    cx.run_until_parked();
+    let shown = cx.update(|_, cx| ws.read(cx).active_panel(Slot::Right, cx));
+    assert_eq!(shown, Some(crate::search::PANEL_ID));
+    let built = cx.update(|window, cx| {
+        Workspace::ensure_panel(&ws, crate::search::PANEL_ID, window, cx)
+            .is_some_and(|p| p.view().downcast::<crate::SearchPanel>().is_ok())
+    });
+    assert!(built);
+    _ = std::fs::remove_dir_all(&repo);
+}
+
+/// A repo with a.txt and src/b.rs, added but not committed.
+fn small_repo(name: &str) -> std::path::PathBuf {
+    let repo = std::env::temp_dir().join(format!("gitviber-files-{name}-{}", std::process::id()));
+    _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+    std::fs::write(repo.join("src/b.rs"), "b\n").unwrap();
+    for args in [&["init", "-q"][..], &["add", "-A"]] {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+    }
+    repo
+}
+
+/// Esc in the explorer's filter clears it, showing the whole tree again, and a second Esc
+/// closes it: clearing the box sends no change of its own.
+#[gpui_kit::test]
+fn escape_clears_the_explorer_filter_then_closes_it(cx: &mut TestAppContext) {
+    setup(cx);
+    let repo = small_repo("filter");
+    cx.update(gitviber_ui::install_core);
+    let (host, cx) = cx.add_window_view(|_, cx| PanelHost(cx.new(Workspace::new), None));
+    let ws = host.read_with(cx, |h, _| h.0.clone());
+    cx.update(|window, cx| {
+        Workspace::register_window(&ws, window, cx);
+        ws.update(cx, |ws, cx| ws.open_project(repo.clone(), window, cx));
+    });
+    cx.run_until_parked();
+    let panel = cx
+        .update(|window, cx| {
+            ws.update(cx, |ws, cx| ws.panel(crate::explorer::PANEL_ID, window, cx))
+        })
+        .unwrap()
+        .view();
+    host.update(cx, |h, cx| {
+        h.1 = Some(panel.clone());
+        cx.notify();
+    });
+    let panel = panel.downcast::<crate::ExplorerPanel>().unwrap();
+    let draw = |cx: &mut gpui_kit::VisualTestContext| {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    };
+    draw(cx);
+    let whole = cx.update(|_, cx| panel.read(cx).row_paths());
+    assert_eq!(whole, vec!["src", "a.txt"]);
+    cx.update(|window, cx| panel.update(cx, |p, cx| p.open_filter(window, cx)));
+    draw(cx);
+    cx.simulate_input("b.rs");
+    draw(cx);
+    let state = |cx: &mut gpui_kit::VisualTestContext| {
+        cx.update(|_, cx| {
+            let p = panel.read(cx);
+            (p.filter_needle(), p.row_paths())
+        })
+    };
+    assert_eq!(
+        state(cx),
+        (Some("b.rs".into()), vec!["src".into(), "src/b.rs".into()])
+    );
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    assert_eq!(state(cx), (Some(String::new()), whole.clone()));
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    assert_eq!(state(cx).0, None);
+    // ↓ from the box goes to the rows.
+    cx.update(|window, cx| panel.update(cx, |p, cx| p.open_filter(window, cx)));
+    draw(cx);
+    cx.simulate_keystrokes("down");
+    draw(cx);
+    let focused = cx.update(|window, cx| {
+        use gitviber_ui::workspace::Panel as _;
+        let focus = panel.read(cx).panel_focus(cx).unwrap();
+        focus.is_focused(window)
     });
     assert!(focused);
     _ = std::fs::remove_dir_all(&repo);

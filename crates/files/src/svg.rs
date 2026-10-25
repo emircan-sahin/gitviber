@@ -1,93 +1,27 @@
-//! A rendered SVG file: fit to the view or 1:1, scroll to zoom around the pointer, drag (or the
-//! arrows) to pan, double-click to fit, and a light or dark checkerboard behind it for art drawn
-//! in a color that vanishes on the theme's. Drawn from the text, so typing not saved yet shows.
+//! A rendered SVG file in the zoom stage the image preview shares (`zoom`): fitted to the view
+//! or zoomed and moved, on a checkerboard of the theme's background or a light or dark one for
+//! art drawn in a color that vanishes on the theme's. Drawn from the text, so typing not saved
+//! yet shows.
 //!
 //! Only the part on screen is rasterized, at the display's density, off the main thread: the
 //! root element's viewBox is rewritten to that part, so a zoomed drawing stays sharp and its
 //! pixels never outgrow the view. The image is this view's own, dropped when replaced.
 
-use std::cell::Cell;
 use std::ops::Range;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gitviber_ui::ActiveAppTheme as _;
-use gitviber_ui::keymap::media;
+use gitviber_diff::model::zoom::Frame;
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::{Toggle as _, segmented};
-use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    App, AppContext as _, Bounds, Context, CursorStyle, DevicePixels, FocusHandle, Hsla,
-    ImageSource, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, ObjectFit, ParentElement as _, Pixels, Point, Render, RenderImage,
-    ScrollWheelEvent, SharedString, Styled as _, StyledImage as _, SvgSize, Task, Window, canvas,
-    div, fill, img, point, prelude::FluentBuilder as _, px, size,
+    App, AppContext as _, Context, DevicePixels, FocusHandle, IntoElement, ParentElement as _,
+    Render, SharedString, SvgSize, Task, Window, size,
 };
 
-/// Margin around a drawing fitted to its view.
-const PAD: f32 = 16.;
-/// The longest side zooming may show, as the old viewer's.
-const MAX_DRAWN: f32 = 16384.;
-/// A checkerboard square, in view pixels.
-const SQUARE: f32 = 8.;
+use crate::zoom::{self, Drawn, Zoomable, Zoomer};
+
 /// Zooming or panning settles this long before the sharp picture is drawn again.
 const SETTLE: Duration = Duration::from_millis(90);
-
-/// How the drawing is zoomed. `scale` is view pixels per SVG pixel, None to fit the view;
-/// (u, v) is the point of the drawing, as fractions of its size, held at the view's center.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Zoom {
-    pub scale: Option<f32>,
-    pub u: f32,
-    pub v: f32,
-}
-
-pub(crate) const FIT: Zoom = Zoom {
-    scale: None,
-    u: 0.5,
-    v: 0.5,
-};
-
-/// How far a drawing of `natural` size, which fits its view at `fit`, may zoom out and in.
-pub(crate) fn zoom_limits(natural: (f32, f32), fit: f32) -> (f32, f32) {
-    let min = fit.min(1.) / 2.;
-    let max = (fit.max(1.) * 16.).min(MAX_DRAWN / natural.0.max(natural.1));
-    (min, min.max(max))
-}
-
-/// Where along a `room`-long view a drawing `size` long starts: centered if it fits, else never
-/// leaving a gap.
-pub(crate) fn place(room: f32, size: f32, u: f32) -> f32 {
-    if size <= room {
-        (room - size) / 2.
-    } else {
-        (room / 2. - u * size).clamp(room - size, 0.)
-    }
-}
-
-/// `u` limited to what place() can show, so panning past an edge doesn't build up.
-fn clamp_center(room: f32, size: f32, u: f32) -> f32 {
-    if size <= room {
-        return 0.5;
-    }
-    let half = room / 2. / size;
-    u.clamp(half, 1. - half)
-}
-
-/// Along one axis: the new center when zooming from `size` to `next`, keeping the point under
-/// `at` in place.
-pub(crate) fn zoom_axis(room: f32, size: f32, next: f32, u: f32, at: f32) -> f32 {
-    let under = (at - place(room, size, u)) / size;
-    clamp_center(room, next, (room / 2. - at) / next + under)
-}
-
-/// Along one axis: the new center after dragging the drawing by `delta` pixels.
-pub(crate) fn pan_axis(room: f32, size: f32, u: f32, delta: f32) -> f32 {
-    clamp_center(room, size, u - delta / size)
-}
 
 /// The root `<svg …>` start tag's byte range, past the prolog, comments and doctype.
 fn root_tag(text: &str) -> Option<Range<usize>> {
@@ -265,36 +199,33 @@ fn no_root(root: Option<Root>) -> Option<SharedString> {
         .then(|| "It has no <svg> element at its root".into())
 }
 
-/// The picture drawn last: `part` of the drawing (CSS pixels at its natural size).
-struct Drawn {
-    image: Arc<RenderImage>,
-    part: [f32; 4],
-}
-
-/// The view's layout as of a frame: the drawing's place in the view, in view pixels.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Layout {
-    room: (f32, f32),
-    fit: f32,
-    scale: f32,
-    origin: (f32, f32),
-}
-
 pub struct SvgPreview {
     source: Arc<str>,
     root: Option<Root>,
-    zoom: Zoom,
-    contrast: bool,
-    /// The view's bounds, as last painted.
-    stage: Rc<Cell<Bounds<Pixels>>>,
+    z: Zoomer,
+    /// The part on screen, drawn last.
     drawn: Option<Drawn>,
     /// The part and device size asked of the renderer last.
     asked: Option<([f32; 4], (u32, u32))>,
     broken: Option<SharedString>,
-    drag: Option<Point<Pixels>>,
-    focus: FocusHandle,
     _render: Task<()>,
     _live: Live,
+}
+
+impl Zoomable for SvgPreview {
+    const GROW: bool = true;
+
+    fn zoomer(&self) -> &Zoomer {
+        &self.z
+    }
+
+    fn zoomer_mut(&mut self) -> &mut Zoomer {
+        &mut self.z
+    }
+
+    fn natural(&self) -> Option<(f32, f32)> {
+        self.root.map(|r| r.natural)
+    }
 }
 
 impl SvgPreview {
@@ -306,20 +237,16 @@ impl SvgPreview {
             source: source.into(),
             broken: no_root(root),
             root,
-            zoom: FIT,
-            contrast: false,
-            stage: Rc::new(Cell::new(Bounds::default())),
+            z: Zoomer::new(cx),
             drawn: None,
             asked: None,
-            drag: None,
-            focus: cx.focus_handle(),
             _render: Task::ready(()),
             _live: Live::new("SvgPreview"),
         }
     }
 
     pub fn focus_handle(&self) -> &FocusHandle {
-        &self.focus
+        &self.z.focus
     }
 
     /// Draws other text (typed into, or changed on disk); the zoom stays.
@@ -340,85 +267,14 @@ impl SvgPreview {
         }
     }
 
-    fn layout(&self) -> Option<Layout> {
-        let natural = self.root?.natural;
-        let room = self.stage.get().size;
-        let room = (f32::from(room.width), f32::from(room.height));
-        if room.0 <= 0. || room.1 <= 0. {
-            return None;
-        }
-        let fit = ((room.0 - 2. * PAD) / natural.0)
-            .min((room.1 - 2. * PAD) / natural.1)
-            .max(0.);
-        // Clamped here too: the file can change under a zoom chosen for a much smaller drawing.
-        let scale = self
-            .zoom
-            .scale
-            .unwrap_or(fit)
-            .min(zoom_limits(natural, fit).1);
-        let (w, h) = (natural.0 * scale, natural.1 * scale);
-        Some(Layout {
-            room,
-            fit,
-            scale,
-            origin: (place(room.0, w, self.zoom.u), place(room.1, h, self.zoom.v)),
-        })
-    }
-
-    /// Zooms by `factor`, keeping the point (x, y) of the view where it is.
-    fn zoom_at(&mut self, factor: f32, x: f32, y: f32, cx: &mut Context<Self>) {
-        let (Some(l), Some(root)) = (self.layout(), self.root) else {
-            return;
-        };
-        let (n, z) = (root.natural, self.zoom);
-        let (min, max) = zoom_limits(n, l.fit);
-        let to = (l.scale * factor).clamp(min, max);
-        self.zoom = Zoom {
-            scale: Some(to),
-            u: zoom_axis(l.room.0, n.0 * l.scale, n.0 * to, z.u, x),
-            v: zoom_axis(l.room.1, n.1 * l.scale, n.1 * to, z.v, y),
-        };
-        cx.notify();
-    }
-
-    fn pan_by(&mut self, dx: f32, dy: f32, cx: &mut Context<Self>) {
-        let (Some(l), Some(root)) = (self.layout(), self.root) else {
-            return;
-        };
-        let n = root.natural;
-        self.zoom = Zoom {
-            scale: Some(l.scale),
-            u: pan_axis(l.room.0, n.0 * l.scale, self.zoom.u, dx),
-            v: pan_axis(l.room.1, n.1 * l.scale, self.zoom.v, dy),
-        };
-        cx.notify();
-    }
-
-    fn set_zoom(&mut self, zoom: Zoom, cx: &mut Context<Self>) {
-        self.zoom = zoom;
-        cx.notify();
-    }
-
-    fn pannable(&self) -> bool {
-        match (self.layout(), self.root) {
-            (Some(l), Some(r)) => {
-                r.natural.0 * l.scale > l.room.0 + 0.5 || r.natural.1 * l.scale > l.room.1 + 0.5
-            }
-            _ => false,
-        }
-    }
-
     /// Asks for the part on screen at the display's density, once the view settles.
-    fn draw_visible(&mut self, l: &Layout, window: &Window, cx: &mut Context<Self>) {
+    fn draw_visible(&mut self, f: &Frame, window: &Window, cx: &mut Context<Self>) {
         let Some(root) = self.root else { return };
-        let n = root.natural;
-        let (w, h) = (n.0 * l.scale, n.1 * l.scale);
-        let (x0, y0) = (l.origin.0.max(0.), l.origin.1.max(0.));
-        let (x1, y1) = (
-            (l.origin.0 + w).min(l.room.0),
-            (l.origin.1 + h).min(l.room.1),
-        );
-        if x1 <= x0 || y1 <= y0 || l.scale <= 0. {
+        let s = f.scale(self.z.zoom);
+        let [x, y, w, h] = f.drawn(self.z.zoom);
+        let (x0, y0) = (x.max(0.), y.max(0.));
+        let (x1, y1) = ((x + w).min(f.room.0), (y + h).min(f.room.1));
+        if x1 <= x0 || y1 <= y0 || s <= 0. {
             return;
         }
         let sf = window.scale_factor();
@@ -426,12 +282,7 @@ impl SvgPreview {
             ((x1 - x0) * sf).round().max(1.) as u32,
             ((y1 - y0) * sf).round().max(1.) as u32,
         );
-        let part = [
-            (x0 - l.origin.0) / l.scale,
-            (y0 - l.origin.1) / l.scale,
-            (x1 - x0) / l.scale,
-            (y1 - y0) / l.scale,
-        ];
+        let part = [(x0 - x) / s, (y0 - y) / s, (x1 - x0) / s, (y1 - y0) / s];
         if self.asked == Some((part, device)) {
             return;
         }
@@ -466,307 +317,30 @@ impl SvgPreview {
             });
         });
     }
-
-    fn backdrop(&self, cx: &App) -> (Option<Hsla>, Hsla) {
-        let t = cx.app_theme();
-        let rgb = |c: u32| -> Hsla { gpui_kit::rgb(c).into() };
-        match (self.contrast, t.dark) {
-            (false, _) => (None, t.foreground.opacity(0.08)),
-            (true, true) => (Some(rgb(0xffffff)), rgb(0xe8e8e8)),
-            (true, false) => (Some(rgb(0x181818)), rgb(0x272727)),
-        }
-    }
-}
-
-/// The checkerboard behind the drawing (`drawing`, window coordinates), only where it's in
-/// `clip`: squares start at the drawing's corner, the way a background starts at its box's.
-fn paint_checkerboard(
-    drawing: Bounds<Pixels>,
-    clip: Bounds<Pixels>,
-    (base, square): (Option<Hsla>, Hsla),
-    window: &mut Window,
-) {
-    let shown = drawing.intersect(&clip);
-    if shown.size.width <= px(0.) || shown.size.height <= px(0.) {
-        return;
-    }
-    if let Some(base) = base {
-        window.paint_quad(fill(shown, base));
-    }
-    let rel = |a: Pixels, o: Pixels| (f32::from(a - o) / SQUARE).floor() as i64;
-    let (c0, c1) = (
-        rel(shown.left(), drawing.left()),
-        rel(shown.right(), drawing.left()),
-    );
-    let (r0, r1) = (
-        rel(shown.top(), drawing.top()),
-        rel(shown.bottom(), drawing.top()),
-    );
-    for r in r0..=r1 {
-        for c in c0..=c1 {
-            // The top right and bottom left of each 2 × 2.
-            if (r + c) % 2 == 0 {
-                continue;
-            }
-            let cell = Bounds::new(
-                point(
-                    drawing.left() + px(c as f32 * SQUARE),
-                    drawing.top() + px(r as f32 * SQUARE),
-                ),
-                size(px(SQUARE), px(SQUARE)),
-            )
-            .intersect(&shown);
-            if cell.size.width > px(0.) && cell.size.height > px(0.) {
-                window.paint_quad(fill(cell, square));
-            }
-        }
-    }
 }
 
 impl Render for SvgPreview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.app_theme().clone();
-        let layout = self.layout();
-        if let Some(l) = &layout {
-            self.draw_visible(l, window, cx);
+        if let Some(f) = self.frame() {
+            self.draw_visible(&f, window, cx);
         }
-        let natural = self.root.map(|r| r.natural);
-        let backdrop = self.backdrop(cx);
-        let stage = self.stage.clone();
-        let me = cx.weak_entity();
-        // The drawing's box and the picture's, relative to the view.
-        let boxes = layout.zip(natural).map(|(l, n)| {
-            let at =
-                |x: f32, y: f32| point(px(l.origin.0 + x * l.scale), px(l.origin.1 + y * l.scale));
-            let drawing = Bounds::new(at(0., 0.), size(px(n.0 * l.scale), px(n.1 * l.scale)));
-            let picture = self.drawn.as_ref().map(|d| {
-                let p = d.part;
-                (
-                    d.image.clone(),
-                    Bounds::new(at(p[0], p[1]), size(px(p[2] * l.scale), px(p[3] * l.scale))),
-                )
-            });
-            (drawing, picture)
+        let over = self.broken.clone().map(|problem| {
+            let detail = format!("{problem}. Switch to Code to see it.");
+            zoom::problem("This SVG can't be rendered", detail, cx)
         });
-        let drawing = boxes.as_ref().map(|b| b.0);
-        let measure = canvas(
-            move |bounds, _, _| bounds,
-            move |bounds, _, window, cx| {
-                if stage.get() != bounds {
-                    stage.set(bounds);
-                    // Laid out anew at this size.
-                    let me = me.clone();
-                    cx.defer(move |cx| _ = me.update(cx, |_, cx| cx.notify()));
-                }
-                if let Some(d) = drawing {
-                    let d = Bounds::new(bounds.origin + d.origin, d.size);
-                    paint_checkerboard(d, bounds, backdrop, window);
-                }
-            },
-        )
-        .absolute()
-        .size_full();
-        let picture = boxes.and_then(|b| b.1).map(|(image, at)| {
-            img(ImageSource::Render(image))
-                .absolute()
-                .left(at.origin.x)
-                .top(at.origin.y)
-                .w(at.size.width)
-                .h(at.size.height)
-                .object_fit(ObjectFit::Fill)
-        });
-        let pannable = self.pannable();
-        let dragging = self.drag.is_some();
-        let label = match self.zoom.scale {
-            None => "Fit".to_string(),
-            Some(_) => layout.map_or(String::new(), |l| format!("{}%", (l.scale * 100.).round())),
-        };
-        let actual = self.zoom.scale == Some(1.);
-        let stage_el = div()
-            .id("svg-stage")
-            .relative()
-            .flex_1()
-            .min_h_0()
-            .overflow_hidden()
-            .bg(t.code(t.background))
-            .when(pannable, |d| {
-                d.cursor(if dragging {
-                    CursorStyle::ClosedHand
-                } else {
-                    CursorStyle::OpenHand
-                })
-            })
-            .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, window, cx| {
-                let origin = this.stage.get().origin;
-                let delta = e.delta.pixel_delta(window.line_height());
-                // Pinches come as ctrl+wheel with small steps.
-                let k = if e.modifiers.control { 0.01 } else { 0.002 };
-                let at = e.position - origin;
-                this.zoom_at(
-                    (f32::from(delta.y) * k).exp(),
-                    f32::from(at.x),
-                    f32::from(at.y),
-                    cx,
-                );
-            }))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, e: &MouseDownEvent, window, cx| {
-                    this.focus.focus(window, cx);
-                    if e.click_count >= 2 {
-                        return this.set_zoom(FIT, cx);
-                    }
-                    if this.pannable() {
-                        this.drag = Some(e.position);
-                        cx.notify();
-                    }
-                }),
-            )
-            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
-                let Some(from) = this.drag else { return };
-                if e.pressed_button != Some(MouseButton::Left) {
-                    this.drag = None;
-                    return cx.notify();
-                }
-                this.drag = Some(e.position);
-                let d = e.position - from;
-                this.pan_by(f32::from(d.x), f32::from(d.y), cx);
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.drag = None;
-                    cx.notify();
-                }),
-            )
-            .child(measure)
-            .children(picture)
-            .when_some(self.broken.clone(), |d, problem| {
-                d.child(
-                    div()
-                        .absolute()
-                        .size_full()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .justify_center()
-                        .p_4()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_size(px(12.5))
-                                .text_color(t.muted_foreground)
-                                .child("This SVG can't be rendered"),
-                        )
-                        .child(
-                            div()
-                                .max_w(px(560.))
-                                .text_center()
-                                .text_size(px(11.5))
-                                .text_color(t.subtle)
-                                .child(format!("{problem}. Switch to Code to see it.")),
-                        ),
-                )
-            });
-        let contrast_tip = match (self.contrast, t.dark) {
-            (true, _) => "Theme background",
-            (false, true) => "Light background",
-            (false, false) => "Dark background",
-        };
-        div()
-            .id("svg-preview")
-            .key_context("ImageView")
-            .track_focus(&self.focus)
-            .size_full()
-            .flex()
-            .flex_col()
-            .on_action(cx.listener(|this, _: &media::ZoomIn, _, cx| {
-                if let Some(l) = this.layout() {
-                    this.zoom_at(1.25, l.room.0 / 2., l.room.1 / 2., cx)
-                }
-            }))
-            .on_action(cx.listener(|this, _: &media::ZoomOut, _, cx| {
-                if let Some(l) = this.layout() {
-                    this.zoom_at(0.8, l.room.0 / 2., l.room.1 / 2., cx)
-                }
-            }))
-            .on_action(cx.listener(|this, _: &media::Fit, _, cx| this.set_zoom(FIT, cx)))
-            .on_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
-                let m = &e.keystroke.modifiers;
-                if m.platform || m.control || m.alt {
-                    return;
-                }
-                let step = 48.;
-                let (dx, dy) = match e.keystroke.key.as_str() {
-                    "left" => (step, 0.),
-                    "right" => (-step, 0.),
-                    "up" => (0., step),
-                    "down" => (0., -step),
-                    _ => return,
-                };
-                cx.stop_propagation();
-                this.pan_by(dx, dy, cx);
-            }))
-            .child(stage_el)
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .h(px(28.))
-                    .border_t_1()
-                    .border_color(t.border)
-                    .text_size(px(11.5))
-                    .text_color(t.muted_foreground)
-                    .children(natural.map(|(w, h)| format!("{} × {}", w.round(), h.round())))
-                    .child(div().flex_1())
-                    .child(div().min_w(px(40.)).text_center().child(label))
-                    .child(segmented(
-                        [
-                            Button::new("svg-fit")
-                                .ghost()
-                                .xsmall()
-                                .label("Fit")
-                                .tooltip("Scroll to zoom, drag to pan, double-click to fit")
-                                .toggle(self.zoom.scale.is_none(), cx)
-                                .on_click(cx.listener(|this, _, _, cx| this.set_zoom(FIT, cx))),
-                            Button::new("svg-actual")
-                                .ghost()
-                                .xsmall()
-                                .label("1:1")
-                                .tooltip("Scroll to zoom, drag to pan, double-click to fit")
-                                .toggle(actual, cx)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    let zoom = Zoom {
-                                        scale: Some(1.),
-                                        ..FIT
-                                    };
-                                    this.set_zoom(zoom, cx)
-                                })),
-                        ],
-                        cx,
-                    ))
-                    .child(
-                        Button::new("svg-contrast")
-                            .ghost()
-                            .xsmall()
-                            .icon(Icon::new(IconName::Contrast))
-                            .tooltip(contrast_tip)
-                            .toggle(self.contrast, cx)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.contrast = !this.contrast;
-                                cx.notify();
-                            })),
-                    ),
-            )
+        let details = self
+            .root
+            .map(|r| format!("{} × {}", r.natural.0.round(), r.natural.1.round()));
+        zoom::root(self, cx)
+            .child(zoom::stage(self, &self.drawn, over, cx))
+            .child(zoom::bar(self, details, cx))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_kit::{Styled as _, div};
 
     #[test]
     fn the_root_size_follows_width_height_and_view_box() {
@@ -852,20 +426,22 @@ mod tests {
                 cx.update(|window, cx| window.draw(cx).clear(cx));
                 cx.run_until_parked();
             }
-            let (drawn, layout, broken) = view.read_with(cx, |v, _| {
+            let (drawn, scale, broken) = view.read_with(cx, |v, _| {
                 (
                     v.drawn.as_ref().map(|d| (d.image.size(0), d.part)),
-                    v.layout(),
+                    v.frame().map(|f| f.scale(v.z.zoom)),
                     v.broken.clone(),
                 )
             });
             assert_eq!(broken, None);
             let (pixels, part) = drawn.expect("drawn");
-            let l = layout.unwrap();
             // Fit: the whole drawing, at its size on screen.
             assert_eq!(part, [0., 0., 40., 20.]);
             let sf = cx.update(|window, _| window.scale_factor());
-            assert_eq!(i32::from(pixels.width), (40. * l.scale * sf).round() as i32);
+            assert_eq!(
+                i32::from(pixels.width),
+                (40. * scale.unwrap() * sf).round() as i32
+            );
             // Broken markup says so.
             view.update(cx, |v, cx| v.set_source("<svg><g></svg>", cx));
             cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -881,19 +457,5 @@ mod tests {
             cx.run_until_parked();
         }
         cx.update(|_, cx| cx.assert_no_new_leaks(&snapshot));
-    }
-
-    #[test]
-    fn zooming_keeps_the_point_under_the_pointer() {
-        // A 100-wide drawing in a 200 room, zoomed 1 → 4 at x = 120: the point there stays.
-        let u = zoom_axis(200., 100., 400., 0.5, 120.);
-        let left = place(200., 400., u);
-        assert!(((120. - left) / 400. - 0.7).abs() < 1e-4, "{u} {left}");
-        // Panning stops at the edge.
-        assert_eq!(pan_axis(200., 400., 0.5, 10_000.), 0.25);
-        assert_eq!(place(200., 100., 0.1), 50.);
-        let (min, max) = zoom_limits((24., 24.), 20.);
-        assert_eq!((min, max), (0.5, 320.));
-        assert_eq!(zoom_limits((4000., 1000.), 0.25).1, 4.096);
     }
 }

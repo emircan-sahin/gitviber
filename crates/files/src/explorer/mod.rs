@@ -317,6 +317,12 @@ impl ExplorerPanel {
         self.rows.iter().map(|r| r.node.path.to_string()).collect()
     }
 
+    /// The filter's text; None while it's closed.
+    #[cfg(test)]
+    pub(crate) fn filter_needle(&self) -> Option<String> {
+        self.filter.as_ref().map(|f| f.needle.clone())
+    }
+
     #[cfg(test)]
     pub(crate) fn is_listing(&self) -> bool {
         !self.listings.is_empty()
@@ -360,7 +366,7 @@ impl ExplorerPanel {
     }
 
     /// Opens the filter (⌘F here) and focuses it.
-    fn open_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(f) = &self.filter {
             f.input.update(cx, |s, cx| {
                 s.focus(window, cx);
@@ -373,11 +379,7 @@ impl ExplorerPanel {
         let sub = cx.subscribe(&input, |this, input, e: &InputEvent, cx| {
             if matches!(e, InputEvent::Change) {
                 let needle = input.read(cx).value().trim().to_string();
-                if let Some(f) = &mut this.filter {
-                    f.needle = needle;
-                }
-                this.picked.clear();
-                this.rebuild(cx);
+                this.set_needle(needle, cx);
             }
         });
         self.filter = Some(Filter {
@@ -391,6 +393,26 @@ impl ExplorerPanel {
         });
         self.load_filter_files(cx);
         cx.notify();
+    }
+
+    /// Esc in the filter: clears it, then closes it.
+    fn filter_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(f) = &self.filter else { return };
+        let input = f.input.clone();
+        if input.read(cx).value().is_empty() {
+            return self.close_filter(window, cx);
+        }
+        // Setting the text sends no change: the rows follow here.
+        input.update(cx, |s, cx| s.set_value("", window, cx));
+        self.set_needle(String::new(), cx);
+    }
+
+    fn set_needle(&mut self, needle: String, cx: &mut Context<Self>) {
+        if let Some(f) = &mut self.filter {
+            f.needle = needle;
+        }
+        self.picked.clear();
+        self.rebuild(cx);
     }
 
     /// Leaving the filter, the file picked in it stays picked, shown in its folders.
@@ -1727,19 +1749,18 @@ impl Render for ExplorerPanel {
                     .px_2()
                     .border_b_1()
                     .border_color(t.border)
-                    // Esc clears, then closes; ↓ or ↵ go to the rows.
+                    // Esc is the box's action, which reaches here before any key listener.
+                    .on_action(cx.listener(
+                        |this, _: &gpui_kit::component::input::Escape, window, cx| {
+                            this.filter_escape(window, cx)
+                        },
+                    ))
+                    // ↓ or ↵ go to the rows.
                     .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
-                        let Some(f) = &this.filter else { return };
-                        match e.keystroke.key.as_str() {
-                            "escape" if f.needle.is_empty() => this.close_filter(window, cx),
-                            "escape" => f
-                                .input
-                                .clone()
-                                .update(cx, |s, cx| s.set_value("", window, cx)),
-                            "down" | "enter" => this.focus.focus(window, cx),
-                            _ => return,
+                        if matches!(e.keystroke.key.as_str(), "down" | "enter") {
+                            this.focus.focus(window, cx);
+                            cx.stop_propagation();
                         }
-                        cx.stop_propagation();
                     }))
                     .child(
                         div()
