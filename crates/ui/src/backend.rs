@@ -52,13 +52,6 @@ pub fn has_core(cx: &App) -> bool {
 /// Makes the app's core, starts it (`Core::start`: the shell's PATH, logs, askpass, notifications,
 /// the launch's paths) and puts its events on the UI thread. Once, before the first window.
 pub fn start_core(cx: &mut App) -> Arc<Core> {
-    let core = install_core(cx);
-    core.start();
-    core
-}
-
-/// As `start_core`, without starting anything in the background: for tests.
-pub fn install_core(cx: &mut App) -> Arc<Core> {
     let (tx, mut rx) = mpsc::unbounded::<Event>();
     let sink: EventSink = Arc::new(move |event| {
         let _ = tx.unbounded_send(event);
@@ -78,6 +71,22 @@ pub fn install_core(cx: &mut App) -> Arc<Core> {
         events,
         _pump: pump,
     });
+    core.start();
+    core
+}
+
+/// A core for tests: nothing starts in the background, and its events go nowhere. Core's own
+/// threads (its repo watcher) would wake the test's deterministic executor whenever the disk
+/// settled, failing it at random under load. A test that needs a refresh calls
+/// `Project::repo_changed`, as the watcher's news would.
+pub fn install_core(cx: &mut App) -> Arc<Core> {
+    let core = Arc::new(Core::new(Arc::new(|_| {})));
+    let events = cx.new(|_| CoreEvents);
+    cx.set_global(CoreGlobal {
+        core: core.clone(),
+        events,
+        _pump: Task::ready(()),
+    });
     core
 }
 
@@ -95,20 +104,6 @@ struct RepoSession {
 }
 
 impl Global for RepoSession {}
-
-/// A core whose events go nowhere: core's own threads (its watcher) waking a test's
-/// deterministic executor would fail it.
-#[cfg(test)]
-pub(crate) fn install_quiet_core(cx: &mut App) -> Arc<Core> {
-    let core = Arc::new(Core::new(Arc::new(|_| {})));
-    let events = cx.new(|_| CoreEvents);
-    cx.set_global(CoreGlobal {
-        core: core.clone(),
-        events,
-        _pump: Task::ready(()),
-    });
-    core
-}
 
 /// Asks core to open the repo at `root`, after whatever it's doing. The answer is None when a
 /// newer request overtook this one; core then follows that one instead.
@@ -189,9 +184,7 @@ mod tests {
     use gpui_kit::TestAppContext;
 
     fn git_repo(name: &str) -> Option<PathBuf> {
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-session-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).ok()?;
+        let dir = crate::test_support::temp_dir(&format!("session-{name}"));
         let ok = std::process::Command::new("git")
             .args(["init", "-q"])
             .arg(&dir)
@@ -206,7 +199,7 @@ mod tests {
         let (Some(a), Some(b), Some(c)) = (git_repo("a"), git_repo("b"), git_repo("c")) else {
             return;
         };
-        let core = cx.update(install_quiet_core);
+        let core = cx.update(install_core);
         let answers: Vec<_> =
             cx.update(|cx| [&a, &b, &c].map(|root| open_repo(cx, root.clone())).into());
         cx.run_until_parked();
@@ -223,7 +216,7 @@ mod tests {
     #[gpui_kit::test]
     fn a_close_after_an_open_wins(cx: &mut TestAppContext) {
         let Some(a) = git_repo("close") else { return };
-        let core = cx.update(install_quiet_core);
+        let core = cx.update(install_core);
         let mut first = cx.update(|cx| open_repo(cx, a.clone()));
         cx.run_until_parked();
         assert!(first.try_recv().unwrap().unwrap().is_some());

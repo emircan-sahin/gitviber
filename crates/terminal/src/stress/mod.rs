@@ -426,24 +426,14 @@ impl Run {
             self.show(true);
         }
         let _ = std::fs::write(self.agents.join(agent::FREEZE), &id);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let mut last = Vec::new();
-        let mut still = 0;
-        while still < 10 && Instant::now() < deadline {
+        // Until every pane shows what its agent drew: a loaded machine can starve a pane's
+        // reader for longer than any quiet spell taken to mean "done".
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
             self.pump(16);
-            let screens: Vec<String> = (0..self.tracks.len())
-                .map(|t| self.pane_read(t, |p| p.screen_text()))
-                .collect();
-            let all_wrote = self.tracks.iter().all(|tr| {
-                std::fs::read_to_string(self.agents.join(format!("{}.screen", tr.pid)))
-                    .is_ok_and(|s| s.lines().next() == Some(id.as_str()))
-            });
-            still = if all_wrote && screens == last {
-                still + 1
-            } else {
-                0
-            };
-            last = screens;
+            if (0..self.tracks.len()).all(|t| self.grid_mismatch(t, &id).is_none()) {
+                break;
+            }
         }
         // The pane number a pane switch shows goes after 700 ms.
         self.pump(800);
@@ -598,19 +588,24 @@ impl Run {
 
     /// The pane's rows against the screen its agent says it drew.
     fn check_grid(&mut self, t: usize, id: &str) {
+        if let Some(what) = self.grid_mismatch(t, id) {
+            self.fail(what);
+        }
+    }
+
+    /// How the pane's rows differ from the screen its agent says it drew, if they do.
+    fn grid_mismatch(&mut self, t: usize, id: &str) -> Option<String> {
         let pid = self.tracks[t].pid;
         let Ok(text) = std::fs::read_to_string(self.agents.join(format!("{pid}.screen"))) else {
-            self.fail(format!(
+            return Some(format!(
                 "checkpoint {id}: agent of pane {t} wrote no screen"
             ));
-            return;
         };
         let mut lines = text.lines();
         if lines.next() != Some(id) {
-            self.fail(format!(
+            return Some(format!(
                 "checkpoint {id}: agent of pane {t} didn't hold still"
             ));
-            return;
         }
         let drawn: Vec<&str> = lines.collect();
         let rows = self.pane_read(t, |p| {
@@ -618,16 +613,15 @@ impl Run {
                 .map(|l| p.row_text(l).unwrap_or_default())
                 .collect::<Vec<_>>()
         });
-        for (r, got) in rows.iter().enumerate() {
+        rows.iter().enumerate().find_map(|(r, got)| {
             let want = drawn.get(r).copied().unwrap_or("").trim_end();
-            if got.trim_end() != want {
-                self.fail(format!(
+            (got.trim_end() != want).then(|| {
+                format!(
                     "checkpoint {id}: pane {t} row {r} shows {:?}, its agent drew {want:?}",
                     got.trim_end()
-                ));
-                return;
-            }
-        }
+                )
+            })
+        })
     }
 }
 

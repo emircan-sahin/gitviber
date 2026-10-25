@@ -18,6 +18,7 @@ pub mod open_in;
 pub mod settings;
 pub mod state;
 pub mod store;
+pub mod test_support;
 pub mod theme;
 pub mod widgets;
 pub mod windows;

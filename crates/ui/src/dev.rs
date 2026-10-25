@@ -178,6 +178,23 @@ pub fn snapshot(
     )
 }
 
+/// The off-screen app, on gpui's test executor run in real time.
+#[cfg(feature = "snapshot")]
+fn headless_app(
+    text_system: std::sync::Arc<dyn gpui_kit::PlatformTextSystem>,
+) -> gpui_kit::HeadlessAppContext {
+    let cx = gpui_kit::HeadlessAppContext::with_platform(
+        text_system,
+        std::sync::Arc::new(Assets),
+        gpui_snapshot_platform::current_headless_renderer,
+    );
+    // Core's threads wake it. Unless parking is allowed, the test scheduler takes such a wake
+    // for non-determinism and symbolizes a backtrace: the app's snapshot peaked at 332 MB
+    // resident instead of 162, the binary's debug info read in.
+    cx.allow_parking();
+    cx
+}
+
 /// `snapshot` for any root: `setup` does the app's init, `root` builds the window's view.
 #[cfg(feature = "snapshot")]
 pub fn snapshot_with(
@@ -189,12 +206,7 @@ pub fn snapshot_with(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
 
-    let text_system = gpui_snapshot_platform::current_platform(true).text_system();
-    let mut cx = gpui_kit::HeadlessAppContext::with_platform(
-        text_system,
-        std::sync::Arc::new(Assets),
-        gpui_snapshot_platform::current_headless_renderer,
-    );
+    let mut cx = headless_app(gpui_snapshot_platform::current_platform(true).text_system());
     cx.update(setup);
     let window = cx.open_window(size, move |window, cx| {
         let view = root(window, cx);
@@ -216,4 +228,39 @@ pub fn snapshot_with(
     let image = cx.capture_screenshot(window.into())?;
     image.save(out)?;
     Ok(())
+}
+
+#[cfg(all(test, feature = "snapshot"))]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::time::{Duration, Instant};
+
+    /// A task waiting for another thread, as views wait for core's (its repo watcher answers
+    /// whenever the disk settles). With the scheduler's thread check on, the wake grew the
+    /// footprint 9.7 MB and the resident set 17 -> 68 MB here; it should cost nothing.
+    #[test]
+    fn a_wake_from_another_thread_costs_no_memory() {
+        let cx = super::headless_app(std::sync::Arc::new(gpui_kit::NoopTextSystem));
+        let (tx, rx) = futures::channel::oneshot::channel::<()>();
+        let done = Rc::new(Cell::new(false));
+        let flag = done.clone();
+        cx.foreground_executor()
+            .spawn(async move {
+                let _ = rx.await;
+                flag.set(true);
+            })
+            .detach();
+        cx.run_until_parked();
+        let before = crate::memory::footprint().unwrap();
+        std::thread::spawn(move || tx.send(()));
+        let until = Instant::now() + Duration::from_secs(5);
+        while !done.get() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+            cx.run_until_parked();
+        }
+        assert!(done.get(), "the task never woke");
+        let grown = crate::memory::footprint().unwrap().saturating_sub(before);
+        assert!(grown < 2 << 20, "a wake grew the footprint {grown} bytes");
+    }
 }

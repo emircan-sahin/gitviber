@@ -3580,6 +3580,14 @@ mod tests {
     #[gpui::test]
     fn closing_terminals_gives_back_their_entities(cx: &mut TestAppContext) {
         real_shells(cx);
+        // /bin/sh in a home of its own: the owner's shell and rc files ran commands at startup,
+        // which on a loaded machine were still running when the test closed the tab.
+        let home = gitviber_ui::test_support::config_dir("term-close");
+        // SAFETY: nextest gives each test its own process; no shell has started yet.
+        unsafe {
+            std::env::set_var("HOME", &home);
+            std::env::set_var("SHELL", "/bin/sh");
+        }
         cx.update(|cx| {
             gpui_kit::init(cx);
             crate::init(cx);
@@ -3633,15 +3641,21 @@ mod tests {
                         .collect()
                 });
                 assert_eq!(terms.len(), 4);
-                panel.update_in(cx, |p, window, cx| {
-                    if round == 0 {
-                        while p.has_terminals() {
-                            p.close_tab_at(0, window, cx);
+                if round == 0 {
+                    // Tab by tab as ⌘W does; one whose shell is still busy starting asks first.
+                    for _ in 0..20 {
+                        if !panel.read_with(cx, |p, _| p.has_terminals()) {
+                            break;
                         }
-                    } else {
-                        p.close_all(cx);
+                        panel.update_in(cx, |p, window, cx| p.close_tab_at(0, window, cx));
+                        if cx.has_pending_prompt() {
+                            cx.simulate_prompt_answer("Kill");
+                        }
+                        cx.run_until_parked();
                     }
-                });
+                } else {
+                    panel.update(cx, |p, cx| p.close_all(cx));
+                }
                 cx.update(|window, cx| window.draw(cx).clear(cx));
                 cx.run_until_parked();
                 assert_eq!(panel.read_with(cx, |p, _| p.panes.len()), 0);

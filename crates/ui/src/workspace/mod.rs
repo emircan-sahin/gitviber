@@ -1229,10 +1229,7 @@ mod tests {
     }
 
     fn setup(cx: &mut TestAppContext) {
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-workspace-test-{}", std::process::id()));
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        crate::test_support::config_dir("workspace-test");
         cx.update(|cx| {
             crate::settings::init(cx);
             crate::state::init(cx);
@@ -1552,8 +1549,7 @@ mod tests {
     }
 
     fn git_repo(name: &str) -> Option<PathBuf> {
-        let dir = std::env::temp_dir().join(format!("gitviber-ws-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).ok()?;
+        let dir = crate::test_support::temp_dir(&format!("ws-{name}"));
         let ok = std::process::Command::new("git")
             .args(["init", "-q"])
             .arg(&dir)
@@ -1569,7 +1565,7 @@ mod tests {
             return;
         };
         setup(cx);
-        cx.update(crate::backend::install_quiet_core);
+        cx.update(crate::install_core);
         let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
         let ws = host.read_with(cx, |h, _| h.0.clone());
         register_file_opener(cx, std::rc::Rc::new(std::cell::Cell::new(0)));
