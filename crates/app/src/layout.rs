@@ -222,7 +222,11 @@ mod tests {
     fn a_fitted_header_is_never_under_the_base_nor_past_the_room() {
         let mut rng = Rng(42);
         for _ in 0..2000 {
-            let limits = if rng.next().is_multiple_of(2) { LEFT } else { RIGHT };
+            let limits = if rng.next().is_multiple_of(2) {
+                LEFT
+            } else {
+                RIGHT
+            };
             let total = rng.range(900., 4000.);
             let other = rng.range(0., 0.4 * total);
             let drawn = rng.range(limits.min, total);
