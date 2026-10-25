@@ -30,7 +30,8 @@ use crate::logic::issue_work::issue_branch_name;
 use crate::model::{Account, IssueItem, LabelItem, Target, repo_of};
 use crate::requests::{GithubRequest, request};
 use crate::ui::common::{
-    Attachments, Blocks, ago, copy, issue_icon, issue_pill, label_chip, open_url, section, theme,
+    Attachments, Blocks, ago, copy, error_text, issue_icon, issue_pill, label_chip, load_failed,
+    open_url, section, theme,
 };
 use crate::ui::dialogs::confirm;
 use crate::ui::labels::LabelPicker;
@@ -246,7 +247,8 @@ impl IssueView {
     }
 
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.find.open(self, &self.scroll, &self.focus, window, cx);
+        self.find
+            .open(self, Some(&self.scroll), &self.focus, window, cx);
     }
 
     /// The labels shown: the ones being picked until they're saved.
@@ -684,11 +686,17 @@ impl Render for IssueView {
         }
         self.find.sync(self, cx);
         let marks = self.find.marks();
+        // The first read failed (offline, GitHub down): the list's copy alone isn't the page.
+        if let (None, Some(e)) = (&self.detail, &self.detail_error) {
+            let retry = cx.listener(|this, _, _, cx| this.load(cx));
+            return div()
+                .id("issue")
+                .track_focus(&self.focus)
+                .size_full()
+                .child(load_failed("issue", e, self.loading, retry, &t, cx))
+                .into_any_element();
+        }
         let Some(i) = self.item() else {
-            let text = self
-                .detail_error
-                .clone()
-                .unwrap_or_else(|| "Loading the issue…".into());
             return div()
                 .id("issue")
                 .track_focus(&self.focus)
@@ -697,7 +705,7 @@ impl Render for IssueView {
                 .text_center()
                 .text_size(rems(0.78))
                 .text_color(t.muted_foreground)
-                .child(text)
+                .child("Loading the issue…")
                 .into_any_element();
         };
         let account = self.account(cx);
@@ -940,19 +948,6 @@ impl Render for IssueView {
                         .child(format!("{b}…")),
                 )
             })
-            .when_some(
-                self.detail_error.clone().filter(|_| !busy && d.is_some()),
-                |a, e| {
-                    a.child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(rems(0.75))
-                            .text_color(t.removed)
-                            .child(format!("Couldn't refresh: {e}")),
-                    )
-                },
-            )
             // GitHub lets repository admins alone delete issues.
             .when(rights.delete, |a| {
                 a.child(div().flex_1()).child(
@@ -974,7 +969,25 @@ impl Render for IssueView {
             .px(px(24.))
             .py(px(20.))
             .child(header)
-            .child(actions);
+            .child(actions)
+            // Cached data stays on screen; a failed refresh (a rate limit, say) is noted under it.
+            .when_some(
+                self.detail_error.clone().filter(|_| !busy && d.is_some()),
+                |page, e| {
+                    page.child(
+                        div()
+                            .mt(px(8.))
+                            .text_size(rems(0.75))
+                            .debug_selector(|| "refresh-error".into())
+                            .child(error_text(
+                                "refresh-error",
+                                &format!("Couldn't refresh: {e}"),
+                                t.removed,
+                                cx,
+                            )),
+                    )
+                },
+            );
         if self.editing.is_none() {
             let desc = match (self.body_view(), &d) {
                 (Some(md), _) => div().px(px(12.)).py(px(10.)).child(md).into_any_element(),
@@ -1092,6 +1105,32 @@ mod tests {
     fn draw(cx: &mut VisualTestContext) {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();
+    }
+
+    #[gpui_kit::test]
+    fn a_first_read_that_fails_says_why_and_offers_retry(cx: &mut TestAppContext) {
+        setup(cx);
+        let (host, cx) = cx.add_window_view(|window, cx| {
+            let ws = cx.new(Workspace::new);
+            Workspace::register_window(&ws, window, cx);
+            let i = issue(1);
+            let view =
+                cx.new(|cx| IssueView::new(ws.downgrade(), i.url.clone(), Some(i), window, cx));
+            Host(ws, view)
+        });
+        // The read finds no repository, as it would find no network.
+        cx.run_until_parked();
+        draw(cx);
+        let view = host.read_with(cx, |h, _| h.1.clone());
+        let retry = cx.debug_bounds("load-retry").expect("Retry shown");
+        let before = view.read_with(cx, |v, _| v.detail_at);
+        cx.simulate_click(retry.center(), gpui_kit::Modifiers::none());
+        // Read again (and failed again: there's still no repository).
+        assert!(view.read_with(cx, |v, _| v.detail_at) > before);
+        cx.run_until_parked();
+        draw(cx);
+        assert!(view.read_with(cx, |v, _| v.detail_error.is_some()));
+        assert!(cx.debug_bounds("load-retry").is_some());
     }
 
     #[gpui_kit::test]

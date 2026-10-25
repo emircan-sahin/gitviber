@@ -185,6 +185,21 @@ impl Cache {
         Cache::start(cx, key, max_age, fetch, same::<T>, true);
     }
 
+    /// Whether `key` would be read again by a `load` with `max_age`: no answer (or failure)
+    /// younger than that, and none on its way.
+    pub fn is_stale(cx: &App, key: &str, max_age: Duration) -> bool {
+        let Some(e) = cx.try_global::<Cache>().and_then(|c| c.entries.get(key)) else {
+            return true;
+        };
+        let young = |at: Option<Instant>| at.is_some_and(|at| at.elapsed() < max_age);
+        e.pending.is_none() && !young(e.at) && !young(e.failed_at)
+    }
+
+    /// Whether a project's views told the cache which repository they read.
+    pub fn has_repo(cx: &App) -> bool {
+        cx.try_global::<Cache>().is_some_and(|c| c.repo.is_some())
+    }
+
     /// Bumped when every answer is dropped (another repo, account or origin).
     pub fn generation(cx: &App) -> u64 {
         cx.try_global::<Cache>().map_or(0, |c| c.generation)

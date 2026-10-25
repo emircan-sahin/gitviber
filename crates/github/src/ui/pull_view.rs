@@ -3,7 +3,7 @@
 //! Files changed), its files, and the description and conversation. The detail, files and
 //! threads live here only: closing the tab frees them.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -23,11 +23,11 @@ use gpui_kit::component::input::InputEvent;
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, ScrollHandle,
-    ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
-    UniformListScrollHandle, WeakEntity, Window, div, prelude::FluentBuilder as _, px, rems,
-    uniform_list,
+    AnyElement, App, AppContext as _, Context, Entity, EntityId, FocusHandle, FontWeight,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListState,
+    ParentElement as _, Pixels, Render, ScrollHandle, ScrollStrategy, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, UniformListScrollHandle,
+    WeakEntity, Window, div, list, prelude::FluentBuilder as _, px, rems, uniform_list,
 };
 
 use crate::cache::{Cache, MIN_AGE, Wakes};
@@ -44,8 +44,8 @@ use crate::model::{Account, Check, PullItem, PullState, Target, repo_of};
 use crate::requests::{GithubRequest, PullSource, request};
 use crate::store::Store;
 use crate::ui::common::{
-    Attachments, Blocks, ago, ci_badge, copy, open_url, pull_icon, pull_pill, section, text_button,
-    theme,
+    Attachments, Blocks, ago, ci_badge, copy, error_text, load_failed, open_url, pull_icon,
+    pull_pill, section, section_part, text_button, theme,
 };
 use crate::ui::dialogs::{ReviewDialog, confirm};
 use crate::ui::markdown_input::MarkdownInput;
@@ -57,9 +57,25 @@ const FILES_AGE: Duration = Duration::from_secs(600);
 const COMMIT_PAGE: usize = 10;
 /// What a merge or cherry-pick that stopped on conflicts says.
 const CONFLICTS: &str = "Stopped on conflicts: resolve them in Changes, then push.";
+/// How far past the page's view its list measures what it hasn't yet.
+const PAGE_OVERDRAW: Pixels = px(600.);
+/// The commits list's lines are this high, but for an open message: the ones out of its view
+/// stand as one gap of their exact height.
+const DAY_H: Pixels = px(24.);
+const ROW_H: Pixels = px(28.);
+const COMMITS_H: Pixels = px(360.);
+/// How far past the commits list's view its lines are still drawn.
+const COMMITS_OVERSCAN: Pixels = px(360.);
 
 /// The files Files changed lists, and the picked commits' range (base, head, label) they're from.
 type Shown = (Arc<Vec<FileChange>>, Option<(String, String, String)>);
+
+/// A line of the commits list: a day's header (by its order) or a commit (by its index).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommitLine {
+    Day(usize),
+    Row(usize),
+}
 
 struct Failure {
     data: Option<Arc<CheckFailure>>,
@@ -118,12 +134,23 @@ pub struct PullView {
     wakes: Wakes,
     generation: u64,
     focus: FocusHandle,
-    scroll: ScrollHandle,
+    /// The page as a list: all above the conversation, then each comment, so a long thread
+    /// draws only what's in view.
+    page: ListState,
     find: PageFind,
     /// The commits list's keys: the row they're on, by its sha.
     commits_focus: FocusHandle,
     commits_scroll: ScrollHandle,
     commit_cursor: Option<String>,
+    /// A commit the keys moved to, scrolled into the list's view at the next frame.
+    commits_to: Option<usize>,
+    /// The line the find's current match is in: drawn wherever it is.
+    commits_keep: Option<CommitLine>,
+    /// Each open message's height as last drawn; the list's children that drew them.
+    body_heights: HashMap<String, Pixels>,
+    bodies_drawn: Vec<(usize, String)>,
+    /// A frame was asked for to measure a message just opened.
+    bodies_asked: bool,
     files_scroll: UniformListScrollHandle,
     _ci: Option<CiWatch>,
     _detail: Task<()>,
@@ -165,6 +192,10 @@ impl PullView {
                 }
             }),
         ];
+        let commits_focus = cx.focus_handle();
+        let page = ListState::new(0, ListAlignment::Top, PAGE_OVERDRAW);
+        // The commits list's keys work while it's scrolled out of the page.
+        page.splice_focusable(0..0, [Some(commits_focus.clone())]);
         let mut view = PullView {
             web: format!("https://github.com/{repo}"),
             target: Some(repo),
@@ -200,11 +231,16 @@ impl PullView {
             wakes: Cache::wakes(cx),
             generation: Cache::generation(cx),
             focus: cx.focus_handle(),
-            scroll: ScrollHandle::new(),
+            page,
             find: PageFind::default(),
-            commits_focus: cx.focus_handle(),
+            commits_focus,
             commits_scroll: ScrollHandle::new(),
             commit_cursor: None,
+            commits_to: None,
+            commits_keep: None,
+            body_heights: HashMap::new(),
+            bodies_drawn: vec![],
+            bodies_asked: false,
             files_scroll: UniformListScrollHandle::new(),
             _ci: None,
             _detail: Task::ready(()),
@@ -336,7 +372,10 @@ impl PullView {
             .collect();
         let (web, url) = (self.web.clone(), self.url.clone());
         let signed = self.attachments.signed.clone();
-        self.blocks.sync(&texts, &web, &url, &signed, window, cx);
+        // Block 0 (the description) is in the page's first item, comment n's block in item n + 1.
+        for item in self.blocks.sync(&texts, &web, &url, &signed, window, cx) {
+            self.page.remeasure_items(item..item + 1);
+        }
     }
 
     /// The description's view, when it has text.
@@ -358,7 +397,34 @@ impl PullView {
     }
 
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.find.open(self, &self.scroll, &self.focus, window, cx);
+        self.find.open(self, None, &self.focus, window, cx);
+    }
+
+    /// Scrolls the page's list to item `ix`'s top unless some of it is in view; what's in it
+    /// then asks for the line it wants. By its top: items never drawn have no height yet.
+    fn reveal_item(&self, ix: usize) {
+        let view = self.page.viewport_bounds();
+        if !self
+            .page
+            .bounds_for_item(ix)
+            .is_some_and(|b| b.intersects(&view))
+        {
+            self.page.scroll_to(gpui_kit::ListOffset {
+                item_ix: ix,
+                offset_in_item: px(0.),
+            });
+        }
+    }
+
+    /// One item per comment after the first: the list follows the comments read.
+    fn sync_items(&self) {
+        let want = 1 + self.detail.as_ref().map_or(0, |d| d.comments.len());
+        let have = self.page.item_count();
+        if want > have {
+            self.page.splice(have..have, want - have);
+        } else if want < have {
+            self.page.splice(want..have, 0);
+        }
     }
 
     /// Signed links for the attachments the text holds, asked once per new one.
@@ -539,21 +605,6 @@ impl PullView {
             .or((!commits.is_empty()).then_some(0))
     }
 
-    /// The list's child that shows commit `ix`: each day's header is one, an open message too.
-    fn commit_child(&self, ix: usize) -> usize {
-        let mut child = 0;
-        for (_, range) in by_day(self.commits()) {
-            child += 1;
-            for i in range {
-                if i == ix {
-                    return child;
-                }
-                child += 1 + usize::from(self.open_bodies.contains(&self.commits()[i].sha));
-            }
-        }
-        child
-    }
-
     /// ↑/↓, Home/End, PgUp/PgDn land on a commit as a click does (its changes alone), Space
     /// picks the one the keys are on, ⇧↑/⇧↓ widen or narrow the run as ⇧-click does, Esc shows
     /// every commit's changes again.
@@ -583,7 +634,7 @@ impl PullView {
                 .map_or_else(|| sha(self, at), |p| p.anchor.clone());
             let run = run_to(self.commits(), Some(&anchor), &sha(self, to));
             self.commit_cursor = Some(sha(self, to));
-            self.commits_scroll.scroll_to_item(self.commit_child(to));
+            self.commits_to = Some(to);
             self.set_pick(Some(run), cx);
             return;
         }
@@ -595,7 +646,7 @@ impl PullView {
                     return;
                 };
                 if to != at || self.pick.is_none() {
-                    self.commits_scroll.scroll_to_item(self.commit_child(to));
+                    self.commits_to = Some(to);
                     self.click_commit(sha(self, to), false, cx);
                 }
             }
@@ -1440,8 +1491,7 @@ impl PullView {
                     .px(px(12.))
                     .py(px(8.))
                     .text_size(rems(0.75))
-                    .text_color(t.removed)
-                    .child(marks.text(("checks-error", 0), checks_error(e), cx)),
+                    .child(error_text("checks-error", &checks_error(e), t.removed, cx)),
             );
         }
         for (i, c) in sort_checks(&checks).into_iter().enumerate() {
@@ -1530,10 +1580,10 @@ impl PullView {
                             .flex()
                             .items_center()
                             .gap(px(8.))
-                            .text_color(t.removed)
-                            .child(div().flex_1().child(marks.text(
+                            .child(div().flex_1().child(error_text(
                                 ("failure-error", row),
-                                failure_error(e),
+                                &failure_error(e),
+                                t.removed,
                                 cx,
                             )))
                             .child(
@@ -1658,16 +1708,18 @@ impl PullView {
             );
         }
         if let Some(e) = &data.annotations_error {
-            col = col.child(div().mt(px(4.)).text_color(t.removed).child(marks.text(
+            col = col.child(div().mt(px(4.)).child(error_text(
                 ("annotations-error", row),
-                annotations_error(e),
+                &annotations_error(e),
+                t.removed,
                 cx,
             )));
         }
         if let Some(e) = &data.log_error {
-            col = col.child(div().mt(px(4.)).text_color(t.removed).child(marks.text(
+            col = col.child(div().mt(px(4.)).child(error_text(
                 ("log-error", row),
-                log_error(e),
+                &log_error(e),
+                t.removed,
                 cx,
             )));
         }
@@ -1714,18 +1766,18 @@ impl PullView {
     }
 
     fn commits_section(
-        &self,
+        &mut self,
         total: u64,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let commits = self.commits();
+        let files = self.files.clone()?;
+        let commits = &files.commits;
         if commits.is_empty() {
             return None;
         }
         let t = theme(cx);
         let marks = self.find.marks();
-        let within = &self.commits_scroll;
         let fresh = commits.iter().filter(|c| self.is_new(&c.sha)).count();
         let aside = if fresh > 0 {
             format!("{fresh} new · {}", commits.len())
@@ -1738,256 +1790,93 @@ impl PullView {
         let cursor = self
             .commit_at()
             .filter(|_| self.commits_focus.is_focused(window));
+        // The open messages as the last frame drew them.
+        for (child, sha) in std::mem::take(&mut self.bodies_drawn) {
+            if let Some(b) = self.commits_scroll.bounds_for_item(child) {
+                self.body_heights.insert(sha, b.size.height - ROW_H);
+            }
+        }
+        self.body_heights
+            .retain(|sha, _| self.open_bodies.contains(sha));
+        let asked = std::mem::take(&mut self.bodies_asked);
+        let view_top = -self.commits_scroll.offset().y;
+        let view_h = Some(self.commits_scroll.bounds().size.height)
+            .filter(|h| *h > px(0.))
+            .unwrap_or(COMMITS_H);
+        let near = (view_top - COMMITS_OVERSCAN)..(view_top + view_h + COMMITS_OVERSCAN);
+        let shown = |y: Pixels, h: Pixels| y + h > near.start && y < near.end;
+        let to = self.commits_to.take().filter(|&ix| ix < commits.len());
+        let keep = self.commits_keep;
         let mut rows: Vec<AnyElement> = Vec::new();
+        // Lines out of view, one gap of their summed (exact) height.
+        let mut gap = px(0.);
+        let flush = |rows: &mut Vec<AnyElement>, gap: &mut Pixels| {
+            if *gap > px(0.) {
+                rows.push(div().flex_none().h(*gap).into_any_element());
+                *gap = px(0.);
+            }
+        };
+        let (mut y, mut unmeasured) = (px(0.), false);
         for (n, (day, range)) in by_day(commits).into_iter().enumerate() {
-            rows.push(
-                div()
-                    .flex()
-                    .items_center()
-                    .h(px(24.))
-                    .px(px(12.))
-                    .bg(t.panel)
-                    .border_b_1()
-                    .border_color(t.border)
-                    .text_size(rems(0.69))
-                    .text_color(t.subtle)
-                    .child(marks.text(("day", n), commits_on(&day), cx).within(within))
-                    .into_any_element(),
-            );
-            for ix in range {
-                let c = &commits[ix];
-                let on = picked.as_ref().is_some_and(|r| r.contains(&ix));
-                let keys_here = cursor == Some(ix);
-                let open = self.open_bodies.contains(&c.sha);
-                let (sha, body_sha, copy_sha, menu_sha) =
-                    (c.sha.clone(), c.sha.clone(), c.sha.clone(), c.sha.clone());
-                let hover = t.hover;
-                let (url, not_in_head, short) = (
-                    format!("{}/commits/{}", self.url, c.sha),
-                    c.not_in_head,
-                    c.short_sha.clone(),
-                );
-                let weak = cx.weak_entity();
+            if keep == Some(CommitLine::Day(n)) || shown(y, DAY_H) {
+                flush(&mut rows, &mut gap);
                 rows.push(
                     div()
-                        .id(("commit", ix))
-                        .relative()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
-                        .h(px(28.))
+                        .h(DAY_H)
                         .px(px(12.))
+                        .bg(t.panel)
                         .border_b_1()
                         .border_color(t.border)
-                        .text_size(rems(0.75))
-                        .cursor_pointer()
-                        .when(on, |d| {
-                            d.bg(t.primary.opacity(0.15)).child(
-                                div()
-                                    .absolute()
-                                    .left_0()
-                                    .top_0()
-                                    .bottom_0()
-                                    .w(px(2.))
-                                    .bg(t.primary),
-                            )
-                        })
-                        .when(!on, |d| d.hover(move |s| s.bg(hover)))
-                        .when(keys_here && !on, |d| d.bg(hover))
-                        .when(keys_here, |d| d.border_1().border_color(t.ring))
+                        .text_size(rems(0.69))
+                        .text_color(t.subtle)
                         .child(
-                            Icon::new(IconName::GitCommitHorizontal)
-                                .xsmall()
-                                .text_color(t.subtle),
+                            marks
+                                .text(("day", n), commits_on(&day), cx)
+                                .within(&self.commits_scroll),
                         )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .child(
-                                    marks
-                                        .text(("subject", ix), c.subject.clone(), cx)
-                                        .within(within),
-                                ),
-                        )
-                        .when(!c.body.is_empty(), |d| {
-                            d.child(
-                                div()
-                                    .id(("commit-body", ix))
-                                    .flex_none()
-                                    .px(px(4.))
-                                    .rounded(px(3.))
-                                    .bg(if open { t.active } else { t.hover })
-                                    .text_size(rems(0.625))
-                                    .child("…")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        cx.stop_propagation();
-                                        if !this.open_bodies.remove(&body_sha) {
-                                            this.open_bodies.insert(body_sha.clone());
-                                        }
-                                        cx.notify();
-                                    })),
-                            )
-                        })
-                        .when(self.is_new(&c.sha), |d| {
-                            d.child(
-                                div()
-                                    .flex_none()
-                                    .px(px(6.))
-                                    .rounded_full()
-                                    .bg(t.primary.opacity(0.15))
-                                    .text_color(t.primary)
-                                    .text_size(rems(0.625))
-                                    .child("New"),
-                            )
-                        })
-                        .child(div().flex_1())
-                        .child(
-                            div()
-                                .flex_none()
-                                .max_w(px(140.))
-                                .truncate()
-                                .text_size(rems(0.69))
-                                .text_color(t.subtle)
-                                .child(
-                                    marks
-                                        .text(("commit-author", ix), c.author_name.clone(), cx)
-                                        .within(within),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_size(rems(0.69))
-                                .text_color(t.subtle)
-                                .child(
-                                    marks
-                                        .text(("commit-time", ix), committed(c), cx)
-                                        .within(within),
-                                ),
-                        )
-                        .children(ci_badge(("commit-ci", ix), states.get(&c.sha).copied(), &t))
-                        .child(
-                            text_button(
-                                ("sha", ix),
-                                marks.text(("sha", ix), short, cx).within(within),
-                                &t,
-                            )
-                                .font_family(t.fonts.code.clone())
-                                .on_click(move |_, window, cx| {
-                                    cx.stop_propagation();
-                                    copy(&copy_sha, "SHA copied", window, cx)
-                                }),
-                        )
-                        .on_click(cx.listener(move |this, ev: &gpui_kit::ClickEvent, _, cx| {
-                            this.click_commit(sha.clone(), ev.modifiers().shift, cx)
-                        }))
-                        .context_menu(move |menu, _, _| {
-                            let (copy_sha, url, sha, weak) = (
-                                menu_sha.clone(),
-                                url.clone(),
-                                menu_sha.clone(),
-                                weak.clone(),
-                            );
-                            let pick_sha = sha.clone();
-                            let pick_weak = weak.clone();
-                            menu.item(
-                                PopupMenuItem::new("Copy SHA")
-                                    .icon(IconName::Copy)
-                                    .on_click(move |_, window, cx| {
-                                        copy(&copy_sha, "SHA copied", window, cx)
-                                    }),
-                            )
-                            .item(
-                                PopupMenuItem::new("Open on GitHub")
-                                    .icon(IconName::ExternalLink)
-                                    .on_click(move |_, _, cx| open_url(&url, cx)),
-                            )
-                            .separator()
-                            .item(
-                                PopupMenuItem::new("Checkout commit")
-                                    .icon(IconName::GitCommitHorizontal)
-                                    .on_click(move |_, window, cx| {
-                                        let (sha, weak) = (sha.clone(), weak.clone());
-                                        let short = sha[..sha.len().min(7)].to_string();
-                                        confirm(
-                                            "Checkout commit",
-                                            format!(
-                                                "Check out {short} without a branch (detached HEAD)? \
-                                                 New commits made there belong to no branch until \
-                                                 you create one."
-                                            ),
-                                            "Checkout",
-                                            window,
-                                            cx,
-                                            move |_, cx| {
-                                                let sha = sha.clone();
-                                                weak.update(cx, |this, cx| {
-                                                    this.act(
-                                                        "Checkout",
-                                                        format!("Checked out {short}"),
-                                                        move |core| {
-                                                            done(api::history::checkout_commit(
-                                                                core, sha,
-                                                            ))
-                                                        },
-                                                        |_, _| {},
-                                                        cx,
-                                                    )
-                                                })
-                                                .ok();
-                                            },
-                                        );
-                                    }),
-                            )
-                            // Your branch has it already (the PR's own, checked out): picking it changes nothing.
-                            .item(
-                                PopupMenuItem::new("Cherry-pick onto current branch")
-                                    .icon(IconName::Cherry)
-                                    .disabled(!not_in_head)
-                                    .on_click(move |_, _, cx| {
-                                        let sha = pick_sha.clone();
-                                        pick_weak
-                                            .update(cx, |this, cx| {
-                                                this.act(
-                                                    "Cherry-pick",
-                                                    format!(
-                                                        "Cherry-picked {}",
-                                                        &sha[..sha.len().min(7)]
-                                                    ),
-                                                    move |core| {
-                                                        api::history::cherry_pick(core, sha)
-                                                    },
-                                                    |_, _| {},
-                                                    cx,
-                                                )
-                                            })
-                                            .ok();
-                                    }),
-                            )
-                        })
                         .into_any_element(),
                 );
-                if open {
-                    rows.push(
-                        div()
-                            .border_b_1()
-                            .border_color(t.border)
-                            .bg(t.panel.opacity(0.5))
-                            .py(px(8.))
-                            .pr(px(12.))
-                            .pl(px(34.))
-                            .font_family(t.fonts.code.clone())
-                            .text_size(rems(0.72))
-                            .text_color(t.muted_foreground)
-                            .children(lines(&c.body).map(|r| {
-                                div()
-                                    .child(marks.slice(("body", ix), &c.body, r, cx).within(within))
-                            }))
-                            .into_any_element(),
-                    );
-                }
+            } else {
+                gap += DAY_H;
             }
+            y += DAY_H;
+            for ix in range {
+                let c = &commits[ix];
+                let open = self.open_bodies.contains(&c.sha);
+                let h = if open {
+                    ROW_H
+                        + self.body_heights.get(&c.sha).copied().unwrap_or_else(|| {
+                            unmeasured = true;
+                            px(17. + 18. * lines(&c.body).count() as f32)
+                        })
+                } else {
+                    ROW_H
+                };
+                // An open message is always drawn: a gap's height is then exact.
+                if open || to == Some(ix) || keep == Some(CommitLine::Row(ix)) || shown(y, h) {
+                    flush(&mut rows, &mut gap);
+                    if to == Some(ix) {
+                        self.commits_scroll.scroll_to_item(rows.len());
+                    }
+                    if open {
+                        self.bodies_drawn.push((rows.len(), c.sha.clone()));
+                    }
+                    let on = picked.as_ref().is_some_and(|r| r.contains(&ix));
+                    let state = states.get(&c.sha).copied();
+                    rows.push(self.commit_row(ix, c, on, cursor == Some(ix), open, state, cx));
+                } else {
+                    gap += h;
+                }
+                y += h;
+            }
+        }
+        flush(&mut rows, &mut gap);
+        // A message just opened was placed by a guess: once drawn, place the lines again.
+        if unmeasured && !asked {
+            self.bodies_asked = true;
+            cx.on_next_frame(window, |_, _, cx| cx.notify());
         }
         let mut s = section("Commits", Some(aside.into()), &t);
         if total as usize > commits.len() {
@@ -2012,13 +1901,247 @@ impl PullView {
                         this.commit_key(ev, cx);
                         cx.notify();
                     }))
-                    .max_h(px(360.))
+                    .max_h(COMMITS_H)
                     .overflow_y_scroll()
                     .track_scroll(&self.commits_scroll)
                     .children(rows),
             )
             .into_any_element(),
         )
+    }
+
+    /// Commit `ix`'s row, with its message under it when that's open.
+    #[allow(clippy::too_many_arguments)]
+    fn commit_row(
+        &self,
+        ix: usize,
+        c: &gitviber_core::git::Commit,
+        on: bool,
+        keys_here: bool,
+        open: bool,
+        ci_state: Option<crate::model::CiState>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let t = theme(cx);
+        let marks = self.find.marks();
+        let within = &self.commits_scroll;
+        let (sha, body_sha, copy_sha, menu_sha) =
+            (c.sha.clone(), c.sha.clone(), c.sha.clone(), c.sha.clone());
+        let hover = t.hover;
+        let (url, not_in_head, short) = (
+            format!("{}/commits/{}", self.url, c.sha),
+            c.not_in_head,
+            c.short_sha.clone(),
+        );
+        let weak = cx.weak_entity();
+        let row = div()
+            .id(("commit", ix))
+            .relative()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .h(ROW_H)
+            .px(px(12.))
+            .border_b_1()
+            .border_color(t.border)
+            .text_size(rems(0.75))
+            .cursor_pointer()
+            .when(on, |d| {
+                d.bg(t.primary.opacity(0.15)).child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .bottom_0()
+                        .w(px(2.))
+                        .bg(t.primary),
+                )
+            })
+            .when(!on, |d| d.hover(move |s| s.bg(hover)))
+            .when(keys_here && !on, |d| d.bg(hover))
+            .when(keys_here, |d| d.border_1().border_color(t.ring))
+            .child(
+                Icon::new(IconName::GitCommitHorizontal)
+                    .xsmall()
+                    .text_color(t.subtle),
+            )
+            .child(
+                div().min_w_0().truncate().child(
+                    marks
+                        .text(("subject", ix), c.subject.clone(), cx)
+                        .within(within),
+                ),
+            )
+            .when(!c.body.is_empty(), |d| {
+                d.child(
+                    div()
+                        .id(("commit-body", ix))
+                        .flex_none()
+                        .px(px(4.))
+                        .rounded(px(3.))
+                        .bg(if open { t.active } else { t.hover })
+                        .text_size(rems(0.625))
+                        .child("…")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            if !this.open_bodies.remove(&body_sha) {
+                                this.open_bodies.insert(body_sha.clone());
+                            }
+                            cx.notify();
+                        })),
+                )
+            })
+            .when(self.is_new(&c.sha), |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .px(px(6.))
+                        .rounded_full()
+                        .bg(t.primary.opacity(0.15))
+                        .text_color(t.primary)
+                        .text_size(rems(0.625))
+                        .child("New"),
+                )
+            })
+            .child(div().flex_1())
+            .child(
+                div()
+                    .flex_none()
+                    .max_w(px(140.))
+                    .truncate()
+                    .text_size(rems(0.69))
+                    .text_color(t.subtle)
+                    .child(
+                        marks
+                            .text(("commit-author", ix), c.author_name.clone(), cx)
+                            .within(within),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(rems(0.69))
+                    .text_color(t.subtle)
+                    .child(
+                        marks
+                            .text(("commit-time", ix), committed(c), cx)
+                            .within(within),
+                    ),
+            )
+            .children(ci_badge(("commit-ci", ix), ci_state, &t))
+            .child(
+                text_button(
+                    ("sha", ix),
+                    marks.text(("sha", ix), short, cx).within(within),
+                    &t,
+                )
+                .font_family(t.fonts.code.clone())
+                .on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    copy(&copy_sha, "SHA copied", window, cx)
+                }),
+            )
+            .on_click(cx.listener(move |this, ev: &gpui_kit::ClickEvent, _, cx| {
+                this.click_commit(sha.clone(), ev.modifiers().shift, cx)
+            }))
+            .context_menu(move |menu, _, _| {
+                let (copy_sha, url, sha, weak) = (
+                    menu_sha.clone(),
+                    url.clone(),
+                    menu_sha.clone(),
+                    weak.clone(),
+                );
+                let pick_sha = sha.clone();
+                let pick_weak = weak.clone();
+                menu.item(
+                    PopupMenuItem::new("Copy SHA")
+                        .icon(IconName::Copy)
+                        .on_click(move |_, window, cx| copy(&copy_sha, "SHA copied", window, cx)),
+                )
+                .item(
+                    PopupMenuItem::new("Open on GitHub")
+                        .icon(IconName::ExternalLink)
+                        .on_click(move |_, _, cx| open_url(&url, cx)),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new("Checkout commit")
+                        .icon(IconName::GitCommitHorizontal)
+                        .on_click(move |_, window, cx| {
+                            let (sha, weak) = (sha.clone(), weak.clone());
+                            let short = sha[..sha.len().min(7)].to_string();
+                            confirm(
+                                "Checkout commit",
+                                format!(
+                                    "Check out {short} without a branch (detached HEAD)? \
+                                     New commits made there belong to no branch until \
+                                     you create one."
+                                ),
+                                "Checkout",
+                                window,
+                                cx,
+                                move |_, cx| {
+                                    let sha = sha.clone();
+                                    weak.update(cx, |this, cx| {
+                                        this.act(
+                                            "Checkout",
+                                            format!("Checked out {short}"),
+                                            move |core| {
+                                                done(api::history::checkout_commit(core, sha))
+                                            },
+                                            |_, _| {},
+                                            cx,
+                                        )
+                                    })
+                                    .ok();
+                                },
+                            );
+                        }),
+                )
+                // Your branch has it already (the PR's own, checked out): picking it changes nothing.
+                .item(
+                    PopupMenuItem::new("Cherry-pick onto current branch")
+                        .icon(IconName::Cherry)
+                        .disabled(!not_in_head)
+                        .on_click(move |_, _, cx| {
+                            let sha = pick_sha.clone();
+                            pick_weak
+                                .update(cx, |this, cx| {
+                                    this.act(
+                                        "Cherry-pick",
+                                        format!("Cherry-picked {}", &sha[..sha.len().min(7)]),
+                                        move |core| api::history::cherry_pick(core, sha),
+                                        |_, _| {},
+                                        cx,
+                                    )
+                                })
+                                .ok();
+                        }),
+                )
+            });
+        if !open {
+            return row.into_any_element();
+        }
+        div()
+            .flex()
+            .flex_col()
+            .child(row)
+            .child(
+                div()
+                    .border_b_1()
+                    .border_color(t.border)
+                    .bg(t.panel.opacity(0.5))
+                    .py(px(8.))
+                    .pr(px(12.))
+                    .pl(px(34.))
+                    .font_family(t.fonts.code.clone())
+                    .text_size(rems(0.72))
+                    .text_color(t.muted_foreground)
+                    .children(lines(&c.body).map(|r| {
+                        div().child(marks.slice(("body", ix), &c.body, r, cx).within(within))
+                    })),
+            )
+            .into_any_element()
     }
 
     fn pick_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -2116,10 +2239,12 @@ impl PullView {
         }
     }
 
-    /// What Files changed says while it has no files to list.
-    fn files_note(&self) -> Option<String> {
+    /// What Files changed says while it has no files to list, and whether that's an error.
+    fn files_note(&self) -> Option<(String, bool)> {
         if let Some((files, _)) = self.shown_files() {
-            return files.is_empty().then(|| "No files changed.".into());
+            return files
+                .is_empty()
+                .then(|| ("No files changed.".into(), false));
         }
         let narrowed = self.picked().is_some_and(|(_, n)| n);
         let error = if narrowed {
@@ -2128,10 +2253,10 @@ impl PullView {
             &self.files_error
         };
         Some(match error {
-            Some(e) if narrowed => format!("Could not load the commits' files: {e}"),
-            Some(e) => format!("Could not load the PR's files: {e}"),
-            None if narrowed => "Loading…".into(),
-            None => "Fetching the PR's commits…".into(),
+            Some(e) if narrowed => (format!("Could not load the commits' files: {e}"), true),
+            Some(e) => (format!("Could not load the PR's files: {e}"), true),
+            None if narrowed => ("Loading…".into(), false),
+            None => ("Fetching the PR's commits…".into(), false),
         })
     }
 
@@ -2146,7 +2271,12 @@ impl PullView {
             _ => None,
         };
         let mut s = section("Files changed", aside, &t).children(self.pick_bar(cx));
-        if let Some(note) = self.files_note() {
+        if let Some((note, error)) = self.files_note() {
+            let note = if error {
+                error_text("files-error", &note, t.removed, cx).into_any_element()
+            } else {
+                marks.text(("files-note", 0), note, cx).into_any_element()
+            };
             return s
                 .child(
                     div()
@@ -2154,7 +2284,7 @@ impl PullView {
                         .py(px(8.))
                         .text_size(rems(0.75))
                         .text_color(t.subtle)
-                        .child(marks.text(("files-note", 0), note, cx)),
+                        .child(note),
                 )
                 .into_any_element();
         }
@@ -2205,37 +2335,32 @@ impl PullView {
         s.into_any_element()
     }
 
-    fn conversation(&self, d: &PullDetail, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if d.comments.is_empty() {
-            return None;
-        }
+    /// Comment `i`, as its item of the page's list: a slice of the Conversation section.
+    fn comment(&self, d: &PullDetail, i: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(c) = d.comments.get(i) else {
+            return div().into_any_element();
+        };
         let t = theme(cx);
         let marks = self.find.marks();
-        let mut s = section(
-            "Conversation",
-            Some(d.comments.len().to_string().into()),
-            &t,
-        );
-        for (i, c) in d.comments.iter().enumerate() {
-            let md = self.comment_view(d, i);
-            let verdict = c.review.as_deref().map(|r| {
-                let color = match r {
-                    "APPROVED" => t.added,
-                    "CHANGES_REQUESTED" => t.removed,
-                    "DISMISSED" => t.subtle,
-                    _ => t.muted_foreground,
-                };
-                div()
-                    .text_size(rems(0.69))
-                    .text_color(color)
-                    .child(marks.text(("verdict", i), review_badge(r), cx))
-            });
-            s = s.child(
+        let md = self.comment_view(d, i);
+        let verdict = c.review.as_deref().map(|r| {
+            let color = match r {
+                "APPROVED" => t.added,
+                "CHANGES_REQUESTED" => t.removed,
+                "DISMISSED" => t.subtle,
+                _ => t.muted_foreground,
+            };
+            div()
+                .text_size(rems(0.69))
+                .text_color(color)
+                .child(marks.text(("verdict", i), review_badge(r), cx))
+        });
+        let title = (i == 0).then(|| ("Conversation", Some(d.comments.len().to_string().into())));
+        section_part(title, i + 1 == d.comments.len(), &t)
+            .child(
                 div()
                     .px(px(12.))
                     .py(px(10.))
-                    .border_b_1()
-                    .border_color(t.border)
                     .child(
                         div()
                             .flex()
@@ -2255,9 +2380,8 @@ impl PullView {
                             ))),
                     )
                     .children(md.map(|md| div().mt(px(6.)).child(md))),
-            );
-        }
-        Some(s.into_any_element())
+            )
+            .into_any_element()
     }
 }
 
@@ -2280,9 +2404,6 @@ impl FindHost for PullView {
         if let Some(d) = d {
             parts.text(("commit-count", 0), &commit_count(d.commits));
         }
-        if let Some(e) = self.refresh_error() {
-            parts.text(("refresh-error", 0), &e);
-        }
         if let Some(d) = d {
             if p.state == PullState::Open {
                 let (_, title, note) = merge_words(d);
@@ -2292,9 +2413,6 @@ impl FindHost for PullView {
                 if let Some(side) = merge_side(d, &rights) {
                     parts.text(("merge-side", 0), side);
                 }
-            }
-            if let Some(e) = &d.ci.checks_error {
-                parts.text(("checks-error", 0), &checks_error(e));
             }
             let checks: Vec<Check> = d.ci.checks.iter().map(Check::from).collect();
             let now = gitviber_ui::widgets::now_unix();
@@ -2334,7 +2452,8 @@ impl FindHost for PullView {
             }
         }
         match (self.files_note(), self.shown_files()) {
-            (Some(note), _) => parts.text(("files-note", 0), &note),
+            (Some((_, true)), _) => {}
+            (Some((note, false)), _) => parts.text(("files-note", 0), &note),
             (None, Some((files, _))) => {
                 for (ix, f) in files.iter().enumerate() {
                     parts.text(("file", ix), &f.path);
@@ -2359,22 +2478,37 @@ impl FindHost for PullView {
         }
     }
 
-    /// A commit's message opens; a file's row comes into the list's view.
+    /// The page's list draws the item it's in; a commit's line is drawn wherever it is in its
+    /// list and its message opens; a file's row comes into the list's view.
     fn show_part(&mut self, (what, ix): Key, cx: &mut Context<Self>) {
         match what {
             "body" => {
                 if let Some(c) = self.commits().get(ix) {
                     let sha = c.sha.clone();
-                    if self.open_bodies.insert(sha) {
-                        cx.notify();
-                    }
+                    self.open_bodies.insert(sha);
                 }
+                self.commits_keep = Some(CommitLine::Row(ix));
             }
-            "file" => {
-                self.files_scroll.scroll_to_item(ix, ScrollStrategy::Center);
-                cx.notify();
+            "subject" | "commit-author" | "commit-time" | "sha" => {
+                self.commits_keep = Some(CommitLine::Row(ix))
             }
+            "day" => self.commits_keep = Some(CommitLine::Day(ix)),
+            "file" => self.files_scroll.scroll_to_item(ix, ScrollStrategy::Center),
             _ => {}
+        }
+        let item = match what {
+            "comment-author" | "verdict" | "comment-time" => ix + 1,
+            _ => 0,
+        };
+        self.reveal_item(item);
+        cx.notify();
+    }
+
+    /// The description is in the page's first item, comment n's view in item n + 1.
+    fn show_view(&mut self, view: EntityId, cx: &mut Context<Self>) {
+        if let Some(item) = self.blocks.position(view) {
+            self.reveal_item(item);
+            cx.notify();
         }
     }
 }
@@ -2383,9 +2517,8 @@ impl PullView {
     /// What a shown failure (check row `row`'s) says, as its view draws it.
     fn failure_parts(&self, row: usize, f: &Failure, parts: &mut Parts) {
         let Some(data) = &f.data else {
-            match &f.error {
-                Some(e) => parts.text(("failure-error", row), &failure_error(e)),
-                None => parts.text(("failure-wait", row), READING),
+            if f.error.is_none() {
+                parts.text(("failure-wait", row), READING);
             }
             return;
         };
@@ -2405,71 +2538,23 @@ impl PullView {
         if let Some(log) = &data.log {
             parts.text(("log", row), log_tail(log));
         }
-        if let Some(e) = &data.annotations_error {
-            parts.text(("annotations-error", row), &annotations_error(e));
-        }
-        if let Some(e) = &data.log_error {
-            parts.text(("log-error", row), &log_error(e));
-        }
         if no_output(data) {
             parts.text(("no-output", row), NO_OUTPUT);
         }
     }
 }
 
-impl Render for PullView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl PullView {
+    /// The page's first item: the PR, where it stands, its checks, commits, files and
+    /// description.
+    fn head(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let Some(p) = self.item() else {
+            return div().into_any_element();
+        };
         let t = theme(cx);
-        // Shown again after a wake: read again if the last read is old.
-        let (wakes, generation) = (Cache::wakes(cx), Cache::generation(cx));
-        // Another repo or account (a restored tab reads before its project opened): read again now.
-        let reset = generation != self.generation;
-        if wakes != self.wakes || reset {
-            self.wakes = wakes;
-            self.generation = generation;
-            let old = self.detail_at.is_none_or(|at| at.elapsed() > MIN_AGE);
-            if (reset || old || self.detail.is_none()) && !self.loading {
-                self.load(cx);
-            }
-        }
-        if self.text_stale {
-            self.sync_text(window, cx);
-        }
-        self.find.sync(self, cx);
         let marks = self.find.marks();
-        if let Some(req) = self.pending_request.take() {
-            window.defer(cx, move |window, cx| request(req, window, cx));
-        }
         let account = self.account(cx);
         let d = self.detail.clone();
-        let Some(p) = self.item() else {
-            let text = self
-                .detail_error
-                .clone()
-                .unwrap_or_else(|| "Loading the pull request…".into());
-            return div()
-                .id("pull")
-                .track_focus(&self.focus)
-                .size_full()
-                .p(px(32.))
-                .text_center()
-                .text_size(rems(0.78))
-                .text_color(t.muted_foreground)
-                .child(text)
-                .into_any_element();
-        };
-        if let (Some(e), None) = (&self.detail_error, &d)
-            && self.item.is_none()
-        {
-            return div()
-                .id("pull")
-                .size_full()
-                .p(px(32.))
-                .text_center()
-                .text_color(t.muted_foreground)
-                .child(e.clone())
-                .into_any_element();
-        }
         let rights = pull_rights(
             &p,
             account.as_deref(),
@@ -2608,25 +2693,9 @@ impl Render for PullView {
                         .text_color(t.muted_foreground)
                         .child(format!("{b}…")),
                 )
-            })
-            // Cached data stays on screen; a failed refresh (a rate limit, say) is noted beside it.
-            .when_some(self.refresh_error(), |a, e| {
-                a.child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_size(rems(0.75))
-                        .text_color(t.removed)
-                        .child(marks.text(("refresh-error", 0), e, cx)),
-                )
             });
 
         let mut page = div()
-            .mx_auto()
-            .max_w(px(900.))
-            .w_full()
-            .px(px(24.))
-            .py(px(20.))
             .child(
                 div()
                     .flex()
@@ -2659,7 +2728,17 @@ impl Render for PullView {
                             .child(meta),
                     ),
             )
-            .child(actions);
+            .child(actions)
+            // Cached data stays on screen; a failed refresh (a rate limit, say) is noted under it.
+            .when_some(self.refresh_error(), |page, e| {
+                page.child(
+                    div()
+                        .mt(px(8.))
+                        .text_size(rems(0.75))
+                        .debug_selector(|| "refresh-error".into())
+                        .child(error_text("refresh-error", &e, t.removed, cx)),
+                )
+            });
         if let Some(d) = &d {
             if open {
                 page = page.child(self.merge_box(d, account.as_deref(), cx));
@@ -2682,17 +2761,92 @@ impl Render for PullView {
                 .into_any_element(),
             (None, None) => div().h(px(8.)).into_any_element(),
         };
-        page = page.child(section("Description", None, &t).child(desc));
-        if let Some(d) = &d {
-            page = page.children(self.conversation(d, cx));
+        page.child(section("Description", None, &t).child(desc))
+            .into_any_element()
+    }
+
+    /// Item `ix` of the page's list: the head, then a comment each.
+    fn page_item(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let comments = self.detail.as_ref().map_or(0, |d| d.comments.len());
+        let item = match (ix, self.detail.clone()) {
+            (0, _) => self.head(window, cx),
+            (n, Some(d)) => self.comment(&d, n - 1, cx),
+            (_, None) => div().into_any_element(),
+        };
+        // The page's column, centered in the list's width.
+        div()
+            .w_full()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .w_full()
+                    .max_w(px(900.))
+                    .px(px(24.))
+                    .when(ix == 0, |d| d.pt(px(20.)))
+                    .when(ix == comments, |d| d.pb(px(20.)))
+                    .child(item),
+            )
+            .into_any_element()
+    }
+}
+
+impl Render for PullView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme(cx);
+        // Shown again after a wake: read again if the last read is old.
+        let (wakes, generation) = (Cache::wakes(cx), Cache::generation(cx));
+        // Another repo or account (a restored tab reads before its project opened): read again now.
+        let reset = generation != self.generation;
+        if wakes != self.wakes || reset {
+            self.wakes = wakes;
+            self.generation = generation;
+            let old = self.detail_at.is_none_or(|at| at.elapsed() > MIN_AGE);
+            if (reset || old || self.detail.is_none()) && !self.loading {
+                self.load(cx);
+            }
         }
+        self.sync_items();
+        if self.text_stale {
+            self.sync_text(window, cx);
+        }
+        self.find.sync(self, cx);
+        if let Some(req) = self.pending_request.take() {
+            window.defer(cx, move |window, cx| request(req, window, cx));
+        }
+        // The first read failed (offline, GitHub down): the list's copy alone isn't the page.
+        if let (None, Some(e)) = (&self.detail, &self.detail_error) {
+            let retry = cx.listener(|this, _, _, cx| this.load(cx));
+            return div()
+                .id("pull")
+                .track_focus(&self.focus)
+                .size_full()
+                .child(load_failed("pull request", e, self.loading, retry, &t, cx))
+                .into_any_element();
+        }
+        if self.item().is_none() {
+            return div()
+                .id("pull")
+                .track_focus(&self.focus)
+                .size_full()
+                .p(px(32.))
+                .text_center()
+                .text_size(rems(0.78))
+                .text_color(t.muted_foreground)
+                .child("Loading the pull request…")
+                .into_any_element();
+        }
+        let weak = cx.weak_entity();
+        let page = list(self.page.clone(), move |ix, window, cx| {
+            weak.update(cx, |this, cx| this.page_item(ix, window, cx))
+                .unwrap_or_else(|_| div().into_any_element())
+        })
+        .size_full();
         let scroller = div()
             .id("pull")
             .key_context("PullView")
             .track_focus(&self.focus)
             .size_full()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
                 let m = ev.keystroke.modifiers;
                 if m.alt || m.platform || m.control || m.shift || this.pick.is_none() {
@@ -2845,6 +2999,224 @@ mod tests {
         );
     }
 
+    /// A long-running PR: 250 commits and `n` comments of a few paragraphs, a list and code.
+    fn fill_long(v: &mut PullView, n: usize) {
+        fill(v);
+        let body = "A paragraph long enough to wrap once or twice at the page's width, about \
+                    what changed and why it matters for the review.\n\n- one point\n- another \
+                    point\n\n```rust\nfn main() {\n    println!(\"hi\");\n}\n```\n";
+        let d = Arc::get_mut(v.detail.as_mut().unwrap()).unwrap();
+        d.comments = (0..n)
+            .map(|i| Comment {
+                author: format!("user{i}"),
+                body: format!("Comment {i}. {body}"),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                review: None,
+            })
+            .collect();
+        d.commits = 250;
+        Arc::get_mut(v.files.as_mut().unwrap()).unwrap().commits = (0..250)
+            .map(|i| commit(i, &format!("commit {i}"), ""))
+            .collect();
+    }
+
+    fn open_long(n: usize, cx: &mut TestAppContext) -> (Entity<PullView>, &mut VisualTestContext) {
+        setup(cx);
+        let (host, cx) = cx.add_window_view(|window, cx| {
+            let ws = cx.new(Workspace::new);
+            Workspace::register_window(&ws, window, cx);
+            let p = pull(1);
+            let view =
+                cx.new(|cx| PullView::new(ws.downgrade(), p.url.clone(), Some(p), window, cx));
+            Host(ws, view)
+        });
+        cx.run_until_parked();
+        let view = host.read_with(cx, |h, _| h.1.clone());
+        view.update(cx, |v, cx| {
+            fill_long(v, n);
+            cx.notify();
+        });
+        draw(cx);
+        draw(cx);
+        (view, cx)
+    }
+
+    /// Frame times on a long page, scrolling top to bottom: `--run-ignored only`.
+    #[gpui_kit::test]
+    #[ignore = "a measurement, not a check"]
+    fn long_page_frame_times(cx: &mut TestAppContext) {
+        for n in [0, 300] {
+            let (view, cx) = open_long(n, cx);
+            let mut frames = vec![];
+            for _ in 0..60 {
+                view.update(cx, |v, cx| {
+                    v.page.scroll_by(px(400.));
+                    cx.notify();
+                });
+                let at = Instant::now();
+                draw(cx);
+                frames.push(at.elapsed());
+            }
+            frames.sort();
+            eprintln!(
+                "{n} comments, 250 commits: median {:?}, p90 {:?}, max {:?}",
+                frames[frames.len() / 2],
+                frames[frames.len() * 9 / 10],
+                frames[frames.len() - 1]
+            );
+        }
+    }
+
+    /// The children the commits list drew: lines in view and the gaps between, not every row.
+    fn commit_children(v: &PullView) -> usize {
+        (0..)
+            .take_while(|&i| v.commits_scroll.bounds_for_item(i).is_some())
+            .count()
+    }
+
+    #[gpui_kit::test]
+    fn a_long_page_builds_only_what_is_in_view(cx: &mut TestAppContext) {
+        let (view, cx) = open_long(300, cx);
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.page.item_count(), 301);
+            // The last comments were never built; the commits list drew a screenful, not 250.
+            assert!(v.page.bounds_for_item(300).is_none());
+            assert!(commit_children(v) < 60, "{} children", commit_children(v));
+        });
+        // End in the commits list: the last commit is drawn and scrolled to, the gaps above it
+        // as tall as the rows they stand for.
+        let focus = view.read_with(cx, |v, _| v.commits_focus.clone());
+        cx.update(|window, cx| focus.focus(window, cx));
+        cx.simulate_keystrokes("end");
+        draw(cx);
+        draw(cx);
+        view.read_with(cx, |v, _| {
+            let (at, max) = (v.commits_scroll.offset().y, v.commits_scroll.max_offset().y);
+            assert!(
+                at < px(0.) && (at + max).abs() < px(1.),
+                "{at:?} of {max:?}"
+            );
+            assert_eq!(v.commit_cursor, Some(format!("{:040}", 249)));
+            assert!(commit_children(v) < 60);
+        });
+        // The end of the page: the last comment is drawn there.
+        view.update(cx, |v, cx| {
+            v.reveal_item(300);
+            cx.notify();
+        });
+        draw(cx);
+        view.read_with(cx, |v, _| {
+            let view = v.page.viewport_bounds();
+            assert!(
+                v.page
+                    .bounds_for_item(300)
+                    .is_some_and(|b| b.intersects(&view))
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn find_reaches_a_comment_far_down_a_long_thread(cx: &mut TestAppContext) {
+        let (view, cx) = open_long(300, cx);
+        view.update(cx, |v, cx| {
+            let d = Arc::get_mut(v.detail.as_mut().unwrap()).unwrap();
+            d.comments[250].body = "the needle is here".into();
+            d.comments[280].author = "needle-bot".into();
+            v.text_stale = true;
+            cx.notify();
+        });
+        draw(cx);
+        cx.update(|window, cx| view.update(cx, |v, cx| v.open_find(window, cx)));
+        cx.simulate_input("needle");
+        draw(cx);
+        draw(cx);
+        let shown = |item: usize, cx: &mut VisualTestContext| {
+            view.read_with(cx, |v, _| {
+                let view = v.page.viewport_bounds();
+                v.page
+                    .bounds_for_item(item)
+                    .is_some_and(|b| b.intersects(&view))
+            })
+        };
+        let finder = view.read_with(cx, |v, _| v.find.finder()).expect("open");
+        assert_eq!(finder.read_with(cx, |f, _| f.state().0), Some(0));
+        // The first: in comment 250's text, which its view scrolled to.
+        assert!(shown(251, cx));
+        assert_eq!(
+            view.read_with(cx, |v, cx| v.blocks.get(251).unwrap().read(cx).matches()),
+            (Some(0), 1)
+        );
+        // The next: comment 280's author, drawn as the list brought it in.
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        draw(cx);
+        assert!(shown(281, cx));
+        assert_eq!(finder.read_with(cx, |f, _| f.state()), (Some(1), 2, None));
+    }
+
+    fn open_page(cx: &mut TestAppContext) -> (Entity<PullView>, &mut VisualTestContext) {
+        setup(cx);
+        let (host, cx) = cx.add_window_view(|window, cx| {
+            let ws = cx.new(Workspace::new);
+            Workspace::register_window(&ws, window, cx);
+            let p = pull(1);
+            let view =
+                cx.new(|cx| PullView::new(ws.downgrade(), p.url.clone(), Some(p), window, cx));
+            Host(ws, view)
+        });
+        // The read finds no repository, as it would find no network.
+        cx.run_until_parked();
+        let view = host.read_with(cx, |h, _| h.1.clone());
+        (view, cx)
+    }
+
+    #[gpui_kit::test]
+    fn a_first_read_that_fails_says_why_and_offers_retry(cx: &mut TestAppContext) {
+        let (view, cx) = open_page(cx);
+        draw(cx);
+        // The list's copy of the PR is in hand, but the page says what went wrong.
+        view.read_with(cx, |v, _| {
+            assert!(v.item.is_some() && v.detail.is_none() && v.detail_error.is_some());
+        });
+        let retry = cx.debug_bounds("load-retry").expect("Retry shown");
+        let before = view.read_with(cx, |v, _| v.detail_at);
+        cx.simulate_click(retry.center(), gpui_kit::Modifiers::none());
+        // Read again (and failed again: there's still no repository).
+        assert!(view.read_with(cx, |v, _| v.detail_at) > before);
+        cx.run_until_parked();
+        draw(cx);
+        assert!(cx.debug_bounds("load-retry").is_some());
+        // Once a read lands, the page; a later failure is only a note beside it.
+        view.update(cx, |v, cx| {
+            fill(v);
+            v.detail_error = Some("GitHub 502: Bad Gateway".into());
+            cx.notify();
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("load-retry").is_none());
+        assert!(cx.debug_bounds("refresh-error").is_some());
+    }
+
+    #[gpui_kit::test]
+    fn a_failed_refresh_is_shown_whole_under_the_actions(cx: &mut TestAppContext) {
+        let (view, cx) = open_page(cx);
+        let saml = "GitHub 403: Resource protected by organization SAML enforcement. You must \
+                    grant your Personal Access token access to this organization. Authorize \
+                    this token for the organization's single sign-on at \
+                    https://github.com/orgs/acme/sso?authorization_request=AAAAAAAAAAAAAAAAAAAAAA";
+        view.update(cx, |v, cx| {
+            fill(v);
+            v.detail_error = Some(saml.into());
+            cx.notify();
+        });
+        draw(cx);
+        draw(cx);
+        // Wrapped onto lines of its own, not cut to the actions row's width.
+        let note = cx.debug_bounds("refresh-error").expect("shown");
+        assert!(note.size.height > px(30.), "{note:?}");
+        assert!(note.size.width > px(800.), "{note:?}");
+    }
+
     #[gpui_kit::test]
     fn every_match_on_the_page_is_drawn_and_scrolled_to(cx: &mut TestAppContext) {
         setup(cx);
@@ -2886,6 +3258,7 @@ mod tests {
             assert!(v.files_scroll.0.borrow().base_handle.offset().y < px(0.));
         });
         // Scrolled down the page and back up to the title.
-        assert_eq!(view.read_with(cx, |v, _| v.scroll.offset().y), px(0.));
+        let top = view.read_with(cx, |v, _| v.page.logical_scroll_top());
+        assert_eq!((top.item_ix, top.offset_in_item), (0, px(0.)));
     }
 }

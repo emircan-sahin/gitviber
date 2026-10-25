@@ -349,9 +349,66 @@ fn html_tag(tag: &str, signed: &dyn Fn(&str) -> Option<String>) -> String {
     image(&alt, &src, signed)
 }
 
+/// An error as markdown that reads exactly as written: its punctuation escaped, each line its
+/// own, and its web links (a SAML sign-on's, a docs page) live; a sentence's last dot or a
+/// closing bracket stays out of the link.
+pub fn error_markdown(error: &str) -> String {
+    let mut out = String::with_capacity(error.len() + 16);
+    for (n, line) in error.lines().enumerate() {
+        if n > 0 {
+            out.push_str("  \n");
+        }
+        let mut rest = line;
+        while !rest.is_empty() {
+            let at = ["https://", "http://"]
+                .iter()
+                .filter_map(|s| rest.find(s))
+                .min()
+                .unwrap_or(rest.len());
+            for c in rest[..at].chars() {
+                if c.is_ascii_punctuation() {
+                    out.push('\\');
+                }
+                out.push(c);
+            }
+            rest = &rest[at..];
+            let end = rest
+                .find(|c: char| c.is_whitespace() || c == '<' || c == '>' || c == '"')
+                .unwrap_or(rest.len());
+            let url = rest[..end].trim_end_matches(['.', ',', ';', ':', ')', ']', '\'', '!', '?']);
+            if !url.is_empty() {
+                out.push('<');
+                out.push_str(url);
+                out.push('>');
+            }
+            rest = &rest[url.len()..];
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_error_reads_as_written_and_its_links_work() {
+        let saml = "GitHub 403: Resource protected by organization SAML enforcement. Authorize \
+                    this token for the organization's single sign-on at \
+                    https://github.com/orgs/acme/sso?authorization_request=A_b-1.";
+        assert_eq!(
+            error_markdown(saml),
+            "GitHub 403\\: Resource protected by organization SAML enforcement\\. Authorize this \
+             token for the organization\\'s single sign\\-on at \
+             <https://github.com/orgs/acme/sso?authorization_request=A_b-1>\\."
+        );
+        // Markdown's own marks are only text; lines stay apart; a bracketed link stays inside.
+        assert_eq!(
+            error_markdown("*not* `code`\n# no heading (see http://x.io/a_b)"),
+            "\\*not\\* \\`code\\`  \n\\# no heading \\(see <http://x.io/a_b>\\)"
+        );
+        assert_eq!(error_markdown("plain"), "plain");
+    }
 
     const REPO: &str = "https://github.com/o/r";
     const PAGE: &str = "https://github.com/o/r/pull/7";

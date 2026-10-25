@@ -29,7 +29,7 @@ use gpui_kit::{
 
 use crate::cache::{Cache, Wakes};
 use crate::model::{Target, repo_of};
-use crate::ui::common::{Attachments, Blocks, ago, text_button, theme};
+use crate::ui::common::{Attachments, Blocks, ago, error_text, text_button, theme};
 use crate::ui::markdown_input::MarkdownInput;
 
 /// Comments are kept fresh a minute at a time while the file shows.
@@ -470,15 +470,6 @@ impl PullFileView {
                 "{n} comment{} on this file",
                 if n == 1 { "" } else { "s" }
             ))
-            .when_some(self.comments_error.clone(), |d, e| {
-                d.child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(t.removed)
-                        .child(format!("· {e}")),
-                )
-            })
             .on_click(cx.listener(|this, _, _, cx| {
                 this.folded = !this.folded;
                 cx.notify();
@@ -588,6 +579,23 @@ impl PullFileView {
                 .flex_col()
                 .flex_none()
                 .child(head)
+                // Under the head, which a click folds: the whole of it, to select and copy.
+                .when_some(self.comments_error.clone(), |d, e| {
+                    d.child(
+                        div()
+                            .px(px(12.))
+                            .py(px(6.))
+                            .border_b_1()
+                            .border_color(t.border)
+                            .text_size(rems(0.72))
+                            .child(error_text(
+                                "comments-error",
+                                &format!("Couldn't load the comments: {e}"),
+                                t.removed,
+                                cx,
+                            )),
+                    )
+                })
                 .when(!folded, |d| d.child(list))
                 .into_any_element(),
         )

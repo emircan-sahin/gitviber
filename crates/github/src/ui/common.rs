@@ -8,16 +8,19 @@ use gitviber_ui::widgets::{now_unix, relative_time};
 use gitviber_ui::workspace::Toast;
 use gitviber_ui::{ActiveAppTheme as _, AppTheme};
 use gpui_kit::assets::IconName;
+use gpui_kit::base::text::{TextView, TextViewStyle};
+use gpui_kit::component::Disableable as _;
+use gpui_kit::component::button::Button;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClipboardItem, Context, Div, ElementId, Entity, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+    AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Div, ElementId, Entity,
+    FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
     rems,
 };
 
-use crate::logic::text::{attachment_id, github_markdown};
+use crate::logic::text::{attachment_id, error_markdown, github_markdown};
 use crate::model::{CiState, IssueItem, LabelItem, PullState, unix};
 
 pub fn theme(cx: &App) -> AppTheme {
@@ -156,23 +159,100 @@ pub fn section(title: &'static str, aside: Option<SharedString>, t: &AppTheme) -
         .border_1()
         .border_color(t.border)
         .overflow_hidden()
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .h(px(30.))
-                .px(px(12.))
-                .bg(t.panel)
-                .border_b_1()
-                .border_color(t.border)
-                .text_size(rems(0.656))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(t.subtle)
-                .child(title.to_uppercase())
-                .when_some(aside, |d, a| {
-                    d.child(div().ml_auto().font_family(t.fonts.code.clone()).child(a))
-                }),
-        )
+        .child(section_title(title, aside, t))
+}
+
+fn section_title(title: &'static str, aside: Option<SharedString>, t: &AppTheme) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .h(px(30.))
+        .px(px(12.))
+        .bg(t.panel)
+        .border_b_1()
+        .border_color(t.border)
+        .text_size(rems(0.656))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(t.subtle)
+        .child(title.to_uppercase())
+        .when_some(aside, |d, a| {
+            d.child(div().ml_auto().font_family(t.fonts.code.clone()).child(a))
+        })
+}
+
+/// One entry of a section drawn as a list's item (a conversation's comment): the first carries
+/// the section's top and title, the last its bottom; together they look like one `section`.
+pub fn section_part(
+    title: Option<(&'static str, Option<SharedString>)>,
+    last: bool,
+    t: &AppTheme,
+) -> Div {
+    div()
+        .border_x_1()
+        .border_b_1()
+        .border_color(t.border)
+        .overflow_hidden()
+        .when_some(title, |d, (title, aside)| {
+            d.mt(px(18.))
+                .border_t_1()
+                .rounded_t(px(6.))
+                .child(section_title(title, aside, t))
+        })
+        .when(last, |d| d.rounded_b(px(6.)))
+}
+
+/// A GitHub error as text that can be selected and copied, its links (where to authorize a
+/// token for SAML sign-on) opening in the browser.
+pub fn error_text(id: impl Into<ElementId>, error: &str, color: Hsla, cx: &App) -> TextView {
+    let style =
+        TextViewStyle::from_theme(&gpui_kit::base::Theme::global(cx)).with_foreground(color);
+    TextView::markdown(id, error_markdown(error))
+        .style(style)
+        .selectable(true)
+}
+
+/// A PR's or an issue's page whose first read failed (offline, GitHub down): what went wrong,
+/// and Retry.
+pub fn load_failed(
+    what: &'static str,
+    error: &str,
+    loading: bool,
+    retry: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    t: &AppTheme,
+    cx: &App,
+) -> Div {
+    div().size_full().px(px(24.)).pt(px(48.)).child(
+        div()
+            .mx_auto()
+            .max_w(px(560.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(8.))
+            .text_center()
+            .text_size(rems(0.78))
+            .child(
+                div()
+                    .text_size(rems(0.875))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(format!("Couldn't load the {what}")),
+            )
+            .child(error_text("load-error", error, t.muted_foreground, cx))
+            .child(
+                div()
+                    .mt(px(4.))
+                    .debug_selector(|| "load-retry".into())
+                    .child(
+                        Button::new("retry")
+                            .small()
+                            .icon(IconName::RefreshCw)
+                            .label("Retry")
+                            .loading(loading)
+                            .disabled(loading)
+                            .on_click(retry),
+                    ),
+            ),
+    )
 }
 
 /// An empty list's words; `roomy`: the whole panel, so it sits lower.
@@ -188,7 +268,13 @@ pub fn empty_note(text: impl Into<SharedString>, roomy: bool, t: &AppTheme) -> D
 }
 
 /// A failed load. With a list on screen, a note above it, not a blank panel.
-pub fn list_error(error: &str, loaded: bool, t: &AppTheme) -> Div {
+pub fn list_error(
+    id: impl Into<ElementId>,
+    error: &str,
+    loaded: bool,
+    t: &AppTheme,
+    cx: &App,
+) -> Div {
     if loaded {
         div()
             .mx(px(8.))
@@ -198,16 +284,14 @@ pub fn list_error(error: &str, loaded: bool, t: &AppTheme) -> Div {
             .rounded(px(3.))
             .bg(t.removed.opacity(0.1))
             .text_size(rems(0.72))
-            .text_color(t.removed)
-            .child(error.to_string())
+            .child(error_text(id, error, t.removed, cx))
     } else {
         div()
             .px(px(16.))
             .py(px(24.))
             .text_center()
             .text_size(rems(0.75))
-            .text_color(t.muted_foreground)
-            .child(error.to_string())
+            .child(error_text(id, error, t.muted_foreground, cx))
     }
 }
 
@@ -234,7 +318,7 @@ pub struct Blocks {
 
 impl Blocks {
     /// `repo`: https://github.com/owner/name; `page`: the PR's or issue's, which relative links
-    /// resolve against.
+    /// resolve against. Returns the blocks whose text changed, for a list to measure again.
     pub fn sync<V: 'static>(
         &mut self,
         texts: &[&str],
@@ -243,8 +327,9 @@ impl Blocks {
         signed: &HashMap<String, String>,
         window: &mut Window,
         cx: &mut Context<V>,
-    ) {
+    ) -> Vec<usize> {
         let sign = |id: &str| signed.get(id).cloned();
+        let mut changed = vec![];
         for (i, text) in texts.iter().enumerate() {
             let source = github_markdown(text, repo, page, &sign);
             match self.items.get_mut(i) {
@@ -252,6 +337,7 @@ impl Blocks {
                 Some((old, view)) => {
                     view.update(cx, |v, cx| v.set_source(&source, cx));
                     *old = source;
+                    changed.push(i);
                 }
                 None => {
                     let base = MarkdownBase {
@@ -265,6 +351,12 @@ impl Blocks {
             }
         }
         self.items.truncate(texts.len());
+        changed
+    }
+
+    /// Which block view `id` is.
+    pub fn position(&self, id: gpui_kit::EntityId) -> Option<usize> {
+        self.items.iter().position(|(_, v)| v.entity_id() == id)
     }
 
     /// Block `i`'s view, once synced.

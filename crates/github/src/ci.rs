@@ -249,27 +249,33 @@ impl CiWatch {
     }
 }
 
+/// Whether `want` would ask for `sha`: nothing fresh, asked or queued, and its repository not
+/// failing just now.
+pub fn wanted(cx: &App, target: &Target, sha: &str) -> bool {
+    let Some(ci) = cx.try_global::<Ci>() else {
+        return false;
+    };
+    let key = (target.clone(), sha.to_string());
+    let failed = ci
+        .failed_at
+        .get(target)
+        .is_some_and(|at| at.elapsed() < FAILED);
+    !failed
+        && stale(ci, &key, Instant::now())
+        && !ci.asking.contains(&key)
+        && !ci.queued.contains(&key)
+}
+
 /// Asks for `sha`'s verdict with the others wanted meanwhile, in one request, and redraws the
 /// windows when it lands: for a badge drawn by a view that doesn't follow `Ci` (History's rows).
 /// The first screen's go at the frame's end; a scroll's, once it stops (or each second).
 pub fn want(cx: &mut App, target: &Target, sha: &str) {
     // Drawn every frame: only a sha with nothing fresh, asked or queued changes anything, so
     // what follows `Ci` isn't woken by every frame.
-    let key = (target.clone(), sha.to_string());
-    let Some(ci) = cx.try_global::<Ci>() else {
-        return;
-    };
-    let failed = ci
-        .failed_at
-        .get(target)
-        .is_some_and(|at| at.elapsed() < FAILED);
-    if failed
-        || !stale(ci, &key, Instant::now())
-        || ci.asking.contains(&key)
-        || ci.queued.contains(&key)
-    {
+    if !wanted(cx, target, sha) {
         return;
     }
+    let key = (target.clone(), sha.to_string());
     let now = cx.background_executor().now();
     let ci = cx.global_mut::<Ci>();
     ci.redraw = true;

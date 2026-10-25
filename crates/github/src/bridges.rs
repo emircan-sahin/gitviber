@@ -20,9 +20,10 @@ use gpui_kit::{
 
 use crate::cache::Cache;
 use crate::logic::checks::{check_note, checks_summary, commit_summary, is_failing, sort_checks};
-use crate::model::{CiState, CommitChecks, PullItem, PullState};
+use crate::model::{CiState, CommitChecks, PullItem, PullState, repo_of};
 use crate::requests::{GithubRequest, set_request_handler};
 use crate::ui::common::{ci_badge, theme};
+use crate::ui::pulls_panel::{branch_lists_stale, load_branch_lists};
 
 /// A commit's checks are read again this often while one runs, rarely once all are done.
 const RUNNING: Duration = Duration::from_secs(15);
@@ -83,12 +84,24 @@ fn checks(state: Option<CiState>) -> Option<Checks> {
     })
 }
 
-/// A branch's pull request on origin, from the lists read so far, with its head's checks.
-/// `fresh` (the picker is open) can't ask from here: origin's open list is read as the
-/// project opens, and the PRs panel keeps the rest.
-fn pull_of(branch: &str, head: Option<&str>, _fresh: bool, cx: &App) -> Option<BranchPull> {
+/// A branch's pull request (on origin, or a fork's original), from the lists read so far
+/// (`load_branch_lists`), with its head's checks. `fresh`: the picker is open, so lists older
+/// than half a minute are read again and an open PR's checks are asked for, after this frame.
+fn pull_of(branch: &str, head: Option<&str>, fresh: bool, cx: &App) -> Option<BranchPull> {
     let origin = crate::account::account(cx)?.origin.as_ref()?.full_name();
+    if fresh && branch_lists_stale(cx) {
+        cx.spawn(async move |cx| cx.update(load_branch_lists))
+            .detach();
+    }
     let p = crate::account::branch_pull(cx, branch, &origin, head)?;
+    // Its checks run where it was opened.
+    let repo = repo_of(&p.url);
+    let target = (!repo.eq_ignore_ascii_case(&origin)).then_some(repo);
+    if fresh && p.state == PullState::Open && crate::ci::wanted(cx, &target, &p.head_sha) {
+        let (target, sha) = (target.clone(), p.head_sha.clone());
+        cx.spawn(async move |cx| cx.update(|cx| crate::ci::want(cx, &target, &sha)))
+            .detach();
+    }
     Some(BranchPull {
         number: p.number,
         title: p.title.clone(),
@@ -99,7 +112,7 @@ fn pull_of(branch: &str, head: Option<&str>, _fresh: bool, cx: &App) -> Option<B
             PullState::Closed => RefsPull::Closed,
             PullState::Merged => RefsPull::Merged,
         },
-        checks: checks(crate::ci::state(cx, &None, &p.head_sha)),
+        checks: checks(crate::ci::state(cx, &target, &p.head_sha)),
         head_sha: p.head_sha,
     })
 }
@@ -277,5 +290,56 @@ fn handle(req: GithubRequest, window: &mut Window, cx: &mut App) {
             let pull = std::sync::Arc::new(pull.to_core());
             gitviber_review::open_guide(GuideOf::Pull { pull, target }, window, cx);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use gpui_kit::TestAppContext;
+
+    use super::*;
+    use crate::logic::narrow::{Filter, Narrow};
+    use crate::model::{Access, Account};
+    use crate::ui::pulls_panel::PullsPanel;
+
+    #[gpui_kit::test]
+    fn a_squash_merged_branch_shows_merged_with_no_prs_panel(cx: &mut TestAppContext) {
+        crate::leak_tests::setup(cx);
+        let origin = Access {
+            owner: "o".into(),
+            name: "r".into(),
+            default_branch: Some("main".into()),
+            push: true,
+            triage: true,
+            admin: false,
+            issues: true,
+            allow_merge_commit: None,
+            allow_squash_merge: None,
+            allow_rebase_merge: None,
+        };
+        cx.update(|cx| {
+            Cache::use_repo(cx, Path::new("/tmp/gitviber-github-merged"));
+            Cache::load(cx, crate::account::KEY, Duration::ZERO, move |_| {
+                Ok(Account {
+                    login: "me".into(),
+                    source: "gh".into(),
+                    origin: Some(origin.clone()),
+                    parent: None,
+                })
+            });
+        });
+        cx.run_until_parked();
+        // What GitHub answers for origin's PRs of any state: `fix`, squash-merged.
+        let mut merged = crate::leak_tests::pull(7);
+        merged.state = PullState::Merged;
+        let all = PullsPanel::list_key("origin", Filter::All, &Narrow::default(), 1);
+        cx.update(|cx| Cache::load(cx, &all, Duration::ZERO, move |_| Ok(vec![merged.clone()])));
+        cx.run_until_parked();
+        let p = cx
+            .update(|cx| pull_of("fix", None, false, cx))
+            .expect("its PR");
+        assert_eq!((p.number, p.state), (7, RefsPull::Merged));
     }
 }

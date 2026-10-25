@@ -324,7 +324,13 @@ impl IssuesPanel {
         };
         let mut col = div().flex().flex_col().size_full().min_h_0();
         if let Some(e) = &error {
-            col = col.child(list_error(e, loaded.is_some(), &t));
+            col = col.child(list_error(
+                ("list-error", pane),
+                e,
+                loaded.is_some(),
+                &t,
+                cx,
+            ));
         }
         if loaded.is_some() && rows.is_empty() {
             let any = loaded.as_ref().is_some_and(|l| !l.is_empty());

@@ -19,7 +19,7 @@ use gpui_kit::{
 use crate::cache::{Cache, Read};
 use crate::logic::connect::{Gate, gate, hidden_note, no_github_text, signed_out_note};
 use crate::model::{Account, is_not_connected};
-use crate::ui::common::{copy, theme};
+use crate::ui::common::{copy, error_text, theme};
 use crate::ui::dialogs::AddRemoteDialog;
 
 const LOGIN: &str = "gh auth login";
@@ -156,7 +156,7 @@ impl Render for ConnectView {
             .flex_col()
             .items_center()
             .child(Icon::new(if self.hidden { IconName::Lock } else { IconName::GitPullRequest }).large().text_color(t.subtle))
-            .when_some(self.error.clone(), |d, e| d.child(div().mt(px(8.)).text_size(rems(0.72)).text_color(t.removed).child(e)))
+            .when_some(self.error.clone(), |d, e| d.child(div().mt(px(8.)).w_full().text_center().text_size(rems(0.72)).child(error_text("connect-error", &e, t.removed, cx))))
             .child(div().mt(px(12.)).text_center().text_size(rems(0.8125)).font_weight(FontWeight::MEDIUM).child(format!("Sign in to GitHub to see {}", self.subject)))
             .child(div().mt(px(4.)).text_center().text_size(rems(0.75)).text_color(t.muted_foreground).child(note))
             .child(

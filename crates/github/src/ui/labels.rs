@@ -18,7 +18,7 @@ use gpui_kit::{
 
 use crate::cache::Cache;
 use crate::model::{LabelItem, Target};
-use crate::ui::common::{label_dot, theme};
+use crate::ui::common::{error_text, label_dot, theme};
 
 const AGE: Duration = Duration::from_secs(600);
 
@@ -263,15 +263,16 @@ impl Render for LabelPicker {
                     .into_any_element()
             })
             .collect();
-        let empty = if let Some(e) = error.filter(|_| !loaded) {
-            Some(e)
+        let error = error.filter(|_| !loaded);
+        let empty = if error.is_some() {
+            None
         } else if !loaded && rows.is_empty() {
-            Some("Loading labels…".to_string())
+            Some("Loading labels…")
         } else if rows.is_empty() {
             Some(if q {
-                "No labels match".into()
+                "No labels match"
             } else {
-                "This repository has no labels".into()
+                "This repository has no labels"
             })
         } else {
             None
@@ -298,6 +299,15 @@ impl Render for LabelPicker {
                                 .text_size(rems(0.75))
                                 .text_color(t.subtle)
                                 .child(e),
+                        )
+                    })
+                    .when_some(error, |d, e| {
+                        d.child(
+                            div()
+                                .py(px(12.))
+                                .text_center()
+                                .text_size(rems(0.75))
+                                .child(error_text("labels-error", &e, t.muted_foreground, cx)),
                         )
                     }),
             )

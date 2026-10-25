@@ -7,7 +7,6 @@ pub mod connect;
 pub mod issue_work;
 pub mod keys;
 pub mod narrow;
-pub mod permalink;
 pub mod pull_commits;
 pub mod refs;
 pub mod suggest;

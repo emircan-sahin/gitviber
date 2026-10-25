@@ -31,6 +31,9 @@ pub trait FindHost: Sized + 'static {
 
     /// The current match is in `key`: draw it if it's folded away or scrolled out of a list.
     fn show_part(&mut self, _key: Key, _cx: &mut Context<Self>) {}
+
+    /// The current match is in markdown view `view`: draw it if the page's list left it out.
+    fn show_view(&mut self, _view: EntityId, _cx: &mut Context<Self>) {}
 }
 
 /// What a page lists for its find: only summed while the box is open, to notice a change, and
@@ -107,30 +110,34 @@ pub struct PageFind(OnceCell<Built>);
 
 struct Built {
     finder: Entity<Finder>,
-    _subs: [Subscription; 2],
+    _subs: [Subscription; 3],
 }
 
 impl PageFind {
     /// ⌘F: the box over the page, focused with its text selected; the last query marked again.
-    /// `scroll`: the page's, which a match revealed scrolls; `page`: focused when the box closes.
+    /// `scroll`: the page's, which a match revealed scrolls, or None for a page drawn as a list,
+    /// which a drawn match asks to scroll; `page`: focused when the box closes.
     pub fn open<V: FindHost>(
         &self,
         host: &V,
-        scroll: &ScrollHandle,
+        scroll: Option<&ScrollHandle>,
         page: &FocusHandle,
         window: &mut Window,
         cx: &mut Context<V>,
     ) {
         let (sum, listing) = Parts::run(host, true, cx);
         let built = self.0.get_or_init(|| {
-            let finder = cx.new(|cx| Finder::new(scroll.clone(), page.clone(), window, cx));
+            let finder = cx.new(|cx| Finder::new(scroll.cloned(), page.clone(), window, cx));
             let redraw = cx.observe(&finder, |_, _, cx| cx.notify());
             let show = cx.subscribe(&finder, |host: &mut V, _, e: &ShowPart, cx| {
                 host.show_part(e.0, cx)
             });
+            let show_view = cx.subscribe(&finder, |host: &mut V, _, e: &ShowView, cx| {
+                host.show_view(e.0, cx)
+            });
             Built {
                 finder,
-                _subs: [redraw, show],
+                _subs: [redraw, show, show_view],
             }
         });
         let listing = listing.unwrap_or_default();
@@ -266,7 +273,8 @@ pub struct FindText {
 struct Reveal {
     /// The match's first byte in the text drawn.
     at: usize,
-    page: ScrollHandle,
+    /// None: the page is a list, asked to scroll by autoscroll.
+    page: Option<ScrollHandle>,
     finder: WeakEntity<Finder>,
 }
 
@@ -324,8 +332,16 @@ impl Element for FindText {
         let layout = self.text.layout();
         if let Some(at) = layout.position_for_index(r.at) {
             let mut line = Bounds::new(at, size(px(1.), layout.line_height()));
-            for scroll in self.within.iter().chain([&r.page]) {
+            for scroll in self.within.iter().chain(&r.page) {
                 line.origin.y += scroll_to(scroll, line);
+            }
+            // A list scrolls the bounds to its edge: some lines of the page show past the match.
+            if r.page.is_none() {
+                let margin = layout.line_height() * 3.;
+                window.request_autoscroll(Bounds::from_corners(
+                    point(line.left(), line.top() - margin),
+                    point(line.right(), line.bottom() + margin),
+                ));
             }
             window.refresh();
         }
@@ -363,12 +379,17 @@ fn scroll_to(scroll: &ScrollHandle, line: Bounds<Pixels>) -> Pixels {
 /// The current match moved into text part `.0`: the page shows it.
 struct ShowPart(Key);
 
+/// The current match moved into markdown view `.0`: the page draws it.
+struct ShowView(EntityId);
+
 impl EventEmitter<ShowPart> for Finder {}
+impl EventEmitter<ShowView> for Finder {}
 
 pub struct Finder {
     bar: Entity<FindBar>,
     open: bool,
-    scroll: ScrollHandle,
+    /// The page's, None for a list (see `PageFind::open`).
+    scroll: Option<ScrollHandle>,
     page: FocusHandle,
     /// What the page listed last, and its sum.
     listing: Listing,
@@ -392,7 +413,7 @@ pub struct Finder {
 
 impl Finder {
     fn new(
-        scroll: ScrollHandle,
+        scroll: Option<ScrollHandle>,
         page: FocusHandle,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -468,7 +489,10 @@ impl Finder {
             self._views = views
                 .iter()
                 .map(|v| {
-                    v.update(cx, |v, _| v.reveal_in(self.scroll.clone()));
+                    // A list scrolls to a view's match by itself: the view asks it to.
+                    if let Some(scroll) = &self.scroll {
+                        v.update(cx, |v, _| v.reveal_in(scroll.clone()));
+                    }
                     cx.subscribe(v, |this, _, _: &FindChanged, cx| {
                         let anchor = this.anchor();
                         this.apply(false, anchor, cx)
@@ -566,16 +590,21 @@ impl Finder {
             .or(self.current)
             .filter(|_| total > 0)
             .map(|c| c.min(total - 1));
-        let mut text = None;
+        let (mut text, mut view) = (None, None);
         for (p, part) in self.listing.parts.iter().enumerate() {
             let local = self
                 .current
                 .filter(|c| (self.bases[p]..self.bases[p] + self.counts[p]).contains(c))
                 .map(|c| c - self.bases[p]);
             match part {
-                Part::View(v) => v.update(cx, |v, cx| {
-                    v.select_match(local, reveal && local.is_some(), cx)
-                }),
+                Part::View(v) => {
+                    if local.is_some() {
+                        view = Some(v.entity_id());
+                    }
+                    v.update(cx, |v, cx| {
+                        v.select_match(local, reveal && local.is_some(), cx)
+                    })
+                }
                 Part::Text(key, _) if local.is_some() => text = Some(*key),
                 Part::Text(..) => {}
             }
@@ -584,6 +613,9 @@ impl Finder {
             self.reveal = text;
             if let Some(key) = text {
                 cx.emit(ShowPart(key));
+            }
+            if let Some(id) = view {
+                cx.emit(ShowView(id));
             }
         }
         let found = match &self.error {
@@ -713,7 +745,7 @@ mod tests {
         cx.update(|window, cx| {
             host.update(cx, |h, cx| {
                 let (scroll, focus) = (h.scroll.clone(), h.focus.clone());
-                h.find.open(h, &scroll, &focus, window, cx);
+                h.find.open(h, Some(&scroll), &focus, window, cx);
             })
         });
         draw(cx);

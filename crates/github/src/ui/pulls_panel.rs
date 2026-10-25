@@ -136,14 +136,45 @@ pub(crate) fn main_of(root: &std::path::Path) -> String {
     gitviber_core::git::main_worktree(root).unwrap_or_else(|| root.to_string_lossy().into_owned())
 }
 
-/// Origin's open PRs, read as a project opens: the branch and worktree pickers' badges read
-/// them, whether or not the PRs panel ever shows.
-pub(crate) fn preload(cx: &mut App) {
-    let key = PullsPanel::list_key("origin", Filter::Open, &Narrow::default(), 1);
-    Cache::load(cx, &key, MIN_AGE, |core| {
-        api::github::pr_list(core, None, "open".into(), 1, Narrow::default().to_core())
+/// The lists the branch and worktree badges read (`bridges::pull_of`), whether or not the PRs
+/// panel ever shows: origin's open PRs, and its 100 most recently updated of any state, so a
+/// squash-merged branch shows merged and Clean up offers its worktree; a fork's original's
+/// too. Under the panel's own keys, so each reuses the other's; an answer redraws the windows,
+/// as the pickers don't follow the cache.
+pub(crate) fn load_branch_lists(cx: &mut App) {
+    let upstream = crate::account::account(cx).and_then(|a| a.upstream());
+    let lists = [(None, Filter::Open), (None, Filter::All)]
+        .into_iter()
+        .chain(upstream.map(|u| (Some(u), Filter::All)));
+    for (target, filter) in lists {
+        let name = target.as_deref().unwrap_or("origin");
+        let key = PullsPanel::list_key(name, filter, &Narrow::default(), 1);
+        Cache::load_held(cx, &key, MIN_AGE, move |core| {
+            api::github::pr_list(
+                core,
+                target.clone(),
+                filter.as_str().into(),
+                1,
+                Narrow::default().to_core(),
+            )
             .map(|ps| ps.iter().map(PullItem::from).collect::<Vec<_>>())
-    });
+        });
+    }
+}
+
+/// Whether `load_branch_lists` would ask anything now: some list is older than `MIN_AGE`.
+pub(crate) fn branch_lists_stale(cx: &App) -> bool {
+    let upstream = crate::account::account(cx).and_then(|a| a.upstream());
+    [
+        ("origin".to_string(), Filter::Open),
+        ("origin".into(), Filter::All),
+    ]
+    .into_iter()
+    .chain(upstream.map(|u| (u, Filter::All)))
+    .any(|(name, filter)| {
+        let key = PullsPanel::list_key(&name, filter, &Narrow::default(), 1);
+        Cache::is_stale(cx, &key, MIN_AGE)
+    })
 }
 
 /// As a project's GitHub views first show: its account, and the cache for its repository.
@@ -151,6 +182,7 @@ pub(crate) fn use_project(root: &std::path::Path, cx: &mut App) {
     let fresh = Cache::repo_is(cx, root);
     Cache::use_repo(cx, root);
     if !fresh {
+        // Its failure is told as the project opens (`follow_projects`).
         let _ = crate::account::apply_project_account(&main_of(root), cx);
     }
 }
@@ -190,7 +222,6 @@ impl PullsPanel {
             subs.push(
                 cx.subscribe(project, |this: &mut Self, _, ev: &ProjectEvent, cx| {
                     if matches!(ev, ProjectEvent::RepoChanged(_)) {
-                        Cache::recheck_pulls_soon(cx);
                         this.read_status(cx);
                     }
                 }),
@@ -264,7 +295,7 @@ impl PullsPanel {
         self.controls.narrow(self.me_usable(cx))
     }
 
-    fn list_key(name: &str, filter: Filter, narrow: &Narrow, pages: usize) -> String {
+    pub(crate) fn list_key(name: &str, filter: Filter, narrow: &Narrow, pages: usize) -> String {
         let tag = narrow.key();
         // Unnarrowed lists keep their key: the worktrees' PR badges read it too.
         let tag = if tag.is_empty() {
@@ -550,7 +581,13 @@ impl PullsPanel {
         };
         let mut col = div().flex().flex_col().size_full().min_h_0();
         if let Some(e) = &error {
-            col = col.child(list_error(e, loaded.is_some(), &t));
+            col = col.child(list_error(
+                ("list-error", pane as usize),
+                e,
+                loaded.is_some(),
+                &t,
+                cx,
+            ));
         }
         if loaded.is_some() && rows.is_empty() {
             let text = if !self.controls.needle.is_empty()
