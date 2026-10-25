@@ -624,6 +624,26 @@ mod tests {
     }
 
     #[test]
+    fn same_named_worktrees_in_two_repos_share_a_hue_until_one_is_picked_for_either() {
+        let (a, b) = (
+            "/one/app.worktrees/fix-login",
+            "/two/web.worktrees/fix-login",
+        );
+        let none = BTreeMap::new();
+        assert_eq!(worktree_hue(a, false, &none), worktree_hue(b, false, &none));
+        assert_ne!(worktree_hue(a, false, &none).map(hue_name), Some("violet"));
+        let picked = BTreeMap::from([(a.to_string(), "violet".to_string())]);
+        assert_eq!(
+            worktree_hue(a, false, &picked).map(hue_name),
+            Some("violet")
+        );
+        assert_eq!(
+            worktree_hue(b, false, &picked),
+            worktree_hue(b, false, &none)
+        );
+    }
+
+    #[test]
     fn a_stored_color_that_isnt_one_of_the_hues_is_dropped() {
         for v in ["toString", "constructor", "__proto__", "Red", ""] {
             assert_eq!(parse_choice(v), None, "{v}");

@@ -1415,3 +1415,60 @@ impl Render for CleanUp {
             ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sizes_just_under_a_unit_read_as_that_unit_never_1024_of_the_smaller() {
+        assert_eq!(format_bytes(9), "9 B");
+        assert_eq!(format_bytes(4002), "3.9 KB");
+        assert_eq!(format_bytes(312 * 1024 * 1024), "312 MB");
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1024), "1.0 KB");
+        assert_eq!(format_bytes(1024 * 1024 - 1), "1.0 MB");
+        assert_eq!(format_bytes(10 * 1024 - 1), "10 KB");
+        assert_eq!(format_bytes(3 * 1024u64.pow(4)), "3.0 TB");
+        assert_eq!(format_bytes(u64::MAX), "16777216 TB");
+    }
+
+    fn ignored(entries: &[(&str, u64)], complete: bool) -> git::IgnoredFiles {
+        git::IgnoredFiles {
+            entries: entries
+                .iter()
+                .map(|&(path, bytes)| git::Ignored {
+                    path: path.into(),
+                    bytes,
+                    files: 1,
+                })
+                .collect(),
+            complete,
+            denied: vec![],
+        }
+    }
+
+    #[test]
+    fn clean_up_names_the_largest_ignored_files_and_sizes_them_all() {
+        assert_eq!(ignored_line(&ignored(&[], true)), "No ignored files in it");
+        let mb = 1024 * 1024;
+        let list = [
+            ("node_modules/", 312 * mb),
+            ("dist/", 2 * mb),
+            ("a.log", 1024),
+            (".cache/", 1024),
+            ("b.log", 1024),
+            ("c.log", 1024),
+            (".env", 9),
+        ];
+        assert_eq!(
+            ignored_line(&ignored(&list, true)),
+            "Deletes ignored node_modules/ (312 MB), dist/ (2.0 MB), a.log (1.0 KB), .cache/ (1.0 KB) and 3 more · 314 MB in all"
+        );
+        // The walk stopped short: what it counted is a floor.
+        assert_eq!(
+            ignored_line(&ignored(&list[..2], false)),
+            "Deletes ignored node_modules/ (312 MB), dist/ (2.0 MB) · at least 314 MB in all"
+        );
+    }
+}

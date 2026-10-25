@@ -729,6 +729,14 @@ mod tests {
     }
 
     #[test]
+    fn a_count_takes_the_plural_unless_its_one() {
+        assert_eq!(plural(1, "commit"), "1 commit");
+        assert_eq!(plural(0, "commit"), "0 commits");
+        assert_eq!(plural(3, "worktree"), "3 worktrees");
+        assert_eq!(plural(2, "uncommitted change"), "2 uncommitted changes");
+    }
+
+    #[test]
     fn short_refs_and_folders() {
         assert_eq!(short_ref("refs/remotes/origin/main"), "origin/main");
         assert_eq!(short_ref("HEAD"), "HEAD");

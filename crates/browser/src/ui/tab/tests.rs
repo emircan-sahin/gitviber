@@ -2,6 +2,8 @@
 //! makes of it, and the keys typed while its page area has the focus.
 
 use super::*;
+#[cfg(target_os = "macos")]
+use gitviber_ui::actions::{changes, terminal, view, window};
 use gitviber_ui::actions::{git, review, tab as tabs};
 use gitviber_ui::keymap::ROOT_CONTEXT;
 use gitviber_ui::Settings;
@@ -226,7 +228,7 @@ fn a_picks_mark_stays_on_the_devices_screen(cx: &mut TestAppContext) {
     });
 }
 
-/// A page area with GPUI's focus, under the app's root, as a browser tab draws it.
+/// A page area with GPUI's focus, in its tab under the app's root, as a browser tab draws it.
 struct Keys {
     page: FocusHandle,
 }
@@ -236,16 +238,33 @@ impl Render for Keys {
         let mut page = KeyContext::default();
         page.add(PAGE_CONTEXT);
         page.set("page", "p1");
-        div()
-            .key_context(ROOT_CONTEXT)
-            .size_full()
-            .child(div().key_context(page).track_focus(&self.page).size_full())
+        div().key_context(ROOT_CONTEXT).size_full().child(
+            div()
+                .key_context(CONTEXT)
+                .size_full()
+                .child(div().key_context(page).track_focus(&self.page).size_full()),
+        )
     }
 }
 
 fn record<A: gpui::Action>(name: &'static str, ran: &Rc<RefCell<Vec<&'static str>>>, cx: &mut App) {
     let ran = ran.clone();
     cx.on_action(move |_: &A, _| ran.borrow_mut().push(name));
+}
+
+/// A window whose page area has the focus, the keys typed in it going through `page_key`.
+fn typing_in_a_page(cx: &mut TestAppContext) -> &mut VisualTestContext {
+    cx.update(|cx| cx.intercept_keystrokes(page_key).detach());
+    let (view, cx) = cx.add_window_view(|_, cx| Keys {
+        page: cx.focus_handle(),
+    });
+    cx.update(|window, cx| {
+        let page = view.read(cx).page.clone();
+        page.focus(window, cx);
+        window.activate_window();
+    });
+    cx.run_until_parked();
+    cx
 }
 
 /// Keys typed for a page run only the chords of the app's commands, as the keymap has them now:
@@ -256,7 +275,6 @@ fn keys_in_a_page_are_the_apps_only_for_its_commands(cx: &mut TestAppContext) {
     setup(cx);
     let ran = Rc::new(RefCell::new(Vec::new()));
     cx.update(|cx| {
-        cx.intercept_keystrokes(page_key).detach();
         record::<review::NextFile>("next file", &ran, cx);
         record::<git::ToggleStage>("stage", &ran, cx);
         record::<review::AddNote>("note", &ran, cx);
@@ -265,15 +283,7 @@ fn keys_in_a_page_are_the_apps_only_for_its_commands(cx: &mut TestAppContext) {
         record::<git::Discard>("discard", &ran, cx);
         record::<tabs::Close>("close", &ran, cx);
     });
-    let (view, cx) = cx.add_window_view(|_, cx| Keys {
-        page: cx.focus_handle(),
-    });
-    cx.update(|window, cx| {
-        let page = view.read(cx).page.clone();
-        page.focus(window, cx);
-        window.activate_window();
-    });
-    cx.run_until_parked();
+    let cx = typing_in_a_page(cx);
     for k in [
         "j",
         "s",
@@ -301,6 +311,86 @@ fn keys_in_a_page_are_the_apps_only_for_its_commands(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.simulate_keystrokes("cmd-w alt-cmd-u");
     assert_eq!(*ran.borrow(), ["close", "close"]);
+}
+
+// These three read chords as macOS has them: elsewhere ⌃ is the Super key, Minimize unbound.
+
+/// A ⌃ chord one of the app's commands has leaves a page (⌃1, ⌃Tab, ⌃`, ⌃⌘C); ⌃ with a letter
+/// edits the page's text field (⌃A, ⌃K), and no command has the rest.
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn a_bound_ctrl_chord_reaches_the_app_from_a_page(cx: &mut TestAppContext) {
+    setup(cx);
+    let ran = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|cx| {
+        record::<view::Changes>("changes", &ran, cx);
+        record::<tabs::Next>("next tab", &ran, cx);
+        record::<terminal::Toggle>("terminal", &ran, cx);
+        record::<changes::FocusMessage>("message", &ran, cx);
+    });
+    let cx = typing_in_a_page(cx);
+    for k in [
+        "ctrl-a",
+        "ctrl-e",
+        "ctrl-k",
+        "ctrl-z",
+        "ctrl-shift-a",
+        "ctrl-shift-e",
+        "ctrl-[",
+        "ctrl-left",
+        "ctrl-enter",
+        "ctrl-space",
+        "ctrl-cmd-a",
+        "ctrl-cmd-v",
+        "ctrl-cmd-z",
+    ] {
+        cx.simulate_keystrokes(k);
+    }
+    assert!(ran.borrow().is_empty(), "{:?}", ran.borrow());
+    cx.simulate_keystrokes("ctrl-1 ctrl-tab ctrl-` ctrl-cmd-c");
+    assert_eq!(
+        *ran.borrow(),
+        ["changes", "next tab", "terminal", "message"]
+    );
+}
+
+/// ⇧ with a symbol comes as the symbol it types (⇧⌘] is ⌘}): Next Tab, not ⌘]'s Go Forward;
+/// ⇧⌘= zooms the page.
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn shifted_punctuation_reaches_the_command_bound_to_it(cx: &mut TestAppContext) {
+    setup(cx);
+    let ran = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|cx| {
+        record::<tabs::Next>("next tab", &ran, cx);
+        record::<tabs::Prev>("prev tab", &ran, cx);
+        record::<act::Forward>("forward", &ran, cx);
+        record::<act::ZoomIn>("zoom in", &ran, cx);
+    });
+    let cx = typing_in_a_page(cx);
+    cx.simulate_keystrokes("cmd-} cmd-{ cmd-] cmd-+");
+    assert_eq!(
+        *ran.borrow(),
+        ["next tab", "prev tab", "forward", "zoom in"]
+    );
+}
+
+/// ⇧⌘M is Toggle Device Mode from a page; ⌘M stays macOS's Minimize, and ⌥⇧⌘M, no one's, the
+/// page's.
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn device_mode_leaves_a_page_while_minimize_stays_the_systems(cx: &mut TestAppContext) {
+    setup(cx);
+    let ran = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|cx| {
+        record::<act::ToggleDevice>("device", &ran, cx);
+        record::<window::Minimize>("minimize", &ran, cx);
+    });
+    let cx = typing_in_a_page(cx);
+    cx.simulate_keystrokes("alt-shift-cmd-m");
+    assert!(ran.borrow().is_empty(), "{:?}", ran.borrow());
+    cx.simulate_keystrokes("shift-cmd-m cmd-m");
+    assert_eq!(*ran.borrow(), ["device", "minimize"]);
 }
 
 /// A page named by its title has its host beside it; by its address till it has one.

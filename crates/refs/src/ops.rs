@@ -841,13 +841,14 @@ pub fn main_of(state: &Entity<RepoState>, cx: &App) -> String {
 /// Where `main`'s next worktree goes; None is `<project>.worktrees` beside it.
 pub fn worktree_dir(main: &str, cx: &mut App) -> Option<String> {
     crate::store::worktree_dir(main, cx).or_else(|| {
-        let root = gitviber_ui::Settings::get(cx).worktree_root.clone()?;
-        Some(format!(
-            "{}/{}",
-            root.trim_end_matches('/'),
-            folder_name(main)
-        ))
+        let root = gitviber_ui::Settings::get(cx).worktree_root.as_deref()?;
+        Some(under_root(root, main))
     })
+}
+
+/// `main`'s own folder in the worktree folder set in Settings.
+fn under_root(root: &str, main: &str) -> String {
+    format!("{}/{}", root.trim_end_matches('/'), folder_name(main))
 }
 
 /// A terminal on another branch gets its own worktree rather than a checkout here, which would
@@ -1362,6 +1363,21 @@ mod tests {
             landing(&[at(Some("main")), at(Some("feat")), at(None)]).as_deref(),
             Some("feat")
         );
+    }
+
+    #[test]
+    fn a_projects_worktrees_go_in_its_own_folder_of_the_worktree_root() {
+        let main = "/Users/me/code/app";
+        assert_eq!(
+            under_root("/Users/me/worktrees", main),
+            "/Users/me/worktrees/app"
+        );
+        assert_eq!(
+            under_root("/Users/me/worktrees/", main),
+            "/Users/me/worktrees/app"
+        );
+        assert_eq!(under_root("/", main), "/app");
+        assert_eq!(under_root("/w", "/Users/me/code/app/"), "/w/app");
     }
 
     #[test]
