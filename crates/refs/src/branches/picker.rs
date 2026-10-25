@@ -2,12 +2,15 @@
 //! what you typed. The highlighted row also offers merging it in, or rebasing onto it. A branch
 //! checked out in another worktree, which git won't switch to here, opens that worktree.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
+use std::rc::Rc;
 
 use gitviber_core::{api, git};
 use gitviber_ui::keymap::git as git_actions;
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::{now_unix, relative_time};
+use gitviber_ui::widgets::{now_unix, relative_time, repaint_next_minute};
 use gitviber_ui::workspace::PanelContext;
 use gitviber_ui::{ActiveAppTheme, Project};
 use gpui_kit::assets::IconName;
@@ -17,10 +20,11 @@ use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    Anchor, AnyElement, AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle,
-    Focusable as _, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
-    WeakEntity, Window, div, prelude::FluentBuilder as _, px, rems,
+    Anchor, AnyElement, AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity,
+    FocusHandle, Focusable as _, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
+    ParentElement as _, Pixels, Render, ScrollStrategy, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Task, UniformListScrollHandle, WeakEntity, Window, div, point,
+    prelude::FluentBuilder as _, px, rems, size, uniform_list,
 };
 
 use super::{LOCAL, PINNED, RECENT, create_name, deletable, groups, held_in};
@@ -181,6 +185,39 @@ enum Row {
     Create(String),
 }
 
+/// Each line of the list, a group's header too, is this tall: the list draws only the lines in
+/// view, which a big org's thousands of remote branches need.
+const LINE: f32 = 28.;
+/// The list's height at most.
+const LIST_MAX: f32 = 360.;
+
+/// A line of the list: a group's header, or row `n`.
+#[derive(Clone)]
+enum Line {
+    Group {
+        name: String,
+        count: String,
+        open: bool,
+    },
+    Row(usize),
+}
+
+/// The list as laid out from what it was laid out from: built once each time one of those
+/// changes, not for each frame or key.
+struct Layout {
+    query: String,
+    branches: Rc<Vec<Branch>>,
+    pins: Vec<String>,
+    visited: Vec<String>,
+    collapsed: HashSet<String>,
+    lines: Vec<Line>,
+    rows: Vec<Row>,
+    /// Each row's line, past the group headers between them.
+    line_of: Vec<usize>,
+    /// No group has a branch.
+    empty: bool,
+}
+
 pub struct BranchPicker {
     state: Entity<RepoState>,
     chip: Option<WeakEntity<BranchChip>>,
@@ -200,9 +237,8 @@ pub struct BranchPicker {
     remote_repos: HashMap<String, Option<String>>,
     index: Option<usize>,
     /// The list's: ↑/↓ keep the highlighted row in view, ⇧F10 finds it for its menu.
-    scroll: gpui_kit::ScrollHandle,
-    /// Each row's child in the list as last drawn, past the group headers between them.
-    child_of: Vec<usize>,
+    scroll: UniformListScrollHandle,
+    layout: RefCell<Option<Rc<Layout>>>,
     _reads: Vec<Task<()>>,
     _subs: Vec<Subscription>,
     _live: Live,
@@ -320,8 +356,8 @@ impl BranchPicker {
             guarded: HashSet::new(),
             remote_repos: HashMap::new(),
             index: None,
-            scroll: gpui_kit::ScrollHandle::new(),
-            child_of: vec![],
+            scroll: UniformListScrollHandle::new(),
+            layout: RefCell::new(None),
             _reads: reads,
             _subs: subs,
             _live: Live::new("BranchPicker"),
@@ -354,44 +390,90 @@ impl BranchPicker {
         cx.notify();
     }
 
-    fn groups(&self, cx: &App) -> Vec<(String, Vec<Branch>)> {
-        groups(
-            &self.state.read(cx).branches,
-            &self.typed(cx),
-            &self.pins,
-            &self.visited,
-        )
-    }
-
-    /// Searching shows every match, whatever is collapsed.
-    fn is_open(&self, group: &str, cx: &App) -> bool {
-        !self.typed(cx).trim().is_empty() || !self.collapsed.contains(group)
-    }
-
-    fn rows(&self, cx: &App) -> Vec<Row> {
-        let mut rows: Vec<Row> = self
-            .groups(cx)
-            .into_iter()
-            .filter(|(g, _)| self.is_open(g, cx))
-            .flat_map(|(_, l)| l.into_iter().map(Row::Branch))
-            .collect();
-        if let Some(n) = create_name(&self.state.read(cx).branches, &self.typed(cx)) {
-            rows.push(Row::Create(n));
+    /// The list for what's typed and the branches now, laid out again only when one of them,
+    /// the pins, the recent ones or the collapsed groups changed.
+    fn layout(&self, cx: &App) -> Rc<Layout> {
+        let query = self.typed(cx);
+        let branches = self.state.read(cx).branches.clone();
+        if let Some(l) = self.layout.borrow().as_ref()
+            && l.query == query
+            && Rc::ptr_eq(&l.branches, &branches)
+            && l.pins == self.pins
+            && l.visited == self.visited
+            && l.collapsed == self.collapsed
+        {
+            return l.clone();
         }
-        rows
+        let l = Rc::new(self.lay_out(query, branches));
+        *self.layout.borrow_mut() = Some(l.clone());
+        l
+    }
+
+    fn lay_out(&self, query: String, branches: Rc<Vec<Branch>>) -> Layout {
+        let found = groups(&branches, &query, &self.pins, &self.visited);
+        // Searching shows every match, whatever is collapsed.
+        let searching = !query.trim().is_empty();
+        // Local branches pinned or recent are listed above, not again under Local: its count says so.
+        let above = found
+            .iter()
+            .filter(|(g, _)| g == PINNED || g == RECENT)
+            .flat_map(|(_, l)| l)
+            .filter(|b| !b.remote)
+            .count();
+        let (mut lines, mut rows, mut line_of) = (vec![], vec![], vec![]);
+        let empty = found.is_empty();
+        for (name, list) in found {
+            let open = searching || !self.collapsed.contains(&name);
+            let count = if name == LOCAL && above > 0 {
+                format!("{} · {above} above", list.len() + above)
+            } else {
+                list.len().to_string()
+            };
+            lines.push(Line::Group { name, count, open });
+            if open {
+                for b in list {
+                    line_of.push(lines.len());
+                    lines.push(Line::Row(rows.len()));
+                    rows.push(Row::Branch(b));
+                }
+            }
+        }
+        if let Some(name) = create_name(&branches, &query) {
+            line_of.push(lines.len());
+            lines.push(Line::Row(rows.len()));
+            rows.push(Row::Create(name));
+        }
+        Layout {
+            query,
+            branches,
+            pins: self.pins.clone(),
+            visited: self.visited.clone(),
+            collapsed: self.collapsed.clone(),
+            lines,
+            rows,
+            line_of,
+            empty,
+        }
+    }
+
+    fn hot_row(&self, cx: &App) -> Option<Row> {
+        self.index
+            .and_then(|i| self.layout(cx).rows.get(i).cloned())
     }
 
     /// Opening starts on the current branch, where Enter does nothing; a search, on its first match.
     fn first_index(&self, cx: &App) -> Option<usize> {
-        let rows = self.rows(cx);
-        if rows.is_empty() {
+        let layout = self.layout(cx);
+        if layout.rows.is_empty() {
             return None;
         }
         if !self.typed(cx).trim().is_empty() {
             return Some(0);
         }
         Some(
-            rows.iter()
+            layout
+                .rows
+                .iter()
                 .position(|r| matches!(r, Row::Branch(b) if b.current))
                 .unwrap_or(0),
         )
@@ -400,19 +482,56 @@ impl BranchPicker {
     /// Rows that move under the highlight (Recent arriving after the picker opened) keep it on
     /// the same branch, so a quick ↓ and Enter switches to the one that was highlighted.
     fn keep_index(&self, hot: Option<String>, cx: &App) -> Option<usize> {
-        let rows = self.rows(cx);
+        let layout = self.layout(cx);
         hot.and_then(|k| {
-            rows.iter()
+            layout
+                .rows
+                .iter()
                 .position(|r| matches!(r, Row::Branch(b) if b.name == k))
         })
         .or(self.index)
     }
 
     fn hot_key(&self, cx: &App) -> Option<String> {
-        match self.index.and_then(|i| self.rows(cx).get(i).cloned()) {
+        match self.hot_row(cx) {
             Some(Row::Branch(b)) => Some(b.name),
             _ => None,
         }
+    }
+
+    /// Where line `ix` was last drawn, when all of it is in view.
+    fn shown_line(&self, ix: usize) -> Option<Bounds<Pixels>> {
+        let s = self.scroll.0.borrow();
+        let list = s.base_handle.bounds();
+        let top = list.origin.y + s.base_handle.offset().y + px(LINE) * ix as f32;
+        let line = Bounds::new(point(list.origin.x, top), size(list.size.width, px(LINE)));
+        (list.size.height > px(0.) && line.top() >= list.top() && line.bottom() <= list.bottom())
+            .then_some(line)
+    }
+
+    /// ⇧F10: the highlighted row's menu. One scrolled out of view comes in first; the second
+    /// frame has it drawn there.
+    fn open_menu(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self
+            .index
+            .and_then(|i| self.layout(cx).line_of.get(i).copied())
+        else {
+            return;
+        };
+        if let Some(line) = self.shown_line(ix) {
+            return crate::ui::open_row_menu(line, window, cx);
+        }
+        self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
+        let this = cx.weak_entity();
+        window.on_next_frame(move |window, _| {
+            window.on_next_frame(move |window, cx| {
+                let line = this.read_with(cx, |p, _| p.shown_line(ix)).ok().flatten();
+                if let Some(line) = line {
+                    crate::ui::open_row_menu(line, window, cx);
+                }
+            })
+        });
+        cx.notify();
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {
@@ -447,7 +566,7 @@ impl BranchPicker {
     }
 
     fn choose(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(row) = self.index.and_then(|i| self.rows(cx).get(i).cloned()) else {
+        let Some(row) = self.hot_row(cx) else {
             return;
         };
         let state = self.state.clone();
@@ -465,18 +584,16 @@ impl BranchPicker {
 
     fn on_key(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let k = &e.keystroke;
-        let child = |this: &Self| this.index.and_then(|i| this.child_of.get(i).copied());
         if crate::ui::is_menu_key(k) {
-            if let Some(row) = child(self).and_then(|c| self.scroll.bounds_for_item(c)) {
-                crate::ui::open_row_menu(row, window, cx);
-            }
+            self.open_menu(window, cx);
             cx.stop_propagation();
             return;
         }
         if k.modifiers.platform || k.modifiers.control || k.modifiers.alt {
             return;
         }
-        let n = self.rows(cx).len();
+        let layout = self.layout(cx);
+        let n = layout.rows.len();
         match k.key.as_str() {
             "down" if n > 0 => self.index = Some(self.index.map_or(0, |i| (i + 1) % n)),
             "up" if n > 0 => self.index = Some(self.index.map_or(n - 1, |i| (i + n - 1) % n)),
@@ -485,9 +602,9 @@ impl BranchPicker {
             _ => return,
         }
         if matches!(k.key.as_str(), "up" | "down")
-            && let Some(c) = child(self)
+            && let Some(line) = self.index.and_then(|i| layout.line_of.get(i).copied())
         {
-            self.scroll.scroll_to_item(c);
+            self.scroll.scroll_to_item(line, ScrollStrategy::Nearest);
         }
         cx.stop_propagation();
         cx.notify();
@@ -515,6 +632,48 @@ impl BranchPicker {
         f(&state, window, cx);
     }
 
+    /// Line `ix` of `layout`: a group's header, which folds it, or a row.
+    fn line(&self, layout: &Layout, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let (name, count, open) = match &layout.lines[ix] {
+            Line::Row(n) => return self.row(*n, &layout.rows[*n], cx),
+            Line::Group { name, count, open } => (name.clone(), count.clone(), *open),
+        };
+        let t = cx.app_theme();
+        let searching = !layout.query.trim().is_empty();
+        div()
+            .id(gpui_kit::SharedString::from(format!("group-{name}")))
+            .w_full()
+            .flex()
+            .items_end()
+            .gap_1()
+            .h(px(LINE))
+            .px_1()
+            .pb_1()
+            .text_size(rems(0.65625))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(t.subtle)
+            .when(!searching, |d| {
+                d.cursor_pointer().hover(|s| s.text_color(t.foreground))
+            })
+            .child(
+                Icon::new(if open {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                })
+                .xsmall(),
+            )
+            .child(name.to_uppercase())
+            .child(div().font_weight(FontWeight::NORMAL).child(count))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if !this.collapsed.remove(&name) {
+                    this.collapsed.insert(name.clone());
+                }
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
     fn row(&self, i: usize, row: &Row, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.app_theme().clone();
         let hot = self.index == Some(i);
@@ -525,10 +684,11 @@ impl BranchPicker {
         };
         let base = div()
             .id(("branch-row", i))
+            .w_full()
             .flex()
             .items_center()
             .gap_2()
-            .h(px(28.))
+            .h(px(LINE))
             .px_2()
             .rounded(px(3.))
             .text_size(rems(0.75))
@@ -911,74 +1071,13 @@ impl gpui_kit::Focusable for BranchPicker {
 }
 
 impl Render for BranchPicker {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The rows' "3h ago" stay current while it's open.
+        repaint_next_minute(window, cx);
         let t = cx.app_theme().clone();
-        let groups = self.groups(cx);
-        let mut rows: Vec<AnyElement> = vec![];
-        let mut child_of: Vec<usize> = vec![];
-        let mut n = 0;
-        let searching = !self.typed(cx).trim().is_empty();
-        // Local branches pinned or recent are listed above, not again under Local: its count says so.
-        let above = groups
-            .iter()
-            .filter(|(g, _)| g == PINNED || g == RECENT)
-            .flat_map(|(_, l)| l)
-            .filter(|b| !b.remote)
-            .count();
-        for (g, list) in &groups {
-            let open = self.is_open(g, cx);
-            let count = if g == LOCAL && above > 0 {
-                format!("{} · {above} above", list.len() + above)
-            } else {
-                list.len().to_string()
-            };
-            let name = g.clone();
-            rows.push(
-                div()
-                    .id(gpui_kit::SharedString::from(format!("group-{g}")))
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .px_1()
-                    .pt_2()
-                    .pb_1()
-                    .text_size(rems(0.65625))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(t.subtle)
-                    .when(!searching, |d| {
-                        d.cursor_pointer().hover(|s| s.text_color(t.foreground))
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if !this.collapsed.remove(&name) {
-                            this.collapsed.insert(name.clone());
-                        }
-                        cx.notify();
-                    }))
-                    .child(
-                        Icon::new(if open {
-                            IconName::ChevronDown
-                        } else {
-                            IconName::ChevronRight
-                        })
-                        .xsmall(),
-                    )
-                    .child(g.to_uppercase())
-                    .child(div().font_weight(FontWeight::NORMAL).child(count))
-                    .into_any_element(),
-            );
-            if open {
-                for b in list {
-                    child_of.push(rows.len());
-                    rows.push(self.row(n, &Row::Branch(b.clone()), cx));
-                    n += 1;
-                }
-            }
-        }
-        if let Some(name) = create_name(&self.state.read(cx).branches, &self.typed(cx)) {
-            child_of.push(rows.len());
-            rows.push(self.row(n, &Row::Create(name), cx));
-        }
-        self.child_of = child_of;
+        let layout = self.layout(cx);
+        let searching = !layout.query.trim().is_empty();
+        let lines = layout.lines.len();
         let branches = self.state.read(cx).branches.clone();
         let current = self.state.read(cx).branch().map(str::to_string);
         // Merged and held by no worktree, this one included: deleting them loses nothing.
@@ -993,7 +1092,7 @@ impl Render for BranchPicker {
             .map(|b| b.name.clone())
             .collect();
         let cleanable = stale.len() + squashed.len();
-        let hot = self.index.and_then(|i| self.rows(cx).get(i).cloned());
+        let hot = self.hot_row(cx);
         let enter = match &hot {
             Some(Row::Branch(b)) => match held_in(b, &branches) {
                 Some(h) if self.holder_of(b, cx).is_some_and(|w| w.prunable) => {
@@ -1008,8 +1107,10 @@ impl Render for BranchPicker {
             div()
                 .id(id)
                 .flex_none()
+                .h(px(20.))
+                .flex()
+                .items_center()
                 .px_1p5()
-                .py_0p5()
                 .rounded(px(3.))
                 .cursor_pointer()
                 .hover(|s| s.bg(t.hover).text_color(t.foreground))
@@ -1022,8 +1123,7 @@ impl Render for BranchPicker {
             .capture_key_down(cx.listener(Self::on_key))
             .on_action(
                 cx.listener(|this, _: &git_actions::RenameBranch, window, cx| {
-                    if let Some(Row::Branch(b)) =
-                        this.index.and_then(|i| this.rows(cx).get(i).cloned())
+                    if let Some(Row::Branch(b)) = this.hot_row(cx)
                         && !b.remote
                     {
                         this.close(cx);
@@ -1044,13 +1144,22 @@ impl Render for BranchPicker {
             )
             .child(
                 div()
-                    .id("branch-list")
-                    .max_h(px(360.))
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
                     .p_1()
-                    .children(rows)
-                    .when(groups.is_empty() && !searching, |d| {
+                    .when(lines > 0, |d| {
+                        d.child(
+                            uniform_list(
+                                "branch-list",
+                                lines,
+                                cx.processor(|this, range: Range<usize>, _, cx| {
+                                    let layout = this.layout(cx);
+                                    range.map(|ix| this.line(&layout, ix, cx)).collect()
+                                }),
+                            )
+                            .h(px((lines as f32 * LINE).min(LIST_MAX)))
+                            .track_scroll(&self.scroll),
+                        )
+                    })
+                    .when(layout.empty && !searching, |d| {
                         d.child(
                             div()
                                 .px_2()
@@ -1104,5 +1213,89 @@ impl Render for BranchPicker {
                         "right-click for more".into(),
                     ])),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+    use std::time::Instant;
+
+    use gitviber_ui::Project;
+    use gpui_kit::{TestAppContext, VisualTestContext, point, px, size};
+
+    use super::*;
+
+    struct Host;
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    #[gpui_kit::test]
+    fn five_thousand_remote_branches_filter_as_you_type(cx: &mut TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("gitviber-refs-picker-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: the tests that read the config dir all point it at a temporary folder.
+        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            gitviber_ui::install_core(cx);
+        });
+        let (_, cx) = cx.add_window_view(|_, _| Host);
+        let state = cx.update(|_, cx| {
+            let project = cx.new(|cx| Project::new(dir.clone(), cx));
+            RepoState::get(&project, cx)
+        });
+        cx.run_until_parked();
+        let mut list: Vec<Branch> = (0..5000)
+            .map(|i| Branch {
+                name: format!("origin/feature/team-{}/ticket-{i}", i % 40),
+                remote: true,
+                sha: format!("{i:040x}"),
+                timestamp: 1_700_000_000 - i as i64,
+                ..Default::default()
+            })
+            .collect();
+        list.push(Branch {
+            name: "main".into(),
+            current: true,
+            upstream: Some("origin/main".into()),
+            ..Default::default()
+        });
+        state.update(cx, |s, _| s.branches = Rc::new(list));
+        let picker =
+            cx.update(|window, cx| cx.new(|cx| BranchPicker::new(state, None, window, cx)));
+        let draw = |cx: &mut VisualTestContext| {
+            let picker = picker.clone();
+            let start = Instant::now();
+            cx.draw(
+                point(px(0.), px(0.)),
+                size(px(400.), px(600.)),
+                move |_, _| div().child(picker),
+            );
+            start.elapsed()
+        };
+        let first = draw(cx);
+        let mut typing = std::time::Duration::ZERO;
+        for q in ["t", "ti", "tic", "tick", "ticket-4", "ticket-49"] {
+            picker.update_in(cx, |p, window, cx| {
+                p.query.update(cx, |i, cx| i.set_value(q, window, cx))
+            });
+            typing = typing.max(draw(cx));
+        }
+        eprintln!(
+            "branch picker, 5001 branches: first draw {first:?}, slowest keystroke {typing:?}"
+        );
+        // ticket-49, -490…499 and -4900…4999 under origin's header, then Create ticket-49.
+        let shown = picker.read_with(cx, |p, cx| {
+            let l = p.layout(cx);
+            (l.rows.len(), l.lines.len())
+        });
+        assert_eq!(shown, (112, 113));
+        // Debug build, M-series: 960 ms a key while every row was built, 7 ms drawing the ones
+        // in view.
+        assert!(typing.as_millis() < 250, "{typing:?}");
     }
 }

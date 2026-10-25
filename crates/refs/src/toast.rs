@@ -8,7 +8,10 @@ use gitviber_ui::keymap::{requests, view};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{Sizable as _, WindowExt as _};
-use gpui_kit::{AnyWindowHandle, App, SharedString, Window};
+use gpui_kit::{
+    AnyWindowHandle, App, IntoElement as _, ParentElement as _, SharedString, Styled as _, Window,
+    div,
+};
 
 use crate::errors::{GitFix, SIGNING_HELP, explain_git_error};
 
@@ -45,6 +48,8 @@ pub struct Note {
     pub title: SharedString,
     pub detail: Option<SharedString>,
     pub action: Option<Action>,
+    /// A second way out, smaller, under the detail.
+    pub also: Option<Action>,
 }
 
 impl Note {
@@ -54,6 +59,7 @@ impl Note {
             title: title.into(),
             detail: None,
             action: None,
+            also: None,
         }
     }
     pub fn info(title: impl Into<SharedString>) -> Self {
@@ -75,6 +81,10 @@ impl Note {
     }
     pub fn action(mut self, action: Option<Action>) -> Self {
         self.action = action;
+        self
+    }
+    pub fn also(mut self, also: Option<Action>) -> Self {
+        self.also = also;
         self
     }
 
@@ -102,6 +112,26 @@ impl Note {
                         }))
                 })
                 .autohide(self.kind != Kind::Error),
+        };
+        let note = match self.also {
+            None => note,
+            Some(a) => note.content(move |_, _, cx| {
+                let run = a.run.clone();
+                div()
+                    .mt_1p5()
+                    .flex()
+                    .child(
+                        Button::new("toast-also")
+                            .xsmall()
+                            .outline()
+                            .label(a.label.clone())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                run(window, cx);
+                                this.dismiss(window, cx);
+                            })),
+                    )
+                    .into_any_element()
+            }),
         };
         // Errors stay until dismissed: they carry hook, GPG or push output that takes a while to read.
         let note = if self.kind == Kind::Error {
@@ -167,13 +197,18 @@ pub fn git_failed(title: impl Into<SharedString>, message: &str, fixes: &Fixes) 
     let Some(help) = explain_git_error(message) else {
         return Note::error(title).detail(message.to_string());
     };
-    let action = help.fix.and_then(|fix| {
+    let caller = help.fix.and_then(|fix| {
         fixes
             .iter()
             .find(|(f, _)| *f == fix)
             .map(|(_, a)| a.clone())
-            .or_else(|| always(fix, help.target.as_deref()))
     });
+    let always = help.fix.and_then(|fix| always(fix, help.target.as_deref()));
+    // The caller's way out first; the one that always fits stays, a size down.
+    let (action, also) = match caller {
+        Some(c) => (Some(c), always),
+        None => (always, None),
+    };
     Note::error(title)
         .detail(format!(
             "{}\n{}\n\n{}",
@@ -182,4 +217,39 @@ pub fn git_failed(title: impl Into<SharedString>, message: &str, fixes: &Fixes) 
             message.trim()
         ))
         .action(action)
+        .also(also)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const REFUSED: &str =
+        "remote: error: GH013: Repository rule violations found for refs/heads/main.
+remote:     - Push cannot contain secrets
+remote:          - commit: 8728dbe67d1a1c4b3a0b1a2c3d4e5f6a7b8c9d0e
+remote:        https://github.com/owner/repo/security/secret-scanning/unblock-secret/2abcDEF";
+
+    fn labels(n: &Note) -> (Option<SharedString>, Option<SharedString>) {
+        (
+            n.action.as_ref().map(|a| a.label.clone()),
+            n.also.as_ref().map(|a| a.label.clone()),
+        )
+    }
+
+    #[test]
+    fn a_callers_way_out_comes_first_and_githubs_page_stays() {
+        let undo = Action::new("Undo last commit", |_, _| {});
+        let note = git_failed("Push failed", REFUSED, &vec![(GitFix::Secret, undo)]);
+        assert_eq!(
+            labels(&note),
+            (
+                Some("Undo last commit".into()),
+                Some("Open on GitHub".into())
+            )
+        );
+        // An earlier commit has it too: GitHub's page alone.
+        let note = git_failed("Push failed", REFUSED, &Fixes::new());
+        assert_eq!(labels(&note), (Some("Open on GitHub".into()), None));
+    }
 }

@@ -42,10 +42,16 @@ pub struct RepoState {
     pub status: Option<Rc<git::RepoStatus>>,
     pub branches: Rc<Vec<Branch>>,
     pub worktrees: Rc<Vec<git::Worktree>>,
+    /// The tags and what each points at, hashed: History reads its log again when one is made,
+    /// moved or deleted, here, in a terminal or by a fetch.
+    pub tags: u64,
     pub journal: Option<Rc<journal::View>>,
     pub error: Option<SharedString>,
     /// The actions running, oldest first, by their own count: one ending leaves the others busy.
     running: Vec<(u64, SharedString)>,
+    /// An undo or redo is asking before it switches: ⌘Z again waits for that answer rather
+    /// than stack a second question.
+    pub(crate) asking: bool,
     next_run: u64,
     reading: Option<Task<()>>,
     /// A change came in while a read ran: read again once it's done.
@@ -60,13 +66,33 @@ impl EventEmitter<RepoEvent> for RepoState {}
 fn read(core: &Core, all: bool) -> Read {
     let status = Some(api::changes::status(core));
     if !all {
-        return (status, None, None, None);
+        return (status, None, None, None, None);
     }
     let branches =
         Some(api::branches::branches(core).map(|b| b.into_iter().map(Branch::from).collect()));
     let worktrees = Some(api::worktrees::worktrees(core));
+    let tags = Some(tags_hash(core));
     let journal = Some(api::journal::journal(core));
-    (status, branches, worktrees, journal)
+    (status, branches, worktrees, tags, journal)
+}
+
+/// Every tag with the object it names, hashed: one cheap `for-each-ref`, so a refresh that
+/// changed no tag costs History nothing.
+fn tags_hash(core: &Core) -> Res<u64> {
+    use std::hash::{Hash as _, Hasher as _};
+    let out = core.read_repo(|r| {
+        git::run(
+            r,
+            &[
+                "for-each-ref",
+                "--format=%(objectname) %(refname)",
+                "refs/tags",
+            ],
+        )
+    })?;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    out.hash(&mut h);
+    Ok(h.finish())
 }
 
 /// Rc so views can hold what they draw without copying it.
@@ -74,6 +100,7 @@ type Read = (
     Option<Res<git::RepoStatus>>,
     Option<Res<Vec<Branch>>>,
     Option<Res<Vec<git::Worktree>>>,
+    Option<Res<u64>>,
     Option<Res<journal::View>>,
 );
 
@@ -126,9 +153,11 @@ impl RepoState {
             status: None,
             branches: Rc::default(),
             worktrees: Rc::default(),
+            tags: 0,
             journal: None,
             error: None,
             running: Vec::new(),
+            asking: false,
             next_run: 0,
             reading: None,
             again: None,
@@ -203,9 +232,10 @@ impl RepoState {
         })
     }
 
-    fn guarded(&self, note: Note, cx: &Context<Self>) -> Note {
+    pub(crate) fn guarded(&self, note: Note, cx: &Context<Self>) -> Note {
         let action = note.action.clone().map(|a| self.guard(a, cx));
-        note.action(action)
+        let also = note.also.clone().map(|a| self.guard(a, cx));
+        note.action(action).also(also)
     }
 
     pub fn current_worktree(&self) -> Option<&git::Worktree> {
@@ -253,7 +283,11 @@ impl RepoState {
         self.apply(r, cx);
     }
 
-    fn apply(&mut self, (status, branches, worktrees, journal): Read, cx: &mut Context<Self>) {
+    fn apply(
+        &mut self,
+        (status, branches, worktrees, tags, journal): Read,
+        cx: &mut Context<Self>,
+    ) {
         match status {
             // Read while a switch moved core to another worktree: that one's reads come next.
             Some(Ok(s)) if std::path::Path::new(&s.root) != self.root => return,
@@ -269,6 +303,9 @@ impl RepoState {
         }
         if let Some(Ok(w)) = worktrees {
             self.worktrees = Rc::new(w);
+        }
+        if let Some(Ok(t)) = tags {
+            self.tags = t;
         }
         if let Some(Ok(j)) = journal {
             self.journal = Some(Rc::new(j));
@@ -651,6 +688,13 @@ mod tests {
     fn setup(
         cx: &mut TestAppContext,
     ) -> (Entity<Workspace>, Entity<RepoState>, &mut VisualTestContext) {
+        setup_in(here(), cx)
+    }
+
+    fn setup_in(
+        repo: PathBuf,
+        cx: &mut TestAppContext,
+    ) -> (Entity<Workspace>, Entity<RepoState>, &mut VisualTestContext) {
         let dir =
             std::env::temp_dir().join(format!("gitviber-refs-repo-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -669,7 +713,7 @@ mod tests {
         });
         cx.update(|window, cx| {
             Workspace::register_window(&ws, window, cx);
-            ws.update(cx, |ws, cx| ws.open_project(here(), window, cx));
+            ws.update(cx, |ws, cx| ws.open_project(repo, window, cx));
         });
         cx.run_until_parked();
         let state = cx.update(|_, cx| {
@@ -800,5 +844,117 @@ mod tests {
         );
         state.update(cx, |s, _| s.ended(b));
         assert!(state.read_with(cx, |s, _| s.busy().is_none()));
+    }
+
+    /// git in `dir`, never the owner's config: no signing, no hooks.
+    fn git(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "T")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "T")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .expect("git runs");
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[gpui_kit::test]
+    fn a_push_refused_over_a_secret_only_the_last_commit_has_offers_undoing_it(
+        cx: &mut TestAppContext,
+    ) {
+        use std::os::unix::fs::PermissionsExt as _;
+        // The repo changes while open: core's watcher thread wakes the test.
+        cx.executor().allow_parking();
+        let dir = scratch("secret");
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "token"]);
+        // A remote that refuses as GitHub's push protection does, naming the pushed commit.
+        let remote =
+            std::env::temp_dir().join(format!("gitviber-refs-bare-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&remote);
+        std::fs::create_dir_all(&remote).unwrap();
+        git(&remote, &["init", "-q", "--bare"]);
+        let hook = remote.join("hooks/pre-receive");
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\nread old new ref\necho \"error: GH013: Repository rule violations found for $ref.\" >&2\necho \"    - Push cannot contain secrets\" >&2\necho \"         - commit: $new\" >&2\necho \"       https://github.com/o/r/security/secret-scanning/unblock-secret/2ab\" >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        let (_ws, state, cx) = setup_in(dir.clone(), cx);
+        let core = cx.update(|_, cx| gitviber_ui::core(cx));
+        let head = git(&dir, &["rev-parse", "HEAD"]);
+        let refused = api::sync::push(
+            &core,
+            Some(false),
+            Some("origin".into()),
+            None,
+            "t".into(),
+            |_| {},
+        )
+        .expect_err("the hook refuses");
+        let listed = crate::errors::secret_commits(&refused);
+        assert_eq!(listed, std::slice::from_ref(&head));
+        assert_eq!(
+            crate::ops::secret_only_in_head(&core, &listed),
+            Some(head.clone())
+        );
+        // An earlier commit has one too: undoing the last doesn't help.
+        let parent = git(&dir, &["rev-parse", "HEAD~1"]);
+        let both = [head.clone(), parent];
+        assert_eq!(crate::ops::secret_only_in_head(&core, &both), None);
+        // The error shows once, after the check, with the way out.
+        cx.update(|window, cx| crate::ops::publish(&state, "origin".into(), window, cx));
+        cx.run_until_parked();
+        use gpui_kit::component::WindowExt as _;
+        assert_eq!(cx.update(|w, cx| w.notifications(cx).len()), 1);
+        // Already on the push target: undoing it would need a force push.
+        let branch = git(&dir, &["branch", "--show-current"]);
+        git(
+            &dir,
+            &[
+                "update-ref",
+                &format!("refs/remotes/origin/{branch}"),
+                "HEAD",
+            ],
+        );
+        git(&dir, &["branch", "-q", "-u", &format!("origin/{branch}")]);
+        assert_eq!(crate::ops::secret_only_in_head(&core, &listed), None);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    #[gpui_kit::test]
+    fn a_second_undo_while_the_switch_question_is_up_asks_nothing_more(cx: &mut TestAppContext) {
+        // Uncommitted changes, so an undo that switches branches asks first.
+        let dir = scratch("asking");
+        std::fs::write(dir.join("new.txt"), "x").unwrap();
+        let (_ws, state, cx) = setup_in(dir, cx);
+        assert!(state.read_with(cx, |s, _| {
+            s.status.as_ref().is_some_and(|s| !s.unstaged.is_empty())
+        }));
+        let undo = || vec![(1, Some("main".to_string()))];
+        use gpui_kit::component::WindowExt as _;
+        let dialogs = |cx: &mut VisualTestContext| cx.update(|w, cx| w.has_active_dialog(cx));
+        // ⌘Z, then ⌘Z again while it asks.
+        cx.update(|window, cx| crate::ops::travel(&state, false, undo(), window, cx));
+        cx.update(|window, cx| crate::ops::travel(&state, false, undo(), window, cx));
+        cx.run_until_parked();
+        assert!(dialogs(cx));
+        assert!(state.read_with(cx, |s, _| s.asking));
+        // One answer and the question is gone: there was only one.
+        cx.update(|window, cx| window.close_dialog(cx));
+        cx.run_until_parked();
+        assert!(!dialogs(cx));
+        assert!(!state.read_with(cx, |s, _| s.asking));
+        // Answered, ⌘Z asks again.
+        cx.update(|window, cx| crate::ops::travel(&state, false, undo(), window, cx));
+        cx.run_until_parked();
+        assert!(dialogs(cx));
     }
 }

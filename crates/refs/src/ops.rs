@@ -8,12 +8,12 @@ use gitviber_core::{Core, Res, api, git};
 use gpui_kit::{App, AppContext as _, Entity, SharedString, WeakEntity, Window};
 
 use crate::ask::{Ask, ask, ask_stacked};
-use crate::errors::GitFix;
+use crate::errors::{GitFix, explain_git_error, secret_commits};
 use crate::names::{Branch, folder_name, plural, short_ref};
 use crate::net::NetOp;
 use crate::remote_tags;
 use crate::repo::{GitAction, RepoState, plain};
-use crate::toast::{Action, Note};
+use crate::toast::{Action, Fixes, Note, git_failed};
 use crate::worktrees::{
     Worktree, WorktreeEvent, WorktreeEvents, default_branch, folder_for_branch,
 };
@@ -155,8 +155,12 @@ pub fn pull(
 /// Pull, then push.
 pub fn sync(state: &Entity<RepoState>, autostash: bool, window: &mut Window, cx: &mut App) {
     let behind = pushes_upstream(state, cx).then(|| pulls(state));
+    let weak = state.downgrade();
     let mut action = with_conflicts(
-        GitAction::new("Sync").net().done("Synced"),
+        GitAction::new("Sync")
+            .net()
+            .done("Synced")
+            .on_error(move |e, window, cx| secret_refused(&weak, "Sync", e, window, cx)),
         stashed_for(autostash, "pull"),
     )
     .fix(GitFix::Diverged, pulls(state))
@@ -215,7 +219,7 @@ pub fn push(state: &Entity<RepoState>, tags: bool, force: bool, window: &mut Win
     let weak = state.downgrade();
     let mut action = GitAction::new("Push").net().untracked().done(if tags { "Pushed with tags" } else { "Pushed" }).on_error(move |e, window, cx| {
         if !e.starts_with(ASK_FORCE) {
-            return false;
+            return secret_refused(&weak, "Push", e, window, cx);
         }
         let rx = ask(
             Ask::new(
@@ -264,10 +268,12 @@ pub fn push(state: &Entity<RepoState>, tags: bool, force: bool, window: &mut Win
 
 /// Pushes the branch to `remote` and tracks it there.
 pub fn publish(state: &Entity<RepoState>, remote: String, window: &mut Window, cx: &mut App) {
+    let weak = state.downgrade();
     let action = GitAction::new("Publish")
         .net()
         .untracked()
-        .done(format!("Branch published to {remote}"));
+        .done(format!("Branch published to {remote}"))
+        .on_error(move |e, window, cx| secret_refused(&weak, "Publish", e, window, cx));
     go(
         state,
         action,
@@ -284,6 +290,77 @@ pub fn publish(state: &Entity<RepoState>, remote: String, window: &mut Window, c
         window,
         cx,
     );
+}
+
+/// A push GitHub refused over a secret: when only the last commit has it, the error offers Undo
+/// last commit, which brings the file back staged to take the secret out. True: the error is
+/// shown here, once that's known.
+fn secret_refused(
+    state: &WeakEntity<RepoState>,
+    label: &str,
+    e: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
+    let listed = secret_commits(e);
+    if listed.is_empty() || explain_git_error(e).and_then(|h| h.fix) != Some(GitFix::Secret) {
+        return false;
+    }
+    let core = gitviber_ui::core(cx);
+    let check = cx.background_spawn(async move { secret_only_in_head(&core, &listed) });
+    let (state, handle) = (state.clone(), window.window_handle());
+    let (title, e) = (format!("{label} failed"), e.to_string());
+    cx.spawn(async move |cx| {
+        let head = check.await;
+        cx.update(|cx| {
+            let fixes: Fixes = head
+                .map(|sha| (GitFix::Secret, undo_last(&state, sha)))
+                .into_iter()
+                .collect();
+            let _ = state.update(cx, |s, cx| {
+                s.guarded(git_failed(title, &e, &fixes), cx)
+                    .show_in(handle, cx)
+            });
+        });
+    })
+    .detach();
+    true
+}
+
+/// HEAD, when it's the only commit GitHub listed a secret in and undoing it is plain: one parent,
+/// and not on the push target yet (History's Undo commit would warn about either).
+pub(crate) fn secret_only_in_head(core: &Core, listed: &[String]) -> Option<String> {
+    let head = core
+        .in_repo(|r| git::run(r, &["rev-parse", "--verify", "-q", "HEAD"]))
+        .ok()?;
+    let head = String::from_utf8_lossy(&head).trim().to_string();
+    if listed.is_empty() || !listed.iter().all(|s| head.starts_with(s.as_str())) {
+        return None;
+    }
+    let commit = api::history::find_commit(core, head.clone()).ok()??;
+    let [parent] = commit.parents.as_slice() else {
+        return None;
+    };
+    let pushed = api::history::drops_pushed(core, Some(parent.clone())).ok()?;
+    (!pushed).then_some(head)
+}
+
+/// History's Undo commit for `sha`, from a refused push's error; core refuses it if HEAD moved.
+fn undo_last(state: &WeakEntity<RepoState>, sha: String) -> Action {
+    let state = state.clone();
+    Action::new("Undo last commit", move |window, cx| {
+        let sha = sha.clone();
+        with(&state, window, cx, |s, w, cx| {
+            let action = GitAction::new("Undo").done("Commit undone; its changes are staged");
+            go(
+                s,
+                action,
+                move |core, _| plain(api::history::undo_commit(core, sha)),
+                w,
+                cx,
+            );
+        });
+    })
 }
 
 pub fn push_tags(
@@ -1189,6 +1266,9 @@ pub fn travel(
     window: &mut Window,
     cx: &mut App,
 ) {
+    if state.read(cx).asking {
+        return;
+    }
     let dirty = state
         .read(cx)
         .status
@@ -1197,28 +1277,32 @@ pub fn travel(
     let switches: Vec<Option<String>> = steps.iter().map(|(_, s)| s.clone()).collect();
     let ids: Vec<u64> = steps.iter().map(|(id, _)| *id).collect();
     let handle = window.window_handle();
-    let go = {
-        let weak = state.downgrade();
-        move |_: &mut Window, cx: &mut App| {
-            let _ = weak.update(cx, |s, cx| s.travel(forward, ids, handle, cx));
-        }
+    let weak = state.downgrade();
+    let Some(q) = switch_question(forward, &switches, dirty) else {
+        let _ = weak.update(cx, |s, cx| s.travel(forward, ids, handle, cx));
+        return;
     };
-    match switch_question(forward, &switches, dirty) {
-        None => go(window, cx),
-        Some(q) => {
-            let verb = if forward { "Redo" } else { "Undo" };
-            let rx = ask(
-                Ask::new(
-                    format!("{verb} git action"),
-                    q,
-                    format!("{verb} and Switch"),
-                ),
-                window,
-                cx,
-            );
-            after_yes(rx, window, cx, go);
-        }
-    }
+    let verb = if forward { "Redo" } else { "Undo" };
+    let rx = ask(
+        Ask::new(
+            format!("{verb} git action"),
+            q,
+            format!("{verb} and Switch"),
+        ),
+        window,
+        cx,
+    );
+    state.update(cx, |s, _| s.asking = true);
+    cx.spawn(async move |cx| {
+        let yes = rx.await == Ok(true);
+        let _ = weak.update(cx, |s, cx| {
+            s.asking = false;
+            if yes {
+                s.travel(forward, ids, handle, cx);
+            }
+        });
+    })
+    .detach();
 }
 
 /// ⌘Z and ⇧⌘Z: the next step, or why nothing happened.

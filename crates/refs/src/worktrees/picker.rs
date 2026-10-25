@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use gitviber_core::api;
 use gitviber_ui::keymap::worktree as wt_actions;
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::{StatusDot, now_unix, relative_time};
+use gitviber_ui::widgets::{StatusDot, now_unix, relative_time, repaint_next_minute};
 use gitviber_ui::workspace::PanelContext;
 use gitviber_ui::{ActiveAppTheme, Project};
 use gpui_kit::assets::IconName;
@@ -917,7 +917,9 @@ fn state_label(s: &State, hot: bool, cx: &App) -> AnyElement {
 }
 
 impl Render for WorktreePicker {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The rows' "3h ago" stay current while it's open.
+        repaint_next_minute(window, cx);
         let t = cx.app_theme().clone();
         let main = self
             .list
@@ -997,8 +999,10 @@ impl Render for WorktreePicker {
                 div()
                     .id(id)
                     .flex_none()
+                    .h(px(20.))
+                    .flex()
+                    .items_center()
                     .px_1p5()
-                    .py_0p5()
                     .rounded(px(3.))
                     .cursor_pointer()
                     .hover(|s| s.bg(t.hover).text_color(t.foreground))
@@ -1100,8 +1104,10 @@ impl Render for WorktreePicker {
                                     div()
                                         .id("wt-cleanup")
                                         .flex_none()
+                                        .h(px(20.))
+                                        .flex()
+                                        .items_center()
                                         .px_1p5()
-                                        .py_0p5()
                                         .rounded(px(3.))
                                         .cursor_pointer()
                                         .hover(|s| s.bg(t.hover).text_color(t.foreground))
