@@ -233,5 +233,119 @@ mod tests {
         assert!(!is_page_url("javascript:alert(1)"));
         assert!(!is_page_url("file:///tmp/x.html"));
         assert!(!is_page_url("http://localhost:5173"));
+        // Only exactly as the parser writes it.
+        for url in [
+            "http://localhost",
+            "HTTP://localhost/",
+            "about:blank#x",
+            " http://localhost/",
+            "",
+            "about:srcdoc",
+            "data:text/html,x",
+            "http://user:pw@localhost:3000/",
+        ] {
+            assert!(!is_page_url(url), "{url:?}");
+        }
+        assert!(is_page_url("http://[::1]:3000/"));
+    }
+
+    #[test]
+    fn no_user_name_no_port_0_and_127_shorthand_is_this_machine() {
+        for typed in [
+            "user:pw@example.com",
+            "http://user:pw@localhost:3000/",
+            "https://user@example.com/",
+            "localhost:0",
+            ":0",
+            "http://localhost:0/",
+        ] {
+            assert_eq!(normalize_url(typed), None, "{typed:?}");
+        }
+        assert_eq!(normalize_url("127.1").as_deref(), Some("http://127.0.0.1/"));
+        assert_eq!(
+            normalize_url("127.1:5173/a").as_deref(),
+            Some("http://127.0.0.1:5173/a")
+        );
+        assert_eq!(
+            normalize_url("127.0.1").as_deref(),
+            Some("http://127.0.0.1/")
+        );
+    }
+
+    #[test]
+    fn a_port_with_a_path_query_or_hash_is_this_machines_page_there() {
+        for (typed, url) in [
+            ("5199/device.html", "http://localhost:5199/device.html"),
+            (":5199/x?y#z", "http://localhost:5199/x?y#z"),
+            ("3000?q=1", "http://localhost:3000/?q=1"),
+            ("3000#top", "http://localhost:3000/#top"),
+            ("8080/", "http://localhost:8080/"),
+        ] {
+            assert_eq!(normalize_url(typed).as_deref(), Some(url), "{typed:?}");
+        }
+        for typed in ["0/x", "70000/x", "5199x", "5199 /x"] {
+            assert_eq!(normalize_url(typed), None, "{typed:?}");
+        }
+    }
+
+    /// A cheap fuzz: whatever comes out loads as typed again and is a page a stored tab may reopen.
+    #[test]
+    fn what_normalize_url_returns_is_a_web_page_and_normalizes_to_itself() {
+        let parts = [
+            "localhost",
+            "127.0.0.1",
+            "[::1]",
+            "example.com",
+            "a.b",
+            ":",
+            "5173",
+            "/",
+            "?",
+            "#",
+            "@",
+            ".",
+            "-",
+            "_",
+            "%",
+            "\\",
+            "http://",
+            "https://",
+            "javascript:",
+            "file:",
+            "data:",
+            "ü",
+            "例",
+            " ",
+            "\t",
+            "0",
+            "65536",
+            "user:pw@",
+            "about:blank",
+        ];
+        let mut seed: u64 = 7;
+        let mut rand = |n: usize| {
+            seed = (seed.wrapping_mul(1_103_515_245).wrapping_add(12_345)) & 0x7fff_ffff;
+            seed as usize % n
+        };
+        for _ in 0..5000 {
+            let mut typed = String::new();
+            for _ in 0..=rand(6) {
+                typed.push_str(parts[rand(parts.len())]);
+            }
+            let Some(url) = normalize_url(&typed) else {
+                continue;
+            };
+            assert!(is_page_url(&url), "{typed:?} -> {url}");
+            assert_eq!(
+                normalize_url(&url).as_deref(),
+                Some(url.as_str()),
+                "{typed:?}"
+            );
+            let web = ["http://", "https://"].iter().any(|s| {
+                url.strip_prefix(s)
+                    .is_some_and(|rest| !rest.starts_with('/'))
+            });
+            assert!(url == BLANK || web, "{typed:?} -> {url}");
+        }
     }
 }

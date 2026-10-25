@@ -672,27 +672,7 @@ impl BrowserTab {
         let mut rows = v_flex().flex_none().border_b_1().border_color(t.border);
         for d in downloads {
             let going = d.state == "going";
-            let text = match d.state.as_str() {
-                "going" if d.total > 0 => format!(
-                    "{}% of {}",
-                    (d.received * 100 / d.total).min(100),
-                    format::format_bytes(d.total)
-                ),
-                "going" if d.received > 0 => format::format_bytes(d.received),
-                "going" => "Starting".into(),
-                "done" => format!(
-                    "Saved to {}",
-                    d.path
-                        .as_deref()
-                        .and_then(|p| std::path::Path::new(p).parent()?.file_name())
-                        .map_or("Downloads".into(), |n| n.to_string_lossy().into_owned())
-                ),
-                "cancelled" => "Cancelled".into(),
-                _ => d
-                    .why
-                    .as_deref()
-                    .map_or("Failed".into(), |w| format!("Failed: {w}")),
-            };
+            let text = format::download_text(&d);
             let key = d.key;
             let path = d.path.clone();
             let icon = if d.state == "failed" {
