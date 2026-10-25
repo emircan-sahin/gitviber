@@ -6,10 +6,13 @@ use crate::highlight::{Highlighted, LineStyles};
 use crate::model::indent::Shown;
 use crate::model::{ADDED, REMOVED, Row, Side, emphasis};
 use crate::style::DiffStyle;
+use gitviber_ui::AppTheme;
+use gitviber_ui::widgets::{ChangeKind, StatusPill};
 use gpui_kit::component::h_flex;
 use gpui_kit::{
     AnyElement, App, Div, Font, HighlightStyle, Hsla, IntoElement, ParentElement as _, Pixels,
-    SharedString, Styled as _, StyledText, TextRun, Window, div, prelude::FluentBuilder as _, px,
+    RenderOnce, SharedString, Styled as _, StyledText, TextRun, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 use std::ops::Range;
 
@@ -266,24 +269,32 @@ pub fn line_counts(additions: u32, deletions: u32, style: &DiffStyle) -> Div {
         })
 }
 
-/// The status letter as a small colored pill.
+/// The status as a solid chip: its color's fill under dark ink.
 pub fn status_pill(status: &str, style: &DiffStyle) -> AnyElement {
-    let c = &style.colors;
-    let (label, color) = match status {
-        "A" | "?" => ("Added", c.added),
-        "D" => ("Deleted", c.removed),
-        "R" => ("Renamed", c.primary),
-        "C" => ("Copied", c.primary),
-        "U" => ("Conflict", c.destructive),
-        _ => ("Modified", c.primary),
-    };
-    div()
-        .flex_none()
-        .px_1p5()
-        .rounded_sm()
-        .bg(color.opacity(0.18))
-        .text_color(color)
-        .text_size(style.ui_font_size - px(1.))
-        .child(label)
-        .into_any_element()
+    Pill {
+        kind: ChangeKind::from_letter(status.chars().next().unwrap_or('M')),
+        bare: style.colors.muted,
+    }
+    .into_any_element()
+}
+
+#[derive(IntoElement)]
+struct Pill {
+    kind: ChangeKind,
+    /// The label's color without the app's theme (tests, the diff's own demo): no chip then.
+    bare: Hsla,
+}
+
+impl RenderOnce for Pill {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        if cx.has_global::<AppTheme>() {
+            StatusPill(self.kind).into_any_element()
+        } else {
+            div()
+                .flex_none()
+                .text_color(self.bare)
+                .child(self.kind.label())
+                .into_any_element()
+        }
+    }
 }
