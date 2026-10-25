@@ -100,6 +100,28 @@ minutes after the build. The user runs it; it launches the app, so the gate abov
   (`GITVIBER_DEV_SKILL=1`), and each skill file is put back as it was found afterwards.
 - Its parsing and table are tested without an app: `zsh .claude/skills/drive-gitviber/browser-check-test.zsh`.
 
+## Browser live check, native app
+
+The GPUI app has no dev bridge, so its check drives the window: keys to the app's pid, real clicks
+only while it's frontmost and its window is on top at the point, and OCR of its own window shots
+(`gvwin.swift`). Build first (`command cargo build -p gitviber`); a run takes about 12 minutes.
+
+```zsh
+.claude/skills/drive-gitviber/browser-check-native.sh [check...]
+```
+
+- It runs a copy of `target/debug/gitviber` with HOME and CFFIXED_USER_HOME on a fake home,
+  GITVIBER_CONFIG_DIR and a short TMPDIR of its own, on a `git clone --local` of this repository.
+  The fake home's `.zshrc` writes each pane's `GITVIBER_*` environment, so nothing is typed into
+  a shell to get it. Ask runs a stand-in `claude` by its full path, never the real one.
+- Settings can't be flipped from here: checks of another setting (Show or Mute agents' tabs, agent
+  control off, no hidden page kept live) relaunch the app with it.
+- `NO_CLICKS=1` skips what needs the window; a check skips itself when another app took the front.
+  Key codes are a US keyboard's: the app reads them through the Mac's layout (a Turkish one makes
+  ⌘= ⌘−, ⌘, is code 42), so the checks avoid the keys layouts move.
+- Never used: pbcopy/pbpaste (the two clipboard checks are SKIP), CryptoKey, ~/Downloads, real
+  sites or agent sessions (`agent_e2e` is SKIP).
+
 ## Cleanup (always)
 
 - Undo any setting you changed. Dev localStorage (localhost:1420) carries over to the
