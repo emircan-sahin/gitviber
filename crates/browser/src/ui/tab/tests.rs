@@ -270,6 +270,8 @@ fn typing_in_a_page(cx: &mut TestAppContext) -> &mut VisualTestContext {
 /// Keys typed for a page run only the chords of the app's commands, as the keymap has them now:
 /// not a single key (J, S), not an editing chord bound elsewhere (⌘Z is Undo Git Action, ⌘⌫
 /// Discard), not a key GPUI reads as no command's (a German ⌘Ü).
+// Pages are WebKit views on macOS only; the chords here are ⌘ ones.
+#[cfg(target_os = "macos")]
 #[gpui::test]
 fn keys_in_a_page_are_the_apps_only_for_its_commands(cx: &mut TestAppContext) {
     setup(cx);
