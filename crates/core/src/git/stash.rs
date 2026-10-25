@@ -40,6 +40,17 @@ pub fn stashes(repo: &Path) -> Result<Vec<Stash>, String> {
         .collect())
 }
 
+/// `stashes` with the repo's common git dir known: `stash list` reads refs/stash's reflog, and
+/// without one (most repos) there is nothing to list and no git call. A reftable repo keeps
+/// its reflogs where only git reads them.
+pub(crate) fn stashes_in(repo: &Path, common: Option<&Path>) -> Result<Vec<Stash>, String> {
+    let none = |c: &Path| !c.join("reftable").is_dir() && !c.join("logs/refs/stash").exists();
+    if common.is_some_and(none) {
+        return Ok(vec![]);
+    }
+    stashes(repo)
+}
+
 /// stash@{n} for the stash that is commit `sha`, wherever it sits in the list now.
 fn stash_ref(repo: &Path, sha: &str) -> Result<String, String> {
     validate_rev(sha)?;

@@ -285,21 +285,25 @@ fn cancel_in_hook(
     let sink = seen.clone();
     let running = Running::default();
     let net = running.start("commit".into(), move |p| sink.lock().unwrap().push(p));
-    let started = Instant::now();
-    let result = std::thread::scope(|s| {
-        s.spawn(|| {
-            // Not forever: a hook that failed early never writes it.
-            for _ in 0..500 {
-                if fs::read_to_string(&pidfile).is_ok_and(|s| !s.trim().is_empty()) {
-                    break;
-                }
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let (result, cancelled) = std::thread::scope(|s| {
+        let canceller = s.spawn(|| {
+            // Once the hook sleeps, however long a loaded machine takes to get there; a hook
+            // that failed early never does, and the commit is over.
+            while !done.load(std::sync::atomic::Ordering::Relaxed)
+                && !fs::read_to_string(&pidfile).is_ok_and(|s| !s.trim().is_empty())
+            {
                 std::thread::sleep(Duration::from_millis(10));
             }
             running.cancel("commit");
+            Instant::now()
         });
-        commit(&net)
+        let result = commit(&net);
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        (result, canceller.join().unwrap())
     });
-    assert!(started.elapsed() < Duration::from_secs(10));
+    // Stopped at the cancel, not after the hook's sleep.
+    assert!(cancelled.elapsed() < Duration::from_secs(10));
     let pid: libc::pid_t = fs::read_to_string(&pidfile)
         .unwrap()
         .trim()

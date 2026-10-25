@@ -12,11 +12,11 @@ pub struct OpenedRepo {
 
 pub fn open_repo(core: &Core, path: String) -> Res<OpenedRepo> {
     let root = git::toplevel(&PathBuf::from(path))?;
-    let main = git::main_worktree(Path::new(&root)).unwrap_or_else(|| root.clone());
     let root_path = PathBuf::from(&root);
     // A new watcher even for the open repo: one deleted and made again at its path left the old
-    // one watching nothing (inotify).
-    let watcher = watch::start(core.events(), root_path.clone())?;
+    // one watching nothing (inotify). It comes up on a thread of its own, while this goes on.
+    let watcher = watch::start(core.events(), root_path.clone());
+    let main = git::main_worktree(Path::new(&root)).unwrap_or_else(|| root.clone());
     *core.watcher.lock().unwrap_or_else(|e| e.into_inner()) = Some(watcher);
     // gh's active account until the page sends this project's own (gh_use_account): one
     // project's pick never carries into the next. Before the repo switches, so none goes out as both.
@@ -26,6 +26,11 @@ pub fn open_repo(core: &Core, path: String) -> Res<OpenedRepo> {
         github::use_account(&core.github, None)?;
     }
     *core.repo.lock().unwrap_or_else(|e| e.into_inner()) = Some(root_path);
+    *core.dirs.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    // The UI reads from here on: a watcher still coming up catches up once it's up.
+    if let Some(w) = &*core.watcher.lock().unwrap_or_else(|e| e.into_inner()) {
+        w.opened();
+    }
     Ok(OpenedRepo { root, main })
 }
 
@@ -34,6 +39,7 @@ pub fn open_repo(core: &Core, path: String) -> Res<OpenedRepo> {
 pub fn close_repo(core: &Core) -> Res<()> {
     *core.watcher.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *core.repo.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *core.dirs.lock().unwrap_or_else(|e| e.into_inner()) = None;
     Ok(())
 }
 
@@ -217,5 +223,108 @@ mod close_tests {
         assert!(core.repo().is_err());
         assert!(core.watcher.lock().unwrap().is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod open_tests {
+    use super::*;
+    use crate::events::Event;
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::time::Duration;
+
+    fn repo(name: &str) -> Option<PathBuf> {
+        let dir = std::env::temp_dir().join(format!("gitviber-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok()?;
+        let init = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(&dir)
+            .status();
+        init.is_ok_and(|s| s.success())
+            .then(|| dir.canonicalize().unwrap())
+    }
+
+    /// A core whose RepoChanged events come out of the receiver.
+    fn core() -> (Arc<Core>, mpsc::Receiver<watch::RepoChanged>) {
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        let core = Core::new(Arc::new(move |e| {
+            if let Event::RepoChanged(change) = e {
+                let _ = tx.lock().unwrap().send(change);
+            }
+        }));
+        (Arc::new(core), rx)
+    }
+
+    /// open_repo on a thread of its own: one that waited for a held watcher would never return.
+    fn open(core: &Arc<Core>, dir: &Path) -> OpenedRepo {
+        let (tx, rx) = mpsc::channel();
+        let (core, dir) = (core.clone(), dir.to_string_lossy().into_owned());
+        std::thread::spawn(move || tx.send(open_repo(&core, dir)));
+        rx.recv_timeout(Duration::from_secs(20))
+            .expect("open_repo waited for the watcher")
+            .unwrap()
+    }
+
+    /// fseventsd under load took 1–10 s to start a watcher. The repo opens without it, and what
+    /// changed in the meantime comes in with one refresh once it's up.
+    #[test]
+    fn a_repo_opens_before_its_watcher_is_up() {
+        let Some(dir) = repo("slow-watcher") else {
+            return;
+        };
+        let (core, rx) = core();
+        let held = watch::held::hold(&dir);
+        assert_eq!(Path::new(&open(&core, &dir).root), dir);
+        // No watcher hears this one.
+        std::fs::write(dir.join("early.txt"), "a").unwrap();
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+        drop(held);
+        let caught = rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("a catch-up");
+        assert!(caught.git && caught.worktree, "{caught:?}");
+        assert_eq!(Path::new(&caught.root), dir);
+        let status = crate::api::changes::status(&core).unwrap();
+        assert!(status.unstaged.iter().any(|f| f.path == "early.txt"));
+        // From then on the watcher hears writes, and that was the only catch-up.
+        std::fs::write(dir.join("late.txt"), "b").unwrap();
+        let heard = rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the write heard");
+        assert!(heard.worktree && !heard.git, "{heard:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Switched away from (or closed) before its watcher was up: that repo tells nothing, ever.
+    #[test]
+    fn a_watcher_left_before_it_is_up_tells_nothing() {
+        let (Some(a), Some(b)) = (repo("left-a"), repo("left-b")) else {
+            return;
+        };
+        let (core, rx) = core();
+        let held = watch::held::hold(&a);
+        open(&core, &a);
+        open(&core, &b);
+        drop(held);
+        std::fs::write(a.join("after.txt"), "a").unwrap();
+        std::fs::write(b.join("after.txt"), "b").unwrap();
+        // b's catch-up or its write, however long fseventsd takes; then whatever else comes.
+        let mut heard = vec![];
+        while !heard.contains(&b) {
+            let change = rx
+                .recv_timeout(Duration::from_secs(20))
+                .expect("b's watcher");
+            heard.push(PathBuf::from(change.root));
+        }
+        heard.extend(
+            std::iter::from_fn(|| rx.recv_timeout(Duration::from_secs(1)).ok())
+                .map(|c| PathBuf::from(c.root)),
+        );
+        assert!(!heard.contains(&a), "a told: {heard:?}");
+        close_repo(&core).unwrap();
+        let _ = std::fs::remove_dir_all(&a);
+        let _ = std::fs::remove_dir_all(&b);
     }
 }

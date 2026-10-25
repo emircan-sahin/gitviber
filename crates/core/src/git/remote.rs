@@ -1,6 +1,6 @@
 //! Remotes: listing and editing them, their URLs, and the github.com token git stores.
 
-use super::{command, run, run_text, run_with, validate_remote_name, validate_url};
+use super::{command, run, run_text, run_with, validate_remote_name, validate_url, ConfigList};
 use crate::process::exec;
 use serde::Serialize;
 use std::path::Path;
@@ -151,9 +151,9 @@ pub fn publish_remote(repo: &Path) -> Result<String, String> {
     publish_remote_among(&remotes(repo), &config)
 }
 
-/// The config an unpublished branch goes by, read in one `git config`: status reads it on
-/// every refresh.
+/// The config an unpublished branch goes by.
 #[derive(Default)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub(super) struct PublishConfig {
     /// `branch.<b>.merge`: a checked-out PR's refs/pull/<n>/head, for one.
     pub merge: Option<String>,
@@ -189,6 +189,26 @@ pub(super) fn publish_config(repo: &Path, branch: Option<&str>) -> PublishConfig
         *slot = Some(value.to_string()).filter(|v| !v.is_empty());
     }
     config
+}
+
+/// `publish_config` from the config read already.
+pub(super) fn publish_config_in(config: &ConfigList, branch: Option<&str>) -> PublishConfig {
+    let key = |var: &str| branch.map(|b| format!("branch.{b}.{var}"));
+    let (merge, push_remote) = (key("merge"), key("pushremote"));
+    let mut found = PublishConfig::default();
+    for (key, value) in config.iter() {
+        let slot = if key == "remote.pushdefault" {
+            &mut found.push_default
+        } else if merge.as_deref() == Some(key) {
+            &mut found.merge
+        } else if push_remote.as_deref() == Some(key) {
+            &mut found.push_remote
+        } else {
+            continue;
+        };
+        *slot = value.filter(|v| !v.is_empty()).map(str::to_string);
+    }
+    found
 }
 
 /// `publish_remote` for a caller that has the remotes and the config at hand already.

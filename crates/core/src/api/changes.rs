@@ -5,7 +5,7 @@ use std::path::Path;
 
 pub fn status(core: &Core) -> Res<git::RepoStatus> {
     core.read_repo(|r| {
-        let mut st = git::status(r)?;
+        let mut st = git::status_in(r, core.git_dirs(r).as_ref())?;
         st.web_url = st.origin.as_ref().map(|url| {
             url.as_deref()
                 .and_then(github::parse_remote)

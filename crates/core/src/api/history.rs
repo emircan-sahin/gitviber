@@ -89,6 +89,11 @@ pub fn merge_check(core: &Core, with: String) -> Res<git::MergeCheck> {
     core.read_repo(move |r| git::merge_check(r, &with))
 }
 
+/// HEAD's message for Amend, in one git call.
+pub fn head_message(core: &Core) -> Res<Option<git::HeadMessage>> {
+    core.read_repo(git::head_message)
+}
+
 pub fn find_commit(core: &Core, sha: String) -> Res<Option<git::Commit>> {
     core.in_repo(move |r| git::find_commit(r, &sha))
 }

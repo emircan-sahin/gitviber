@@ -181,3 +181,79 @@ fn watcher_reloads_after_dropped_events() {
         .set_flag(Flag::Rescan);
     assert!(kinds(&objects).is_empty());
 }
+
+/// Quitting (or closing the repo) drops the watchers while files keep changing. FSEvents' stop
+/// waits on fseventsd, which took 4–70 s here while builds kept it busy: the drop must not.
+#[test]
+fn shutting_down_never_waits_for_the_watchers() {
+    use crate::events::Event;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::{Duration, Instant};
+    let sb = Sandbox::new("shutdown");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "one");
+    let vault = sb.path("vault");
+    fs::create_dir_all(&vault).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let core = crate::Core::new(Arc::new(move |e| {
+        if matches!(e, Event::RepoChanged(_) | Event::VaultChanged(_)) {
+            let _ = tx.lock().unwrap().send(());
+        }
+    }));
+    crate::api::repo::open_repo(&core, r.to_string_lossy().into_owned()).unwrap();
+    let watched = crate::obsidian::watch(core.events(), vault.to_string_lossy().into_owned());
+    *core.vault_watcher.lock().unwrap() = Some(watched.unwrap());
+    // Files keep changing until after the drop, as a build or an agent would.
+    let writing = Arc::new(AtomicBool::new(true));
+    let writer = {
+        let (writing, r, vault) = (writing.clone(), r.clone(), vault.clone());
+        std::thread::spawn(move || {
+            let mut i = 0;
+            while writing.load(Ordering::Relaxed) {
+                fs::write(r.join(format!("f{}.txt", i % 50)), i.to_string()).unwrap();
+                fs::write(vault.join(format!("n{}.md", i % 50)), i.to_string()).unwrap();
+                i += 1;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        })
+    };
+    // Heard, so both are busy: fseventsd is slow to answer under load, so it isn't required.
+    let _ = rx.recv_timeout(Duration::from_secs(20));
+    let started = Instant::now();
+    drop(core);
+    let took = started.elapsed();
+    std::thread::sleep(Duration::from_millis(500));
+    writing.store(false, Ordering::Relaxed);
+    writer.join().unwrap();
+    assert!(took < Duration::from_millis(200), "the drop took {took:?}");
+    // Nothing is told about the repo or the vault once they're closed.
+    std::thread::sleep(Duration::from_millis(300));
+    let _ = rx.try_iter().count();
+    fs::write(r.join("late.txt"), "late").unwrap();
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(rx.try_iter().count(), 0, "told after the shutdown");
+}
+
+/// A FIFO named .git in a folder: reading it to check for a worktree link waited for a writer
+/// forever, on the watcher's own thread.
+#[cfg(unix)]
+#[test]
+fn a_fifo_named_git_doesnt_stall_the_watcher() {
+    use crate::watch::{classify, Kind};
+    use std::os::unix::ffi::OsStrExt;
+    let sb = Sandbox::new("watchfifo");
+    let r = sb.path("r");
+    init(&r);
+    let sub = r.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    let fifo = std::ffi::CString::new(sub.join(".git").as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let root = r.clone();
+    std::thread::spawn(move || tx.send(classify(&root, &root.join("sub/f.txt"))));
+    let got = rx.recv_timeout(std::time::Duration::from_secs(5));
+    assert_eq!(got, Ok(Some(Kind::Worktree)));
+}

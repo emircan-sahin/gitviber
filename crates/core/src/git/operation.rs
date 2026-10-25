@@ -4,12 +4,34 @@ use super::{
     run, run_text, run_with, stage, validate_ref, validate_rev, with_paths, Operation, REF_KINDS,
 };
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-pub(crate) fn git_dir(repo: &Path) -> Option<std::path::PathBuf> {
+pub(crate) fn git_dir(repo: &Path) -> Option<PathBuf> {
     run_text(repo, &["rev-parse", "--absolute-git-dir"])
         .ok()
         .map(|s| s.trim().into())
+}
+
+/// A worktree's own git dir (HEAD, index, a stopped merge) and the common one (refs, stashes),
+/// the same outside linked worktrees.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GitDirs {
+    pub dir: PathBuf,
+    pub common: PathBuf,
+}
+
+/// Both, from one `rev-parse`.
+pub(crate) fn git_dirs(repo: &Path) -> Option<GitDirs> {
+    let out = run_text(
+        repo,
+        &["rev-parse", "--absolute-git-dir", "--git-common-dir"],
+    )
+    .ok()?;
+    let mut lines = out.lines();
+    let dir = PathBuf::from(lines.next()?);
+    // Relative to where git ran, the worktree root.
+    let common = repo.join(lines.next()?);
+    Some(GitDirs { dir, common })
 }
 
 fn read_trim(path: std::path::PathBuf) -> Option<String> {

@@ -7,11 +7,11 @@
 //! deploy or a publish.
 
 use crate::procinfo::{self, Process};
-use notify::{recommended_watcher, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{recommended_watcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{mpsc, Arc, Mutex, OnceLock, Weak};
 use std::time::UNIX_EPOCH;
 
 /// How many words a flag takes after it (`--flag=value` takes its own). A flag the table
@@ -568,9 +568,11 @@ type Files = Mutex<HashMap<PathBuf, Tracked>>;
 #[derive(Default)]
 struct Watch {
     files: Arc<Files>,
-    /// Locked apart from `files`: watching another folder restarts the watcher's thread and
-    /// waits for it, and that thread may be waiting for `files` in `changed`.
-    watcher: Mutex<Option<(RecommendedWatcher, HashSet<PathBuf>)>>,
+    /// The watcher's thread, sent each folder to watch, and the folders sent. FSEvents restarts
+    /// its stream for each one with round trips to fseventsd, which took seconds under load: a
+    /// pane closing or the app quitting on the UI thread never waits for them. Dropping the
+    /// sender stops the watcher, on that thread.
+    watcher: Mutex<Option<(mpsc::Sender<PathBuf>, HashSet<PathBuf>)>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -609,18 +611,12 @@ impl Watch {
         };
         let mut watcher = lock(&self.watcher);
         if watcher.is_none() {
-            let files = Arc::downgrade(&self.files);
-            let sink = sink();
-            let made = recommended_watcher(move |event: notify::Result<notify::Event>| {
-                if let Ok(event) = event {
-                    changed(&files, &event.paths, &sink);
-                }
-            });
-            *watcher = made.ok().map(|w| (w, HashSet::new()));
+            *watcher = watch_in_background(Arc::downgrade(&self.files), sink())
+                .map(|tx| (tx, HashSet::new()));
         }
-        if let Some((w, dirs)) = watcher.as_mut() {
-            if !dirs.contains(&dir) && w.watch(&dir, RecursiveMode::NonRecursive).is_ok() {
-                dirs.insert(dir);
+        if let Some((tx, dirs)) = watcher.as_mut() {
+            if dirs.insert(dir.clone()) {
+                let _ = tx.send(dir);
             }
         }
         last
@@ -644,40 +640,62 @@ impl Watch {
     }
 
     fn stop(&self) {
-        // Dropped unlocked, as its thread is joined.
-        let watcher = lock(&self.watcher).take();
-        drop(watcher);
+        lock(&self.watcher).take();
     }
+}
+
+/// The thread that watches the folders it's sent until the sender is gone; see `Watch`.
+fn watch_in_background(files: Weak<Files>, sink: Sink) -> Option<mpsc::Sender<PathBuf>> {
+    let (tx, rx) = mpsc::channel::<PathBuf>();
+    let spawned = std::thread::Builder::new()
+        .name("agent watcher".into())
+        .spawn(move || {
+            let (heard, told) = (files.clone(), sink.clone());
+            let Ok(mut watcher) =
+                recommended_watcher(move |event: notify::Result<notify::Event>| {
+                    if let Ok(event) = event {
+                        changed(&heard, &event.paths, &told);
+                    }
+                })
+            else {
+                return;
+            };
+            while let Ok(dir) = rx.recv() {
+                // The stream restarts for every folder added, the others' too.
+                let _ = watcher.watch(&dir, RecursiveMode::NonRecursive);
+                // Written while it was down, or since `track` read it: no event tells that.
+                let Some(all) = files.upgrade() else { break };
+                let tracked: Vec<PathBuf> = lock(&all).keys().cloned().collect();
+                changed(&files, &tracked, &sink);
+            }
+        });
+    spawned.ok().map(|_| tx)
 }
 
 fn changed(files: &Weak<Files>, paths: &[PathBuf], sink: &Sink) {
     let Some(files) = files.upgrade() else {
         return;
     };
-    let mut told = Vec::new();
-    {
-        let mut files = lock(&files);
-        for path in paths {
-            let Some(t) = files.get_mut(path) else {
-                continue;
-            };
-            if !path.exists() {
-                told.push((t.id, None));
-                files.remove(path);
-                continue;
-            }
-            // Mid-write, unreadable or a state the table doesn't know: the last one stands.
-            let Some(state) = read_state(path, t.status) else {
-                continue;
-            };
-            if t.last != Some(state) {
-                t.last = Some(state);
-                told.push((t.id, Some(state)));
-            }
+    // Told under the lock: the watcher's catch-up and its stream's events would otherwise cross,
+    // an older state told last.
+    let mut files = lock(&files);
+    for path in paths {
+        let Some(t) = files.get_mut(path) else {
+            continue;
+        };
+        if !path.exists() {
+            sink(t.id, None);
+            files.remove(path);
+            continue;
         }
-    }
-    for (id, state) in told {
-        sink(id, state);
+        // Mid-write, unreadable or a state the table doesn't know: the last one stands.
+        let Some(state) = read_state(path, t.status) else {
+            continue;
+        };
+        if t.last != Some(state) {
+            t.last = Some(state);
+            sink(t.id, Some(state));
+        }
     }
 }
 
@@ -1075,9 +1093,9 @@ mod tests {
             })
         };
         assert_eq!(watch.track(5, &file, status, sink), Some("working"));
-        // FSEvents starts with the next write after the watch.
-        std::thread::sleep(Duration::from_millis(300));
-        let next = || rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Most likely before the watcher is up, which a busy fseventsd takes seconds for: its
+        // catch-up tells this one.
+        let next = || rx.recv_timeout(Duration::from_secs(20)).unwrap();
         write("idle");
         assert_eq!(next(), (5, Some("idle")));
         // A background shell started after the turn: still idle, not a second finish.

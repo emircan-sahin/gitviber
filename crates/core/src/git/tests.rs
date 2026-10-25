@@ -382,3 +382,58 @@ fn modes_are_the_strings_the_page_sends() {
     assert_eq!(parse("mixed"), Some(ResetMode::Mixed));
     assert_eq!(parse::<ResetMode>("--hard"), None);
 }
+
+/// One `git config --list` stands in for `remote -v`, `config --get push.default` and the
+/// publish config's `--get-regexp`, each read as git reads it, or left to git.
+#[test]
+fn the_config_list_reads_remotes_and_settings_as_git_does() {
+    let repo = temp_repo("configlist");
+    let set = |args: &[&str]| {
+        let mut all = vec!["config"];
+        all.extend(args);
+        run(&repo, &all).unwrap();
+    };
+    set(&["url.https://github.com/.insteadOf", "gh:"]);
+    set(&["url.https://example.com/X/.insteadOf", "gh:x/"]);
+    // A tie goes to the base git met first, not to the entry that comes first.
+    set(&["url.https://first/.insteadOf", "zz"]);
+    set(&["url.https://second/.insteadOf", "tie:"]);
+    set(&["--add", "url.https://first/.insteadOf", "tie:"]);
+    set(&["remote.zeta.url", "gh:me/z"]);
+    set(&["--add", "remote.zeta.url", "second"]);
+    set(&["remote.Upper.url", "https://x/u"]);
+    set(&["remote.my.fork.url", "gh:x/fork"]);
+    set(&["remote.t.url", "tie:r"]);
+    set(&["remote.nourl.fetch", "+refs/heads/*:refs/remotes/nourl/*"]);
+    set(&["remote.part.url", "/tmp/p"]);
+    set(&["remote.part.partialclonefilter", "blob:none"]);
+    set(&["remote.pushDefault", "zeta"]);
+    set(&["branch.Feat/a.b+c.pushRemote", "Upper"]);
+    set(&["branch.Feat/a.b+c.merge", "refs/pull/7/head"]);
+    set(&["push.default", " current "]);
+    let list = ConfigList::read(&repo).unwrap();
+    let urls = list.remote_urls().unwrap();
+    assert_eq!(urls, remote_urls(&repo).unwrap());
+    assert!(urls.contains(&("t".into(), Some("https://first/r".into()))));
+    assert_eq!(
+        list.value("push.default"),
+        config_value(&repo, None, "push.default")
+    );
+    for branch in [Some("Feat/a.b+c"), Some("feat/a.b+c"), None] {
+        assert_eq!(
+            publish_config_in(&list, branch),
+            publish_config(&repo, branch)
+        );
+    }
+    // An empty URL resets the list only since git 2.46, and a string key without a value makes
+    // git fail: git is asked then.
+    set(&["--add", "remote.zeta.url", ""]);
+    assert_eq!(ConfigList::read(&repo).unwrap().remote_urls(), None);
+    set(&["--unset-all", "remote.zeta.url"]);
+    let config = repo.join(".git/config");
+    let mut text = fs::read_to_string(&config).unwrap();
+    text.push_str("[remote \"m\"]\n\tmirror\n");
+    fs::write(&config, text).unwrap();
+    assert_eq!(ConfigList::read(&repo).unwrap().remote_urls(), None);
+    let _ = fs::remove_dir_all(&repo);
+}

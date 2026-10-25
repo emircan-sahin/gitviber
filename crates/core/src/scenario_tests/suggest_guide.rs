@@ -27,11 +27,17 @@ fn of(sha: String) -> Target {
     Target::Commit { sha }
 }
 
-/// Processes whose command line has `marker`, other than pgrep itself.
+/// `sleep <secs>.<this test's pid>`: a command line no other test, or test run, has.
+#[cfg(unix)]
+fn sleep_marker(secs: u32) -> String {
+    format!("sleep {secs}.{}", std::process::id())
+}
+
+/// Whether a process has exactly this command line.
 #[cfg(unix)]
 fn alive(marker: &str) -> bool {
     std::process::Command::new("pgrep")
-        .args(["-f", marker])
+        .args(["-fx", marker])
         .output()
         .map(|o| !o.stdout.is_empty())
         .unwrap_or(false)
@@ -243,7 +249,7 @@ fn starting_a_second_guide_cancels_the_first_and_kills_its_children() {
         out
     });
     let t = Instant::now();
-    let marker = "sleep 41.7";
+    let marker = sleep_marker(41);
     let err = suggest::run_guide(
         &r,
         &format!("sh -c '{marker} & {marker}'"),
@@ -260,10 +266,10 @@ fn starting_a_second_guide_cancels_the_first_and_kills_its_children() {
     assert!(second.join().unwrap().unwrap().text.starts_with("P\n\n"));
     // Nothing of the first is left running.
     let gone = Instant::now() + Duration::from_secs(2);
-    while alive(marker) && Instant::now() < gone {
+    while alive(&marker) && Instant::now() < gone {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!alive(marker));
+    assert!(!alive(&marker));
 }
 
 /// An agent that leaves a background child holding stdout and exits: the run doesn't wait for
@@ -377,22 +383,29 @@ fn the_patch_file_goes_when_the_agent_fails_is_cancelled_or_times_out() {
     assert!(err.contains("code 3"), "{err}");
     assert!(!recorded().exists());
 
+    // Cancelled once the agent has named the file: on a loaded machine it can take a while to.
     let cancel = Arc::new(AtomicBool::new(false));
-    let c = cancel.clone();
+    let (c, written) = (cancel.clone(), record.clone());
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(800));
+        let t = Instant::now();
+        while !fs::read_to_string(&written).is_ok_and(|s| s.ends_with('\n'))
+            && t.elapsed() < Duration::from_secs(20)
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         c.store(true, std::sync::atomic::Ordering::Relaxed);
     });
     assert_eq!(run(&agent, &cancel, None).unwrap_err(), CANCELLED);
     assert!(!recorded().exists());
 
+    // Long enough for a loaded machine to start the agent before the time is up.
     let err = run(
         &agent,
         &AtomicBool::new(false),
-        Some(Duration::from_secs(1)),
+        Some(Duration::from_secs(5)),
     )
     .unwrap_err();
-    assert!(err.contains("within 1 seconds"), "{err}");
+    assert!(err.contains("within 5 seconds"), "{err}");
     assert!(!recorded().exists());
 }
 
@@ -588,11 +601,12 @@ fn kill_all_stops_every_running_command_and_its_children() {
     init(&r);
     write_commit(&r, "a.txt", "one\n", "root");
     let head = rev(&r, "HEAD");
-    let marker = "sleep 42.3";
+    let marker = sleep_marker(42);
+    let command = format!("sh -c '{marker} & {marker}'");
     let run = std::thread::spawn(move || {
         suggest::run_guide(
             &r,
-            &format!("sh -c '{marker} & {marker}'"),
+            &command,
             "P",
             &of(head),
             &Agent::default(),
@@ -600,16 +614,16 @@ fn kill_all_stops_every_running_command_and_its_children() {
         )
     });
     let t = Instant::now();
-    while !alive(marker) && t.elapsed() < Duration::from_secs(10) {
+    while !alive(&marker) && t.elapsed() < Duration::from_secs(10) {
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(alive(marker), "the command started");
+    assert!(alive(&marker), "the command started");
     suggest::kill_all();
     let err = run.join().unwrap().unwrap_err();
     assert!(err.contains("signal"), "{err}");
     let t = Instant::now();
-    while alive(marker) && t.elapsed() < Duration::from_secs(5) {
+    while alive(&marker) && t.elapsed() < Duration::from_secs(5) {
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(!alive(marker), "its children went too");
+    assert!(!alive(&marker), "its children went too");
 }

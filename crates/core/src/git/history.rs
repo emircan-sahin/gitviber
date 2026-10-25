@@ -383,6 +383,43 @@ pub fn compare_counts(repo: &Path, with: &str) -> Result<(u32, u32), String> {
     Ok((n.next().unwrap_or(0), n.next().unwrap_or(0)))
 }
 
+/// HEAD's id and message, which Amend starts from.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct HeadMessage {
+    pub sha: String,
+    pub subject: String,
+    /// Trimmed, as `Commit::body`.
+    pub body: String,
+}
+
+/// HEAD's message from one `git log`; `find_commit` takes nine git calls for what the commit
+/// box doesn't show. None before the first commit.
+pub fn head_message(repo: &Path) -> Result<Option<HeadMessage>, String> {
+    let args = [
+        "log",
+        "-1",
+        "--no-show-signature",
+        "--format=%H%x1f%s%x1f%b",
+        "HEAD",
+        "--",
+    ];
+    let out = match run_text(repo, &args) {
+        Ok(out) => out,
+        Err(_) if !has_head(repo) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let mut fields = out.splitn(3, '\x1f');
+    let (Some(sha), Some(subject), Some(body)) = (fields.next(), fields.next(), fields.next())
+    else {
+        return Err(format!("git log printed no commit: {out}"));
+    };
+    Ok(Some(HeadMessage {
+        sha: sha.to_string(),
+        subject: subject.to_string(),
+        body: body.trim().to_string(),
+    }))
+}
+
 /// The commit a SHA (or a prefix of one) names, wherever it is: a pasted SHA goes first in a search.
 /// A full ref name (refs/heads/…) finds its tip, for going to a branch in the graph.
 pub fn find_commit(repo: &Path, sha: &str) -> Result<Option<Commit>, String> {

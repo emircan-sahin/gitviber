@@ -6,12 +6,13 @@
 use crate::events::{Event, EventSink};
 use crate::fs::{confine, read_media_at, read_text_at};
 use crate::git::FileText;
-use crate::watch::debounce;
-use notify::{recommended_watcher, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use crate::watch::{debounce, Watching};
+use notify::{recommended_watcher, EventKind, RecursiveMode, Watcher};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -284,7 +285,7 @@ pub(crate) fn vault_event(
 }
 
 /// Tells the page what changed in the vault, once writes go quiet (watch::debounce).
-pub fn watch(events: EventSink, vault: String) -> Result<RecommendedWatcher, String> {
+pub fn watch(events: EventSink, vault: String) -> Result<Watching, String> {
     let root = PathBuf::from(&vault);
     let real = root.canonicalize().unwrap_or_else(|_| root.clone());
     let (tx, rx) = mpsc::channel::<(bool, Vec<String>)>();
@@ -297,9 +298,14 @@ pub fn watch(events: EventSink, vault: String) -> Result<RecommendedWatcher, Str
     watcher
         .watch(Path::new(&vault), RecursiveMode::Recursive)
         .map_err(|e| e.to_string())?;
-    // The thread ends when the watcher (and with it the sender) is dropped.
+    let live = Arc::new(AtomicBool::new(true));
+    let open = live.clone();
+    // The thread ends when the watcher (and with it the sender) is gone.
     std::thread::spawn(move || {
         debounce(rx, |batch| {
+            if !open.load(Ordering::Relaxed) {
+                return;
+            }
             let files = batch.iter().any(|(files, _)| *files);
             // A rescan says nothing about which files: none named, every one may have changed.
             let all = batch.iter().any(|(_, paths)| paths.is_empty());
@@ -317,7 +323,7 @@ pub fn watch(events: EventSink, vault: String) -> Result<RecommendedWatcher, Str
             }));
         })
     });
-    Ok(watcher)
+    Ok(Watching::new(watcher, live))
 }
 
 #[cfg(test)]

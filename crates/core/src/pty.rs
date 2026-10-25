@@ -54,8 +54,8 @@ pub type Output = Box<dyn FnMut(&[u8]) -> bool + Send>;
 pub type Ended = Box<dyn FnOnce(Option<Exit>) + Send>;
 /// More variables for a session's shell, by its id: the browser's socket for `gitviber browser`.
 pub type ExtraEnv = Box<dyn Fn(u32) -> Vec<(String, String)> + Send + Sync>;
-/// Told a session's id once `kill` ended it (not `kill_all`, at quit): the browser closes that
-/// pane's agent tabs.
+/// Told a session's id once it ended, killed or by its shell's own exit; not at quit
+/// (`kill_all`). The browser hands that pane's agent tabs to the user.
 pub type Killed = Box<dyn Fn(u32) + Send + Sync>;
 
 /// Output handed over that the terminal hasn't parsed yet (`Ptys::ack`), past which the reader
@@ -150,6 +150,19 @@ impl Session {
 
     fn kill(mut self) {
         let _ = self.killer.kill();
+        // portable-pty's writer, dropped with the session, writes an EOF to the pty. A raw-mode
+        // program that stopped reading leaves the input queue full, and that write never
+        // returned (on the UI thread at quit). Non-blocking, it fails instead; the shell has its
+        // SIGHUP.
+        #[cfg(unix)]
+        if let Some(fd) = self.master.as_raw_fd() {
+            unsafe {
+                let flags = libc::fcntl(fd, libc::F_GETFL);
+                if flags >= 0 {
+                    libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+                }
+            }
+        }
         self.flow.close();
     }
 }
@@ -159,7 +172,8 @@ pub struct Ptys {
     sessions: Arc<Mutex<HashMap<u32, Session>>>,
     next: AtomicU32,
     extra_env: OnceLock<ExtraEnv>,
-    killed: OnceLock<Killed>,
+    /// Shared with the reader threads, which tell a shell's own exit.
+    killed: Arc<OnceLock<Killed>>,
 }
 
 fn size(cols: u16, rows: u16) -> PtySize {
@@ -200,6 +214,12 @@ fn with_last(path: &OsStr, dir: &Path) -> OsString {
     out
 }
 
+fn tell(killed: &OnceLock<Killed>, id: u32) {
+    if let Some(killed) = killed.get() {
+        killed(id);
+    }
+}
+
 impl Ptys {
     /// Set once, before the first shell starts; a second call is ignored.
     pub fn set_extra_env(&self, env: ExtraEnv) {
@@ -211,9 +231,7 @@ impl Ptys {
     }
 
     fn tell_killed(&self, id: u32) {
-        if let Some(killed) = self.killed.get() {
-            killed(id);
-        }
+        tell(&self.killed, id);
     }
 
     /// Starts the user's login shell in `cwd`, for the pane opened in `pane`, with the shell
@@ -303,7 +321,7 @@ impl Ptys {
             },
         );
 
-        let sessions = self.sessions.clone();
+        let (sessions, killed) = (self.sessions.clone(), self.killed.clone());
         std::thread::spawn(move || {
             let mut buf = vec![0u8; 64 * 1024];
             loop {
@@ -321,7 +339,11 @@ impl Ptys {
                 code: s.signal().is_none().then(|| s.exit_code()),
                 signal: s.signal().map(str::to_string),
             });
-            sessions.lock().unwrap().remove(&id);
+            // Still listed: it ended by itself, not by `kill` or `kill_all`, which told or needn't.
+            let ended = sessions.lock().unwrap().remove(&id);
+            if ended.is_some() {
+                tell(&killed, id);
+            }
             exit(status);
         });
         Ok(Spawned {
@@ -569,11 +591,13 @@ mod tests {
         assert_eq!(with_last(middle.as_ref(), bin), *middle);
     }
 
-    #[test]
-    fn a_killed_session_is_told_once_and_an_unknown_id_never() {
-        let ptys = Ptys::default();
-        let (tx, rx) = mpsc::channel();
-        ptys.on_killed(Box::new(move |id| tx.send(id).unwrap()));
+    /// A session started with the told ids going to the first receiver, and its end to the second.
+    fn told_session(ptys: &Ptys) -> (u32, mpsc::Receiver<u32>, mpsc::Receiver<()>) {
+        let (tx, told) = mpsc::channel();
+        ptys.on_killed(Box::new(move |id| {
+            let _ = tx.send(id);
+        }));
+        let (end, ended) = mpsc::channel();
         let dir = std::env::temp_dir();
         let spawned = ptys
             .spawn(
@@ -583,12 +607,96 @@ mod tests {
                 24,
                 None,
                 Box::new(|_| true),
-                Box::new(|_| {}),
+                Box::new(move |_| {
+                    let _ = end.send(());
+                }),
             )
             .unwrap();
-        ptys.kill(spawned.id + 1000);
-        ptys.kill(spawned.id);
-        ptys.kill(spawned.id);
-        assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec![spawned.id]);
+        (spawned.id, told, ended)
+    }
+
+    #[test]
+    fn a_killed_session_is_told_once_and_an_unknown_id_never() {
+        let ptys = Ptys::default();
+        let (id, told, ended) = told_session(&ptys);
+        ptys.kill(id + 1000);
+        ptys.kill(id);
+        ptys.kill(id);
+        // Its reader sees the shell go too, and says nothing more.
+        ended.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert_eq!(told.try_iter().collect::<Vec<_>>(), vec![id]);
+    }
+
+    /// `exit` typed in the pane: the browser hears of it as of a closed pane, once.
+    #[test]
+    fn a_shell_that_exits_by_itself_is_told_once() {
+        let ptys = Ptys::default();
+        let (id, told, ended) = told_session(&ptys);
+        super::write(&ptys.writer(id).unwrap(), b"exit\n").unwrap();
+        ended.recv_timeout(Duration::from_secs(30)).unwrap();
+        ptys.kill(id);
+        ptys.kill_all();
+        assert_eq!(told.try_iter().collect::<Vec<_>>(), vec![id]);
+    }
+
+    /// A raw-mode program that ignores SIGHUP and stopped reading, its input queue full: killing
+    /// its session (quitting kills every one, on the UI thread) returns at once.
+    #[cfg(unix)]
+    #[test]
+    fn killing_a_session_whose_input_is_full_returns_at_once() {
+        use portable_pty::{native_pty_system, CommandBuilder};
+        let pair =
+            crate::process::spawning(|| native_pty_system().openpty(super::size(80, 24))).unwrap();
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.args(["-c", "trap '' HUP; exec sleep 30"]);
+        let mut child = crate::process::spawning(|| pair.slave.spawn_command(cmd)).unwrap();
+        drop(pair.slave);
+        let pid = child.process_id().unwrap();
+        // Once it's sleep, SIGHUP is ignored.
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        while crate::procinfo::process(pid)
+            .is_none_or(|p| p.argv.first().is_none_or(|a| a != "sleep"))
+            && std::time::Instant::now() < until
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let fd = pair.master.as_raw_fd().unwrap();
+        let mut writer = pair.master.take_writer().unwrap();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        unsafe {
+            let mut t: libc::termios = std::mem::zeroed();
+            libc::tcgetattr(fd, &mut t);
+            libc::cfmakeraw(&mut t);
+            libc::tcsetattr(fd, libc::TCSANOW, &t);
+            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+        let mut queued = 0;
+        while writer.write(b"x").is_ok() && queued < 1 << 20 {
+            queued += 1;
+        }
+        assert!(queued < 1 << 20, "the queue fills");
+        unsafe { libc::fcntl(fd, libc::F_SETFL, flags) };
+        let ptys = Ptys::default();
+        ptys.sessions.lock().unwrap().insert(
+            1,
+            super::Session {
+                master: pair.master,
+                writer: Arc::new(std::sync::Mutex::new(writer)),
+                killer: child.clone_killer(),
+                shell: Some(pid),
+                flow: Arc::default(),
+                pane: std::env::temp_dir(),
+            },
+        );
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            ptys.kill_all();
+            let _ = tx.send(());
+        });
+        let returned = rx.recv_timeout(Duration::from_secs(2)).is_ok();
+        let _ = child.kill();
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        let _ = child.wait();
+        assert!(returned, "kill_all waited on the full pty");
     }
 }

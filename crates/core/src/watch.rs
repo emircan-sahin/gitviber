@@ -1,13 +1,60 @@
 //! Watches the open repo and tells the UI to refresh, so changes an agent makes
 //! show up without clicking anything.
 
+use crate::errors;
 use crate::events::{Event, EventSink};
 use notify::{recommended_watcher, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// A running watcher. FSEvents starts and stops with round trips to fseventsd, which took up to
+/// 23 s while builds kept it busy: neither opening a repo nor dropping this waits for them, so
+/// closing a repo or quitting doesn't either. Its events stop at once.
+pub struct Watching {
+    /// Empty while `start` is still bringing the watcher up.
+    watcher: Arc<Mutex<Option<RecommendedWatcher>>>,
+    /// What the watcher's thread checks before it tells the UI anything.
+    live: Arc<AtomicBool>,
+    /// The repo was shown (`opened`).
+    shown: Arc<AtomicBool>,
+}
+
+impl Watching {
+    pub(crate) fn new(watcher: RecommendedWatcher, live: Arc<AtomicBool>) -> Self {
+        Watching {
+            watcher: Arc::new(Mutex::new(Some(watcher))),
+            live,
+            shown: Arc::default(),
+        }
+    }
+
+    /// open_repo answered: what the UI reads from now on is newer than anything a watcher still
+    /// coming up has missed, so one that's up only later catches up with a refresh.
+    pub(crate) fn opened(&self) {
+        self.shown.store(true, Ordering::SeqCst);
+    }
+}
+
+impl Drop for Watching {
+    fn drop(&mut self) {
+        self.live.store(false, Ordering::Relaxed);
+        let taken = lock(&self.watcher).take();
+        if let Some(watcher) = taken {
+            // Without a thread to spare it stops here, as it always did.
+            let _ = std::thread::Builder::new()
+                .name("watcher stop".into())
+                .spawn(move || drop(watcher));
+        }
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 #[derive(Serialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
@@ -75,19 +122,25 @@ fn in_nested_repo(root: &Path, path: &Path) -> bool {
 /// this repo, and edits in it are ours to show.
 fn is_untracked_repo_root(dir: &Path) -> bool {
     let git = dir.join(".git");
-    if git.is_dir() {
+    let Ok(meta) = std::fs::metadata(&git) else {
+        return false;
+    };
+    if meta.is_dir() {
         return true;
     }
-    std::fs::read_to_string(&git).ok().is_some_and(|s| {
-        s.strip_prefix("gitdir:")
-            .and_then(|d| {
-                Path::new(d.trim())
-                    .parent()?
-                    .file_name()
-                    .map(|n| n == "worktrees")
-            })
-            .unwrap_or(false)
-    })
+    // Only a file is read: opening a FIFO named .git waited for a writer forever, in FSEvents'
+    // callback, and the watcher heard nothing more.
+    meta.is_file()
+        && std::fs::read_to_string(&git).ok().is_some_and(|s| {
+            s.strip_prefix("gitdir:")
+                .and_then(|d| {
+                    Path::new(d.trim())
+                        .parent()?
+                        .file_name()
+                        .map(|n| n == "worktrees")
+                })
+                .unwrap_or(false)
+        })
 }
 
 /// Git dirs that live outside the worktree (linked worktrees: `.git` is a file and HEAD/index
@@ -99,16 +152,13 @@ pub(crate) struct ExternalGitDirs {
 
 impl ExternalGitDirs {
     pub(crate) fn find(root: &Path) -> Self {
-        let dir = |flag: &str| {
-            crate::git::run(root, &["rev-parse", flag])
-                .ok()
-                .map(|o| PathBuf::from(String::from_utf8_lossy(&o).trim()))
-        };
+        let dirs = crate::git::git_dirs(root);
         ExternalGitDirs {
-            own: dir("--absolute-git-dir").filter(|d| !d.starts_with(root)),
-            common: dir("--git-common-dir")
-                .map(|d| if d.is_absolute() { d } else { root.join(d) })
+            own: dirs
+                .as_ref()
+                .map(|d| d.dir.clone())
                 .filter(|d| !d.starts_with(root)),
+            common: dirs.map(|d| d.common).filter(|d| !d.starts_with(root)),
         }
     }
 
@@ -198,10 +248,67 @@ pub(crate) fn debounce<T>(rx: mpsc::Receiver<T>, mut emit: impl FnMut(Vec<T>)) {
     }
 }
 
-pub fn start(events: EventSink, root: PathBuf) -> Result<RecommendedWatcher, String> {
-    let (tx, rx) = mpsc::channel::<(Kind, PathBuf)>();
-    let watch_root = root.clone();
-    let external = ExternalGitDirs::find(&root);
+/// Watches the repo at `root` from a thread of its own: FSEvents' start waited 1–10 s on a busy
+/// fseventsd, and opening the repo doesn't wait for it. What changed before it was up is caught
+/// up with one refresh (`Watching::opened`).
+pub fn start(events: EventSink, root: PathBuf) -> Watching {
+    let watching = Watching {
+        watcher: Arc::default(),
+        live: Arc::new(AtomicBool::new(true)),
+        shown: Arc::default(),
+    };
+    let slot = watching.watcher.clone();
+    let live = watching.live.clone();
+    let shown = watching.shown.clone();
+    let spawned = std::thread::Builder::new()
+        .name("repo watcher".into())
+        .spawn(move || {
+            #[cfg(test)]
+            held::wait(&root);
+            // Closed already: a quick A→B→C doesn't start B's.
+            if !live.load(Ordering::Relaxed) {
+                return;
+            }
+            let (tx, rx) = mpsc::channel();
+            let watcher = match watcher_for(&root, tx) {
+                Ok(w) => w,
+                Err(e) => {
+                    // The repo stays open, without live updates.
+                    errors::write("repo watcher", &format!("{}: {e}", root.display()));
+                    return;
+                }
+            };
+            {
+                let mut kept = lock(&slot);
+                if !live.load(Ordering::Relaxed) {
+                    // Closed while it came up: it stops here, on this thread.
+                    return;
+                }
+                *kept = Some(watcher);
+            }
+            if shown.load(Ordering::SeqCst) && live.load(Ordering::Relaxed) {
+                events(Event::RepoChanged(RepoChanged {
+                    root: root.to_string_lossy().into_owned(),
+                    worktree: true,
+                    git: true,
+                }));
+            }
+            // Ends when the watcher (and with it the sender) is gone.
+            relay(rx, &root, &live, &events);
+        });
+    if let Err(e) = spawned {
+        errors::write("repo watcher", &e.to_string());
+    }
+    watching
+}
+
+/// A watcher on the worktree and the git dirs outside it, started once for all of them: FSEvents
+/// restarts its stream for every `watch`.
+fn watcher_for(
+    root: &Path,
+    tx: mpsc::Sender<(Kind, PathBuf)>,
+) -> notify::Result<RecommendedWatcher> {
+    let external = ExternalGitDirs::find(root);
     let dirs: Vec<(PathBuf, RecursiveMode)> = [
         external
             .own
@@ -215,48 +322,75 @@ pub fn start(events: EventSink, root: PathBuf) -> Result<RecommendedWatcher, Str
     .into_iter()
     .flatten()
     .collect();
+    let watch_root = root.to_path_buf();
     let mut watcher = recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(event) = res {
             for change in route(&watch_root, &external, &event) {
                 let _ = tx.send(change);
             }
         }
-    })
-    .map_err(|e| e.to_string())?;
-    watcher
-        .watch(&root, RecursiveMode::Recursive)
-        .map_err(|e| e.to_string())?;
+    })?;
+    let mut paths = watcher.paths_mut();
+    paths.add(root, RecursiveMode::Recursive)?;
     for (dir, mode) in dirs {
-        // Best effort: a git dir that can't be watched shouldn't fail opening the repo.
-        let _ = watcher.watch(&dir, mode);
+        // Best effort: a git dir that can't be watched shouldn't leave the worktree unwatched.
+        let _ = paths.add(&dir, mode);
+    }
+    paths.commit()?;
+    Ok(watcher)
+}
+
+/// Tells the UI what the watcher heard, a burst at a time, while the repo is open.
+fn relay(rx: mpsc::Receiver<(Kind, PathBuf)>, root: &Path, live: &AtomicBool, events: &EventSink) {
+    debounce(rx, |batch| {
+        let mut change = RepoChanged {
+            root: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let mut touched = HashSet::new();
+        for (kind, path) in batch {
+            match kind {
+                Kind::Worktree => {
+                    touched.insert(path);
+                }
+                Kind::Git => change.git = true,
+            }
+        }
+        // A git change reloads the status anyway; no need to ask git which files count.
+        change.worktree = if change.git {
+            !touched.is_empty()
+        } else {
+            not_ignored(root, &touched)
+        };
+        if (change.worktree || change.git) && live.load(Ordering::Relaxed) {
+            events(Event::RepoChanged(change));
+        }
+    })
+}
+
+/// Holds a repo watcher's start the way a busy fseventsd did, which a test can't make happen.
+#[cfg(test)]
+pub(crate) mod held {
+    use std::path::{Path, PathBuf};
+    use std::sync::{mpsc, Mutex};
+
+    static HELD: Mutex<Vec<(PathBuf, mpsc::Receiver<()>)>> = Mutex::new(Vec::new());
+
+    /// `root`'s next watcher comes up once the returned sender is dropped.
+    pub(crate) fn hold(root: &Path) -> mpsc::Sender<()> {
+        let (tx, rx) = mpsc::channel();
+        super::lock(&HELD).push((root.to_path_buf(), rx));
+        tx
     }
 
-    // The thread ends when the watcher (and with it the sender) is dropped.
-    std::thread::spawn(move || {
-        debounce(rx, |batch| {
-            let mut change = RepoChanged {
-                root: root.to_string_lossy().into_owned(),
-                ..Default::default()
-            };
-            let mut touched = HashSet::new();
-            for (kind, path) in batch {
-                match kind {
-                    Kind::Worktree => {
-                        touched.insert(path);
-                    }
-                    Kind::Git => change.git = true,
-                }
-            }
-            // A git change reloads the status anyway; no need to ask git which files count.
-            change.worktree = if change.git {
-                !touched.is_empty()
-            } else {
-                not_ignored(&root, &touched)
-            };
-            if change.worktree || change.git {
-                events(Event::RepoChanged(change));
-            }
-        })
-    });
-    Ok(watcher)
+    pub(super) fn wait(root: &Path) {
+        let rx = {
+            let mut held = super::lock(&HELD);
+            let at = held.iter().position(|(r, _)| r == root);
+            at.map(|i| held.swap_remove(i).1)
+        };
+        if let Some(rx) = rx {
+            let _ = rx.recv();
+        }
+    }
 }

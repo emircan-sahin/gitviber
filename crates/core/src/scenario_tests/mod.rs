@@ -25,6 +25,7 @@ mod operations;
 mod patch;
 mod patch_edges;
 mod pr_checkout;
+mod refresh;
 mod review;
 mod rewrite;
 mod search;

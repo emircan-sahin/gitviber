@@ -21,7 +21,15 @@ pub struct PushTarget {
 /// `@{push}` for a branch. Under the default `push.default=simple`, git won't name it for a
 /// triangular setup although the push itself works; `current` is what it does then.
 pub(super) fn push_target(repo: &Path, branch: &str) -> Option<PushTarget> {
-    let mode = config_value(repo, None, "push.default");
+    push_target_as(repo, branch, config_value(repo, None, "push.default"))
+}
+
+/// `push_target` with `push.default` read already (`mode`).
+pub(super) fn push_target_as(
+    repo: &Path,
+    branch: &str,
+    mode: Option<String>,
+) -> Option<PushTarget> {
     let mut args = vec![];
     if matches!(mode.as_deref(), None | Some("simple")) {
         args.extend(["-c", "push.default=current"]);

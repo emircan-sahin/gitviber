@@ -8,7 +8,7 @@ use crate::state::{Core, Res};
 use std::path::Path;
 
 pub fn stashes(core: &Core) -> Res<Vec<git::Stash>> {
-    core.in_repo(git::stashes)
+    core.in_repo(|r| git::stashes_in(r, core.git_dirs(r).as_ref().map(|d| d.common.as_path())))
 }
 
 pub fn stash_files(core: &Core, sha: String) -> Res<git::StashFiles> {

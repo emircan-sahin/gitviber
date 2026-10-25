@@ -1,8 +1,9 @@
 //! The working tree's status: changed files, line counts, nested repos, the operation under way.
 
 use super::{
-    command, git_dir, is_binary, operation_in, publish_config, publish_remote_among, push_target,
-    read_regular, remote_urls, run, run_text, worktrees, PushTarget, MAX_TEXT_BYTES, PREPARED,
+    both, command, git_dirs, is_binary, operation_in, publish_config_in, publish_remote_among,
+    push_target_as, read_regular, remote_urls, run, run_text, worktrees, ConfigList, GitDirs,
+    PushTarget, MAX_TEXT_BYTES, PREPARED,
 };
 use crate::process::exec;
 use serde::Serialize;
@@ -71,7 +72,9 @@ pub struct Operation {
 pub struct RepoStatus {
     pub root: String,
     pub branch: Option<String>,
+    /// HEAD's first 7 digits; `head_oid` has them all.
     pub head: Option<String>,
+    pub head_oid: Option<String>,
     pub upstream: Option<String>,
     /// A checked-out pull request's number (`#7`) when the branch follows its
     /// `refs/pull/<n>/head`, which git names no upstream for.
@@ -227,21 +230,26 @@ pub(super) fn count_lines(repo: &Path, rel: &str, budget: &mut CountBudget) -> O
 }
 
 pub fn status(repo: &Path) -> Result<RepoStatus, String> {
-    let raw = run(
-        repo,
-        &[
-            "status",
-            "--porcelain=v2",
-            "-z",
-            "--branch",
-            "--untracked-files=all",
-        ],
-    )?;
-    let dir = git_dir(repo);
+    status_in(repo, git_dirs(repo).as_ref())
+}
+
+/// `status` with the repo's git dirs known (the open repo's are kept: api::changes::status).
+pub(crate) fn status_in(repo: &Path, dirs: Option<&GitDirs>) -> Result<RepoStatus, String> {
+    let args = [
+        "status",
+        "--porcelain=v2",
+        "-z",
+        "--branch",
+        "--untracked-files=all",
+    ];
+    let (raw, config) = both(|| run(repo, &args), || ConfigList::read(repo));
+    let (raw, config) = (raw?, config.ok());
+    let dir = dirs.map(|d| d.dir.as_path());
     let mut st = RepoStatus {
         root: repo.to_string_lossy().into_owned(),
         branch: None,
         head: None,
+        head_oid: None,
         upstream: None,
         follows: None,
         upstream_gone: false,
@@ -255,8 +263,8 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         staged: vec![],
         unstaged: vec![],
         conflicted: vec![],
-        operation: dir.as_deref().and_then(operation_in),
-        prepared_message: dir.as_deref().and_then(prepared_stamp),
+        operation: dir.and_then(operation_in),
+        prepared_message: dir.and_then(prepared_stamp),
     };
 
     let mut nested_roots = std::collections::HashSet::new();
@@ -268,7 +276,10 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         if let Some(h) = rec.strip_prefix("# ") {
             let (key, val) = h.split_once(' ').unwrap_or((h, ""));
             match key {
-                "branch.oid" if val != "(initial)" => st.head = Some(val.chars().take(7).collect()),
+                "branch.oid" if val != "(initial)" => {
+                    st.head = Some(val.chars().take(7).collect());
+                    st.head_oid = Some(val.to_string());
+                }
                 "branch.head" if val != "(detached)" => st.branch = Some(val.to_string()),
                 "branch.upstream" => {
                     st.upstream = Some(val.to_string());
@@ -357,17 +368,22 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
             .map(|h| h.trim().to_string())
             .or_else(|| disk_oid(repo, &f.path));
     }
-    if let Some(b) = &st.branch {
-        st.push = push_target(repo, b);
-    }
-    if let Ok(remotes) = remote_urls(repo) {
+    // `remote -v` where the list can't stand in for it.
+    let remotes = config
+        .as_ref()
+        .and_then(ConfigList::remote_urls)
+        .map_or_else(|| remote_urls(repo), Ok);
+    if let Ok(remotes) = remotes {
         let origin = remotes.iter().find(|(name, _)| name == "origin");
         st.origin = Some(origin.and_then(|(_, url)| url.clone()));
         st.remotes = remotes.into_iter().map(|(name, _)| name).collect();
     }
     if st.branch.is_some() && !st.remotes.is_empty() && (st.upstream.is_none() || st.upstream_gone)
     {
-        let config = publish_config(repo, st.branch.as_deref());
+        let config = config
+            .as_ref()
+            .map(|c| publish_config_in(c, st.branch.as_deref()))
+            .unwrap_or_default();
         if st.upstream.is_none() {
             st.follows = config
                 .merge
@@ -382,20 +398,27 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
     if st.unstaged.iter().any(|f| f.nested.is_some()) {
         drop_worktrees(repo, &mut st.unstaged);
     }
-    if !st.unstaged.is_empty() {
-        line_counts(repo, &["diff", "--numstat", "-z"], &mut st.unstaged);
-    }
-    if !st.staged.is_empty() {
-        line_counts(
-            repo,
-            &["diff", "--cached", "--numstat", "-z", "-M"],
-            &mut st.staged,
-        );
-    }
+    // None of these three waits on another.
+    let mode = config.as_ref().and_then(|c| c.value("push.default"));
+    let (branch, unstaged, staged) = (&st.branch, &mut st.unstaged, &mut st.staged);
+    let (push, ()) = both(
+        || branch.as_ref().and_then(|b| push_target_as(repo, b, mode)),
+        || {
+            both(
+                || line_counts(repo, &["diff", "--numstat", "-z"], unstaged),
+                || line_counts(repo, &["diff", "--cached", "--numstat", "-z", "-M"], staged),
+            );
+        },
+    );
+    st.push = push;
     Ok(st)
 }
 
+/// Counts `list`'s lines with `args` (a `diff --numstat`); nothing to count, no git call.
 fn line_counts(repo: &Path, args: &[&str], list: &mut [FileChange]) {
+    if list.is_empty() {
+        return;
+    }
     let cmd = command(repo, args);
     if let Ok(out) = exec(cmd, "git diff", &[], None, Some(NUMSTAT_TIMEOUT)) {
         apply_numstat(list, &parse_numstat(&out));

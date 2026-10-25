@@ -3,15 +3,20 @@
 
 use crate::events::{Event, EventSink};
 use crate::journal::{self, Action};
-use crate::{agents, askpass, errors, git, github, network, notifications, opened, pty, shell};
+use crate::{
+    agents, askpass, errors, git, github, network, notifications, opened, pty, shell, watch,
+};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 pub struct Core {
     pub(crate) repo: Mutex<Option<PathBuf>>,
-    pub(crate) watcher: Mutex<Option<notify::RecommendedWatcher>>,
+    /// The open repo's git dirs, read once it's asked: a refresh needs them, and open_repo or
+    /// close_repo starts over.
+    pub(crate) dirs: Mutex<Option<(PathBuf, git::GitDirs)>>,
+    pub(crate) watcher: Mutex<Option<watch::Watching>>,
     /// The Obsidian vault the explorer shows, watched while it does.
-    pub(crate) vault_watcher: Mutex<Option<notify::RecommendedWatcher>>,
+    pub(crate) vault_watcher: Mutex<Option<watch::Watching>>,
     pub github: github::Session,
     pub ptys: pty::Ptys,
     /// The agents running in terminals, and their state files watched.
@@ -41,6 +46,7 @@ impl Core {
     pub fn new(events: EventSink) -> Self {
         Core {
             repo: Mutex::default(),
+            dirs: Mutex::default(),
             watcher: Mutex::default(),
             vault_watcher: Mutex::default(),
             github: github::Session::default(),
@@ -97,6 +103,22 @@ impl Core {
     pub fn read_repo<T>(&self, f: impl FnOnce(&Path) -> Res<T>) -> Res<T> {
         let r = self.repo()?;
         git::reading(|| f(&r))
+    }
+
+    /// `repo`'s git dirs, read once while it's the open repo. None when git can't say.
+    pub(crate) fn git_dirs(&self, repo: &Path) -> Option<git::GitDirs> {
+        let lock = || self.dirs.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((root, dirs)) = lock().as_ref() {
+            if root == repo {
+                return Some(dirs.clone());
+            }
+        }
+        let dirs = git::git_dirs(repo)?;
+        // Only for the repo still open: one that changed meanwhile reads its own.
+        if self.repo().is_ok_and(|open| open == repo) {
+            *lock() = Some((repo.to_path_buf(), dirs.clone()));
+        }
+        Some(dirs)
     }
 
     /// `f` with the GitHub session and the open repo.
