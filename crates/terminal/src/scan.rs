@@ -11,6 +11,8 @@
 pub enum Found {
     /// What follows `133;`.
     Mark(String),
+    /// An OSC 133 past MAX_KEPT: what follows `133;` up to there, to a whole character.
+    CutMark(String),
     /// What follows `7;`: a file URL.
     Cwd(String),
     /// A notification escape: OSC 9, 777 or 99, and what follows its number.
@@ -37,7 +39,8 @@ enum State {
     SkipEsc,
 }
 
-/// Longer than any mark a shell sends (zsh's command line is cut at 200 characters, encoded).
+/// Longer than our zsh's marks (its command line is cut at 200 characters, encoded); fish's command
+/// line comes whole, so a longer mark keeps this much of it.
 const MAX_KEPT: usize = 4096;
 const MAX_CSI: usize = 16;
 /// An OSC 52 of the most the clipboard takes (about 1 MB decoded) fits.
@@ -50,6 +53,8 @@ pub struct Scanner {
     buf: Vec<u8>,
     /// Whether this OSC's payload is still kept: its number may be one we read.
     keep: bool,
+    /// An OSC 133 that grew past MAX_KEPT: its start is kept, the rest passed over.
+    cut: bool,
     /// This OSC's length so far.
     osc_len: usize,
 }
@@ -60,6 +65,7 @@ impl Default for Scanner {
             state: State::Ground,
             buf: Vec::new(),
             keep: true,
+            cut: false,
             osc_len: 0,
         }
     }
@@ -88,6 +94,7 @@ impl Scanner {
                     };
                     self.buf.clear();
                     self.keep = true;
+                    self.cut = false;
                     self.osc_len = 0;
                 }
                 State::Csi => match b {
@@ -108,13 +115,13 @@ impl Scanner {
                     }
                     0x1b => self.state = State::OscEsc,
                     0x18 | 0x1a => self.state = State::Ground,
-                    _ if self.keep => {
+                    _ if self.keep && !self.cut => {
                         self.osc_len += 1;
                         self.buf.push(b);
                         self.check_number();
                     }
                     _ => {
-                        // A payload not kept, an OSC 52's: on to its end, or to the cap.
+                        // A payload not kept (an OSC 52's) or kept whole: on to its end, or the cap.
                         let room = MAX_OSC.saturating_sub(self.osc_len);
                         let rest = &bytes[i..bytes.len().min(i + room)];
                         match rest
@@ -180,7 +187,13 @@ impl Scanner {
     /// Stops keeping a payload once its number isn't one we read, or it's grown past any mark.
     fn check_number(&mut self) {
         if self.buf.len() > MAX_KEPT {
-            self.keep = false;
+            // A C mark's command line can be any length: its start names the command.
+            if self.buf.starts_with(b"133;") {
+                self.buf.truncate(MAX_KEPT);
+                self.cut = true;
+            } else {
+                self.keep = false;
+            }
             return;
         }
         let number_done = self.buf.last() == Some(&b';') || self.buf.len() > 4;
@@ -200,9 +213,23 @@ impl Scanner {
         if !self.keep {
             return;
         }
+        if self.cut
+            && let Err(e) = std::str::from_utf8(&self.buf)
+            && e.error_len().is_none()
+        {
+            self.buf.truncate(e.valid_up_to());
+        }
         let text = String::from_utf8_lossy(&self.buf);
         if let Some(mark) = text.strip_prefix("133;") {
-            out.push((end, Found::Mark(mark.to_string())));
+            let mark = mark.to_string();
+            out.push((
+                end,
+                if self.cut {
+                    Found::CutMark(mark)
+                } else {
+                    Found::Mark(mark)
+                },
+            ));
         } else if let Some(url) = text.strip_prefix("7;") {
             out.push((end, Found::Cwd(url.to_string())));
         } else {
@@ -379,6 +406,31 @@ mod tests {
             out[1..],
             [(0, Found::OscSkipped { esc: true }), (3, Found::XtVersion)]
         );
+    }
+
+    /// fish sends the command line whole: a mark past MAX_KEPT keeps its start, so the command
+    /// still gets its mark, its time and its notification.
+    #[test]
+    fn a_mark_past_the_cap_keeps_its_start_to_a_whole_character() {
+        let mut bytes = b"\x1b]133;C;cmdline=echo ".to_vec();
+        bytes.extend("ş".repeat(3000).as_bytes());
+        bytes.push(0x07);
+        let end = bytes.len();
+        bytes.extend(b"\x1b]133;D;0\x07");
+        let (a, b) = bytes.split_at(1000);
+        let found = scan(&[a, b]);
+        let [(1, at, Found::CutMark(data)), (1, _, Found::Mark(d))] = &found[..] else {
+            panic!("{found:?}")
+        };
+        assert_eq!((*at, d.as_str()), (end - 1000, "D;0"));
+        // "133;C;cmdline=echo " is odd: the cut falls inside a ş.
+        assert_eq!(data.len(), MAX_KEPT - "133;".len() - 1);
+        assert!(data.starts_with("C;cmdline=echo şş") && data.ends_with('ş'));
+        // Past the cap another number's payload is still dropped: a cut folder would be wrong.
+        let mut seven = b"\x1b]7;file:///".to_vec();
+        seven.extend(std::iter::repeat_n(b'a', MAX_KEPT));
+        seven.push(0x07);
+        assert!(scan(&[&seven]).is_empty());
     }
 
     #[test]

@@ -97,13 +97,15 @@ impl AgentsButton {
     }
 }
 
-/// "45s", "12m", "3h": how long an agent has been in its state.
+/// "<1m", "42m", "3h 5m", "2d": how long an agent has been in its state, as a glance needs it.
+/// No seconds: the menu redraws every 30 s.
 fn short_duration(secs: f64) -> String {
-    let s = secs.max(0.) as u64;
-    match s {
-        0..60 => format!("{s}s"),
-        60..3600 => format!("{}m", s / 60),
-        _ => format!("{}h", s / 3600),
+    let m = secs.max(0.) as u64 / 60;
+    match m {
+        0 => "<1m".into(),
+        1..60 => format!("{m}m"),
+        60..1440 => format!("{}h {}m", m / 60, m % 60),
+        _ => format!("{}d", m / 1440),
     }
 }
 
@@ -357,5 +359,20 @@ impl TerminalPanel {
                 )
             })
             .unwrap_or_else(|| folder_name(cwd))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::short_duration;
+
+    #[test]
+    fn durations_at_a_glance() {
+        assert_eq!(short_duration(-5.), "<1m");
+        assert_eq!(short_duration(59.), "<1m");
+        assert_eq!(short_duration(42. * 60. + 30.), "42m");
+        assert_eq!(short_duration(3. * 3600. + 5. * 60.), "3h 5m");
+        assert_eq!(short_duration(23. * 3600. + 59. * 60.), "23h 59m");
+        assert_eq!(short_duration(50. * 3600.), "2d");
     }
 }

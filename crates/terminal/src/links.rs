@@ -3,7 +3,7 @@
 //! time, on chars (a line's offsets are char indices), then resolved against the repo's file list.
 //! Pure, so it's tested here.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkKind {
@@ -715,6 +715,26 @@ impl FileIndex {
             }
             dirs
         })
+    }
+
+    /// `paths` by their lowercase, spelled as the index has them: the disk finds a path in any
+    /// case (APFS), and a tab opened by another spelling would be the file's second. One pass.
+    pub fn spellings<'a>(
+        &self,
+        paths: impl IntoIterator<Item = &'a str>,
+    ) -> HashMap<String, String> {
+        let want: HashSet<String> = paths.into_iter().map(str::to_lowercase).collect();
+        let mut out = HashMap::new();
+        if want.is_empty() {
+            return out;
+        }
+        for f in self.files.iter().chain(self.folders()) {
+            let lower = f.to_lowercase();
+            if want.contains(&lower) {
+                out.insert(lower, f.clone());
+            }
+        }
+        out
     }
 
     /// The one file whose path ends in `tail`; None for none, or more than one.
@@ -1497,6 +1517,38 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn join_stays_inside_the_repo() {
+        assert_eq!(
+            join("src/lib", "../features/./A.tsx").as_deref(),
+            Some("src/features/A.tsx")
+        );
+        assert_eq!(join("src", "../.."), None);
+        assert_eq!(join("", ".."), None);
+        assert_eq!(join("src", "..").as_deref(), Some(""));
+        assert_eq!(join("", "a//b/").as_deref(), Some("a/b"));
+    }
+
+    /// The disk finds a path in any case: a file or a folder opens as the index spells it.
+    #[test]
+    fn what_the_disk_found_in_another_case_is_spelled_as_the_index_has_it() {
+        let pairs = |p: &[(&str, &str)]| {
+            p.iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect::<HashMap<_, _>>()
+        };
+        assert_eq!(
+            index().spellings(["SRC/lib/API.ts", "src/LIB", "nope.ts"]),
+            pairs(&[("src/lib/api.ts", "src/lib/api.ts"), ("src/lib", "src/lib")])
+        );
+        let notes = FileIndex::new(["Notlar/Özet.md".to_string()]);
+        assert_eq!(
+            notes.spellings(["notlar/ÖZET.md", "NOTLAR"]),
+            pairs(&[("notlar/özet.md", "Notlar/Özet.md"), ("notlar", "Notlar")])
+        );
+        assert!(notes.spellings([]).is_empty());
     }
 
     #[test]

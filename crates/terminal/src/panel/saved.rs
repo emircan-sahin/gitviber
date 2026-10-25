@@ -167,10 +167,13 @@ fn safe_name(name: &str) -> bool {
         && !name.starts_with('.')
 }
 
-/// `raw` as a layout of `n` panes by index, each leaf once; else a row of them, as an older save
-/// or a broken one would leave it.
+/// Splits nested deeper than any screen shows: a hand-edited save, not a layout.
+const MAX_DEPTH: usize = 16;
+
+/// `raw` as a layout of `n` panes by index, each leaf once, its sizes rescaled to 100 as a divider
+/// drag and a close take them; else a row of them, as an older save or a broken one would leave it.
 pub(super) fn saved_layout(raw: Option<&Value>, n: usize) -> Layout {
-    fn read(v: &Value, n: usize, seen: &mut Vec<bool>) -> Option<Layout> {
+    fn read(v: &Value, n: usize, seen: &mut Vec<bool>, depth: usize) -> Option<Layout> {
         if let Some(i) = v.as_u64() {
             let i = i as usize;
             if i >= n || seen[i] {
@@ -178,6 +181,9 @@ pub(super) fn saved_layout(raw: Option<&Value>, n: usize) -> Layout {
             }
             seen[i] = true;
             return Some(Layout::Pane(i as PaneId));
+        }
+        if depth >= MAX_DEPTH {
+            return None;
         }
         let dir = match v.get("dir")?.as_str()? {
             "row" => Dir::Row,
@@ -188,7 +194,7 @@ pub(super) fn saved_layout(raw: Option<&Value>, n: usize) -> Layout {
             .get("children")?
             .as_array()?
             .iter()
-            .map(|c| read(c, n, seen))
+            .map(|c| read(c, n, seen, depth + 1))
             .collect::<Option<_>>()?;
         let sizes: Vec<f64> = v
             .get("sizes")?
@@ -196,17 +202,21 @@ pub(super) fn saved_layout(raw: Option<&Value>, n: usize) -> Layout {
             .iter()
             .map(Value::as_f64)
             .collect::<Option<_>>()?;
+        let total: f64 = sizes.iter().sum();
         (children.len() >= 2
             && sizes.len() == children.len()
-            && sizes.iter().all(|s| s.is_finite() && *s > 0.))
-        .then_some(Layout::Split(Split {
-            dir,
-            children,
-            sizes,
-        }))
+            && sizes.iter().all(|s| s.is_finite() && *s > 0.)
+            && total.is_finite())
+        .then(|| {
+            Layout::Split(Split {
+                dir,
+                children,
+                sizes: sizes.iter().map(|s| s * 100. / total).collect(),
+            })
+        })
     }
     let mut seen = vec![false; n];
-    match raw.and_then(|v| read(v, n, &mut seen)) {
+    match raw.and_then(|v| read(v, n, &mut seen, 0)) {
         Some(l) if seen.iter().all(|s| *s) => l,
         _ => layout::row(&(0..n as PaneId).collect::<Vec<_>>()),
     }
@@ -777,6 +787,7 @@ impl TerminalPanel {
 mod tests {
     use super::*;
     use gpui::{TestAppContext, VisualTestContext};
+    use serde_json::json;
 
     /// A `cd` in a shell without the integration, which no prompt mark tells of, is saved: the
     /// shell's process is asked where it is, off the UI thread.
@@ -850,6 +861,81 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// A save restored: each tab's splits, sizes and focused pane come back under the new panes'
+    /// ids, and the same tab is open.
+    #[gpui::test]
+    fn saved_tabs_come_back_split_as_they_were_under_new_ids(cx: &mut TestAppContext) {
+        // Settings (how agents resume) and the save in a folder of the test's own.
+        let base = gitviber_ui::test_support::config_dir("term-restore");
+        // SAFETY: nextest gives each test its own process; no shell has started yet.
+        unsafe { std::env::set_var("SHELL", "/bin/sh") };
+        cx.executor().allow_parking();
+        cx.executor().forbid_parking();
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            crate::init(cx);
+        });
+        let core = Arc::new(Core::new(Arc::new(|_| {})));
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            TerminalPanel::new(
+                core.clone(),
+                base.clone(),
+                TerminalConfig::default(),
+                TerminalTheme::dark(),
+                window,
+                cx,
+            )
+        });
+        panel.update_in(cx, |p, window, cx| {
+            p.open_terminal(base.clone(), None, window, cx);
+            p.split(Dir::Row, None, window, cx);
+            p.split(Dir::Col, None, window, cx);
+            p.open_terminal(base.clone(), None, window, cx);
+            p.split(Dir::Col, None, window, cx);
+            // A divider dragged: the first tab's sizes aren't even.
+            let set = p.set_mut();
+            let g = &mut set.groups[0];
+            g.layout = layout::resize(&g.layout, &[], &[30., 70.]);
+            g.focused = g.panes[0];
+            set.active = Some(g.id);
+        });
+        type Tab = (Vec<PaneId>, Layout, PaneId);
+        let tabs = |cx: &mut VisualTestContext| -> (Vec<Tab>, Option<usize>) {
+            panel.read_with(cx, |p, _| {
+                let s = p.set().expect("a set");
+                let tabs = s
+                    .groups
+                    .iter()
+                    .map(|g| (g.panes.clone(), g.layout.clone(), g.focused))
+                    .collect();
+                (tabs, s.groups.iter().position(|g| Some(g.id) == s.active))
+            })
+        };
+        let (before, open) = tabs(cx);
+        assert!(matches!(&before[0].1, Layout::Split(s) if s.sizes == [30., 70.]));
+        panel.update_in(cx, |p, window, cx| {
+            let saved = p.saved_set(p.set().expect("a set"), cx);
+            p.close_all(cx);
+            let root = p.root.clone();
+            p.offers.insert(root.clone(), saved);
+            p.accept_restore(&root, window, cx);
+        });
+        let (after, reopened) = tabs(cx);
+        assert_eq!((after.len(), reopened), (before.len(), open));
+        for ((old, layout, focused), (new, restored, refocused)) in before.iter().zip(&after) {
+            assert!(new.iter().all(|id| !old.contains(id)), "new ids");
+            let to_new = |id: PaneId| new[old.iter().position(|p| *p == id).unwrap()];
+            assert_eq!(
+                rounded(restored),
+                rounded(&layout::map_panes(layout, &to_new))
+            );
+            assert_eq!(*refocused, to_new(*focused));
+        }
+        panel.update(cx, |p, cx| p.close_all(cx));
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+    }
+
     #[test]
     fn the_old_apps_tabs_go_to_their_folders_with_their_histories_in_files() {
         let old = serde_json::json!({
@@ -898,7 +984,7 @@ mod tests {
             Layout::Split(Split {
                 dir: Dir::Row,
                 children: vec![Layout::Pane(0), Layout::Pane(1)],
-                sizes: vec![0.5, 0.5]
+                sizes: vec![50., 50.]
             })
         );
     }
@@ -919,8 +1005,155 @@ mod tests {
             saved_layout(Some(&serde_json::json!(0)), 1),
             Layout::Pane(0)
         );
+        let split = |children: Value, sizes: Value| serde_json::json!({"dir": "row", "children": children, "sizes": sizes});
+        let two = layout::row(&[0, 1]);
+        for (bad, why) in [
+            (split(json!([0, 1]), json!([50, -50])), "a negative size"),
+            (split(json!([0, 1]), json!([50, 0])), "a zero size"),
+            (
+                split(json!([0, 1]), json!([1e308, 1e308])),
+                "sizes past f64",
+            ),
+            (split(json!([0, 1]), json!([50, "50"])), "a string size"),
+            (split(json!([0, 1]), json!([50])), "a size missing"),
+            (split(json!([0]), json!([100])), "a split of one"),
+            (split(json!([0, null]), json!([50, 50])), "a null child"),
+            (split(json!([0, "1"]), json!([50, 50])), "a string child"),
+            (
+                split(json!([0, {"children": [1]}]), json!([50, 50])),
+                "a child without a direction",
+            ),
+            (
+                json!({"dir": "diagonal", "children": [0, 1], "sizes": [50, 50]}),
+                "no such direction",
+            ),
+        ] {
+            assert_eq!(saved_layout(Some(&bad), 2), two, "{why}");
+        }
+        assert_eq!(
+            saved_layout(Some(&split(json!([0, 1]), json!([50, 50]))), 3),
+            row,
+            "a pane missing from it"
+        );
         assert!(safe_name("0a1b.ans"));
         assert!(!safe_name("../x.ans") && !safe_name("/etc/passwd") && !safe_name(".ans"));
+    }
+
+    /// A divider drag and a close take a split's sizes as percents: a save's are made so.
+    #[test]
+    fn saved_sizes_are_rescaled_to_100_and_splits_nest_16_deep() {
+        let saved = json!({"dir": "col", "children": [0, 1], "sizes": [1, 3]});
+        assert_eq!(
+            saved_layout(Some(&saved), 2),
+            Layout::Split(Split {
+                dir: Dir::Col,
+                children: vec![Layout::Pane(0), Layout::Pane(1)],
+                sizes: vec![25., 75.]
+            })
+        );
+        // Each split's first child a pane, its second the next split: `depth` splits, one in another.
+        let nested = |depth: usize| {
+            let mut v = json!(depth);
+            for i in (0..depth).rev() {
+                v = json!({"dir": if i % 2 == 0 { "row" } else { "col" }, "children": [i, v], "sizes": [50, 50]});
+            }
+            v
+        };
+        assert_ne!(
+            saved_layout(Some(&nested(MAX_DEPTH)), MAX_DEPTH + 1),
+            layout::row(&(0..=MAX_DEPTH as PaneId).collect::<Vec<_>>())
+        );
+        let deeper = MAX_DEPTH + 1;
+        assert_eq!(
+            saved_layout(Some(&nested(deeper)), deeper + 1),
+            layout::row(&(0..=deeper as PaneId).collect::<Vec<_>>()),
+            "nested past any screen"
+        );
+    }
+
+    /// Sizes to a millionth: a save's rescale may differ in the last bits.
+    fn rounded(l: &Layout) -> Layout {
+        match l {
+            Layout::Pane(id) => Layout::Pane(*id),
+            Layout::Split(s) => Layout::Split(Split {
+                dir: s.dir,
+                children: s.children.iter().map(rounded).collect(),
+                sizes: s.sizes.iter().map(|x| (x * 1e6).round() / 1e6).collect(),
+            }),
+        }
+    }
+
+    /// `l` saved with its panes by their place in `order` (a tab's panes), through the file's
+    /// text, and restored under the ids `new` gives each place.
+    fn round_trip(l: &Layout, order: &[PaneId], new: impl Fn(usize) -> PaneId) -> Layout {
+        let value = layout_value(l, &|id| order.iter().position(|p| *p == id).unwrap());
+        let text = serde_json::to_string(&value).unwrap();
+        let back: Value = serde_json::from_str(&text).unwrap();
+        layout::map_panes(
+            &saved_layout(Some(&back), order.len()),
+            &|i| new(i as usize),
+        )
+    }
+
+    #[test]
+    fn a_save_restores_the_same_tree_under_the_new_panes_ids() {
+        let split = |dir, children, sizes| {
+            Layout::Split(Split {
+                dir,
+                children,
+                sizes,
+            })
+        };
+        let l = split(
+            Dir::Col,
+            vec![
+                split(
+                    Dir::Row,
+                    vec![
+                        Layout::Pane(7),
+                        split(
+                            Dir::Col,
+                            vec![Layout::Pane(9), Layout::Pane(8)],
+                            vec![40., 60.],
+                        ),
+                    ],
+                    vec![30., 70.],
+                ),
+                Layout::Pane(12),
+            ],
+            vec![65., 35.],
+        );
+        let order = layout::leaves(&l);
+        let ids = [101, 102, 103, 104];
+        let want = layout::map_panes(&l, &|id| ids[order.iter().position(|p| *p == id).unwrap()]);
+        assert_eq!(rounded(&round_trip(&l, &order, |i| ids[i])), rounded(&want));
+        // Whatever a run of splits and closes leaves, its panes in the order they opened.
+        let mut seed: u32 = 7;
+        let mut random = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            seed >> 8
+        };
+        let (mut l, mut live, mut next) = (Layout::Pane(1), vec![1], 2);
+        for _ in 0..300 {
+            let pick = live[random() as usize % live.len()];
+            if live.len() > 1 && random() % 5 < 2 {
+                l = layout::remove_pane(&l, pick).unwrap();
+                live.retain(|&id| id != pick);
+            } else {
+                let dir = if random() % 2 == 0 {
+                    Dir::Row
+                } else {
+                    Dir::Col
+                };
+                l = layout::split_pane(&l, pick, next, dir);
+                live.push(next);
+                next += 1;
+            }
+            let new = |i: usize| 1000 + i as PaneId;
+            let want =
+                layout::map_panes(&l, &|id| new(live.iter().position(|p| *p == id).unwrap()));
+            assert_eq!(rounded(&round_trip(&l, &live, new)), rounded(&want));
+        }
     }
 
     #[test]

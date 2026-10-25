@@ -227,16 +227,15 @@ fn resolve_all(
     if !new.is_empty() {
         let kinds = files::path_kinds(core, new.clone())
             .unwrap_or_else(|_| new.iter().map(|_| None).collect());
+        let there = new.iter().zip(&kinds).filter(|(_, k)| k.is_some());
+        let cased = index.spellings(there.map(|(p, _)| p.as_str()));
         for (p, k) in new.into_iter().zip(kinds) {
             let answer = k.map(|k| {
-                // The index's spelling, when the disk found it in another case.
-                let cased = index
-                    .files
-                    .iter()
-                    .find(|f| f.eq_ignore_ascii_case(&p))
+                let path = cased
+                    .get(&p.to_lowercase())
                     .cloned()
                     .unwrap_or_else(|| p.clone());
-                (cased, matches!(k, Kind::Dir))
+                (path, matches!(k, Kind::Dir))
             });
             c.disk.insert(p, answer);
         }
@@ -368,11 +367,28 @@ pub fn hyperlink_file(
             dir: true,
         });
     }
-    let kind = files::path_kinds(core, vec![path.clone()])
-        .ok()?
-        .pop()
-        .flatten()?;
-    let dir = matches!(kind, Kind::Dir);
+    // As a terminal link's: asked once, spelled as the index has it.
+    let known = match c.disk.get(&path) {
+        Some(known) => known.clone(),
+        None => {
+            let kind = files::path_kinds(core, vec![path.clone()])
+                .ok()?
+                .pop()
+                .flatten();
+            let known = kind.map(|k| {
+                let cased = index
+                    .spellings([path.as_str()])
+                    .remove(&path.to_lowercase());
+                (
+                    cased.unwrap_or_else(|| path.clone()),
+                    matches!(k, Kind::Dir),
+                )
+            });
+            c.disk.insert(path, known.clone());
+            known
+        }
+    };
+    let (path, dir) = known?;
     Some(Target::Path {
         path,
         line: if dir { None } else { line },
@@ -399,5 +415,61 @@ mod tests {
             (Some(".claude/worktrees/x/src".into()), false)
         );
         assert_eq!(place(&site, "/elsewhere"), (None, false));
+    }
+
+    /// The disk finds a path in any case (APFS): a folder, or a file not named in ASCII (a
+    /// hyperlink's), that the output spells otherwise opens as the repo spells it, not as a second
+    /// tab of it.
+    #[test]
+    fn a_path_spelled_in_another_case_opens_as_the_repo_spells_it() {
+        let base = std::env::temp_dir().join(format!("gv-link-case-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("src/Lib")).unwrap();
+        std::fs::write(base.join("src/Lib/Özet.md"), "x").unwrap();
+        // A case-sensitive disk finds neither: nothing to fix there.
+        if base.join("SRC").exists() {
+            let git = std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&base)
+                .status()
+                .unwrap();
+            assert!(git.success());
+            let core = Core::new(Arc::new(|_| {}));
+            let root = gitviber_core::api::repo::open_repo(&core, base.to_string_lossy().into())
+                .unwrap()
+                .root;
+            let site = LinkSite {
+                root: root.clone(),
+                ..Default::default()
+            };
+            let line: Vec<char> = "see src/LIB/ and SRC/lib/".chars().collect();
+            let found = crate::links::find_terminal_links(&line, None);
+            let cache = SharedCache::default();
+            let paths: Vec<(String, bool)> =
+                resolve_links(&core, &cache, &site, &root, &found, &[])
+                    .into_iter()
+                    .filter_map(|(_, _, t)| match t {
+                        Target::Path { path, dir, .. } => Some((path, dir)),
+                        _ => None,
+                    })
+                    .collect();
+            assert_eq!(paths, [("src/Lib".into(), true), ("src/Lib".into(), true)]);
+            let link = Target::Path {
+                path: "src/lib/ÖZET.md".into(),
+                line: Some(3),
+                column: None,
+                dir: false,
+            };
+            assert_eq!(
+                hyperlink_file(&core, &cache, &site, link),
+                Some(Target::Path {
+                    path: "src/Lib/Özet.md".into(),
+                    line: Some(3),
+                    column: None,
+                    dir: false,
+                })
+            );
+        }
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

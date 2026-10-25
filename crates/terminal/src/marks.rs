@@ -33,6 +33,16 @@ pub struct Mark {
 /// A mark from what follows `133;`. C may say what was typed: fish's `cmdline_url=`
 /// (percent-encoded), or `cmdline=`, the rest of the mark as typed.
 pub fn parse_mark(data: &str) -> Option<Mark> {
+    parse(data, false)
+}
+
+/// A mark the scanner kept only the start of: a command line it cuts is longer, and an escape it
+/// cuts in half is left out.
+pub fn parse_cut_mark(data: &str) -> Option<Mark> {
+    parse(data, true)
+}
+
+fn parse(data: &str, cut: bool) -> Option<Mark> {
     let mut fields = data.split(';');
     let kind = match fields.next()? {
         "A" => MarkKind::A,
@@ -48,7 +58,9 @@ pub fn parse_mark(data: &str) -> Option<Mark> {
             .and_then(|a| a.parse().ok()),
         _ => None,
     };
-    let command = (kind == MarkKind::C).then(|| command_line(data)).flatten();
+    let command = (kind == MarkKind::C)
+        .then(|| command_line(data, cut))
+        .flatten();
     Some(Mark {
         kind,
         exit,
@@ -59,20 +71,24 @@ pub fn parse_mark(data: &str) -> Option<Mark> {
 /// A notification's or a tooltip's worth of it: a long one ends in "…".
 const MAX_COMMAND: usize = 80;
 
-fn command_line(data: &str) -> Option<String> {
-    let text = if let Some(at) = data.find(";cmdline=") {
-        data[at + ";cmdline=".len()..].to_string()
+fn command_line(data: &str, cut: bool) -> Option<String> {
+    let (text, cut) = if let Some(at) = data.find(";cmdline=") {
+        (data[at + ";cmdline=".len()..].to_string(), cut)
     } else {
         let at = data.find(";cmdline_url=")?;
         let rest = &data[at + ";cmdline_url=".len()..];
+        let cut = cut && !rest.contains(';');
         // Malformed escapes: no name, rather than a wrong one.
-        percent_decode(rest.split(';').next().unwrap_or(""))?
+        (
+            percent_decode(rest.split(';').next().unwrap_or(""), cut)?,
+            cut,
+        )
     };
     let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if line.is_empty() {
         return None;
     }
-    if line.chars().count() > MAX_COMMAND {
+    if cut || line.chars().count() > MAX_COMMAND {
         let mut cut: String = line.chars().take(MAX_COMMAND - 1).collect();
         cut.push('…');
         return Some(cut);
@@ -80,13 +96,17 @@ fn command_line(data: &str) -> Option<String> {
     Some(line)
 }
 
-/// As decodeURIComponent: `%XX` bytes that must make UTF-8, any other escape an error.
-fn percent_decode(s: &str) -> Option<String> {
+/// As decodeURIComponent: `%XX` bytes that must make UTF-8, any other escape an error. `cut`: `s`
+/// was cut short, so an escape or a character it ends inside of is left out.
+fn percent_decode(s: &str, cut: bool) -> Option<String> {
     let mut out = Vec::with_capacity(s.len());
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' {
+            if cut && i + 3 > bytes.len() {
+                break;
+            }
             let hex = s.get(i + 1..i + 3)?;
             out.push(u8::from_str_radix(hex, 16).ok()?);
             i += 3;
@@ -95,7 +115,16 @@ fn percent_decode(s: &str) -> Option<String> {
             i += 1;
         }
     }
-    String::from_utf8(out).ok()
+    match String::from_utf8(out) {
+        Ok(text) => Some(text),
+        Err(e) if cut && e.utf8_error().error_len().is_none() => {
+            let whole = e.utf8_error().valid_up_to();
+            let mut bytes = e.into_bytes();
+            bytes.truncate(whole);
+            String::from_utf8(bytes).ok()
+        }
+        Err(_) => None,
+    }
 }
 
 /// How a command ended, from its output's mark (C) to its end (D) or the next prompt.
@@ -306,7 +335,8 @@ pub struct Marks {
 }
 
 impl Marks {
-    pub fn on<T>(&mut self, mark: &Mark, term: &mut Term<T>) -> Option<Effect> {
+    /// `now`: when the mark came, which times its command.
+    pub fn on<T>(&mut self, mark: &Mark, term: &mut Term<T>, now: Instant) -> Option<Effect> {
         // A shell under a full-screen program (tmux) marks lines that aren't the history's.
         if term.mode().contains(TermMode::ALT_SCREEN) {
             return None;
@@ -317,7 +347,7 @@ impl Marks {
                 let mut effect = None;
                 // No D (the shell was interrupted, or doesn't send one): it ended here.
                 if let Some(id) = self.current.take().and_then(|c| c.id) {
-                    effect = self.ended(term, id, None).map(Effect::Ended);
+                    effect = self.ended(term, id, None, now).map(Effect::Ended);
                 }
                 self.current = Some(Current {
                     line: cursor.line.0,
@@ -333,13 +363,14 @@ impl Marks {
                 // cleared it), above the output.
                 let row = (current.line - current.scrolled).clamp(0, (cursor.line.0 - 1).max(0));
                 let id = self.next_id;
-                self.next_id = self.next_id.wrapping_add(1);
+                // Ids are what a row's mark can tell apart.
+                self.next_id = (self.next_id + 1) % MARK_IDS;
                 term.grid_mut()[Line(row)][Column(0)].push_zerowidth(mark_char(id));
                 current.id = Some(id);
                 self.commands.push_back(Command {
                     id,
                     command: mark.command.clone(),
-                    started: Instant::now(),
+                    started: now,
                     out: logical_offset(term, Line(row), cursor),
                     end: None,
                 });
@@ -351,13 +382,19 @@ impl Marks {
             MarkKind::D => {
                 let id = self.current.as_ref().and_then(|c| c.id)?;
                 self.current = None;
-                self.ended(term, id, mark.exit).map(Effect::Ended)
+                self.ended(term, id, mark.exit, now).map(Effect::Ended)
             }
             MarkKind::B => None,
         }
     }
 
-    fn ended<T>(&mut self, term: &Term<T>, id: u32, exit: Option<i32>) -> Option<CommandEnd> {
+    fn ended<T>(
+        &mut self,
+        term: &Term<T>,
+        id: u32,
+        exit: Option<i32>,
+        now: Instant,
+    ) -> Option<CommandEnd> {
         let cursor = term.grid().cursor.point;
         let row = find_mark(term, id, cursor.line);
         let c = self
@@ -366,7 +403,7 @@ impl Marks {
             .find(|c| c.id == id && c.end.is_none())?;
         let end = CommandEnd {
             command: c.command.clone(),
-            duration: c.started.elapsed(),
+            duration: now.saturating_duration_since(c.started),
             exit,
         };
         c.end = Some(Ended {
@@ -639,6 +676,29 @@ mod tests {
         assert!(long.ends_with('…'));
     }
 
+    /// The scanner keeps a long mark's start: the command line it cuts goes on, and the escapes it
+    /// cuts in half are left out.
+    #[test]
+    fn a_cut_marks_command_line_is_its_start() {
+        let cut = |s: &str| parse_cut_mark(s).unwrap().command;
+        assert_eq!(cut("C;cmdline=echo ab").as_deref(), Some("echo ab…"));
+        assert_eq!(cut("C;cmdline_url=make%20a%2").as_deref(), Some("make a…"));
+        assert_eq!(cut("C;cmdline_url=make%20a%").as_deref(), Some("make a…"));
+        assert_eq!(
+            cut("C;cmdline_url=echo%20%C5%9F%C5").as_deref(),
+            Some("echo ş…")
+        );
+        // A field that ended before the cut is whole; a bad escape before it is still no name.
+        assert_eq!(cut("C;cmdline_url=ls;aid=12").as_deref(), Some("ls"));
+        assert_eq!(cut("C;cmdline_url=%ZZls%2"), None);
+        assert_eq!(parse_cut_mark("D;0").unwrap().exit, Some(0));
+        // Whole, a half escape at the end is no name.
+        assert_eq!(
+            parse_mark("C;cmdline_url=make%20a%2").unwrap().command,
+            None
+        );
+    }
+
     fn end(ms: u64, exit: Option<i32>, command: Option<&str>) -> CommandEnd {
         CommandEnd {
             command: command.map(Into::into),
@@ -731,6 +791,9 @@ mod tests {
         marks: Marks,
         counter: ScrollCounter,
         effects: Vec<Effect>,
+        /// The clock the marks come at, set by hand.
+        start: Instant,
+        now: Instant,
     }
 
     impl Shell {
@@ -745,7 +808,26 @@ mod tests {
                 marks: Marks::default(),
                 counter: ScrollCounter::default(),
                 effects: vec![],
+                start: Instant::now(),
+                now: Instant::now(),
             }
+        }
+        /// The marks that follow come `ms` into the session.
+        fn at(&mut self, ms: u64) -> &mut Self {
+            self.now = self.start + Duration::from_millis(ms);
+            self
+        }
+        /// What ended, in order: the command, how long it took in ms, its exit code.
+        fn ends(&self) -> Vec<(Option<&str>, u128, Option<i32>)> {
+            self.effects
+                .iter()
+                .filter_map(|e| match e {
+                    Effect::Ended(e) => {
+                        Some((e.command.as_deref(), e.duration.as_millis(), e.exit))
+                    }
+                    Effect::Prompt => None,
+                })
+                .collect()
         }
         fn print(&mut self, text: &str) {
             let rows = self
@@ -757,8 +839,13 @@ mod tests {
         }
         fn mark(&mut self, data: &str) {
             let mark = parse_mark(data).unwrap();
-            if let Some(e) = self.marks.on(&mark, &mut self.term) {
+            if let Some(e) = self.marks.on(&mark, &mut self.term, self.now) {
                 self.effects.push(e);
+            }
+        }
+        fn marks(&mut self, data: &[&str]) {
+            for d in data {
+                self.mark(d);
             }
         }
         /// A prompt, a command typed at it, its output and its end.
@@ -956,5 +1043,125 @@ mod tests {
         let rows = sh.counter.advance(&mut sh.parser, &mut sh.term, b"z\r\n");
         assert_eq!(rows, 1);
         assert_eq!(sh.term.grid().display_offset(), 3);
+    }
+
+    #[test]
+    fn a_commands_time_runs_from_its_c_to_its_d() {
+        let mut sh = Shell::new(100);
+        sh.at(0).mark("A");
+        sh.at(1000).mark("C;cmdline=pnpm test");
+        sh.at(13_500).mark("D;1");
+        assert_eq!(sh.ends(), [(Some("pnpm test"), 12_500, Some(1))]);
+        // No D (a killed shell's command): it ends at the next prompt, how unknown; a dead one never.
+        let mut sh = Shell::new(100);
+        sh.at(0).marks(&["A", "C;cmdline=sleep 100"]);
+        sh.at(20_000).mark("A");
+        sh.at(21_000).mark("C;cmdline=tail -f log");
+        assert_eq!(sh.ends(), [(Some("sleep 100"), 20_000, None)]);
+    }
+
+    #[test]
+    fn an_empty_line_a_ctrl_c_at_the_prompt_and_a_d_with_no_c_end_nothing() {
+        let mut sh = Shell::new(100);
+        sh.marks(&["D;0", "A", "D;0", "A", "D;130", "A", "B", "A"]);
+        assert_eq!(
+            sh.effects,
+            [
+                Effect::Prompt,
+                Effect::Prompt,
+                Effect::Prompt,
+                Effect::Prompt
+            ]
+        );
+    }
+
+    #[test]
+    fn ssh_to_a_host_that_marks_its_prompts_too_then_exit() {
+        let mut sh = Shell::new(100);
+        sh.at(0).marks(&["A", "C;cmdline=ssh box"]);
+        // The remote's first prompt ends the local command as far as the marks can tell.
+        sh.at(4000).mark("A");
+        sh.at(5000).mark("C;cmdline=make");
+        sh.at(65_000).marks(&["D;0", "A"]);
+        sh.at(66_000).mark("C;cmdline=exit");
+        // The local shell's D for ssh lands on the remote's `exit`.
+        sh.at(66_200).marks(&["D;255", "A"]);
+        assert_eq!(
+            sh.ends(),
+            [
+                (Some("ssh box"), 4000, None),
+                (Some("make"), 60_000, Some(0)),
+                (Some("exit"), 200, Some(255)),
+            ]
+        );
+        // A sub-shell without marks: the command that started it runs until it exits.
+        let mut sh = Shell::new(100);
+        sh.at(0).marks(&["A", "C;cmdline=zsh"]);
+        sh.at(600_000).marks(&["D;0", "A"]);
+        assert_eq!(sh.ends(), [(Some("zsh"), 600_000, Some(0))]);
+    }
+
+    #[test]
+    fn marks_under_a_full_screen_program_leave_the_command_that_started_it_running() {
+        let mut sh = Shell::new(100);
+        sh.at(0).marks(&["A", "C;cmdline=tmux"]);
+        sh.print("\x1b[?1049h");
+        sh.at(1000).marks(&["A", "C;cmdline=make", "D;2", "A"]);
+        sh.print("\x1b[?1049l");
+        sh.at(90_000).marks(&["D;0", "A"]);
+        assert_eq!(sh.ends(), [(Some("tmux"), 90_000, Some(0))]);
+    }
+
+    #[test]
+    fn a_second_c_or_a_d_twice_changes_nothing() {
+        let mut sh = Shell::new(100);
+        sh.at(0).marks(&["A", "C;cmdline=first"]);
+        sh.at(5000).mark("C;cmdline=second");
+        sh.at(9000).marks(&["D;0", "D;1"]);
+        assert_eq!(sh.ends(), [(Some("first"), 9000, Some(0))]);
+        assert_eq!(sh.marked_lines().len(), 1);
+    }
+
+    #[test]
+    fn a_thousand_commands_each_end_once_and_the_oldest_are_let_go() {
+        let mut sh = Shell::new(100);
+        for i in 0..1000u64 {
+            sh.at(i * 10).marks(&["A", &format!("C;cmdline=echo {i}")]);
+            sh.at(i * 10 + 5).mark(&format!("D;{}", i % 3));
+        }
+        let ends = sh.ends();
+        assert_eq!(ends.len(), 1000);
+        assert_eq!(ends[999], (Some("echo 999"), 5, Some(0)));
+        assert_eq!(sh.marks.commands.len(), MAX_COMMANDS);
+        assert_eq!(
+            sh.marks.commands.front().and_then(|c| c.command.as_deref()),
+            Some("echo 700")
+        );
+    }
+
+    /// A row's mark tells MARK_IDS ids apart: past that many commands the ids start over, and the
+    /// newest still find their rows.
+    #[test]
+    fn command_ids_start_over_where_the_row_marks_do() {
+        let mut sh = Shell::new(100);
+        sh.marks.next_id = MARK_IDS - 1;
+        sh.run("ls", "a\r\n", 0);
+        sh.run("seq", "1\r\n2\r\n3\r\n4\r\n5\r\n", 0);
+        assert_eq!(
+            sh.marks.last_output(&sh.term).as_deref(),
+            Some("1\n2\n3\n4\n5")
+        );
+        assert_eq!(sh.marks.next_id, 1);
+        let lines = sh.marked_lines();
+        let ids: Vec<u32> = lines
+            .iter()
+            .filter_map(|&l| mark_on(&sh.term, Line(l)))
+            .collect();
+        assert_eq!(ids, [MARK_IDS - 1, 0]);
+        assert!(ids.iter().all(|&id| sh.marks.command(id).is_some()));
+        sh.mark("A");
+        sh.print("$ ");
+        sh.marks.jump(&mut sh.term, -1);
+        assert_eq!(-(sh.term.grid().display_offset() as i32), lines[1]);
     }
 }

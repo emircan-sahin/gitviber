@@ -390,33 +390,36 @@ impl Emu {
                     self.outbox.note(Note::Cwd(dir));
                 }
             }
-            Found::Mark(data) => {
-                let Some(mark) = marks::parse_mark(data) else {
-                    return;
-                };
-                // As if the program had turned them off itself.
-                if marks::mouse_left_on(mark.kind, *self.term.mode()) {
-                    self.parser.advance(&mut self.term, marks::MODES_OFF);
-                }
-                match mark.kind {
-                    MarkKind::C => self.command_ran = true,
-                    MarkKind::A => {
-                        let ran = std::mem::take(&mut self.command_ran);
-                        if marks::keys_left_on(*self.term.mode(), ran) {
-                            self.parser.advance(&mut self.term, marks::KEYS_OFF);
-                        }
-                    }
-                    _ => {}
-                }
-                match self.marks.on(&mark, &mut self.term) {
-                    Some(Effect::Prompt) => self.outbox.note(Note::Prompt),
-                    Some(Effect::Ended(end)) => {
-                        self.outbox.note(Note::Ended(end));
-                        self.outbox.note(Note::Prompt);
-                    }
-                    None => {}
+            Found::Mark(data) => self.mark(marks::parse_mark(data)),
+            Found::CutMark(data) => self.mark(marks::parse_cut_mark(data)),
+        }
+    }
+
+    fn mark(&mut self, mark: Option<marks::Mark>) {
+        let Some(mark) = mark else {
+            return;
+        };
+        // As if the program had turned them off itself.
+        if marks::mouse_left_on(mark.kind, *self.term.mode()) {
+            self.parser.advance(&mut self.term, marks::MODES_OFF);
+        }
+        match mark.kind {
+            MarkKind::C => self.command_ran = true,
+            MarkKind::A => {
+                let ran = std::mem::take(&mut self.command_ran);
+                if marks::keys_left_on(*self.term.mode(), ran) {
+                    self.parser.advance(&mut self.term, marks::KEYS_OFF);
                 }
             }
+            _ => {}
+        }
+        match self.marks.on(&mark, &mut self.term, Instant::now()) {
+            Some(Effect::Prompt) => self.outbox.note(Note::Prompt),
+            Some(Effect::Ended(end)) => {
+                self.outbox.note(Note::Ended(end));
+                self.outbox.note(Note::Prompt);
+            }
+            None => {}
         }
     }
 
@@ -844,6 +847,71 @@ mod tests {
             })
             .collect();
         assert_eq!(row, "ok");
+    }
+
+    /// A mark past what the scanner keeps is cut, not dropped: the command still ends, named, so
+    /// its time and notification come.
+    #[test]
+    fn a_command_line_of_any_size_or_content_from_either_shell() {
+        let outbox = Arc::new(Outbox::default());
+        let mut emu = Emu::new(20, 5, test_config(), outbox.clone());
+        let marks = [
+            format!("C;cmdline_url={}", "%41".repeat(100_000)),
+            format!("C;cmdline={}", "ş".repeat(5000)),
+            "C;cmdline_url=%ZZ".into(),
+            "C;cmdline=a;cmdline_url=b%20c".into(),
+        ];
+        for m in &marks {
+            emu.feed(
+                format!("\x1b]133;A\x07$ x\r\n\x1b]133;{m}\x07out\r\n\x1b]133;D;0\x07").as_bytes(),
+            );
+        }
+        let ends: Vec<Option<String>> = outbox
+            .take_notes()
+            .into_iter()
+            .filter_map(|n| match n {
+                Note::Ended(e) if e.exit == Some(0) => Some(e.command),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ends,
+            [
+                Some(format!("{}…", "A".repeat(79))),
+                Some(format!("{}…", "ş".repeat(79))),
+                None,
+                Some("a;cmdline_url=b%20c".into()),
+            ]
+        );
+        assert_eq!(emu.marks.last_output(&emu.term).as_deref(), Some("out"));
+    }
+
+    /// OSC 52 copies text whichever clipboard it names; a read (`?`) is never answered: what the
+    /// user copied elsewhere isn't the program's.
+    #[test]
+    fn osc_52_copies_text_and_never_answers_a_read() {
+        let outbox = Arc::new(Outbox::default());
+        let (tx, rx) = channel();
+        *outbox.io.lock().unwrap() = Some(tx);
+        let mut emu = Emu::new(20, 5, test_config(), outbox.clone());
+        let copied = |emu: &mut Emu, osc: &str| {
+            emu.feed(format!("\x1b]52;{osc}\x07").as_bytes());
+            outbox
+                .take_notes()
+                .into_iter()
+                .filter_map(|n| match n {
+                    Note::Copy(text) => Some(text),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(copied(&mut emu, "c;aMOpbGxvIOKchQo="), ["héllo ✅\n"]);
+        assert_eq!(copied(&mut emu, ";dG11eA=="), ["tmux"]);
+        assert_eq!(copied(&mut emu, "s;c2Vs"), ["sel"]);
+        for nothing in ["c;?", "c;", "c", "c;not base64!", "c;//4="] {
+            assert!(copied(&mut emu, nothing).is_empty(), "{nothing}");
+        }
+        assert!(rx.try_recv().is_err());
     }
 
     fn screen(emu: &Emu) -> String {

@@ -13,9 +13,9 @@ use gpui::{
     AnyElement, AnyView, App, AppContext as _, Bounds, Context, DispatchPhase, Entity,
     EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton,
     MouseMoveEvent, MouseUpEvent, ParentElement as _, PathPromptOptions, Pixels, Point,
-    PromptLevel, Render, SharedString, StatefulInteractiveElement as _, StyleRefinement,
-    Styled as _, Subscription, Task, WeakEntity, Window, canvas, div, prelude::FluentBuilder as _,
-    px,
+    PromptLevel, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
+    StyleRefinement, Styled as _, Subscription, Task, WeakEntity, Window, canvas, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -185,6 +185,9 @@ pub struct TerminalPanel {
     focus: FocusHandle,
     /// The tab strip, reached by keyboard only (a click goes into the terminal).
     strip_focus: FocusHandle,
+    strip_scroll: ScrollHandle,
+    /// The open tab as last drawn: a newly opened one is scrolled into view.
+    strip_shown: Option<u64>,
     /// Branches of tabs outside the repo's worktrees, by tab, read once as each first shows:
     /// nothing watches that folder, so a checkout there shows on a new tab.
     outside_branches: HashMap<u64, Option<String>>,
@@ -467,6 +470,8 @@ impl TerminalPanel {
             killing: false,
             focus: cx.focus_handle(),
             strip_focus: cx.focus_handle().tab_stop(true),
+            strip_scroll: ScrollHandle::new(),
+            strip_shown: None,
             outside_branches: HashMap::new(),
             branch_reads: HashMap::new(),
             bound: None,
@@ -1917,9 +1922,16 @@ impl TerminalPanel {
         let listed = self.repo_worktrees(cx);
         self.read_outside_branches(&listed, cx);
         let strip_focused = self.strip_focus.is_focused(window);
+        if active != self.strip_shown {
+            if let Some(at) = set_groups.iter().position(|(g, _)| Some(*g) == active) {
+                self.strip_scroll.scroll_to_item(at);
+            }
+            self.strip_shown = active;
+        }
         let mut tabs = h_flex()
             .id("terminal-tabs")
             .track_focus(&self.strip_focus)
+            .track_scroll(&self.strip_scroll)
             .key_context("TabStrip")
             .role(gpui::Role::TabList)
             .aria_label("Terminals")
@@ -3107,6 +3119,69 @@ mod tests {
         });
         assert!(text.starts_with("one\ntwo"), "{text:?}");
         assert!(text.lines().all(|l| l.trim_end() == l));
+        panel.update(cx, |p, cx| p.close_all(cx));
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+    }
+
+    /// Row 7: a tab opened past a narrow strip's edge scrolls into view, by as much as it needs; a
+    /// redraw with the same tab open leaves the strip where the user scrolled it.
+    #[gpui::test]
+    fn the_open_tab_scrolls_into_view(cx: &mut TestAppContext) {
+        real_shells(cx);
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::init(cx);
+        });
+        let core = Arc::new(Core::new(Arc::new(|_| {})));
+        let dir = std::env::temp_dir();
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            TerminalPanel::new(
+                core.clone(),
+                dir.clone(),
+                TerminalConfig::default(),
+                TerminalTheme::dark(),
+                window,
+                cx,
+            )
+        });
+        cx.simulate_resize(gpui::size(px(360.), px(300.)));
+        for _ in 0..8 {
+            panel.update_in(cx, |p, window, cx| {
+                p.open_terminal(dir.clone(), None, window, cx)
+            });
+        }
+        draw(cx);
+        // The open tab's place in the strip as drawn, and the strip's.
+        let shown = |cx: &mut VisualTestContext| {
+            panel.read_with(cx, |p, _| {
+                let s = p.set().expect("a set");
+                let at = s
+                    .groups
+                    .iter()
+                    .position(|g| Some(g.id) == s.active)
+                    .unwrap();
+                let mut tab = p.strip_scroll.bounds_for_item(at).expect("a tab");
+                tab.origin += p.strip_scroll.offset();
+                (tab, p.strip_scroll.bounds())
+            })
+        };
+        let (tab, strip) = shown(cx);
+        assert!(strip.size.width < tab.size.width * 8., "the tabs overflow");
+        assert_eq!(tab.right(), strip.right());
+        panel.update_in(cx, |p, window, cx| window.focus(&p.strip_focus, cx));
+        draw(cx);
+        cx.simulate_keystrokes("home");
+        draw(cx);
+        let (tab, strip) = shown(cx);
+        assert_eq!(tab.left(), strip.left());
+        let scrolled = gpui::point(px(-40.), px(0.));
+        panel.update(cx, |p, _| p.strip_scroll.set_offset(scrolled));
+        draw(cx);
+        assert_eq!(
+            panel.read_with(cx, |p, _| p.strip_scroll.offset()),
+            scrolled
+        );
         panel.update(cx, |p, cx| p.close_all(cx));
         cx.update(|window, _| window.remove_window());
         cx.run_until_parked();

@@ -130,6 +130,38 @@ mod tests {
     }
 
     #[test]
+    fn every_count_up_to_600_links_distinct_prefix_free_few_keys_home_row_only() {
+        let letters: std::collections::HashSet<char> = HINT_ALPHABET.chars().collect();
+        assert_eq!(letters.len(), HINT_ALPHABET.len(), "no letter twice");
+        // Lower case: Shift is the copy key.
+        assert!(HINT_ALPHABET.chars().all(|c| c.is_ascii_lowercase()));
+        for n in 0..=600 {
+            let labels = hint_labels(n, HINT_ALPHABET);
+            assert_eq!(labels.len(), n);
+            let set: std::collections::HashSet<&str> = labels.iter().map(String::as_str).collect();
+            assert_eq!(set.len(), n, "{n}: distinct");
+            for l in &labels {
+                assert!(l.chars().all(|c| letters.contains(&c)), "{n}: {l}");
+                for k in 1..l.len() {
+                    assert!(!set.contains(&l[..k]), "{n}: {} starts {l}", &l[..k]);
+                }
+            }
+            // Two keys reach 196 links, three the rest of a screen.
+            let longest = labels.iter().map(String::len).max().unwrap_or(0);
+            let most = match n {
+                0..=1 => n,
+                2..=14 => 1,
+                15..=196 => 2,
+                _ => 3,
+            };
+            assert!(longest <= most, "{n}: {longest} keys");
+        }
+        // 26 links: half of them one key.
+        let labels = hint_labels(26, HINT_ALPHABET);
+        assert_eq!(labels.iter().filter(|l| l.len() == 1).count(), 13);
+    }
+
+    #[test]
     fn typing_a_label_picks_its_link_and_shift_copies() {
         let mut h = Hints::new(20);
         let target = h.labels[3].clone();
