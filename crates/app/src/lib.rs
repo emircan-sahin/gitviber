@@ -58,8 +58,7 @@ fn first_folder(candidates: Vec<PathBuf>) -> Option<PathBuf> {
         .find_map(|p| p.canonicalize().ok())
 }
 
-/// Everything before the first window: the UI layer, core, the app's commands, menus and
-/// placeholders.
+/// Everything before the first window: the UI layer, core, the app's commands and placeholders.
 pub fn init(cx: &mut App) {
     // On the first launch the old app's data goes into the files the stores load from here on.
     gitviber_ui::legacy::import_once();
@@ -90,7 +89,6 @@ pub fn init(cx: &mut App) {
     dialogs::install(cx);
     quit::install(cx);
     native_updater::install(cx);
-    menus::install(cx);
     gitviber_ui::open_in::refresh(cx);
     status_bar::read_system_name(cx);
     palette::import_legacy();
@@ -193,8 +191,11 @@ pub fn run(started: impl FnOnce(&mut App) + 'static) {
     });
     application.run(move |cx| {
         init(cx);
-        open_main_window(None, cx);
+        // Before the window: what the launch opens is looked up while the window is made.
         opened::install(cx);
+        open_main_window(None, cx);
+        // After it: the menu bar isn't in the window's first frame.
+        menus::install(cx);
         let (raise_tx, mut raise_rx) = futures::channel::mpsc::unbounded::<()>();
         let core = gitviber_ui::core(cx);
         instance::listen(move |paths| {

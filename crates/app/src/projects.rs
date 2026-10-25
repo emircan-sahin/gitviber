@@ -29,27 +29,36 @@ struct Info {
     github: Option<String>,
 }
 
-/// What each saved folder is now, asked when the list changes and when a window comes forward,
-/// so a moved folder shows up soon.
+/// What each saved folder is now, asked when a list of them is drawn: the first time, after the
+/// list changed, and after a window came forward, so a moved folder shows up soon. Never while
+/// no list shows: each folder is a git call.
 #[derive(Default)]
 struct Infos {
     by_path: HashMap<String, Info>,
     asked: Vec<String>,
+    /// A window came forward since the last ask.
+    stale: bool,
     _task: Option<Task<()>>,
 }
 
 impl Global for Infos {}
 
-/// Asks again about the saved folders (on a window's activation, or when the list changed).
-pub fn refresh(force: bool, cx: &mut App) {
+/// A window came forward: a folder moved meanwhile is asked about when a list is drawn next.
+pub fn mark_stale(cx: &mut App) {
+    cx.default_global::<Infos>().stale = true;
+}
+
+/// Asks again about the saved folders when what's known is old, or at once (`force`).
+fn refresh(force: bool, cx: &mut App) {
     if !gitviber_ui::has_core(cx) {
         return;
     }
     let list = UiState::get(cx).recent_projects.clone();
     let infos = cx.default_global::<Infos>();
-    if !force && infos.asked == list {
+    if !force && !infos.stale && infos.asked == list {
         return;
     }
+    infos.stale = false;
     infos.asked = list.clone();
     let core = gitviber_ui::core(cx);
     let asked = cx.background_spawn(async move {
@@ -379,6 +388,7 @@ pub fn list(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
+    refresh(false, cx);
     let keys = window.use_keyed_state(SharedString::from(format!("{id}-keys")), cx, |_, cx| Keys {
         focus: cx.focus_handle().tab_stop(true),
         row: None,

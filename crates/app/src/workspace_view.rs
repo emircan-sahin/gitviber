@@ -165,14 +165,11 @@ impl WorkspaceView {
         // meanwhile shows in the projects list.
         subs.push(cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
-                crate::projects::refresh(true, cx);
+                crate::projects::mark_stale(cx);
             } else {
                 this.overlay.update(cx, |o, cx| o.hide(cx));
             }
         }));
-        subs.push(cx.observe_global::<UiState>(|_, cx| crate::projects::refresh(false, cx)));
-        // A window opened behind others isn't activated: its list still marks a gone folder.
-        crate::projects::refresh(false, cx);
         // Set by the terminal whenever an agent's look changes; drawn again only when news did.
         subs.push(
             cx.observe_global::<gitviber_refs::hooks::AgentLooks>(|this, cx| {

@@ -6,8 +6,8 @@
 
 use std::path::PathBuf;
 
-use gitviber_core::opened::Target;
-use gitviber_core::{Event, api};
+use gitviber_core::opened::{Taken, Target};
+use gitviber_core::{Core, Event, api};
 use gitviber_files::{OpenOptions, Reveal};
 use gitviber_ui::workspace::Toast;
 use gitviber_ui::{CoreEvents, UiState, Workspace};
@@ -108,21 +108,18 @@ fn take(launch: bool, cx: &mut App) {
     let recent = launch
         .then(|| UiState::get(cx).recent_projects.first().cloned())
         .flatten();
-    let task = cx.spawn(async move |cx| {
-        if let Some(before) = before {
+    let found = match before {
+        // After the take before it, so that what this one opens lands last.
+        Some(before) => cx.spawn(async move |cx| {
             before.await;
-        }
-        let (taken, recent) = cx
-            .background_spawn(async move {
-                let taken = api::app::take_opened(&core).unwrap_or_default();
-                // A gone network mount can take seconds to say so: not on the UI thread.
-                let recent = recent
-                    .map(PathBuf::from)
-                    .filter(|p| p.is_dir())
-                    .and_then(|p| p.canonicalize().ok());
-                (taken, recent)
-            })
-            .await;
+            cx.background_spawn(async move { resolve(&core, recent) })
+                .await
+        }),
+        // The launch's own starts now, and runs while the window is made.
+        None => cx.background_spawn(async move { resolve(&core, recent) }),
+    };
+    let task = cx.spawn(async move |cx| {
+        let (taken, recent) = found.await;
         cx.update(|cx| {
             let (last, toasts) = plan(&taken.open, &taken.missing);
             for t in toasts {
@@ -139,6 +136,17 @@ fn take(launch: bool, cx: &mut App) {
         });
     });
     cx.default_global::<Opened>().taking = Some(task);
+}
+
+/// What was handed over, and `recent` while it's still a folder. Reads the disk: a gone network
+/// mount can take seconds to say so.
+fn resolve(core: &Core, recent: Option<String>) -> (Taken, Option<PathBuf>) {
+    let taken = api::app::take_opened(core).unwrap_or_default();
+    let recent = recent
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .and_then(|p| p.canonicalize().ok());
+    (taken, recent)
 }
 
 fn open_target(t: &Target, cx: &mut App) {
