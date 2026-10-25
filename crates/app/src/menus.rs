@@ -334,7 +334,8 @@ pub fn install(cx: &mut App) {
         .detach();
 }
 
-#[cfg(test)]
+// The menu bar takes the ⌘ keys GPUI leaves only on macOS.
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
     use gitviber_ui::keymap::ROOT_CONTEXT;

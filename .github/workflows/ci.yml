@@ -72,7 +72,8 @@ jobs:
 
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo nextest run --workspace --locked
+      # Every failure in one run, not just the first.
+      - run: cargo nextest run --workspace --locked --no-fail-fast
 
       # The scripts the browser injects into pages, run on stand-in pages; node strips the types.
       - if: runner.os == 'macOS'
