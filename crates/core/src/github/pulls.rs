@@ -1,0 +1,554 @@
+//! Pull requests: listing, details, files, creating, merging, reviews and line comments.
+
+use super::checks::read_checks;
+use super::search::{self, Kind};
+use super::{
+    all_pages, call, fetch_remote, graphql, is_sha, list_state, pages, repo_ref, string, target,
+    CommitChecks, ListFilter, Method, Session, StateCounts, JSON, MAX_PAGES,
+};
+use crate::git;
+use crate::network::Net;
+use serde::Serialize;
+use serde_json::{json, Value};
+use std::path::Path;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pull {
+    pub number: u64,
+    pub title: String,
+    /// "open" | "closed" | "merged"
+    pub state: String,
+    pub draft: bool,
+    pub author: String,
+    pub head_ref: String,
+    pub head_sha: String,
+    pub head_repo: Option<String>,
+    pub base_ref: String,
+    pub base_sha: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub url: String,
+}
+
+fn pull_from(v: &Value) -> Pull {
+    let merged = !v["merged_at"].is_null();
+    Pull {
+        number: v["number"].as_u64().unwrap_or_default(),
+        title: string(&v["title"]),
+        state: if merged {
+            "merged".into()
+        } else {
+            string(&v["state"])
+        },
+        draft: v["draft"].as_bool().unwrap_or(false),
+        author: string(&v["user"]["login"]),
+        head_ref: string(&v["head"]["ref"]),
+        head_sha: string(&v["head"]["sha"]),
+        head_repo: v["head"]["repo"]["full_name"].as_str().map(str::to_string),
+        base_ref: string(&v["base"]["ref"]),
+        base_sha: string(&v["base"]["sha"]),
+        created_at: string(&v["created_at"]),
+        updated_at: string(&v["updated_at"]),
+        url: string(&v["html_url"]),
+    }
+}
+
+/// `state`: "open" | "closed" | "all"; `pages`: how many pages of PER_PAGE, most recently
+/// updated first ("Load more" asks for one more; the ones before come back as 304s, but a
+/// narrowed list is a search and has no ETags).
+pub fn list(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    state: &str,
+    pages: usize,
+    narrow: &ListFilter,
+) -> Result<Vec<Pull>, String> {
+    let r = target(session, repo, to)?;
+    let state = list_state(state);
+    if !narrow.is_empty(Kind::Pull) {
+        return search::pulls(session, repo, &r, state, narrow, pages);
+    }
+    let list = self::pages(
+        session,
+        repo,
+        &r.api(&format!("/pulls?state={state}&sort=updated&direction=desc")),
+        JSON,
+        None,
+        pages.clamp(1, MAX_PAGES),
+    )?;
+    Ok(list.iter().map(pull_from).collect())
+}
+
+/// How many pull requests are open and closed, narrowed as the list is: the list holds only
+/// the pages loaded so far.
+pub fn pull_counts(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    narrow: &ListFilter,
+) -> Result<StateCounts, String> {
+    let r = target(session, repo, to)?;
+    if !narrow.is_empty(Kind::Pull) {
+        return search::counts(session, repo, &r, Kind::Pull, narrow);
+    }
+    let v = graphql(
+        session,
+        repo,
+        "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {
+            open: pullRequests(states: OPEN) { totalCount }
+            closed: pullRequests(states: [CLOSED, MERGED]) { totalCount }
+        } }",
+        json!({ "owner": r.owner, "name": r.name }),
+    )?;
+    let count = |v: &Value| v.as_u64().unwrap_or_default();
+    Ok(StateCounts {
+        open: count(&v["repository"]["open"]["totalCount"]),
+        closed: count(&v["repository"]["closed"]["totalCount"]),
+    })
+}
+
+/// CI's verdict on each commit that has one, as GitHub rolls its checks and statuses up:
+/// "success", "failure" or "pending". One request for up to 100 commits.
+pub fn ci_states(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    shas: &[String],
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let r = target(session, repo, to)?;
+    let shas: Vec<&String> = shas.iter().filter(|s| is_sha(s)).take(100).collect();
+    let mut out = std::collections::HashMap::new();
+    if shas.is_empty() {
+        return Ok(out);
+    }
+    let fields: String = shas
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            format!("c{i}: object(oid: \"{s}\") {{ ... on Commit {{ statusCheckRollup {{ state }} }} }} ")
+        })
+        .collect();
+    let query = format!(
+        "query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {fields}}} }}"
+    );
+    let v = graphql(
+        session,
+        repo,
+        &query,
+        json!({ "owner": r.owner, "name": r.name }),
+    )?;
+    for (i, sha) in shas.iter().enumerate() {
+        let state = match v["repository"][format!("c{i}")]["statusCheckRollup"]["state"].as_str() {
+            Some("SUCCESS") => "success",
+            Some("FAILURE" | "ERROR") => "failure",
+            Some("PENDING" | "EXPECTED") => "pending",
+            // Not on GitHub, or no checks.
+            _ => continue,
+        };
+        out.insert(sha.to_string(), state.to_string());
+    }
+    Ok(out)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Comment {
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+    /// Review verdict for review entries: APPROVED, CHANGES_REQUESTED, COMMENTED
+    pub review: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullDetail {
+    #[serde(flatten)]
+    pub pull: Pull,
+    pub body: String,
+    pub additions: u64,
+    pub deletions: u64,
+    pub changed_files: u64,
+    pub commits: u64,
+    /// null while GitHub is still computing it
+    pub mergeable: Option<bool>,
+    pub mergeable_state: String,
+    #[serde(flatten)]
+    pub ci: CommitChecks,
+    pub comments: Vec<Comment>,
+    /// Who closed it, if closed: an author may reopen only what they closed themselves
+    pub closed_by: Option<String>,
+    /// Who merged it, if merged: often not its author.
+    pub merged_by: Option<String>,
+}
+
+pub fn detail(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    number: u64,
+) -> Result<PullDetail, String> {
+    let r = target(session, repo, to)?;
+    let base = r.api("");
+    let v = call(
+        session,
+        repo,
+        Method::Get,
+        &format!("{base}/pulls/{number}"),
+    )?;
+    let pull = pull_from(&v);
+    // The pulls endpoint doesn't say who closed it; the issue behind every PR does.
+    let closed_by = if pull.state == "closed" {
+        call(
+            session,
+            repo,
+            Method::Get,
+            &format!("{base}/issues/{number}"),
+        )
+        .ok()
+        .and_then(|i| i["closed_by"]["login"].as_str().map(str::to_string))
+    } else {
+        None
+    };
+
+    let ci = read_checks(session, repo, &r, &pull.head_sha);
+
+    // A failure here is an error, not "no comments": an empty thread would be a lie.
+    let mut comments = vec![];
+    for c in all_pages(
+        session,
+        repo,
+        &format!("{base}/issues/{number}/comments"),
+        JSON,
+    )? {
+        comments.push(Comment {
+            author: string(&c["user"]["login"]),
+            body: string(&c["body"]),
+            created_at: string(&c["created_at"]),
+            review: None,
+        });
+    }
+    for c in all_pages(
+        session,
+        repo,
+        &format!("{base}/pulls/{number}/reviews"),
+        JSON,
+    )? {
+        // Bare "commented" reviews with no text are line comments' containers; skip the noise.
+        if c["state"] == "COMMENTED" && string(&c["body"]).is_empty() {
+            continue;
+        }
+        comments.push(Comment {
+            author: string(&c["user"]["login"]),
+            body: string(&c["body"]),
+            created_at: string(&c["submitted_at"]),
+            review: c["state"].as_str().map(str::to_string),
+        });
+    }
+    comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+
+    Ok(PullDetail {
+        closed_by,
+        merged_by: v["merged_by"]["login"].as_str().map(str::to_string),
+        body: string(&v["body"]),
+        additions: v["additions"].as_u64().unwrap_or_default(),
+        deletions: v["deletions"].as_u64().unwrap_or_default(),
+        changed_files: v["changed_files"].as_u64().unwrap_or_default(),
+        commits: v["commits"].as_u64().unwrap_or_default(),
+        mergeable: v["mergeable"].as_bool(),
+        mergeable_state: string(&v["mergeable_state"]),
+        ci,
+        comments,
+        pull,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullFiles {
+    /// The merge base: what GitHub diffs the PR against.
+    pub base: String,
+    pub head: String,
+    pub files: Vec<git::FileChange>,
+    /// Oldest first; the newest `COMMITS` when there are more (GitHub's own list stops at 250).
+    pub commits: Vec<git::Commit>,
+}
+
+const COMMITS: u32 = 250;
+
+/// Fetches the PR's commits (no refs are created) and diffs them locally, so PR files
+/// open in the same full-file viewer as everything else.
+#[allow(clippy::too_many_arguments)]
+pub fn files(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    number: u64,
+    base_ref: &str,
+    base_sha: &str,
+    head_sha: &str,
+    net: &Net,
+) -> Result<PullFiles, String> {
+    let have =
+        |sha: &str| git::run(repo, &["cat-file", "-e", &format!("{sha}^{{commit}}")]).is_ok();
+    if !have(head_sha) || !have(base_sha) {
+        git::validate_branch(repo, base_ref)?;
+        git::fetch_objects(
+            repo,
+            &fetch_remote(session, repo, to)?,
+            &[
+                format!("pull/{number}/head"),
+                format!("refs/heads/{base_ref}"),
+            ],
+            net,
+        )?;
+    }
+    let base = git::merge_base(repo, base_sha, head_sha)?;
+    Ok(PullFiles {
+        files: git::range_files(repo, &base, head_sha)?,
+        commits: git::log_range(repo, &base, head_sha, COMMITS)?,
+        base,
+        head: head_sha.to_string(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn create(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    title: &str,
+    body: &str,
+    head: &str,
+    base: &str,
+    draft: bool,
+    maintainer_edits: bool,
+) -> Result<Pull, String> {
+    let r = target(session, repo, to)?;
+    let origin = repo_ref(repo)?;
+    let mut pr =
+        json!({ "title": title, "body": body, "head": head, "base": base, "draft": draft });
+    // Into the parent, the branch is named by the fork it lives in, and its maintainers may be
+    // let push to it (GitHub's "Allow edits by maintainers"; only a fork's PR has it).
+    if !r.is(&origin.full()) {
+        pr["head"] = json!(format!("{}:{head}", origin.owner));
+        pr["maintainer_can_modify"] = json!(maintainer_edits);
+    }
+    let v = call(session, repo, Method::Post(pr), &r.api("/pulls"))?;
+    Ok(pull_from(&v))
+}
+
+/// The merge's body. With `sha`, the head the user looked at: GitHub refuses (409) a merge
+/// once commits were pushed since, rather than merging what nobody saw.
+fn merge_body(method: &str, sha: Option<&str>) -> Value {
+    let method = if matches!(method, "merge" | "squash" | "rebase") {
+        method
+    } else {
+        "merge"
+    };
+    let mut body = json!({ "merge_method": method });
+    if let Some(sha) = sha.filter(|s| is_sha(s)) {
+        body["sha"] = json!(sha);
+    }
+    body
+}
+
+/// `method`: "merge" | "squash" | "rebase"; `sha`: the head it must still be at.
+pub fn merge(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    number: u64,
+    method: &str,
+    sha: Option<&str>,
+) -> Result<(), String> {
+    let r = target(session, repo, to)?;
+    call(
+        session,
+        repo,
+        Method::Put(merge_body(method, sha)),
+        &r.api(&format!("/pulls/{number}/merge")),
+    )
+    .map(|_| ())
+}
+
+/// Closes or reopens a PR. Close-then-reopen also makes GitHub recompute a stale diff or
+/// conflict state, e.g. after the PR below it in a stack was merged.
+pub fn set_open(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    number: u64,
+    open: bool,
+) -> Result<Pull, String> {
+    let r = target(session, repo, to)?;
+    let v = call(
+        session,
+        repo,
+        Method::Patch(json!({ "state": if open { "open" } else { "closed" } })),
+        &r.api(&format!("/pulls/{number}")),
+    )?;
+    Ok(pull_from(&v))
+}
+
+/// The review's body. With `commit`, the head the user reviewed: an approval then stays on
+/// that commit rather than on one pushed while they read.
+fn review_body(event: &str, body: &str, commit: Option<&str>) -> Value {
+    let mut v = json!({ "event": event, "body": body });
+    if let Some(commit) = commit.filter(|s| is_sha(s)) {
+        v["commit_id"] = json!(commit);
+    }
+    v
+}
+
+/// `event`: "APPROVE" | "REQUEST_CHANGES" | "COMMENT". GitHub requires a body for the
+/// last two, and refuses the first two on your own PR; its message says so. `commit`: the
+/// head reviewed.
+pub fn review(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    number: u64,
+    event: &str,
+    body: &str,
+    commit: Option<&str>,
+) -> Result<(), String> {
+    let r = target(session, repo, to)?;
+    if !matches!(event, "APPROVE" | "REQUEST_CHANGES" | "COMMENT") {
+        return Err(format!("unknown review event: {event}"));
+    }
+    call(
+        session,
+        repo,
+        Method::Post(review_body(event, body, commit)),
+        &r.api(&format!("/pulls/{number}/reviews")),
+    )
+    .map(|_| ())
+}
+
+/// A comment on a line of a PR's diff. `line` is where it sits now, on its `side` (LEFT, the
+/// old file; RIGHT, the new one); none when the diff moved on past it (outdated).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewComment {
+    pub id: u64,
+    /// The thread's first comment, for a reply.
+    pub reply_to: Option<u64>,
+    pub path: String,
+    pub line: Option<u64>,
+    pub side: String,
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+    pub url: String,
+}
+
+fn review_comment(c: &Value) -> ReviewComment {
+    ReviewComment {
+        id: c["id"].as_u64().unwrap_or_default(),
+        reply_to: c["in_reply_to_id"].as_u64(),
+        path: string(&c["path"]),
+        line: c["line"].as_u64(),
+        side: c["side"].as_str().unwrap_or("RIGHT").to_string(),
+        author: string(&c["user"]["login"]),
+        body: string(&c["body"]),
+        created_at: string(&c["created_at"]),
+        url: string(&c["html_url"]),
+    }
+}
+
+pub fn review_comments(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    number: u64,
+) -> Result<Vec<ReviewComment>, String> {
+    let r = target(session, repo, to)?;
+    let path = r.api(&format!("/pulls/{number}/comments"));
+    Ok(all_pages(session, repo, &path, JSON)?
+        .iter()
+        .map(review_comment)
+        .collect())
+}
+
+/// A new comment on `line` of `path` as it is at `commit` (the PR's head), on `side`; or with
+/// `reply_to`, an answer in that comment's thread.
+#[allow(clippy::too_many_arguments)]
+pub fn comment_line(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    number: u64,
+    commit: &str,
+    path: &str,
+    line: u64,
+    side: &str,
+    reply_to: Option<u64>,
+    body: &str,
+) -> Result<ReviewComment, String> {
+    let r = target(session, repo, to)?;
+    if body.trim().is_empty() {
+        return Err("The comment is empty.".into());
+    }
+    let base = r.api(&format!("/pulls/{number}/comments"));
+    let v = match reply_to {
+        Some(id) => call(
+            session,
+            repo,
+            Method::Post(json!({ "body": body })),
+            &format!("{base}/{id}/replies"),
+        )?,
+        None => {
+            if !matches!(side, "LEFT" | "RIGHT") {
+                return Err(format!("unknown side: {side}"));
+            }
+            call(
+                session,
+                repo,
+                Method::Post(json!({
+                    "body": body, "commit_id": commit, "path": path, "line": line, "side": side,
+                })),
+                &base,
+            )?
+        }
+    };
+    Ok(review_comment(&v))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn a_merge_is_pinned_to_the_head_seen() {
+        assert_eq!(
+            merge_body("squash", Some(SHA)),
+            json!({ "merge_method": "squash", "sha": SHA })
+        );
+        assert_eq!(
+            merge_body("rebase", None),
+            json!({ "merge_method": "rebase" })
+        );
+        // Anything else is a plain merge, and what isn't a commit id isn't sent.
+        assert_eq!(
+            merge_body("octopus", Some("main")),
+            json!({ "merge_method": "merge" })
+        );
+    }
+
+    #[test]
+    fn a_review_stays_on_the_commit_reviewed() {
+        assert_eq!(
+            review_body("APPROVE", "", Some(SHA)),
+            json!({ "event": "APPROVE", "body": "", "commit_id": SHA })
+        );
+        assert_eq!(
+            review_body("COMMENT", "x", None),
+            json!({ "event": "COMMENT", "body": "x" })
+        );
+    }
+}

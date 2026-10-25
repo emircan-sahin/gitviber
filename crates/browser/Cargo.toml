@@ -1,0 +1,138 @@
+[package]
+name = "gitviber-browser"
+description = "GitViber's browser: WKWebView tabs in the window, and the agents' tabs they drive with `gitviber browser`."
+version.workspace = true
+# The backend came over from the Tauri build as it was, which is 2021.
+edition = "2021"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "gitviber_browser"
+
+[dependencies]
+gitviber-core = { path = "../core" }
+gitviber-ui = { path = "../ui" }
+# The ports menu reads the worktree's terminals; Ask Agent opens one.
+gitviber-terminal = { path = "../terminal" }
+gpui-kit.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Pages' addresses (policy, the address bar); already in the tree through gpui.
+url = "=2.5.8"
+# Saved sessions are kept by their repository's hash (sessions.rs); already in core.
+sha2 = "=0.10.9"
+# The window's NSView, which the pages lie beside; already in the tree through gpui.
+raw-window-handle = "=0.6.2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.189"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The versions core and the Tauri build pin: the tab's WKWebView, its delegates and AppKit
+# around it, typed where raw messages would guess.
+objc2 = "=0.6.4"
+block2 = "=0.6.2"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "block2",
+  "objc2-core-foundation",
+  "NSArray",
+  "NSData",
+  "NSDate",
+  "NSDictionary",
+  "NSError",
+  "NSGeometry",
+  "NSHTTPCookie",
+  "NSKeyValueObserving",
+  "NSNotification",
+  "NSObject",
+  "NSProcessInfo",
+  "NSProgress",
+  "NSRange",
+  "NSRunLoop",
+  "NSSet",
+  "NSString",
+  "NSThread",
+  "NSTimer",
+  "NSURL",
+  "NSURLAuthenticationChallenge",
+  "NSURLCredential",
+  "NSURLProtectionSpace",
+  "NSURLRequest",
+  "NSURLResponse",
+  "NSURLSession",
+  "NSUUID",
+  "NSUndoManager",
+  "NSValue",
+] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "objc2-core-foundation",
+  "NSAlert",
+  "NSAppearance",
+  "NSApplication",
+  "NSAttributedString",
+  "NSBitmapImageRep",
+  "NSButton",
+  "NSColor",
+  "NSControl",
+  "NSEvent",
+  "NSFont",
+  "NSGraphics",
+  "NSGraphicsContext",
+  "NSImage",
+  "NSImageRep",
+  "NSOpenPanel",
+  "NSPanel",
+  "NSResponder",
+  "NSRunningApplication",
+  "NSSavePanel",
+  "NSScreen",
+  "NSStringDrawing",
+  "NSTrackingArea",
+  "NSView",
+  "NSWindow",
+  "NSWorkspace",
+] }
+objc2-web-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "block2",
+  "objc2-app-kit",
+  "objc2-core-foundation",
+  "WKContentWorld",
+  "WKDownload",
+  "WKDownloadDelegate",
+  "WKFindConfiguration",
+  "WKFindResult",
+  "WKFrameInfo",
+  "WKHTTPCookieStore",
+  "WKNavigation",
+  "WKNavigationAction",
+  "WKNavigationDelegate",
+  "WKNavigationResponse",
+  "WKOpenPanelParameters",
+  "WKPreferences",
+  "WKScriptMessage",
+  "WKScriptMessageHandler",
+  "WKScriptMessageHandlerWithReply",
+  "WKSnapshotConfiguration",
+  "WKUIDelegate",
+  "WKUserContentController",
+  "WKUserScript",
+  "WKWebView",
+  "WKWebViewConfiguration",
+  "WKWebsiteDataStore",
+  "WKWindowFeatures",
+] }
+
+[dev-dependencies]
+gitviber-ui = { path = "../ui", features = ["snapshot"] }
+# Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.
+gpui-test.workspace = true
+
+[[example]]
+name = "browser-demo"
+path = "examples/demo.rs"

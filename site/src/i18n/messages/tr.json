@@ -1,16 +1,16 @@
 {
   "meta": {
     "title": "GitViber: paralel ajanlar ve worktree'ler için git istemcisi",
-    "description": "Vibe coding için ~14 MB'lık bir git istemcisi. Claude Code ya da Codex'i paralel worktree'lerde çalıştır, diff'leri canlı izle, terminalde test et, commit'le.",
+    "description": "Vibe coding için native bir git istemcisi. Claude Code ya da Codex'i paralel worktree'lerde çalıştır, diff'leri canlı izle, terminalde test et, commit'le. macOS ve Linux için.",
     "keywords": "git istemcisi, git arayüzü, kodlama ajanları, yapay zeka ajanları, Claude Code, Codex, git worktree, paralel ajanlar, vibe coding, kod inceleme, diff görüntüleyici, GitHub Desktop alternatifi, ücretsiz git istemcisi, macOS, Linux, açık kaynak",
     "ogTitle": "GitViber: vibe coding, tek uygulamada",
-    "ogDescription": "Ajanlarını kendi worktree'lerinde yan yana çalıştır, yazdıklarını inceleme için yapılmış bir arayüzde oku, gerekirse düzelt, test et ve commit'le. macOS ve Linux için ~14 MB.",
+    "ogDescription": "Ajanlarını kendi worktree'lerinde yan yana çalıştır, yazdıklarını inceleme için yapılmış bir arayüzde oku, gerekirse düzelt, test et ve commit'le. macOS ve Linux için native bir uygulama.",
     "ogImageAlt": "GitViber: vibe coding, tek uygulamada. Canlı bir diff, değişen dosyalar ve terminalle uygulama penceresi."
   },
   "og": {
     "tagline": "Paralel worktree'lerde ajanlar, canlı diff'ler, terminal ve commit. Hepsi tek pencerede.",
     "facts": [
-      "~14 MB",
+      "İndirme boyutu ~20 MB",
       "macOS ve Linux",
       "Ücretsiz ve açık kaynak"
     ]
@@ -32,7 +32,9 @@
     "downloadLinux": "Linux için indir",
     "get": "GitViber'ı indir",
     "copy": "Komutu kopyala",
-    "copied": "Kopyalandı"
+    "copied": "Kopyalandı",
+    "otherMac": "{chip} işlemcili bir Mac mi? {link}",
+    "otherMacLink": "{chip} sürümünü indir"
   },
   "hero": {
     "release": "macOS ve Linux için GitViber {version}",
@@ -96,17 +98,27 @@
   },
   "numbers": {
     "title": "RAM'ini yiyen bir editör daha değil.",
-    "subtitle": "Cursor gibi editörler sırf kod okuyabilmen için bile gigabaytlarca RAM harcıyor.",
+    "subtitle": "0.1.18'den beri native Rust, GPU'da çiziliyor.",
     "items": [
       {
-        "big": "~14 MB",
-        "title": "Uygulamanın tamamı.",
-        "text": "GitHub Desktop 681 MB. GitViber'ın içinde gömülü Chromium yok: Rust bir çekirdek ve sistemin kendi webview'u."
+        "big": "~20 MB",
+        "title": "İndirmenin tamamı bu.",
+        "text": "Apple Silicon için 19,5 MB, Intel için 22,6 MB. İçine gömülü bir tarayıcı motoru yok, uygulama penceresini kendisi çiziyor."
       },
       {
-        "big": "%0",
-        "title": "Boşta CPU kullanımı.",
-        "text": "Zamanlayıcıyla değil, dosyalar değişince uyanır. Diff'ler Rust'ta hesaplanır, vurgulama ana thread'in dışında yapılır."
+        "big": "~100 MB",
+        "title": "Repo açıkken.",
+        "text": "Bütün process'ler dahil, M2 Pro'da ölçüldü. Web tabanlı 0.1.17 sürümü 317 MB kullanıyordu. Pencereyi küçültünce 62 MB'a, hatta daha altına iniyor. 100.000 satırlık bir dosyada sayfa sayfa gezinirken de en fazla 186 MB'a çıkıyor, 0.1.17 burada 2,6 GB'ı buluyordu."
+      },
+      {
+        "big": "0,76 sn",
+        "title": "Açılıştan repoya kadar.",
+        "text": "Aynı Mac'te soğuk açılış, eskiden 5,4 sn sürüyordu. Bir git çağrısı 13 ms yerine 4 ms'de dönüyor, komut paleti de yaklaşık 45 ms'de açılıyor."
+      },
+      {
+        "big": "2,1 sn",
+        "title": "Terminalde iki milyon satır.",
+        "text": "`seq 1 2000000` komutu 2,1 sn'de bitiyor, 0.1.17'de bu süre 9,9 sn'ydi. Terminal sadece ekrandaki satırları çiziyor, değişmeyenleri de yeniden kullanıyor."
       }
     ]
   },
@@ -136,7 +148,7 @@
       },
       {
         "title": "Kısayollar",
-        "text": "Her işlemin bir kısayolu var, hepsi değiştirilebilir. Görmek için ⌘ tuşunu basılı tut."
+        "text": "Çoğu işlemin bir kısayolu var, hepsi değiştirilebilir. Bulunduğun yerde hangilerinin çalıştığını görmek için ⌘ tuşunu basılı tut."
       }
     ]
   },
@@ -147,7 +159,7 @@
     "items": [
       {
         "q": "GitViber nedir?",
-        "a": "macOS ve Linux için ücretsiz, açık kaynak bir git istemcisi. Ajanlarla kod yazmak için yapıldı. Claude Code, Codex ya da başka bir ajanı paralel worktree'lerde çalıştır, diff'lerin canlı gelişini izle, kodda gez, dahili terminalde test et ve commit'le. Hepsi ~14 MB'lık tek bir uygulamada."
+        "a": "macOS ve Linux için ücretsiz, açık kaynak bir git istemcisi. Ajanlarla kod yazmak için yapıldı. Claude Code, Codex ya da başka bir ajanı paralel worktree'lerde çalıştır, diff'leri canlı izle, kodda gez, dahili terminalde test et ve commit'le. Hepsi tek bir native uygulamada."
       },
       {
         "q": "Ücretsiz mi?",
@@ -163,7 +175,7 @@
       },
       {
         "q": "GitHub Desktop'tan farkı ne?",
-        "a": "GitViber worktree'ler ve ajanlar üzerine kurulu: ajan kaydettiği anda yenilenen diff'ler, aynı pencerede terminal ve dosya gezgini, her worktree için ayrı tutulan inceleme ilerlemesi. Bir de boyutu ~14 MB; GitHub Desktop 681 MB."
+        "a": "GitViber worktree'ler ve ajanlar üzerine kurulu: ajan kaydettiği anda yenilenen diff'ler, aynı pencerede terminal ve dosya gezgini, her worktree için ayrı tutulan inceleme ilerlemesi. Ayrıca native bir uygulama: indirmesi 20 MB civarında, repo açıkken de yaklaşık 100 MB bellek kullanıyor."
       },
       {
         "q": "Cursor ya da VS Code gibi bir editöre hâlâ ihtiyacım var mı?",
@@ -171,11 +183,11 @@
       },
       {
         "q": "Çok RAM ya da CPU kullanıyor mu?",
-        "a": "Hayır. İçinde gömülü Chromium olmayan ~14 MB'lık bir uygulama: Rust bir çekirdek ve sistemin kendi webview'u. Boştayken %0 CPU kullanır, sadece dosyalar değişince uyanır. Arayüzde gezinirken Etkinlik Monitörü'nde belleğin tırmandığını görebilirsin. Bu, WebKit'in henüz temizlemediği bellek ve birkaç dakika boşta kalınca düşer."
+        "a": "Hayır. Native Rust ile yazıldı, arayüzü bir webview'da değil, GPU'da çiziliyor. Repo açıkken bütün process'ler dahil yaklaşık 100 MB bellek kullanıyor, kapattığın sekme ya da terminal de kullandığı belleği geri veriyor. Dosya değişikliklerini diski tarayarak değil, sistemin dosya olaylarından öğreniyor."
       },
       {
         "q": "Hangi platformlarda çalışır?",
-        "a": "macOS 13 ve sonrasında, Apple Silicon ve Intel için tek bir universal uygulama olarak. Linux x86_64'te de .deb, .rpm ya da AppImage olarak. macOS'ta her gün kullanılıyor, Linux derlemeleri CI'da test ediliyor. Windows'ta test edilmedi, henüz derlemesi de yok."
+        "a": "macOS 13 ve sonrasında, Apple Silicon ve Intel için ayrı birer indirme olarak. Linux x86_64'te de .deb, .rpm ya da AppImage olarak. macOS'ta her gün kullanılıyor, Linux derlemeleri CI'da test ediliyor. Windows'ta test edilmedi, henüz derlemesi de yok."
       },
       {
         "q": "GitHub'a nasıl giriş yaparım?",
@@ -190,7 +202,7 @@
   "install": {
     "title": "Diğer pencereleri kapat.",
     "lead": "Ücretsiz ve açık kaynak. Hesap yok, telemetri yok.",
-    "mac": "macOS 13 ve sonrası, tek bir universal uygulama, imzalı ve notarize edilmiş.",
+    "mac": "macOS 13 ve sonrası, Apple Silicon ya da Intel, imzalı ve notarize edilmiş.",
     "linux": "Linux x86_64: {files}. git 2.36 ya da daha yenisi gerekir.",
     "source": "Ya da {link}.",
     "sourceLink": "kaynak koddan derle"

@@ -1,0 +1,38 @@
+[package]
+name = "gitviber-review"
+description = "GitViber's guided review: the user's agent CLI explains a change as sections beside their diffs, finds its risks, and hands parts of it to the agent in the terminal."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "gitviber_review"
+
+[dependencies]
+gitviber-core = { path = "../core" }
+gitviber-ui = { path = "../ui" }
+gitviber-diff = { path = "../diff" }
+# The worktree's status and worktrees, as every feature reads them.
+gitviber-refs = { path = "../refs" }
+# Ask Agent starts Claude Code in the worktree's terminal, or pastes into the one running there.
+gitviber-terminal = { path = "../terminal" }
+# Review notes between a repo file's lines in its own view.
+gitviber-files = { path = "../files" }
+# An older guide's Mermaid diagram, drawn as Markdown draws one.
+gitviber-markdown = { path = "../markdown" }
+gpui-kit.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# Off-screen pictures of the demo (dev::run with GITVIBER_SNAPSHOT).
+gitviber-ui = { path = "../ui", features = ["snapshot"] }
+# Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.
+gpui-test.workspace = true
+
+# Every crate's example shares target/debug/examples/: a plain "demo" would be overwritten.
+[[example]]
+name = "review-demo"
+path = "examples/demo.rs"

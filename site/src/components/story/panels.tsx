@@ -110,7 +110,7 @@ export function PaneText({ pane }: { pane: Pane }) {
   );
 }
 
-// The + menu's worktrees: every one but the terminal's own (src/features/terminal/TerminalPanel.tsx).
+// The + menu's worktrees: every one but the terminal's own (crates/terminal/src/panel.rs).
 const OTHER_WORKTREES = [{ folder: "acme-web", branch: "main" }, ...SCENES.slice(1)];
 // ...and the saved projects besides this one, with the folder each lives in.
 const OTHER_PROJECTS = [{ name: "acme-api", parent: "code" }];
@@ -131,7 +131,7 @@ export function TerminalPanel({ state, wrap }: { state: ReturnType<typeof termin
       <div className={cx("grid min-h-0 flex-1", split ? "grid-cols-2" : "grid-cols-1")}>
         {state.panes.map((pane, i) => (
           <div key={pane.output} className={cx("flex min-h-0 flex-col", i > 0 && "pane-in border-l border-fg/20")}>
-            {split && <TerminalPaneHeader title={paneTitle(pane)} focused={i === state.panes.length - 1} calling={i < state.panes.length - 1} />}
+            {split && <TerminalPaneHeader n={i + 1} title={paneTitle(pane)} focused={i === state.panes.length - 1} calling={i < state.panes.length - 1} />}
             <TerminalBody wrap={wrap} className="min-h-0 flex-1 overflow-hidden">
               <PaneText pane={pane} />
             </TerminalBody>
@@ -189,14 +189,14 @@ export function CommitRows({ files }: { files: ChangeFile[] }) {
   return files.map((file) => <ChangeRow key={file.path} file={file} />);
 }
 
-/** The app's toast after a commit (src/components/Toaster.tsx): title, the summary, Undo. */
+/** The app's toast after a commit (crates/changes/src/commit.rs): the title and the summary, top right. */
 export function CommitToast({ show, summary }: { show: boolean; summary: string }) {
   return (
     <div
       aria-hidden
       className={cx(
-        "absolute right-4 bottom-10 z-30 flex w-96 gap-3 rounded-md border border-border-strong bg-elevated p-3 shadow-lg shadow-black/50 transition-all duration-300",
-        show ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0",
+        "absolute top-3 right-3 z-30 flex w-96 gap-3 rounded-md border border-border-strong bg-elevated p-3 shadow-lg shadow-black/50 transition-all duration-300",
+        show ? "translate-y-0 opacity-100" : "-translate-y-2 opacity-0",
       )}
     >
       <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-added" />
@@ -204,7 +204,6 @@ export function CommitToast({ show, summary }: { show: boolean; summary: string 
         <div className="text-[12px] font-medium">Committed</div>
         <div className="mt-1 truncate text-[11.5px] leading-relaxed text-muted">{summary}</div>
       </div>
-      <span className="h-fit rounded-sm px-1.5 py-0.5 text-[12px] font-medium text-primary">Undo</span>
     </div>
   );
 }

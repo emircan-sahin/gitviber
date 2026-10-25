@@ -1,0 +1,1978 @@
+//! A list of commits read a page at a time, with the graph built as pages arrive: HEAD's history,
+//! every branch's, a search's matches, or one side of a comparison. Only the rows on screen are
+//! laid out; an open commit's files are rows of their own, so a commit of thousands of files
+//! scrolls like the rest.
+
+use std::collections::HashSet;
+use std::rc::Rc;
+
+use gitviber_core::{Res, api, git};
+use gitviber_refs::RepoState;
+use gitviber_ui::memory::Live;
+use gitviber_ui::widgets::{
+    ChangeKind, FileIcon, LineCounts, PathLabel, RelativeTime, StatusLetter, full_date, now_unix,
+    relative_time,
+};
+use gitviber_ui::{ActiveAppTheme, AppTheme, Workspace};
+use gpui_kit::assets::IconName;
+use gpui_kit::component::menu::ContextMenuExt as _;
+use gpui_kit::component::scroll::Scrollbar;
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{Icon, Sizable as _};
+use gpui_kit::{
+    AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, DragMoveEvent, Entity,
+    EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent,
+    ListAlignment, ListOffset, ListState, MouseButton, ParentElement as _, PathBuilder, Pixels,
+    Point, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Task, WeakEntity,
+    Window, canvas, div, fill, list, point, prelude::FluentBuilder as _, px, rems, size,
+};
+
+use crate::commit::{Badge, Commit, GraphRefs, RefKind, group_refs};
+use crate::edits::{FirstParentLine, Where};
+use crate::graph::{GraphBuilder, GraphRow, Lane};
+use crate::query::Filter;
+
+/// Commits a page.
+pub const PAGE: u32 = 200;
+/// Going to a commit reads pages until it's listed, but not the whole history of a huge repo.
+pub const JUMP_PAGES: usize = 20;
+/// The key context the list's keys (`/` to search) listen in.
+pub const CONTEXT: &str = "HistoryList";
+
+/// What a list shows.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Source {
+    /// HEAD's history.
+    Head,
+    /// Every branch's history as the refs let through; HEAD keeps the first lane.
+    All(GraphRefs),
+    /// A search's matches, with the commits its SHA-looking words name first.
+    Search {
+        filter: Filter,
+        shas: Vec<String>,
+        all: Option<GraphRefs>,
+    },
+    /// What `with` (a full ref) has that HEAD doesn't (`incoming`), or the other way round.
+    Compare { with: String, incoming: bool },
+    /// What `head` has that `base` doesn't (commit ids).
+    Between { base: String, head: String },
+    /// A remote-tracking branch's history (a fork's original, refs/remotes/upstream/main), with
+    /// what HEAD lacks marked.
+    Rev(String),
+}
+
+impl Source {
+    /// Branches and merges drawn; off for lists whose neighbours aren't parent and child.
+    pub fn graph(&self) -> bool {
+        matches!(self, Source::Head | Source::All(_) | Source::Rev(_))
+    }
+
+    fn read(&self, core: &gitviber_core::Core, skip: u32, limit: u32) -> Res<Vec<git::Commit>> {
+        match self {
+            Source::Head => api::history::log(core, None, skip, limit, None, None),
+            Source::All(refs) => {
+                api::history::log(core, None, skip, limit, None, Some(refs.to_core()))
+            }
+            Source::Search { filter, all, .. } => api::history::log(
+                core,
+                None,
+                skip,
+                limit,
+                Some(filter.to_core()),
+                all.as_ref().map(GraphRefs::to_core),
+            ),
+            Source::Compare { with, incoming } => {
+                api::history::log_compare(core, with.clone(), *incoming, skip, limit)
+            }
+            Source::Between { base, head } => {
+                api::history::log_between(core, base.clone(), head.clone(), skip, limit)
+            }
+            Source::Rev(rev) => api::history::log(core, Some(rev.clone()), skip, limit, None, None),
+        }
+    }
+
+    /// The commits a SHA in a search names, which go first.
+    fn found(&self, core: &gitviber_core::Core) -> Vec<git::Commit> {
+        match self {
+            Source::Search { shas, .. } => shas
+                .iter()
+                .filter_map(|s| api::history::find_commit(core, s.clone()).ok().flatten())
+                .collect(),
+            _ => vec![],
+        }
+    }
+}
+
+/// HEAD's commit id.
+fn head_of(core: &gitviber_core::Core) -> Option<String> {
+    let log = api::history::log(core, None, 0, 1, None, None).ok()?;
+    log.into_iter().next().map(|c| c.sha)
+}
+
+/// What a list tells its owner.
+#[derive(Clone, Debug)]
+pub enum ListEvent {
+    /// Narrow the search to this author.
+    FilterAuthor {
+        name: String,
+        email: String,
+    },
+    /// Show what changed between two commits (`head` None: one and the working tree).
+    ComparePoints {
+        base: (String, String),
+        head: Option<(String, String)>,
+    },
+    HideRefs(Vec<String>),
+    OnlyRef(String),
+    /// A page or a reload came in.
+    Loaded,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Item {
+    Commit(usize),
+    Files,
+    File(usize),
+    /// Reading the open commit's files.
+    FilesLoading,
+    More,
+}
+
+struct Open {
+    sha: String,
+    files: Option<Rc<Vec<git::FileChange>>>,
+    _read: Task<()>,
+}
+
+/// Open a commit's first file once its files are in (a file's history: that one), so one click
+/// shows code.
+const AUTO_OPEN: bool = true;
+
+/// Where dragged commits would land.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DropAt {
+    sha: String,
+    at: Where,
+}
+
+/// What a drag carries: the commits it moves.
+#[derive(Clone)]
+pub struct Dragged(pub Vec<String>);
+
+pub struct DragLabel(SharedString);
+
+impl Render for DragLabel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.app_theme();
+        div()
+            .px_2()
+            .py_1()
+            .rounded(px(6.))
+            .border_1()
+            .border_color(t.border)
+            .bg(t.elevated)
+            .text_size(rems(0.75))
+            .shadow_md()
+            .child(self.0.clone())
+    }
+}
+
+/// How the list behaves, as its owner sets it up.
+#[derive(Clone, Default)]
+pub struct ListOptions {
+    /// What an empty list says.
+    pub empty: SharedString,
+    /// Clicking an author narrows the search to them.
+    pub filter_author: bool,
+    /// The all-branches graph: badges offer Hide and Show only.
+    pub ref_menu: bool,
+    /// Only these refs' badges show.
+    pub show_refs: Option<GraphRefs>,
+    /// The repository on GitHub (owner/name) these commits live in when it's not origin: a
+    /// fork's original has them all, so every one links there and shows its checks.
+    pub github: Option<String>,
+}
+
+pub struct CommitList {
+    pub(crate) repo: Entity<RepoState>,
+    pub(crate) workspace: WeakEntity<Workspace>,
+    source: Source,
+    pub(crate) options: ListOptions,
+    pub(crate) commits: Vec<Rc<Commit>>,
+    rows: Vec<GraphRow>,
+    builder: GraphBuilder,
+    /// What a drag can move: HEAD's own list's first-parent line, walked on as pages come in.
+    line: FirstParentLine,
+    has_more: bool,
+    loaded: bool,
+    error: Option<SharedString>,
+    seq: u64,
+    reading: Option<Task<()>>,
+    /// The repo moved while a read ran: read again once it's in.
+    again: bool,
+    /// HEAD as read with the list: what Undo, reset and rewrites start from.
+    head_sha: Option<String>,
+    /// HEAD, the branch tips and the tags when last read: a change that moved none of them (a
+    /// staged file, an agent saving) doesn't read the log again.
+    tips: String,
+    paging: Option<Task<()>>,
+    items: Vec<Item>,
+    state: ListState,
+    open: Option<Open>,
+    /// Picked together with ⌘/⇧-click, newest first as listed.
+    pub(crate) picked: Vec<String>,
+    anchor: Option<String>,
+    /// The row the keys move.
+    cursor: Option<usize>,
+    /// The cursor is on this file of the open commit, under its row.
+    on_file: Option<usize>,
+    /// The drag's label, to say whether it squashes or moves as the target changes.
+    drag_label: Option<WeakEntity<DragLabel>>,
+    /// ↓ on the last row read the next page: the row to move on to once it's in.
+    down_after_page: bool,
+    /// The row under the pointer: its branches come forward.
+    lit: Option<usize>,
+    drop_at: Option<DropAt>,
+    dragging: Option<Vec<String>>,
+    /// Scroll to this commit and open it once it's listed.
+    jump: Option<String>,
+    /// Loading pages until there's no more (a memory check, a jump far back).
+    to_end: bool,
+    focus: FocusHandle,
+    pub(crate) flow: Option<Task<()>>,
+    _repo: gpui_kit::Subscription,
+    _tabs: Option<gpui_kit::Subscription>,
+    _live: Live,
+}
+
+impl EventEmitter<ListEvent> for CommitList {}
+
+impl Focusable for CommitList {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+// Lane geometry, matching the dot: 12px row padding, 9px dot, its centre 13.5px down.
+const LANE: f32 = 10.;
+const LANE_X: f32 = 16.5;
+const DOT_Y: f32 = 13.5;
+const BEND_Y: f32 = DOT_Y + 10.;
+// Past this many lanes the rest are cut off; their commits sit on the last one shown.
+const MAX_LANES: usize = 8;
+
+fn lane_of(i: usize) -> usize {
+    i.min(MAX_LANES - 1)
+}
+
+fn lanes_of(row: &GraphRow) -> usize {
+    row.width.min(MAX_LANES)
+}
+
+/// Colour follows the branch, not the column. The list's own branch is grey like its dots.
+pub fn lane_color(id: usize, t: &AppTheme) -> Hsla {
+    if id == 0 {
+        return t.subtle;
+    }
+    [t.renamed, t.modified, t.primary, t.conflict, t.added][(id - 1) % 5]
+}
+
+impl CommitList {
+    pub fn new(
+        repo: Entity<RepoState>,
+        workspace: WeakEntity<Workspace>,
+        source: Source,
+        options: ListOptions,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let state = ListState::new(0, ListAlignment::Top, px(300.));
+        let weak = cx.weak_entity();
+        state.set_scroll_handler(move |e, _, cx| {
+            // Near the end: the next page, before the user gets there.
+            if e.visible_range.end + 20 >= e.count {
+                let _ = weak.update(cx, |this, cx| this.load_more(cx));
+            }
+        });
+        let sub = cx.subscribe(
+            &repo,
+            |this: &mut Self, _, event: &gitviber_refs::RepoEvent, cx| {
+                if let gitviber_refs::RepoEvent::Changed = event {
+                    this.repo_changed(cx);
+                }
+            },
+        );
+        // The active tab marks its file's row.
+        let tabs = workspace.upgrade().map(|ws| {
+            cx.observe(&ws, |this, _, cx| {
+                if this.open.is_some() {
+                    cx.notify();
+                }
+            })
+        });
+        let mut list = CommitList {
+            repo,
+            workspace,
+            source,
+            options,
+            commits: vec![],
+            rows: vec![],
+            builder: GraphBuilder::default(),
+            line: FirstParentLine::default(),
+            has_more: false,
+            loaded: false,
+            error: None,
+            seq: 0,
+            reading: None,
+            again: false,
+            head_sha: None,
+            tips: String::new(),
+            paging: None,
+            items: vec![],
+            state,
+            open: None,
+            picked: vec![],
+            anchor: None,
+            cursor: None,
+            on_file: None,
+            drag_label: None,
+            down_after_page: false,
+            lit: None,
+            drop_at: None,
+            dragging: None,
+            jump: None,
+            to_end: false,
+            focus: cx.focus_handle(),
+            flow: None,
+            _repo: sub,
+            _tabs: tabs,
+            _live: Live::new("CommitList"),
+        };
+        // Before the project opens core has no repo: its first read comes with RepoEvent::Changed.
+        if list.repo.read(cx).status.is_some() {
+            list.reload(cx);
+        }
+        list
+    }
+
+    /// Reads page after page until the history ends.
+    pub fn load_to_end(&mut self, cx: &mut Context<Self>) {
+        self.to_end = true;
+        self.load_more(cx);
+    }
+
+    /// The first commit's tab of all its files.
+    pub fn open_first_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(c) = self.commits.first().cloned() {
+            crate::open::open_commit(self, &c, window, cx);
+        }
+    }
+
+    /// Opens the first commit as a click does, its first file's tab too.
+    pub fn open_first(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(c) = self.commits.first().cloned() {
+            self.cursor = Some(0);
+            self.toggle_open(&c, Some(window), cx);
+        }
+    }
+
+    pub fn source(&self) -> &Source {
+        &self.source
+    }
+
+    pub fn is_loaded(&self) -> bool {
+        self.loaded
+    }
+
+    pub fn len(&self) -> usize {
+        self.commits.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.commits.is_empty()
+    }
+
+    pub fn has_more(&self) -> bool {
+        self.has_more
+    }
+
+    /// HEAD as the history shows it: core refuses to move HEAD if it moved since.
+    pub fn head(&self, _: &App) -> String {
+        self.head_sha.clone().unwrap_or_default()
+    }
+
+    pub fn commit(&self, sha: &str) -> Option<&Rc<Commit>> {
+        self.commits.iter().find(|c| c.sha == sha)
+    }
+
+    /// Shows another list in place of this one: what's loaded goes.
+    pub fn set_source(&mut self, source: Source, options: ListOptions, cx: &mut Context<Self>) {
+        if source == self.source && options.show_refs == self.options.show_refs {
+            self.options = options;
+            return;
+        }
+        self.source = source;
+        self.options = options;
+        self.commits.clear();
+        self.rows.clear();
+        self.line = FirstParentLine::default();
+        self.open = None;
+        self.picked.clear();
+        self.loaded = false;
+        self.state.reset(0);
+        self.items.clear();
+        self.reload(cx);
+    }
+
+    /// HEAD or the refs may have moved: read again what's loaded.
+    fn repo_changed(&mut self, cx: &mut Context<Self>) {
+        // A list of fixed commits never changes.
+        if matches!(self.source, Source::Between { .. }) {
+            return;
+        }
+        if self.loaded && self.tips_now(cx) == self.tips {
+            return;
+        }
+        // One read at a time: a slow search isn't asked again under itself.
+        if self.reading.is_some() {
+            self.again = true;
+            return;
+        }
+        self.reload(cx);
+    }
+
+    fn tips_now(&self, cx: &App) -> String {
+        let repo = self.repo.read(cx);
+        // Tags badge their commits and the menus act on them.
+        let mut tips = format!("{:x} {}", repo.tags, repo.head().unwrap_or_default());
+        for b in repo.branches.iter() {
+            tips.push(' ');
+            tips.push_str(&b.name);
+            tips.push(':');
+            tips.push_str(&b.sha);
+        }
+        tips
+    }
+
+    /// Reads the list again, as many as are loaded; what's on screen stays where it was.
+    pub fn reload(&mut self, cx: &mut Context<Self>) {
+        self.seq += 1;
+        let seq = self.seq;
+        let limit = PAGE.max(self.commits.len() as u32);
+        let source = self.source.clone();
+        let core = gitviber_ui::core(cx);
+        self.paging = None;
+        self.again = false;
+        self.tips = self.tips_now(cx);
+        // The list, the commits a search's SHAs name and HEAD are read at once: each is a log of
+        // its own, several git calls long.
+        let found = cx.background_spawn({
+            let (source, core) = (source.clone(), core.clone());
+            async move { source.found(&core) }
+        });
+        let head = (source != Source::Head).then(|| {
+            let core = core.clone();
+            cx.background_spawn(async move { head_of(&core) })
+        });
+        let read = cx.background_spawn({
+            let core = core.clone();
+            async move { source.read(&core, 0, limit) }
+        });
+        self.reading = Some(cx.spawn(async move |this, cx| {
+            let log = read.await;
+            // HEAD read with the list, so what the menus act on is what's shown.
+            let head = match (head, &log) {
+                (Some(head), _) => head.await,
+                (None, Ok(log)) => log.first().map(|c| c.sha.clone()),
+                (None, Err(_)) => {
+                    let read = async move { head_of(&core) };
+                    cx.background_executor().spawn(read).await
+                }
+            };
+            let found = found.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.seq != seq {
+                    return;
+                }
+                this.reading = None;
+                this.head_sha = head;
+                match log {
+                    Ok(log) => {
+                        let has_more = log.len() as u32 == limit;
+                        this.replace(found, log, has_more, cx);
+                        this.error = None;
+                    }
+                    Err(e) => {
+                        this.error = Some(e.into());
+                        if !this.loaded {
+                            this.replace(vec![], vec![], false, cx);
+                        }
+                    }
+                }
+                this.loaded = true;
+                // A jump asked before the first page came in looks now.
+                this.try_jump(cx);
+                cx.emit(ListEvent::Loaded);
+                cx.notify();
+                if std::mem::take(&mut this.again) {
+                    this.repo_changed(cx);
+                } else if this.to_end {
+                    this.load_more(cx);
+                }
+            });
+        }));
+    }
+
+    fn graph_head(&self) -> Option<String> {
+        // Every branch is listed: HEAD's keeps the first lane even below newer branches' tips.
+        match &self.source {
+            Source::All(_) => self.head_sha.clone(),
+            _ => None,
+        }
+    }
+
+    fn replace(
+        &mut self,
+        found: Vec<git::Commit>,
+        log: Vec<git::Commit>,
+        has_more: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let mut seen = HashSet::new();
+        let next: Vec<Rc<Commit>> = found
+            .into_iter()
+            .chain(log)
+            .filter(|c| seen.insert(c.sha.clone()))
+            .map(|c| Rc::new(Commit::from(c)))
+            .collect();
+        // A refresh that moved nothing shown (a staged file, a focus) leaves the list alone.
+        if self.loaded
+            && next.len() == self.commits.len()
+            && next.iter().zip(&self.commits).all(|(a, b)| **a == **b)
+        {
+            self.has_more = has_more;
+            return;
+        }
+        let top = self.state.logical_scroll_top();
+        let top_sha = self.item_sha(top.item_ix);
+        self.commits = next;
+        let listed: HashSet<&str> = self.commits.iter().map(|c| c.sha.as_str()).collect();
+        // An undo can bring rewritten commits back: their old picks don't come with them.
+        self.picked.retain(|s| listed.contains(s.as_str()));
+        if self
+            .open
+            .as_ref()
+            .is_some_and(|o| !listed.contains(o.sha.as_str()))
+        {
+            self.open = None;
+        }
+        self.has_more = has_more;
+        self.builder = GraphBuilder::new(
+            self.graph_head()
+                .filter(|h| listed.contains(h.as_str()))
+                .as_deref(),
+        );
+        self.rows.clear();
+        let head = self.head_sha.as_deref();
+        self.line = FirstParentLine::new(head.filter(|_| matches!(self.source, Source::Head)));
+        self.line.extend(&self.commits, 0);
+        if self.source.graph() {
+            let mut builder = std::mem::take(&mut self.builder);
+            self.rows = self
+                .commits
+                .iter()
+                .map(|c| builder.push(&c.sha, &c.parents))
+                .collect();
+            self.builder = builder;
+        }
+        let old = self.items.len();
+        self.rebuild_items();
+        self.state.splice(0..old, self.items.len());
+        if let Some(sha) = top_sha
+            && let Some(ix) = self
+                .items
+                .iter()
+                .position(|i| matches!(i, Item::Commit(c) if self.commits[*c].sha == sha))
+        {
+            self.state.scroll_to(ListOffset {
+                item_ix: ix,
+                offset_in_item: top.offset_in_item,
+            });
+        }
+        self.try_jump(cx);
+    }
+
+    fn item_sha(&self, ix: usize) -> Option<String> {
+        match self.items.get(ix)? {
+            Item::Commit(c) => Some(self.commits[*c].sha.clone()),
+            _ => None,
+        }
+    }
+
+    fn rebuild_items(&mut self) {
+        let mut items = Vec::with_capacity(self.commits.len() + 1);
+        for (i, c) in self.commits.iter().enumerate() {
+            items.push(Item::Commit(i));
+            if let Some(open) = self.open.as_ref().filter(|o| o.sha == c.sha) {
+                match &open.files {
+                    None => items.push(Item::FilesLoading),
+                    Some(files) => {
+                        items.push(Item::Files);
+                        items.extend((0..files.len()).map(Item::File));
+                    }
+                }
+            }
+        }
+        if self.has_more {
+            items.push(Item::More);
+        }
+        self.items = items;
+    }
+
+    /// The next page, unless one is on its way or there's no more.
+    pub fn load_more(&mut self, cx: &mut Context<Self>) {
+        if !self.has_more || self.paging.is_some() || self.reading.is_some() {
+            return;
+        }
+        let seq = self.seq;
+        let skip = self.commits.len() as u32;
+        let source = self.source.clone();
+        let core = gitviber_ui::core(cx);
+        let read = cx.background_spawn(async move { source.read(&core, skip, PAGE) });
+        self.paging = Some(cx.spawn(async move |this, cx| {
+            let more = read.await;
+            let _ = this.update(cx, |this, cx| {
+                this.paging = None;
+                if this.seq != seq {
+                    return;
+                }
+                match more {
+                    Ok(more) => this.append(more, cx),
+                    Err(e) => this.error = Some(e.into()),
+                }
+                cx.emit(ListEvent::Loaded);
+                cx.notify();
+            });
+        }));
+    }
+
+    fn append(&mut self, more: Vec<git::Commit>, cx: &mut Context<Self>) {
+        self.has_more = more.len() as u32 == PAGE;
+        // A refresh may have shifted the page boundary meanwhile; never show a commit twice.
+        let seen: HashSet<&str> = self.commits.iter().map(|c| c.sha.as_str()).collect();
+        let fresh: Vec<Rc<Commit>> = more
+            .into_iter()
+            .filter(|c| !seen.contains(c.sha.as_str()))
+            .map(|c| Rc::new(Commit::from(c)))
+            .collect();
+        let at = self.items.len() - usize::from(self.items.last() == Some(&Item::More));
+        let first = self.commits.len();
+        if self.source.graph() {
+            for c in &fresh {
+                self.rows.push(self.builder.push(&c.sha, &c.parents));
+            }
+        }
+        self.commits.extend(fresh);
+        self.line.extend(&self.commits, first);
+        let mut tail: Vec<Item> = (first..self.commits.len()).map(Item::Commit).collect();
+        if self.has_more {
+            tail.push(Item::More);
+        }
+        let old = self.items.len() - at;
+        let count = tail.len();
+        self.items.truncate(at);
+        self.items.extend(tail);
+        self.state.splice(at..at + old, count);
+        self.try_jump(cx);
+        // ↓ on the last row asked for this page: the cursor goes on to its first commit.
+        if std::mem::take(&mut self.down_after_page) && first < self.commits.len() {
+            self.cursor = Some(first);
+            self.on_file = None;
+            if let Some(ix) = self.items.iter().position(|it| *it == Item::Commit(first)) {
+                self.state.scroll_to_reveal_item(ix);
+            }
+        }
+        if self.to_end {
+            self.load_more(cx);
+        }
+    }
+
+    /// Scrolls to a commit and opens it, loading pages until it's listed, up to a point.
+    pub fn jump_to(&mut self, sha: String, cx: &mut Context<Self>) {
+        self.jump = Some(sha);
+        self.try_jump(cx);
+    }
+
+    fn try_jump(&mut self, cx: &mut Context<Self>) {
+        let Some(sha) = self.jump.clone() else { return };
+        // A link's id may be short: its commit is the one it begins.
+        let found = self
+            .commits
+            .iter()
+            .position(|c| c.sha == sha || (sha.len() >= 7 && c.sha.starts_with(&sha)));
+        if let Some(i) = found {
+            self.jump = None;
+            let commit = self.commits[i].clone();
+            self.picked.clear();
+            self.cursor = Some(i);
+            self.anchor = Some(commit.sha.clone());
+            if self.open.as_ref().is_none_or(|o| o.sha != commit.sha) {
+                self.toggle_open(&commit, None, cx);
+            }
+            if let Some(ix) = self.items.iter().position(|it| *it == Item::Commit(i)) {
+                self.state.scroll_to_reveal_item(ix);
+            }
+            cx.notify();
+            return;
+        }
+        // Still reading: the page that comes in looks again.
+        if !self.loaded || self.reading.is_some() || self.paging.is_some() {
+            return;
+        }
+        if self.has_more && self.commits.len() < JUMP_PAGES * PAGE as usize {
+            self.load_more(cx);
+            return;
+        }
+        self.jump = None;
+        let short = sha[..sha.len().min(7)].to_string();
+        let _ = self.workspace.update(cx, |ws, cx| {
+            ws.toast(
+                gitviber_ui::workspace::Toast::info(
+                    "It's further back than History reads, or not on the branches it shows.",
+                )
+                .title(format!("{short} isn't in the history")),
+                cx,
+            )
+        });
+    }
+
+    // MARK: Open, pick
+
+    pub fn open_sha(&self) -> Option<&str> {
+        self.open.as_ref().map(|o| o.sha.as_str())
+    }
+
+    /// Opens a commit's files under it, or closes it; with `window`, its first file's tab too.
+    fn toggle_open(
+        &mut self,
+        commit: &Rc<Commit>,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.open.as_ref().is_some_and(|o| o.sha == commit.sha) {
+            self.open = None;
+        } else {
+            let core = gitviber_ui::core(cx);
+            let sha = commit.sha.clone();
+            let read = cx.background_spawn({
+                let sha = sha.clone();
+                async move { api::history::commit_files(&core, sha) }
+            });
+            // From a click, the first file opens too, in the window clicked.
+            let handle = window.filter(|_| AUTO_OPEN).map(|w| w.window_handle());
+            let commit2 = commit.clone();
+            let task = cx.spawn(async move |this, cx| {
+                let files = read.await;
+                let _ = this.update(cx, |this, cx| {
+                    let Some(open) = this.open.as_mut().filter(|o| o.sha == sha) else {
+                        return;
+                    };
+                    if let Err(e) = &files {
+                        let e = e.clone();
+                        let _ = this.workspace.update(cx, |ws, cx| {
+                            ws.toast(
+                                gitviber_ui::workspace::Toast::error(e)
+                                    .title("Could not load commit"),
+                                cx,
+                            )
+                        });
+                    }
+                    let files = Rc::new(files.unwrap_or_default());
+                    open.files = Some(files.clone());
+                    this.relayout(cx);
+                    let file = files
+                        .iter()
+                        .find(|f| Some(&f.path) == commit2.file.as_ref())
+                        .or(files.first())
+                        .cloned();
+                    if let (Some(handle), Some(f)) = (handle, file) {
+                        let this = cx.weak_entity();
+                        cx.defer(move |cx| {
+                            let _ = handle.update(cx, |_, window, cx| {
+                                let _ = this.update(cx, |this, cx| {
+                                    crate::open::open_commit_file(
+                                        this, &commit2, &f, true, window, cx,
+                                    )
+                                });
+                            });
+                        });
+                    }
+                });
+            });
+            self.open = Some(Open {
+                sha: commit.sha.clone(),
+                files: None,
+                _read: task,
+            });
+        }
+        self.relayout(cx);
+    }
+
+    /// The items changed around the open commit: laid out again, the scroll kept on its row.
+    fn relayout(&mut self, cx: &mut Context<Self>) {
+        let top = self.state.logical_scroll_top();
+        let top_sha = self.item_sha(top.item_ix);
+        let old = self.items.len();
+        self.rebuild_items();
+        self.state.splice(0..old, self.items.len());
+        if let Some(sha) = top_sha
+            && let Some(ix) = self
+                .items
+                .iter()
+                .position(|i| matches!(i, Item::Commit(c) if self.commits[*c].sha == sha))
+        {
+            self.state.scroll_to(ListOffset {
+                item_ix: ix,
+                offset_in_item: top.offset_in_item,
+            });
+        }
+        cx.notify();
+    }
+
+    fn files_of_open(&self) -> Option<(Rc<Commit>, Rc<Vec<git::FileChange>>)> {
+        let open = self.open.as_ref()?;
+        Some((self.commit(&open.sha)?.clone(), open.files.clone()?))
+    }
+
+    /// A plain click opens the commit; ⌘ picks one more, ⇧ the range from the last clicked,
+    /// along commits on the same side of HEAD.
+    /// A row's index now: a click lands on a row drawn with the list as it was.
+    fn index_of(&self, sha: &str) -> Option<usize> {
+        self.commits.iter().position(|c| c.sha == sha)
+    }
+
+    pub(crate) fn click_commit(
+        &mut self,
+        sha: &str,
+        e: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(i) = self.index_of(sha) else { return };
+        let commit = self.commits[i].clone();
+        self.cursor = Some(i);
+        self.on_file = None;
+        let m = e.modifiers();
+        if m.secondary() {
+            if self.picked.is_empty()
+                && let Some(open) = self.open_sha()
+            {
+                self.picked.push(open.to_string());
+            }
+            match self.picked.iter().position(|s| *s == commit.sha) {
+                Some(at) => {
+                    self.picked.remove(at);
+                }
+                None => self.picked.push(commit.sha.clone()),
+            }
+            self.order_picked();
+            self.anchor = Some(commit.sha.clone());
+        } else if m.shift {
+            self.pick_range(i);
+        } else {
+            self.picked.clear();
+            self.anchor = Some(commit.sha.clone());
+            self.toggle_open(&commit, Some(window), cx);
+        }
+        cx.notify();
+    }
+
+    fn order_picked(&mut self) {
+        let picked: HashSet<String> = self.picked.drain(..).collect();
+        self.picked = self
+            .commits
+            .iter()
+            .filter(|c| picked.contains(&c.sha))
+            .map(|c| c.sha.clone())
+            .collect();
+    }
+
+    fn pick_range(&mut self, to: usize) {
+        let from = self
+            .anchor
+            .clone()
+            .or_else(|| self.open_sha().map(str::to_string))
+            .and_then(|a| self.commits.iter().position(|c| c.sha == a))
+            .unwrap_or(to);
+        let side = self.commits[to].not_in_head;
+        let (lo, hi) = (from.min(to), from.max(to));
+        self.anchor = Some(self.commits[from].sha.clone());
+        self.picked = self.commits[lo..=hi]
+            .iter()
+            .filter(|c| c.not_in_head == side)
+            .map(|c| c.sha.clone())
+            .collect();
+    }
+
+    /// The picked commits as listed; one when nothing's picked but `sha`.
+    pub fn picked_commits(&self) -> Vec<Rc<Commit>> {
+        let set: HashSet<&str> = self.picked.iter().map(String::as_str).collect();
+        self.commits
+            .iter()
+            .filter(|c| set.contains(c.sha.as_str()))
+            .cloned()
+            .collect()
+    }
+
+    /// The rows keys move along, top to bottom: each commit, and the open one's files under it.
+    fn nav_rows(&self) -> Vec<(usize, Option<usize>)> {
+        let open = self.open_sha().and_then(|s| self.index_of(s));
+        self.items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Commit(i) => Some((*i, None)),
+                Item::File(f) => open.map(|o| (o, Some(*f))),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn item_of(&self, row: (usize, Option<usize>)) -> Option<usize> {
+        self.items.iter().position(|it| match (it, row.1) {
+            (Item::Commit(i), None) => *i == row.0,
+            (Item::File(f), Some(g)) => *f == g,
+            _ => false,
+        })
+    }
+
+    /// Rows a PageUp/PageDown moves: as many as fit, one kept for context.
+    fn page_rows(&self) -> usize {
+        let height = self.state.viewport_bounds().size.height;
+        ((height / px(44.)) as usize).saturating_sub(1).max(1)
+    }
+
+    /// Puts the cursor on a row and scrolls it into view; a file row previews its diff, as a
+    /// click does, while a commit's row only takes the cursor.
+    fn land(&mut self, row: (usize, Option<usize>), window: &mut Window, cx: &mut Context<Self>) {
+        self.cursor = Some(row.0);
+        self.on_file = row.1;
+        if let Some(ix) = self.item_of(row) {
+            self.state.scroll_to_reveal_item(ix);
+        }
+        if let (Some(f), Some((commit, files))) = (row.1, self.files_of_open())
+            && let Some(file) = files.get(f)
+        {
+            crate::open::open_commit_file(self, &commit, file, true, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// The keys do what the mouse does on the rows: ↵ and Space open and close a commit (↵ keeps
+    /// a file's tab), → steps into a commit's files and on to the code, ← back out, ⇧ with a move
+    /// picks commits along, ⇧F10 the row's menu.
+    pub(crate) fn key_down(
+        &mut self,
+        e: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let rows = self.nav_rows();
+        if rows.is_empty() {
+            return;
+        }
+        let k = e.keystroke.key.as_str();
+        let m = e.keystroke.modifiers;
+        let menu = k == "menu" || (k == "f10" && m.shift && !m.alt && !m.platform && !m.control);
+        if (m.alt || m.platform || m.control) && !menu {
+            return;
+        }
+        // The list may have been read again shorter since the cursor was put there.
+        let here = (
+            self.cursor
+                .unwrap_or(0)
+                .min(self.commits.len().saturating_sub(1)),
+            self.on_file,
+        );
+        let at = rows
+            .iter()
+            .position(|r| *r == here)
+            .or_else(|| rows.iter().position(|r| r.0 == here.0))
+            .unwrap_or(0);
+        let row = rows[at];
+        let last = rows.len() - 1;
+        let page = self.page_rows();
+        let to = match k {
+            "down" => Some((at + 1).min(last)),
+            "up" => Some(at.saturating_sub(1)),
+            "home" => Some(0),
+            "end" => Some(last),
+            "pagedown" => Some((at + page).min(last)),
+            "pageup" => Some(at.saturating_sub(page)),
+            _ => None,
+        };
+        cx.stop_propagation();
+        if menu {
+            self.open_row_menu(row, window, cx);
+            return;
+        }
+        if let Some(to) = to {
+            if m.shift {
+                // Along the commits only, for picking them.
+                let commits: Vec<usize> =
+                    rows.iter().filter(|r| r.1.is_none()).map(|r| r.0).collect();
+                let i = commits.iter().position(|c| *c == row.0).unwrap_or(0);
+                let j = match k {
+                    "down" => (i + 1).min(commits.len() - 1),
+                    "up" => i.saturating_sub(1),
+                    "home" => 0,
+                    "end" => commits.len() - 1,
+                    "pagedown" => (i + page).min(commits.len() - 1),
+                    _ => i.saturating_sub(page),
+                };
+                if self.picked.is_empty() {
+                    self.anchor = Some(self.commits[row.0].sha.clone());
+                }
+                self.pick_range(commits[j]);
+                self.land((commits[j], None), window, cx);
+                return;
+            }
+            if k == "down" && at == last && self.has_more {
+                self.down_after_page = true;
+                self.load_more(cx);
+                return;
+            }
+            self.picked.clear();
+            self.anchor = Some(self.commits[rows[to].0].sha.clone());
+            self.land(rows[to], window, cx);
+            return;
+        }
+        let open = self.open_sha() == Some(self.commits[row.0].sha.as_str());
+        match (k, row.1) {
+            ("enter" | "space", None) => {
+                let commit = self.commits[row.0].clone();
+                self.toggle_open(&commit, Some(window), cx);
+            }
+            ("enter", Some(f)) => {
+                if let Some((commit, files)) = self.files_of_open()
+                    && let Some(file) = files.get(f)
+                {
+                    crate::open::open_commit_file(self, &commit, file, false, window, cx);
+                }
+            }
+            ("space", Some(_)) => self.land(row, window, cx),
+            ("right", None) if !open => {
+                let commit = self.commits[row.0].clone();
+                self.toggle_open(&commit, Some(window), cx);
+            }
+            ("right", None) => {
+                if let Some(next) = rows.get(at + 1).filter(|r| r.1.is_some()) {
+                    self.land(*next, window, cx);
+                }
+            }
+            ("right", Some(_)) => {
+                self.land(row, window, cx);
+                if let Some(ws) = self.workspace.upgrade() {
+                    ws.update(cx, |ws, cx| ws.focus_center(window, cx));
+                }
+            }
+            ("left", None) if open => {
+                let commit = self.commits[row.0].clone();
+                self.toggle_open(&commit, None, cx);
+            }
+            ("left", Some(_)) => self.land((row.0, None), window, cx),
+            ("escape", _) if !self.picked.is_empty() => {
+                self.picked.clear();
+                cx.notify();
+            }
+            _ => cx.propagate(),
+        }
+    }
+
+    /// A row's right-click menu from the keyboard, just under the row's start.
+    fn open_row_menu(
+        &mut self,
+        row: (usize, Option<usize>),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ix) = self.item_of(row) else { return };
+        self.state.scroll_to_reveal_item(ix);
+        let Some(bounds) = self.state.bounds_for_item(ix) else {
+            return;
+        };
+        let position = bounds.origin + point(px(24.), bounds.size.height - px(4.));
+        // After this key's dispatch: the menu opens as a right-click there would open it.
+        window.defer(cx, move |window, cx| {
+            let down = gpui_kit::MouseDownEvent {
+                button: MouseButton::Right,
+                position,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            };
+            window.dispatch_event(gpui_kit::PlatformInput::MouseDown(down), cx);
+            let up = gpui_kit::MouseUpEvent {
+                button: MouseButton::Right,
+                position,
+                modifiers: Default::default(),
+                click_count: 1,
+            };
+            window.dispatch_event(gpui_kit::PlatformInput::MouseUp(up), cx);
+        });
+    }
+
+    // MARK: Drag
+
+    /// Only the branch's own history as the graph draws it, with nothing running.
+    fn can_drag(&self, cx: &App) -> bool {
+        matches!(self.source, Source::Head) && !self.repo.read(cx).locked()
+    }
+
+    fn drag_move(
+        &mut self,
+        i: usize,
+        sha: &str,
+        e: &DragMoveEvent<Dragged>,
+        cx: &mut Context<Self>,
+    ) {
+        // Every row hears every move of the drag: only the one under the pointer has a say.
+        let inside = e.bounds.contains(&e.event.position);
+        let dragged = e.drag(cx).0.clone();
+        let droppable = !dragged.iter().any(|d| d == sha)
+            && self.commits.get(i).is_some_and(|c| c.sha == sha)
+            && self.line.contains(i);
+        let over = drop_over(e.event.position, e.bounds, inside, droppable);
+        if let Some(next) = next_drop(&self.drop_at, sha, over) {
+            // Onto a commit, that one is squashed too.
+            let onto = next.as_ref().is_some_and(|d| d.at == Where::Onto);
+            if let Some(label) = self.drag_label.as_ref().and_then(|l| l.upgrade()) {
+                label.update(cx, |l, cx| {
+                    l.0 = drag_text(dragged.len(), onto);
+                    cx.notify();
+                });
+            }
+            self.drop_at = next;
+            self.dragging = Some(dragged);
+            cx.notify();
+        }
+    }
+
+    fn drop(&mut self, dragged: &Dragged, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.drop_at.take();
+        self.dragging = None;
+        cx.notify();
+        if let Some(target) = target {
+            crate::act::drop_commits(self, dragged.0.clone(), target.sha, target.at, window, cx);
+        }
+    }
+
+    // MARK: Render
+
+    fn render_item(
+        &mut self,
+        ix: usize,
+        remotes: &[String],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match self.items.get(ix).copied() {
+            Some(Item::Commit(i)) => self.render_commit(i, remotes, window, cx),
+            Some(Item::Files) => self.render_files_header(cx),
+            Some(Item::File(f)) => self.render_file(f, window, cx),
+            Some(Item::FilesLoading) => {
+                let t = cx.app_theme();
+                div()
+                    .py_1()
+                    .pl_8()
+                    .text_size(rems(0.71875))
+                    .text_color(t.subtle)
+                    .child("Loading…")
+                    .into_any_element()
+            }
+            Some(Item::More) => {
+                let t = cx.app_theme();
+                div()
+                    .p_2()
+                    .text_center()
+                    .text_size(rems(0.71875))
+                    .text_color(t.subtle)
+                    .child("Loading more…")
+                    .into_any_element()
+            }
+            None => div().into_any_element(),
+        }
+    }
+
+    fn row_graph(&self, i: usize) -> GraphRow {
+        if self.source.graph() {
+            self.rows.get(i).cloned().unwrap_or_default()
+        } else {
+            GraphRow::straight(i == 0, i + 1 == self.commits.len() && !self.has_more)
+        }
+    }
+
+    fn render_commit(
+        &mut self,
+        i: usize,
+        remotes: &[String],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let t = cx.app_theme().clone();
+        let commit = self.commits[i].clone();
+        let row = self.row_graph(i);
+        let head = self.head(cx);
+        let is_head = commit.sha == head;
+        let open = self.open_sha() == Some(commit.sha.as_str());
+        let picked = self.picked.iter().any(|s| *s == commit.sha);
+        let cursor =
+            self.cursor == Some(i) && self.on_file.is_none() && self.focus.is_focused(window);
+        let lit: Option<Vec<usize>> = self.lit.map(|l| {
+            let r = self.row_graph(l);
+            std::iter::once(r.id)
+                .chain(r.out.iter().map(|o| o.id))
+                .collect()
+        });
+        let drop = self
+            .drop_at
+            .as_ref()
+            .filter(|d| d.sha == commit.sha)
+            .map(|d| d.at);
+        let dragged = self
+            .dragging
+            .as_ref()
+            .is_some_and(|d| d.contains(&commit.sha));
+        let lanes = lanes_of(&row);
+        let mark = if commit.unpushed {
+            Some("Not pushed yet")
+        } else if commit.not_in_head {
+            Some("Not in your branch yet")
+        } else {
+            None
+        };
+        let dot_tip: Option<SharedString> = if is_head {
+            Some(
+                std::iter::once("HEAD")
+                    .chain(mark)
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+                    .into(),
+            )
+        } else {
+            mark.map(SharedString::from)
+        };
+        let (dot_border, dot_bg) = if commit.unpushed {
+            (t.primary, t.primary)
+        } else if commit.not_in_head {
+            (t.added, t.added)
+        } else if row.id == 0 {
+            (t.subtle, t.sidebar)
+        } else {
+            (lane_color(row.id, &t), t.sidebar)
+        };
+        let dot = div()
+            .id(("dot", i))
+            .relative()
+            .flex_none()
+            .mt(px(3.))
+            .ml(px(lane_of(row.col) as f32 * LANE))
+            .mr(px((lanes - 1 - lane_of(row.col)) as f32 * LANE))
+            .size(px(9.))
+            .rounded_full()
+            .border_2()
+            .border_color(dot_border)
+            .bg(dot_bg)
+            // Where you are, among every branch's commits.
+            .when(is_head, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .top(px(-4.))
+                        .left(px(-4.))
+                        .size(px(13.))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(t.primary),
+                )
+            })
+            .when_some(dot_tip, |d, tip| {
+                d.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            });
+        let badges = group_refs(&commit.refs, remotes, self.options.show_refs.as_ref());
+        let author: AnyElement = if self.options.filter_author && !commit.author.is_empty() {
+            let (name, email) = (commit.author.to_string(), commit.email.to_string());
+            div()
+                .id(("author", i))
+                // A bigger target, laid out as the text alone.
+                .py(px(4.))
+                .my(px(-4.))
+                .min_w_0()
+                .truncate()
+                .cursor_pointer()
+                .hover(|s| s.text_color(t.foreground).underline())
+                .child(commit.author.clone())
+                .tooltip({
+                    let tip: SharedString = format!("Filter by author {}", commit.author).into();
+                    move |window, cx| Tooltip::new(tip.clone()).build(window, cx)
+                })
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.stop_propagation();
+                    cx.emit(ListEvent::FilterAuthor {
+                        name: name.clone(),
+                        email: email.clone(),
+                    });
+                }))
+                .into_any_element()
+        } else {
+            div()
+                .min_w_0()
+                .truncate()
+                .child(commit.author.clone())
+                .into_any_element()
+        };
+        let now = now_unix();
+        let committed = relative_time(commit.committed_at, now);
+        let authored = relative_time(commit.timestamp, now);
+        let moved = committed != authored;
+        let time_tip: Option<SharedString> = moved.then(|| {
+            format!(
+                "Committed {committed} by {} ({})\nAuthored {authored} by {} ({})",
+                commit.committer,
+                full_date(commit.committed_at),
+                commit.author,
+                full_date(commit.timestamp)
+            )
+            .into()
+        });
+        let time = div()
+            .id(("time", i))
+            .flex_none()
+            .when(moved, |d| d.underline())
+            .child(RelativeTime::new(commit.committed_at))
+            .when_some(time_tip, |d, tip| {
+                d.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            });
+        let bg = if drop == Some(Where::Onto) || picked {
+            Some(t.primary.opacity(0.15))
+        } else if open {
+            Some(t.active)
+        } else {
+            None
+        };
+        let draggable = self.can_drag(cx) && self.line.contains(i);
+        let sha = commit.sha.clone();
+        let list = cx.weak_entity();
+        let menu_commit = commit.clone();
+        let mut el = div()
+            .id(("commit", i))
+            .relative()
+            .w_full()
+            .overflow_hidden()
+            .flex()
+            .items_start()
+            .gap(px(10.))
+            .py(px(6.))
+            .pr_2()
+            .pl(px(12.))
+            .cursor_pointer()
+            .when_some(bg, |d, bg| d.bg(bg))
+            .when(bg.is_none(), |d| d.hover(|s| s.bg(t.hover)))
+            .when(cursor, |d| d.border_1().border_color(t.ring))
+            .when(dragged, |d| d.opacity(0.5))
+            .when(drop == Some(Where::Onto), |d| {
+                d.border_1().border_color(t.primary)
+            })
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                let lit = hovered.then_some(i);
+                if this.lit != lit && (lit.is_some() || this.lit == Some(i)) {
+                    this.lit = lit;
+                    cx.notify();
+                }
+            }))
+            .on_click({
+                let sha = sha.clone();
+                cx.listener(move |this, e: &ClickEvent, window, cx| {
+                    this.click_commit(&sha, e, window, cx)
+                })
+            })
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener({
+                    let sha = sha.clone();
+                    move |this, _, _, cx| {
+                        // A right-click off the picked commits lets them go: its menu is that commit's.
+                        if !this.picked.contains(&sha) {
+                            this.picked.clear();
+                            cx.notify();
+                        }
+                    }
+                }),
+            )
+            .child(graph_lines(row.clone(), lit, &t))
+            .child(dot)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(rems(0.75))
+                            .line_height(px(16.))
+                            .text_color(if open {
+                                t.foreground
+                            } else {
+                                t.foreground.opacity(0.9)
+                            })
+                            .when(open, |d| d.font_weight(t.medium()))
+                            .child(commit.subject.clone()),
+                    )
+                    .child(
+                        div()
+                            .mt(px(2.))
+                            .flex()
+                            .min_w_0()
+                            .items_center()
+                            .gap(px(6.))
+                            .text_size(rems(0.65625))
+                            .text_color(t.subtle)
+                            .child(author)
+                            .child("·")
+                            .child(time)
+                            .child(
+                                div()
+                                    .ml_auto()
+                                    .flex_none()
+                                    .children(match &self.options.github {
+                                        Some(repo) => {
+                                            crate::repo_checks(repo, &commit.sha, window, cx)
+                                        }
+                                        None => commit
+                                            .on_origin
+                                            .then(|| {
+                                                crate::commit_checks(&commit.sha, false, window, cx)
+                                            })
+                                            .flatten(),
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .font_family(t.fonts.code.clone())
+                                    .child(commit.short.clone()),
+                            ),
+                    )
+                    .when(!badges.is_empty(), |d| d.child(render_badges(&badges, &t))),
+            )
+            .when(drop == Some(Where::Above), |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(px(-1.))
+                        .h(px(2.))
+                        .bg(t.primary),
+                )
+            })
+            .when(drop == Some(Where::Below), |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom(px(-1.))
+                        .h(px(2.))
+                        .bg(t.primary),
+                )
+            });
+        if draggable {
+            let row_sha = sha.clone();
+            // A drag takes the picked commits it starts on, else its own.
+            let shas = if self.picked.len() > 1 && picked {
+                self.picked.clone()
+            } else {
+                vec![sha.clone()]
+            };
+            let label_n = shas.len();
+            let list = cx.weak_entity();
+            el = el
+                .on_drag(Dragged(shas), move |_, _, _, cx| {
+                    let label = cx.new(|_| DragLabel(drag_text(label_n, false)));
+                    let weak = label.downgrade();
+                    let _ = list.update(cx, |l, _| l.drag_label = Some(weak));
+                    label
+                })
+                .on_drag_move(cx.listener(move |this, e: &DragMoveEvent<Dragged>, _, cx| {
+                    this.drag_move(i, &row_sha, e, cx)
+                }))
+                .on_drop(cx.listener(|this, d: &Dragged, window, cx| this.drop(d, window, cx)));
+        }
+        el.context_menu(move |menu, window, cx| {
+            let Some(list) = list.upgrade() else {
+                return menu;
+            };
+            crate::menu::commit_menu(menu, &list, &menu_commit, window, cx)
+        })
+        .into_any_element()
+    }
+
+    pub(crate) fn remotes(&self, cx: &App) -> Vec<String> {
+        self.repo
+            .read(cx)
+            .branches
+            .iter()
+            .filter(|b| b.remote)
+            .map(|b| b.name.clone())
+            .collect()
+    }
+
+    fn render_files_header(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.app_theme().clone();
+        let Some((commit, files)) = self.files_of_open() else {
+            return div().into_any_element();
+        };
+        let (add, del) = files.iter().fold((0, 0), |(a, d), f| {
+            (a + f.additions.unwrap_or(0), d + f.deletions.unwrap_or(0))
+        });
+        div()
+            .w_full()
+            .flex()
+            .h(px(24.))
+            .items_center()
+            .gap_2()
+            .pr_2()
+            .pl_8()
+            .border_t_1()
+            .border_color(t.border)
+            .text_size(rems(0.65625))
+            .text_color(t.subtle)
+            .child(div().font_weight(t.semibold()).child("CHANGED FILES"))
+            .child(
+                div()
+                    .font_family(t.fonts.code.clone())
+                    .text_color(t.muted_foreground)
+                    .child(files.len().to_string()),
+            )
+            .when(!files.is_empty(), |d| {
+                d.child(
+                    div()
+                        .id("open-all")
+                        .h(px(20.))
+                        .flex()
+                        .items_center()
+                        .px_1()
+                        .rounded(px(3.))
+                        .text_color(t.primary)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(t.hover))
+                        .child("Open all")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            crate::open::open_commit(this, &commit, window, cx)
+                        })),
+                )
+            })
+            .child(
+                div()
+                    .ml_auto()
+                    .flex()
+                    .gap_1()
+                    .font_family(t.fonts.code.clone())
+                    .child(div().text_color(t.added).child(format!("+{add}")))
+                    .child(div().text_color(t.removed).child(format!("-{del}"))),
+            )
+            .into_any_element()
+    }
+
+    /// The commit file the active tab shows, so its row says so.
+    fn active_file(&self, cx: &App) -> Option<(String, String)> {
+        let ws = self.workspace.upgrade()?;
+        let ws = ws.read(cx);
+        match ws.tabs().active()?.item.selection()? {
+            gitviber_ui::workspace::Selection::Commit { commit, file, .. } => {
+                Some((commit.sha.clone(), file.path.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    fn render_file(&mut self, f: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.app_theme().clone();
+        let Some((commit, files)) = self.files_of_open() else {
+            return div().into_any_element();
+        };
+        let file = files[f].clone();
+        let last = f + 1 == files.len();
+        let active = self
+            .active_file(cx)
+            .is_some_and(|(sha, path)| sha == commit.sha && path == file.path);
+        let cursor = self.on_file == Some(f) && self.focus.is_focused(window);
+        let menu_file = file.clone();
+        let menu_commit = commit.clone();
+        let list = cx.weak_entity();
+        div()
+            .id(("file", f))
+            .relative()
+            .w_full()
+            .flex()
+            .h(px(26.))
+            .items_center()
+            .gap_2()
+            .pr_2()
+            .pl_8()
+            .text_size(rems(0.75))
+            .cursor_pointer()
+            .when(active, |d| {
+                d.bg(t.primary.opacity(0.15)).child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left_0()
+                        .w(px(2.))
+                        .bg(t.primary),
+                )
+            })
+            .when(!active, |d| d.hover(|s| s.bg(t.hover)))
+            .when(cursor, |d| d.border_1().border_color(t.ring))
+            .when(last, |d| d.border_b_1().border_color(t.border))
+            .child(FileIcon::file(&file.path))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(PathLabel(file.path.clone().into())),
+            )
+            .child(LineCounts::new(file.additions, file.deletions))
+            .child(StatusLetter(ChangeKind::from_letter(
+                file.status.chars().next().unwrap_or('M'),
+            )))
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                this.on_file = Some(f);
+                crate::open::open_commit_file(
+                    this,
+                    &commit,
+                    &file,
+                    e.click_count() < 2,
+                    window,
+                    cx,
+                );
+            }))
+            .context_menu(move |menu, window, cx| {
+                let Some(list) = list.upgrade() else {
+                    return menu;
+                };
+                crate::menu::file_menu(menu, &list, &menu_commit, &menu_file, window, cx)
+            })
+            .into_any_element()
+    }
+}
+
+/// What a drag's label says: "Move 2 commits", or onto a commit "Squash 3 commits".
+fn drag_text(n: usize, onto: bool) -> SharedString {
+    if onto {
+        format!("Squash {} commits", n + 1).into()
+    } else if n == 1 {
+        "Move 1 commit".into()
+    } else {
+        format!("Move {n} commits").into()
+    }
+}
+
+/// What the pointer says about a row during a drag: None when it's elsewhere (no say), Some(None)
+/// over a row it can't land on, else where on the row, by quarters: the top and bottom ones are
+/// the gaps around it.
+fn drop_over(
+    pointer: Point<Pixels>,
+    bounds: Bounds<Pixels>,
+    inside: bool,
+    droppable: bool,
+) -> Option<Option<Where>> {
+    if !inside {
+        return None;
+    }
+    if !droppable {
+        return Some(None);
+    }
+    let (y, top, h) = (pointer.y, bounds.origin.y, bounds.size.height);
+    Some(Some(if y < top + h / 4. {
+        Where::Above
+    } else if y > top + h - h / 4. {
+        Where::Below
+    } else {
+        Where::Onto
+    }))
+}
+
+/// The drop target after a row heard a move; None when it stays as it is. A row the pointer left
+/// takes back only its own target.
+fn next_drop(
+    current: &Option<DropAt>,
+    sha: &str,
+    over: Option<Option<Where>>,
+) -> Option<Option<DropAt>> {
+    let next = match over {
+        None if current.as_ref().is_some_and(|d| d.sha == sha) => None,
+        None => return None,
+        Some(at) => at.map(|at| DropAt {
+            sha: sha.to_string(),
+            at,
+        }),
+    };
+    (next != *current).then_some(next)
+}
+
+/// The colored lines of one row: lanes passing by, ending at the dot, and leaving it for its
+/// parents. `lit`: the hovered row's branches, which stay bright while the others dim.
+fn graph_lines(row: GraphRow, lit: Option<Vec<usize>>, t: &AppTheme) -> impl IntoElement {
+    let colors: Vec<Hsla> = (0..=row
+        .through
+        .iter()
+        .chain(&row.into)
+        .chain(&row.out)
+        .map(|l| l.id)
+        .max()
+        .unwrap_or(0)
+        .max(row.id))
+        .map(|id| {
+            let c = lane_color(id, t);
+            if lit.as_ref().is_some_and(|l| !l.contains(&id)) {
+                c.opacity(0.25)
+            } else {
+                c
+            }
+        })
+        .collect();
+    let width = LANE_X + (lanes_of(&row) as f32 - 1.) * LANE + LANE / 2.;
+    canvas(
+        |_, _, _| {},
+        move |bounds: Bounds<Pixels>, _, window, _| {
+            let x0 = bounds.origin.x;
+            let top = bounds.origin.y;
+            let bottom = top + bounds.size.height;
+            let lx = |col: usize| x0 + px(LANE_X + lane_of(col) as f32 * LANE);
+            let x = lx(row.col);
+            let shown = |l: &Lane| l.col < MAX_LANES || l.col == row.col;
+            let color = |l: &Lane| colors.get(l.id).copied().unwrap_or(colors[0]);
+            let vline = |window: &mut Window, at: Pixels, from: Pixels, to: Pixels, c: Hsla| {
+                window.paint_quad(fill(
+                    Bounds::new(point(at - px(0.5), from), size(px(1.), to - from)),
+                    c,
+                ));
+            };
+            let curve = |window: &mut Window,
+                         from: Point<Pixels>,
+                         c1: Point<Pixels>,
+                         c2: Point<Pixels>,
+                         to: Point<Pixels>,
+                         c: Hsla| {
+                let mut path = PathBuilder::stroke(px(1.));
+                path.move_to(from);
+                path.cubic_bezier_to(to, c1, c2);
+                if let Ok(p) = path.build() {
+                    window.paint_path(p, c);
+                }
+            };
+            let dot = top + px(DOT_Y);
+            let bend = top + px(BEND_Y);
+            for l in row.through.iter().filter(|l| shown(l)) {
+                vline(window, lx(l.col), top, bottom, color(l));
+            }
+            for l in row.into.iter().filter(|l| shown(l)) {
+                if l.col == row.col {
+                    vline(window, x, top, dot, color(l));
+                } else {
+                    let from = point(lx(l.col), top);
+                    curve(
+                        window,
+                        from,
+                        point(lx(l.col), dot),
+                        point(x, top),
+                        point(x, dot),
+                        color(l),
+                    );
+                }
+            }
+            for l in row.out.iter().filter(|l| shown(l)) {
+                if l.col == row.col {
+                    vline(window, x, dot, bottom, color(l));
+                } else {
+                    curve(
+                        window,
+                        point(x, dot),
+                        point(x, bend),
+                        point(lx(l.col), dot),
+                        point(lx(l.col), bend),
+                        color(l),
+                    );
+                    vline(window, lx(l.col), bend, bottom, color(l));
+                }
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .h_full()
+    .w(px(width))
+}
+
+fn render_badges(badges: &[Badge], t: &AppTheme) -> impl IntoElement {
+    div()
+        .mt_1()
+        .flex()
+        .flex_wrap()
+        .gap_1()
+        .children(badges.iter().map(|b| {
+            let (bg, fg, border) = match b.kind {
+                RefKind::Head => (Some(t.primary), t.primary_foreground, None),
+                RefKind::Local => (Some(t.renamed.opacity(0.15)), t.renamed, None),
+                RefKind::Remote => (None, t.muted_foreground, Some(t.border_strong)),
+                RefKind::Tag => (Some(t.modified.opacity(0.15)), t.modified, None),
+            };
+            let icon = match b.kind {
+                RefKind::Tag => Some(IconName::Tag),
+                RefKind::Remote => Some(IconName::Cloud),
+                _ => None,
+            };
+            div()
+                .flex()
+                .max_w_full()
+                .items_center()
+                .gap_1()
+                .rounded(px(3.))
+                .px(px(6.))
+                .font_family(t.fonts.code.clone())
+                .text_size(rems(0.625))
+                .line_height(px(18.))
+                .font_weight(t.medium())
+                .text_color(fg)
+                .when_some(bg, |d, bg| d.bg(bg))
+                .when_some(border, |d, c| d.border_1().border_color(c))
+                .when_some(icon, |d, i| d.child(Icon::new(i).xsmall()))
+                .child(div().truncate().child(b.name.clone()))
+                .when(b.synced, |d| {
+                    d.child(Icon::new(IconName::Cloud).xsmall().opacity(0.75))
+                })
+        }))
+}
+
+impl Render for CommitList {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.app_theme().clone();
+        // A drag that ended off the rows left its mark: nothing is being dragged now.
+        if !cx.has_active_drag() && (self.drop_at.is_some() || self.dragging.is_some()) {
+            self.drop_at = None;
+            self.dragging = None;
+            self.drag_label = None;
+        }
+        if self.commits.is_empty() {
+            let text: SharedString = match (&self.error, self.loaded) {
+                (Some(e), _) => e.clone(),
+                (None, true) => self.options.empty.clone(),
+                (None, false) => "Loading…".into(),
+            };
+            return div()
+                .size_full()
+                .track_focus(&self.focus)
+                .px_6()
+                .pt(px(80.))
+                .text_center()
+                .text_size(rems(0.75))
+                .text_color(t.subtle)
+                .child(text)
+                .into_any_element();
+        }
+        // Once a frame, not for each row: a big org's repo has thousands of remote branches.
+        let remotes: Rc<[String]> = self.remotes(cx).into();
+        let render = cx.processor(move |this, ix: usize, window, cx| {
+            this.render_item(ix, &remotes, window, cx)
+        });
+        div()
+            .id("commit-list")
+            .relative()
+            .size_full()
+            .key_context(CONTEXT)
+            .track_focus(&self.focus)
+            .on_key_down(
+                cx.listener(|this, e: &KeyDownEvent, window, cx| this.key_down(e, window, cx)),
+            )
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !hovered && this.lit.is_some() {
+                    this.lit = None;
+                    cx.notify();
+                }
+            }))
+            .child(
+                list(self.state.clone(), move |ix, window, cx| {
+                    render(ix, window, cx)
+                })
+                .size_full()
+                .py_1(),
+            )
+            .child(Scrollbar::vertical(&self.state))
+            .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(top: f32) -> Bounds<Pixels> {
+        Bounds::new(point(px(0.), px(top)), size(px(300.), px(40.)))
+    }
+
+    #[test]
+    fn only_the_row_under_the_pointer_takes_the_drop() {
+        // The pointer on row b's middle; every row hears the move, a, b, c in paint order.
+        let pointer = point(px(10.), px(60.));
+        let mut at: Option<DropAt> = None;
+        for (sha, top) in [("a", 0.), ("b", 40.), ("c", 80.)] {
+            let bounds = row(top);
+            if let Some(next) = next_drop(
+                &at,
+                sha,
+                drop_over(pointer, bounds, bounds.contains(&pointer), true),
+            ) {
+                at = next;
+            }
+        }
+        assert_eq!(
+            at,
+            Some(DropAt {
+                sha: "b".into(),
+                at: Where::Onto
+            })
+        );
+        // Its gaps: the top and bottom quarters.
+        assert_eq!(
+            drop_over(point(px(10.), px(42.)), row(40.), true, true),
+            Some(Some(Where::Above))
+        );
+        assert_eq!(
+            drop_over(point(px(10.), px(78.)), row(40.), true, true),
+            Some(Some(Where::Below))
+        );
+    }
+
+    #[test]
+    fn a_drags_label_says_whether_it_squashes_or_moves() {
+        assert_eq!(drag_text(1, false), "Move 1 commit");
+        assert_eq!(drag_text(2, false), "Move 2 commits");
+        assert_eq!(drag_text(2, true), "Squash 3 commits");
+    }
+
+    #[test]
+    fn leaving_a_row_or_crossing_one_that_cant_take_it_drops_the_target() {
+        let b = Some(DropAt {
+            sha: "b".into(),
+            at: Where::Onto,
+        });
+        // Off b: b lets go; other rows the pointer isn't on change nothing.
+        assert_eq!(next_drop(&b, "c", None), None);
+        assert_eq!(next_drop(&b, "b", None), Some(None));
+        // Over a dragged row, or one off the branch's line: no target.
+        assert_eq!(next_drop(&b, "x", Some(None)), Some(None));
+        assert_eq!(next_drop(&None, "x", Some(None)), None);
+    }
+}

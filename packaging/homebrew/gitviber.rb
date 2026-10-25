@@ -1,10 +1,13 @@
 # Template for Casks/gitviber.rb in emircan-sahin/homebrew-tap. The release workflow fills in
-# the version and the .dmg's checksum, drops these comment lines and prints the result.
+# the version and each .dmg's checksum, drops these comment lines and prints the result.
 cask "gitviber" do
-  version "__VERSION__"
-  sha256 "__SHA256__"
+  arch arm: "aarch64", intel: "x64"
 
-  url "https://github.com/emircan-sahin/gitviber/releases/download/v#{version}/GitViber_#{version}_universal.dmg"
+  version "__VERSION__"
+  sha256 arm:   "__SHA256_ARM__",
+         intel: "__SHA256_INTEL__"
+
+  url "https://github.com/emircan-sahin/gitviber/releases/download/v#{version}/GitViber_#{version}_#{arch}.dmg"
   name "GitViber"
   desc "Git client for reviewing and committing what coding agents write"
   homepage "https://github.com/emircan-sahin/gitviber"
@@ -18,10 +21,11 @@ cask "gitviber" do
   depends_on macos: :ventura
 
   app "GitViber.app"
-  # The `gitviber` command (src-tauri/resources/gitviber), linked into Homebrew's bin.
+  # The `gitviber` command (packaging/macos/gitviber), linked into Homebrew's bin.
   binary "#{appdir}/GitViber.app/Contents/Resources/bin/gitviber"
 
   zap trash: [
+    "~/Library/Application Support/app.gitviber.desktop",
     "~/Library/Caches/app.gitviber.desktop",
     "~/Library/HTTPStorages/app.gitviber.desktop",
     "~/Library/Logs/app.gitviber.desktop",

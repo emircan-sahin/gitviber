@@ -1,0 +1,9 @@
+[Desktop Entry]
+Categories=Development;
+Comment=Vibe code from one app: worktrees, live diffs, a file explorer and a terminal.
+Exec=gitviber
+StartupWMClass=app.gitviber.desktop
+Icon=gitviber
+Name=GitViber
+Terminal=false
+Type=Application

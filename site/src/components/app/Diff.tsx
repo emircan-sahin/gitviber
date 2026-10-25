@@ -1,7 +1,7 @@
 import { cx } from "../ui.tsx";
 import { tokenize, type DiffLine, type Token } from "../demo-data.ts";
 
-// Shiki's VS Code Dark+, the app's default dark syntax theme, on the app's background instead of its own.
+// VS Code Dark+, the app's default dark syntax theme, on the app's background instead of its own.
 const DARK_PLUS: Record<NonNullable<Token["tone"]>, string> = {
   kw: "text-[#569cd6]",
   flow: "text-[#c586c0]",
@@ -29,10 +29,6 @@ export function numbered(lines: DiffLine[], [oldStart, newStart]: [number, numbe
   }));
 }
 
-/**
- * Monaco's inline diff as the app configures it: SF Mono 12.5 on 20px lines, two number
- * columns, a 20px sign column, tinted rows for whole added or removed lines.
- */
 function Code({ text }: { text: string }) {
   return tokenize(text).map((t, j) => (
     <span key={j} className={t.tone && DARK_PLUS[t.tone]}>
@@ -47,16 +43,15 @@ export interface FileLine {
   bar?: "add" | "mod";
 }
 
-/** The file itself, the diff's new side: one number column, a 3px change bar, a caret while editing. */
+/** The file itself, the diff's new side: a 3px change bar at the edge, one number column, a caret while editing. */
 export function FileRows({ lines, caret }: { lines: FileLine[]; caret?: number }) {
   return (
     <div className="bg-bg pt-1 font-mono text-[12.5px] leading-5 whitespace-pre text-[#d4d4d4]">
       {lines.map((line, i) => (
-        <div key={i} className="flex h-5">
+        <div key={i} className="relative flex h-5">
+          {line.bar && <span className={cx("absolute inset-y-0 left-1.5 w-[3px]", line.bar === "add" ? "bg-added" : "bg-primary")} />}
           <span className="w-[42px] shrink-0 pr-2 text-right text-subtle">{i + 1}</span>
-          <span className="w-[22px] shrink-0 pl-1.5">
-            {line.bar && <span className={cx("block h-full w-[3px]", line.bar === "add" ? "bg-added" : "bg-primary")} />}
-          </span>
+          <span className="w-[14px] shrink-0" />
           <span className="min-w-0 flex-1 overflow-hidden">
             <Code text={line.text} />
             {i === caret && <span className="ml-px inline-block h-4 w-px translate-y-[3px] animate-blink bg-fg" />}
@@ -67,26 +62,24 @@ export function FileRows({ lines, caret }: { lines: FileLine[]; caret?: number }
   );
 }
 
+/**
+ * The unified diff as the app draws it (crates/diff/src/paint.rs): the code font at 12.5 on 20px
+ * lines, the old and new numbers in a gutter tinted for added or removed lines, then a sign
+ * column and the code on the row's tint.
+ */
 export function DiffRows({ lines, fresh }: { lines: NumberedLine[]; fresh?: number }) {
   return (
     <div className="bg-bg pt-1 font-mono text-[12.5px] leading-5 whitespace-pre text-[#d4d4d4]">
       {lines.map((line, i) => {
         const add = line.kind === "+";
         const del = line.kind === "-";
+        const gutter = cx("w-[31px] shrink-0 pr-1.5 text-right text-subtle", add && "bg-add-gutter", del && "bg-del-gutter");
         return (
           <div key={i} className={cx("flex h-5", i === fresh && "line-in")}>
-            <span className="w-[42px] shrink-0 pr-2 text-right text-subtle">{line.old}</span>
-            <span
-              className={cx(
-                "flex w-[62px] shrink-0 justify-between pr-1.5 pl-1 text-subtle",
-                add && "bg-add-gutter",
-                del && "bg-del-gutter",
-              )}
-            >
-              <span className="w-[34px] text-right">{line.new}</span>
-              <span className={cx(add && "text-added", del && "text-removed")}>{add ? "+" : del ? "−" : ""}</span>
-            </span>
-            <span className={cx("min-w-0 flex-1 overflow-hidden pl-1", add && "bg-add-bg", del && "bg-del-bg")}>
+            <span className={gutter}>{line.old}</span>
+            <span className={gutter}>{line.new}</span>
+            <span className={cx("min-w-0 flex-1 overflow-hidden", add && "bg-add-bg", del && "bg-del-bg")}>
+              <span className="inline-block w-[19px] text-center text-subtle">{add ? "+" : del ? "−" : ""}</span>
               <Code text={line.text} />
             </span>
           </div>

@@ -8,9 +8,12 @@ disk and your logins.
 ## The network
 
 - The app talks to your git remotes and, for pull requests and issues, to GitHub.
-- It checks GitHub Releases for updates at launch and every few hours. Turn it off in
+- It checks for updates at launch, every few hours and when Settings → Updates opens: it asks
+  GitViber's download mirror first (a Cloudflare Worker that hands out GitHub Releases' files) and
+  GitHub Releases second. Nothing downloads until you choose to update. Turn the checks off in
   Settings → Updates.
-- Commit message suggestions go wherever the command you picked (`claude`, `codex`) sends them.
+- Commit messages, guided reviews and Ask Agent go wherever the agent CLI you picked (`claude`,
+  `codex`, …) sends them.
 
 ## Your GitHub login
 
@@ -20,15 +23,16 @@ GitViber has no sign-in of its own. It borrows a login you already have, the Git
 ## Logs and diagnostics
 
 - Errors, including every error message the app shows you (a failed push's git output, say), go to
-  a local file and nowhere else: `~/Library/Logs/app.gitviber.desktop/errors.log` on macOS, or
-  Help → Show Logs. Logins in URLs and GitHub tokens are blanked out.
-- Help → Copy Diagnostics copies only the versions of GitViber, the OS, git, `gh` and WebKit, for
-  you to paste into a bug report.
+  a local file and nowhere else: `~/Library/Logs/app.gitviber.desktop/errors.log` on macOS,
+  `~/.local/share/app.gitviber.desktop/logs/` on Linux, or Help → Show Logs. Logins in URLs and
+  GitHub tokens are blanked out.
+- Help → Copy Diagnostics copies only the versions of GitViber, the OS, git and `gh`, for you to
+  paste into a bug report.
 
 ## Content from the web
 
-- Markdown from GitHub is cut down to GitHub's own HTML allowlist.
-- An image hosted outside GitHub loads only when you click it.
+- Markdown from GitHub is drawn by the app itself, not shown as a web page, so nothing in it runs.
+- An image hosted outside GitHub becomes a link naming its host, so it loads only if you click it.
 
 ## Obsidian
 
@@ -37,13 +41,14 @@ vault's `.obsidian` folder.
 
 ## Browser tabs
 
-- Tabs keep their own cookies, site storage and cache, apart from the app's, and load pages straight
-  from where they're served. Your other browsers' sign-ins don't carry over.
+- Tabs keep their own cookies, site storage and cache, and load pages straight from where they're
+  served. Your other browsers' sign-ins don't carry over. On macOS 13 they keep them only until
+  you quit.
 - Settings → Browser → Clear Browsing Data empties them.
 
 ## When agents use the browser
 
-Off until you turn it on in Settings → Browser.
+Off until you turn it on in Settings → Browser, on macOS.
 
 - **Tabs.** An agent's tabs each keep their cookies in memory, apart from yours, unless the agent
   asks for yours.
@@ -66,8 +71,9 @@ Off until you turn it on in Settings → Browser.
 - **The skill.** GitViber writes a `gitviber-browser` skill for Claude Code and Codex only while
   agent control and its setting are on, and only for an agent that's installed. Your own skill of
   that name is never touched.
-- **The socket.** Letting agents use the browser opens a socket on your Mac only, in a folder only
-  you can enter, that only GitViber's own terminals have the keys to. Each pane's key reaches only
-  that pane's tabs, so an agent that changes which pane it says it's in gets nowhere. Another
-  program running as you can still read a pane's key from its environment (`ps -E`), as it could
-  read anything else of yours.
+- **The socket.** GitViber's terminals reach the browser through a socket on your computer only, in
+  a folder only you can enter, that only GitViber's own terminals have the keys to. Until you let
+  agents use the browser it answers nothing but `tab new --show`, a page opened for you. Each
+  pane's key reaches only that pane's tabs, so an agent that changes which pane it says it's in
+  gets nowhere. Another program running as you can still read a pane's key from its environment
+  (`ps -E`), as it could read anything else of yours.

@@ -2,7 +2,8 @@ export interface Release {
   /** "0.1.0", or null when the build couldn't reach GitHub. */
   version: string | null;
   url: string;
-  assets: Partial<Record<"dmg" | "deb" | "rpm" | "appImage", string>>;
+  /** dmgArm and dmgIntel are the same universal .dmg for a release before 0.1.18. */
+  assets: Partial<Record<"dmgArm" | "dmgIntel" | "deb" | "rpm" | "appImage", string>>;
 }
 
 declare const __RELEASE__: Release;
@@ -12,7 +13,7 @@ declare const __STARS__: number | null;
 
 export const release = __RELEASE__;
 export const siteUrl = __SITE_URL__;
-/** The published release, or package.json's when GitHub couldn't be reached. */
+/** The published release's, or Cargo.toml's when GitHub couldn't be reached. */
 export const version = __VERSION__;
 /** The repo's stars when the site was built, or null when GitHub couldn't be reached. */
 export const buildStars = __STARS__;

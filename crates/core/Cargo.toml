@@ -1,0 +1,52 @@
+[package]
+name = "gitviber-core"
+description = "GitViber's backend: git, GitHub, terminals and agents, without any UI."
+version.workspace = true
+# The code came over from the Tauri backend as it was, which is 2021.
+edition = "2021"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "gitviber_core"
+
+# git and ssh run it as their askpass in tests/askpass.rs, as they run the app's binary.
+[[bin]]
+name = "gitviber-askpass"
+path = "src/bin/askpass.rs"
+test = false
+doc = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+# Gemini CLI keeps chats under its folder's SHA-256 (agents.rs).
+sha2 = "=0.10.9"
+notify = "=8.2.0"
+similar = { version = "=3.2.0", features = ["inline"] }
+ureq = { version = "=3.4.2", features = ["json"] }
+portable-pty = "=0.9.0"
+# Go to Definition: parsers for the languages it knows (see definitions.rs).
+tree-sitter = "=0.26.13"
+tree-sitter-rust = "=0.24.2"
+tree-sitter-javascript = "=0.23.1"
+tree-sitter-typescript = "=0.23.2"
+tree-sitter-python = "=0.23.6"
+tree-sitter-go = "=0.23.4"
+# Links are canonicalized before the OS opens them (launch.rs); already in the tree through gpui.
+url = "=2.5.8"
+
+[target.'cfg(unix)'.dependencies]
+# Already linked through portable-pty; stops a cancelled git with the ssh it started.
+libc = "=0.2.189"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Reads the clipboard for the terminal's paste where GTK runs (clipboard.rs).
+gtk = "=0.18.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Pasteboard, file icons and UNUserNotificationCenter through raw messages (objc.rs).
+objc2 = "=0.6.4"
+# UNUserNotificationCenter's completion handlers (notifications.rs).
+block2 = "=0.6.2"

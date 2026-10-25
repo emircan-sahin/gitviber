@@ -16,6 +16,6 @@
 
 ## Checklist
 
-- [ ] I ran `pnpm check`
+- [ ] I ran `cargo fmt --all`, and `cargo clippy --all-targets -- -D warnings` and `cargo nextest run` for the crates I touched
 - [ ] This PR is small and focused
 - [ ] I did not mix unrelated changes

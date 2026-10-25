@@ -1,0 +1,235 @@
+//! Takes the welcome screen's place while git can't run: nothing else works without it. Checked
+//! once at launch, off the UI thread, once the login shell's PATH is read (it decides which git
+//! every later call runs), and again on Check again.
+
+use gitviber_core::api;
+use gitviber_core::git::GitInfo;
+use gitviber_ui::ActiveAppTheme;
+use gitviber_ui::assets::LOGO;
+use gitviber_ui::keymap::IS_MAC;
+use gitviber_ui::workspace::Toast;
+use gpui_kit::assets::IconName;
+use gpui_kit::component::Disableable as _;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::{
+    AnyElement, App, AppContext as _, Global, IntoElement, ParentElement as _, Styled as _, Task,
+    div, img, prelude::FluentBuilder as _, px, rems,
+};
+
+use crate::help::toast;
+
+#[derive(Default)]
+pub struct GitCheck {
+    /// What the last check found.
+    found: Option<GitInfo>,
+    checking: bool,
+    _task: Option<Task<()>>,
+}
+
+impl Global for GitCheck {}
+
+/// Whether git is missing, as the last check found.
+pub fn missing(cx: &App) -> Option<&GitInfo> {
+    checked(cx).filter(|i| matches!(i.state, "missing" | "tools"))
+}
+
+/// The git found when it's older than GitViber needs.
+pub fn old(cx: &App) -> Option<&GitInfo> {
+    checked(cx).filter(|i| i.state == "old")
+}
+
+fn checked(cx: &App) -> Option<&GitInfo> {
+    cx.try_global::<GitCheck>()?.found.as_ref()
+}
+
+pub fn check(recheck: bool, cx: &mut App) {
+    if !gitviber_ui::has_core(cx) {
+        return;
+    }
+    let core = gitviber_ui::core(cx);
+    let asked = cx.background_spawn(async move {
+        // Until the shell answers, the fallback PATH can find another git (Homebrew's) than the
+        // one every later call runs (an old /usr/local/bin/git first on the login PATH).
+        if !recheck {
+            gitviber_core::shell::wait_for_first_answer();
+        }
+        api::repo::git_info(&core, recheck)
+    });
+    cx.default_global::<GitCheck>().checking = true;
+    let task = cx.spawn(async move |cx| {
+        let info = asked.await;
+        cx.update(|cx| {
+            if let Some(note) = info.as_ref().ok().and_then(|i| found(i, recheck)) {
+                toast(note, cx);
+            }
+            let c = cx.default_global::<GitCheck>();
+            c.checking = false;
+            c.found = info.ok();
+            cx.refresh_windows();
+        });
+    });
+    cx.default_global::<GitCheck>()._task = Some(task);
+}
+
+/// What a check that found git says: at launch only an old one (it does fail: every repo open
+/// lists worktrees; errors stay until dismissed), on Check again which one it found.
+fn found(info: &GitInfo, recheck: bool) -> Option<Toast> {
+    let version = info.version.as_deref().unwrap_or_default();
+    match info.state {
+        "old" if !recheck => {
+            let how = if IS_MAC {
+                ", e.g. brew install git"
+            } else {
+                " with your package manager"
+            };
+            Some(
+                Toast::error(format!(
+                    "Worktrees and some actions will fail. Update git{how}."
+                ))
+                .title(format!(
+                    "git {version} is older than GitViber needs ({})",
+                    info.minimum
+                )),
+            )
+        }
+        "ok" | "old" if recheck => Some(Toast::success(format!("Found git {version}"))),
+        _ => None,
+    }
+}
+
+fn install_tools(cx: &mut App) {
+    let core = gitviber_ui::core(cx);
+    let started = cx.background_spawn(async move { api::repo::install_git(&core) });
+    cx.spawn(async move |cx| {
+        let shown = match started.await {
+            Ok(()) => Toast::info("Then come back and click Check again.")
+                .title("Follow the installer macOS opened"),
+            Err(err) => Toast::error(err).title("Couldn't start the installer"),
+        };
+        cx.update(|cx| toast(shown, cx));
+    })
+    .detach();
+}
+
+pub fn screen(info: &GitInfo, cx: &App) -> AnyElement {
+    let t = cx.app_theme().clone();
+    let mac = info.state == "tools" || IS_MAC;
+    let checking = cx.try_global::<GitCheck>().is_some_and(|c| c.checking);
+    let lead = if info.state == "tools" {
+        "git comes with Apple's Command Line Tools, which aren't installed yet."
+    } else {
+        "git isn't installed, or GitViber can't find it."
+    };
+    div()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(t.code(t.background))
+        .child(
+            div()
+                .w(px(400.))
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(img(LOGO).size(px(44.)))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_size(rems(1.25))
+                                        .font_weight(t.semibold())
+                                        .child("GitViber needs git"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(rems(0.75))
+                                        .text_color(t.muted_foreground)
+                                        .child(lead),
+                                ),
+                        ),
+                )
+                .when(mac, |d| {
+                    d.child(
+                        Button::new("install-tools")
+                            .primary()
+                            .icon(IconName::Download)
+                            .label("Install Command Line Tools")
+                            .on_click(|_, _, cx| install_tools(cx)),
+                    )
+                })
+                .child(
+                    div()
+                        .text_size(rems(0.75))
+                        .text_color(t.muted_foreground)
+                        .child(if mac {
+                            "Or with Homebrew: brew install git"
+                        } else {
+                            "Install git with your package manager or from git-scm.com."
+                        }),
+                )
+                .child(
+                    Button::new("check-git")
+                        .icon(if checking {
+                            IconName::LoaderCircle
+                        } else {
+                            IconName::RefreshCw
+                        })
+                        .label("Check again")
+                        .disabled(checking)
+                        .on_click(|_, _, cx| check(true, cx)),
+                )
+                .when_some(info.detail.clone(), |d, detail| {
+                    d.child(
+                        div()
+                            .p_2()
+                            .rounded(px(6.))
+                            .border_1()
+                            .border_color(t.border)
+                            .bg(t.panel)
+                            .font_family(t.fonts.code.clone())
+                            .text_size(rems(0.6875))
+                            .text_color(t.subtle)
+                            .child(detail),
+                    )
+                }),
+        )
+        .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(state: &'static str) -> GitInfo {
+        GitInfo {
+            state,
+            version: Some("2.30.1".into()),
+            detail: None,
+            minimum: "2.36".into(),
+        }
+    }
+
+    #[test]
+    fn an_old_git_warns_at_launch_and_check_again_says_what_it_found() {
+        let old = found(&info("old"), false).unwrap();
+        assert_eq!(old.kind, gitviber_ui::workspace::ToastKind::Error);
+        assert_eq!(
+            old.title.as_deref(),
+            Some("git 2.30.1 is older than GitViber needs (2.36)")
+        );
+        assert!(found(&info("ok"), false).is_none());
+        assert_eq!(
+            found(&info("old"), true).map(|t| t.message),
+            Some("Found git 2.30.1".into())
+        );
+        assert!(found(&info("missing"), true).is_none());
+    }
+}

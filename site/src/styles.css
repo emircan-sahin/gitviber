@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-/* The app's own dark theme (src/index.css): neutral graphite, hard 1px lines, one blue accent. */
+/* The app's own dark theme (crates/ui/src/theme/palettes.rs DARK): neutral graphite, hard 1px lines, one blue accent. */
 @theme {
   --color-page: #0b0b0c;
   --color-sidebar: #0e0e0f;

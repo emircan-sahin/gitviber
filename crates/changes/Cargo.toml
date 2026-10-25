@@ -1,0 +1,37 @@
+[package]
+name = "gitviber-changes"
+description = "GitViber's Changes panel: the uncommitted files, staging, the commit box, stashes, and their diff tabs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "gitviber_changes"
+
+[dependencies]
+gitviber-core = { path = "../core" }
+gitviber-ui = { path = "../ui" }
+gitviber-diff = { path = "../diff" }
+gitviber-terminal = { path = "../terminal" }
+# Review notes: on a local diff's lines, and the worktree's list.
+gitviber-review = { path = "../review" }
+# A branch review's default base; the status bar's counts read its repo state.
+gitviber-refs = { path = "../refs" }
+# Reveal in Explorer View, and Show History of a row's file.
+gitviber-files = { path = "../files" }
+gitviber-history = { path = "../history" }
+gpui-kit.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+gitviber-ui = { path = "../ui", features = ["snapshot"] }
+# Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.
+gpui-test.workspace = true
+
+# Every crate's example shares target/debug/examples/: a plain "demo" would be overwritten.
+[[example]]
+name = "changes-demo"
+path = "examples/demo.rs"

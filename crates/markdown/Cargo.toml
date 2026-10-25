@@ -1,0 +1,48 @@
+[package]
+name = "gitviber-markdown"
+description = "GitViber's markdown: GitHub-flavored, rendered natively, for files, pull requests and notes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "gitviber_markdown"
+
+[dependencies]
+gpui-kit.workspace = true
+gitviber-ui = { path = "../ui" }
+# Already in the tree through gpui; decodes still images scaled down (images.rs).
+image = { version = "=0.25.10", default-features = false }
+# Already in the tree through gpui, with these features: find's Regex toggle (find.rs).
+regex = "=1.13.1"
+# Mermaid diagrams (as SVG, which gpui's resvg draws) and TeX math (as pixels), no JS: diagrams.rs.
+# All MIT. mermaid's defaults would add a CLI and a third resvg; json5 and ratex's own crates
+# are pinned below their newest releases, out less than two weeks.
+mermaid-rs-renderer = { version = "=0.3.1", default-features = false }
+json5 = "=1.3.1"
+ratex-render = { version = "=0.1.14", features = ["embed-fonts"] }
+ratex-parser = "=0.1.14"
+ratex-layout = "=0.1.14"
+ratex-types = "=0.1.14"
+ratex-font = "=0.1.14"
+ratex-font-loader = "=0.1.14"
+ratex-unicode-font = "=0.1.14"
+ratex-lexer = "=0.1.14"
+ratex-katex-fonts = "=0.1.14"
+
+[dev-dependencies]
+# examples/cycles.rs draws off screen with gpui's headless renderer.
+gpui-snapshot-platform.workspace = true
+# Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.
+gpui-test.workspace = true
+
+# The shaped-text test draws with the real text system off the main thread (src/leak_tests.rs);
+# already in the tree with this feature.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+gpui-pre-apple = { version = "=0.3.9", features = ["font-kit"] }
+
+[[example]]
+name = "markdown-cycles"
+path = "examples/cycles.rs"

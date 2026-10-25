@@ -1,0 +1,7 @@
+# Each test runs in a process of its own: the tests that point GITVIBER_CONFIG_DIR, HOME or PATH
+# elsewhere, and gitviber_ui::test_support's folders, rely on it.
+[profile.default]
+# A test that fails now and then is a bug to fix, not one to run again until it passes.
+retries = 0
+# On a loaded machine the slowest tests take about two minutes; one still going at five is hung.
+slow-timeout = { period = "60s", terminate-after = 5 }

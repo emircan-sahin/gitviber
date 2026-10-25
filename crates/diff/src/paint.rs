@@ -1,0 +1,336 @@
+//! What a diff's rows are drawn with, shared by the single view and the stacked one: a line's
+//! code in its colors with its word changes marked, the gutters, the file header's pieces.
+
+use crate::data::DiffData;
+use crate::highlight::{Highlighted, LineStyles};
+use crate::model::indent::Shown;
+use crate::model::{ADDED, REMOVED, Row, Side, emphasis};
+use crate::style::DiffStyle;
+use gitviber_ui::AppTheme;
+use gitviber_ui::widgets::{ChangeKind, StatusPill};
+use gpui_kit::component::h_flex;
+use gpui_kit::{
+    AnyElement, App, Div, Font, HighlightStyle, Hsla, IntoElement, ParentElement as _, Pixels,
+    RenderOnce, SharedString, Styled as _, StyledText, TextRun, Window, div,
+    prelude::FluentBuilder as _, px,
+};
+use std::ops::Range;
+
+/// What a row of each kind is drawn with.
+pub struct Tone {
+    pub line: Hsla,
+    pub gutter: Hsla,
+    pub emph: Option<Hsla>,
+    pub sign: &'static str,
+}
+
+pub fn tone(k: u8, style: &DiffStyle) -> Tone {
+    let c = &style.colors;
+    match k {
+        ADDED => Tone {
+            line: c.add_bg,
+            gutter: c.add_gutter,
+            emph: Some(c.add_emph),
+            sign: "+",
+        },
+        REMOVED => Tone {
+            line: c.del_bg,
+            gutter: c.del_gutter,
+            emph: Some(c.del_emph),
+            sign: "−",
+        },
+        _ => Tone {
+            line: c.background,
+            gutter: c.background,
+            emph: None,
+            sign: "",
+        },
+    }
+}
+
+/// Sizes of one frame's rows, and their code's font.
+pub struct Metrics {
+    pub font: Font,
+    pub line: Pixels,
+    pub char_w: Pixels,
+    pub number_w: Pixels,
+    pub sign_w: Pixels,
+    /// How far the code is scrolled sideways.
+    pub left: Pixels,
+}
+
+impl Metrics {
+    /// `lines`: the most lines either side has, for the number column's width.
+    pub fn new(
+        window: &Window,
+        cx: &App,
+        style: &DiffStyle,
+        lines: u32,
+        line: Pixels,
+        left: Pixels,
+    ) -> Self {
+        let font = style.code_font(cx);
+        let font_id = window.text_system().resolve_font(&font);
+        let char_w = window
+            .text_system()
+            .ch_advance(font_id, style.font_size)
+            .unwrap_or(style.font_size * 0.6);
+        let digits = lines.max(1).ilog10() as f32 + 2.;
+        Metrics {
+            font,
+            line,
+            char_w,
+            number_w: char_w * digits + px(6.),
+            sign_w: char_w * 2.5,
+            left,
+        }
+    }
+
+    /// How far code `widest` columns wide scrolls sideways in `columns` columns of `width`, each
+    /// with `numbers` number gutters.
+    pub fn max_left(&self, widest: usize, width: Pixels, columns: f32, numbers: f32) -> Pixels {
+        let room = width / columns - self.number_w * numbers - self.sign_w - px(8.);
+        self.char_w * widest as f32 + px(24.) - room
+    }
+}
+
+/// A line's code in its colors, its word changes marked; `marks` (byte ranges of the line, as
+/// Find's matches) are drawn over them.
+pub fn code(
+    data: &DiffData,
+    hl: &[Option<Highlighted>; 2],
+    side: Side,
+    row: &Row,
+    style: &DiffStyle,
+    base: &Font,
+    marks: &[(Range<usize>, Hsla)],
+) -> StyledText {
+    let line = if side == Side::Old { row.o } else { row.n };
+    let text = data.side(side).line(line);
+    let shown = Shown::new(&text, data.unit);
+    let syntax: Option<LineStyles> = hl[side as usize]
+        .as_ref()
+        .and_then(|h| h.line(line, &style.syntax));
+    let tokens: &[(Range<usize>, HighlightStyle)] = syntax.as_deref().unwrap_or(&[]);
+    let emph = if row.k != 0 {
+        emphasis::useful(&text, emphasis::utf16_to_bytes(&text, &row.e))
+    } else {
+        vec![]
+    };
+    let tone = tone(row.k, style);
+    let mut runs = syntax_runs(
+        &text,
+        &shown,
+        tokens,
+        &emph,
+        tone.emph,
+        base,
+        style.colors.foreground,
+    );
+    if !marks.is_empty() {
+        let marks: Vec<(Range<usize>, Hsla)> = marks
+            .iter()
+            .map(|(r, c)| (shown.offset(r.start)..shown.offset(r.end), *c))
+            .collect();
+        runs = mark(runs, &marks);
+    }
+    StyledText::new(SharedString::from(shown.text)).with_runs(runs)
+}
+
+/// A line of code in its syntax colors (`styles`, from `Highlighted::line`), drawn as a diff's
+/// line is but without word changes: for code shown outside a diff, a conflict's blocks.
+pub fn code_line(
+    text: &str,
+    styles: Option<&LineStyles>,
+    unit: usize,
+    base: &Font,
+    foreground: Hsla,
+) -> StyledText {
+    let shown = Shown::new(text, unit);
+    let tokens = styles.map_or(&[][..], |s| &s[..]);
+    let runs = syntax_runs(text, &shown, tokens, &[], None, base, foreground);
+    StyledText::new(SharedString::from(shown.text)).with_runs(runs)
+}
+
+/// The runs of `text` as `shown`: each token in its color and weight, the bytes in `emph` on
+/// `emph_bg`.
+fn syntax_runs(
+    text: &str,
+    shown: &Shown,
+    tokens: &[(Range<usize>, HighlightStyle)],
+    emph: &[Range<usize>],
+    emph_bg: Option<Hsla>,
+    base: &Font,
+    foreground: Hsla,
+) -> Vec<TextRun> {
+    let mut runs = Vec::new();
+    for (range, token, emphasized) in emphasis::cut(text.len(), tokens, emph) {
+        let len = shown.offset(range.end) - shown.offset(range.start);
+        if len == 0 {
+            continue;
+        }
+        let mut f = base.clone();
+        if let Some(t) = token {
+            if let Some(w) = t.font_weight {
+                f.weight = w;
+            }
+            if let Some(s) = t.font_style {
+                f.style = s;
+            }
+        }
+        runs.push(TextRun {
+            len,
+            font: f,
+            color: token.and_then(|t| t.color).unwrap_or(foreground),
+            background_color: if emphasized { emph_bg } else { None },
+            underline: None,
+            strikethrough: None,
+        });
+    }
+    runs
+}
+
+/// `runs` cut at the edges of `marks` (offsets in their text), each piece inside one on its color.
+fn mark(runs: Vec<TextRun>, marks: &[(Range<usize>, Hsla)]) -> Vec<TextRun> {
+    let mut out = Vec::with_capacity(runs.len() + marks.len() * 2);
+    let mut at = 0;
+    for run in runs {
+        let end = at + run.len;
+        let mut cuts: Vec<usize> = marks
+            .iter()
+            .flat_map(|(r, _)| [r.start, r.end])
+            .filter(|&c| c > at && c < end)
+            .collect();
+        cuts.extend([at, end]);
+        cuts.sort_unstable();
+        cuts.dedup();
+        for w in cuts.windows(2) {
+            let mut piece = run.clone();
+            piece.len = w[1] - w[0];
+            if let Some((_, color)) = marks.iter().find(|(r, _)| w[0] >= r.start && w[1] <= r.end) {
+                piece.background_color = Some(*color);
+            }
+            out.push(piece);
+        }
+        at = end;
+    }
+    out
+}
+
+pub fn number(n: Option<u32>, bg: Hsla, color: Hsla, m: &Metrics) -> Div {
+    div()
+        .flex_none()
+        .w(m.number_w)
+        .h_full()
+        .pr(px(6.))
+        .bg(bg)
+        .text_color(color)
+        .flex()
+        .justify_end()
+        .children(n.map(|n| SharedString::from(n.to_string())))
+}
+
+pub fn sign(t: &Tone, style: &DiffStyle, m: &Metrics) -> Div {
+    div()
+        .flex_none()
+        .w(m.sign_w)
+        .text_color(style.colors.subtle)
+        .flex()
+        .justify_center()
+        .child(t.sign)
+}
+
+/// The code, clipped to its column and moved by the sideways scroll.
+pub fn code_cell(code: StyledText, m: &Metrics) -> Div {
+    div()
+        .relative()
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .overflow_hidden()
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left(px(4.) - m.left)
+                .h(m.line)
+                .whitespace_nowrap()
+                .child(code),
+        )
+}
+
+pub fn overlay(color: Hsla) -> Div {
+    div().absolute().top_0().left_0().size_full().bg(color)
+}
+
+pub fn gap_label(count: u32) -> String {
+    if count == 1 {
+        "1 unchanged line".to_string()
+    } else {
+        format!("{count} unchanged lines")
+    }
+}
+
+/// A path as the header shows it: its folder dimmed, its name.
+pub fn path_label(path: &str, style: &DiffStyle) -> Div {
+    let (dir, name) = match path.rsplit_once('/') {
+        Some((d, n)) => (format!("{d}/"), n.to_string()),
+        None => (String::new(), path.to_string()),
+    };
+    h_flex()
+        .min_w_0()
+        .overflow_hidden()
+        // In a narrow header the folder gives way first, so the name stays readable.
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .text_color(style.colors.subtle)
+                .child(dir),
+        )
+        .child(div().flex_none().child(name))
+}
+
+/// "+12 −3", each only when there are some.
+pub fn line_counts(additions: u32, deletions: u32, style: &DiffStyle) -> Div {
+    let c = &style.colors;
+    h_flex()
+        .flex_none()
+        .gap_1()
+        .when(additions > 0, |el| {
+            el.child(div().text_color(c.added).child(format!("+{additions}")))
+        })
+        .when(deletions > 0, |el| {
+            el.child(div().text_color(c.removed).child(format!("−{deletions}")))
+        })
+}
+
+/// The status as a solid chip: its color's fill under dark ink.
+pub fn status_pill(status: &str, style: &DiffStyle) -> AnyElement {
+    Pill {
+        kind: ChangeKind::from_letter(status.chars().next().unwrap_or('M')),
+        bare: style.colors.muted,
+    }
+    .into_any_element()
+}
+
+#[derive(IntoElement)]
+struct Pill {
+    kind: ChangeKind,
+    /// The label's color without the app's theme (tests, the diff's own demo): no chip then.
+    bare: Hsla,
+}
+
+impl RenderOnce for Pill {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        if cx.has_global::<AppTheme>() {
+            StatusPill(self.kind).into_any_element()
+        } else {
+            div()
+                .flex_none()
+                .text_color(self.bare)
+                .child(self.kind.label())
+                .into_any_element()
+        }
+    }
+}

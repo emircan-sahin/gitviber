@@ -1,0 +1,34 @@
+[package]
+name = "gitviber-diff"
+description = "GitViber's diff viewer: one file or a whole list, unified or split, with line staging."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "gitviber_diff"
+
+[dependencies]
+# A save's answer to the ask before a close or a switch.
+futures.workspace = true
+gpui-kit.workspace = true
+gitviber-core = { path = "../core" }
+# The app's editor commands (Find, GitHub links, Go to Definition), toasts and the SVG setting.
+gitviber-ui = { path = "../ui" }
+# A markdown file's Preview. Neither it nor gitviber-ui depends on the diff: no cycle.
+gitviber-markdown = { path = "../markdown" }
+# Find's Regex toggle; the version the markdown and files crates already build.
+regex = "=1.13.1"
+# Already in the tree through gpui, with its codecs: images decoded no bigger than shown (raster.rs).
+image = { version = "=0.25.10", default-features = false }
+
+[dev-dependencies]
+# Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.
+gpui-test.workspace = true
+
+# Every crate's example shares target/debug/examples/: a plain "demo" would be overwritten.
+[[example]]
+name = "diff-demo"
+path = "examples/demo.rs"

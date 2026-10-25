@@ -3,13 +3,15 @@ import type { Release } from "../src/release.ts";
 const REPO = "emircan-sahin/gitviber";
 export const RELEASES_URL = `https://github.com/${REPO}/releases/latest`;
 
-// Asset names carry the version (GitViber_0.1.0_universal.dmg), so direct download links have
-// to be looked up per release; the site is rebuilt when a release is published.
-const PATTERNS: Record<keyof Release["assets"], RegExp> = {
-  dmg: /_universal\.dmg$/,
-  deb: /_amd64\.deb$/,
-  rpm: /\.x86_64\.rpm$/,
-  appImage: /_amd64\.AppImage$/,
+// Asset names carry the version (GitViber_0.1.18_aarch64.dmg), so direct download links have
+// to be looked up per release; the site is rebuilt when a release is published. The first name
+// that matches wins: 0.1.17 and older had one universal .dmg for both chips.
+const PATTERNS: Record<keyof Release["assets"], RegExp[]> = {
+  dmgArm: [/_aarch64\.dmg$/, /_universal\.dmg$/],
+  dmgIntel: [/_x64\.dmg$/, /_universal\.dmg$/],
+  deb: [/_amd64\.deb$/],
+  rpm: [/\.x86_64\.rpm$/],
+  appImage: [/_amd64\.AppImage$/],
 };
 
 interface GitHubRelease {
@@ -43,8 +45,8 @@ export async function latestRelease(): Promise<Release> {
     if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
     const data = (await res.json()) as GitHubRelease;
     const assets: Release["assets"] = {};
-    for (const [key, re] of Object.entries(PATTERNS) as [keyof Release["assets"], RegExp][]) {
-      const asset = data.assets.find((a) => re.test(a.name));
+    for (const [key, patterns] of Object.entries(PATTERNS) as [keyof Release["assets"], RegExp[]][]) {
+      const asset = patterns.map((re) => data.assets.find((a) => re.test(a.name))).find(Boolean);
       if (asset) assets[key] = asset.browser_download_url;
     }
     return { version: data.tag_name.replace(/^v/, ""), url: data.html_url, assets };

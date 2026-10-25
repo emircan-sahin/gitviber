@@ -5,42 +5,80 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  # Incremental artifacts only fill the cache; CI never builds the same thing twice.
+  CARGO_INCREMENTAL: 0
 
 jobs:
   check:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        include:
+          - os: macos-latest
+            nextest: universal-apple-darwin
+            nextest-sha256: 6c23b7fb4ca82c571fc8dfedbab45bfa773d45918f933170c85d21cd7f4b852b
+          - os: ubuntu-latest
+            nextest: x86_64-unknown-linux-gnu
+            nextest-sha256: 223ba936714cc861a9cdedad5a8eb664dfdd69d6fbdf6cea6aa8184f523290dc
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      # WebKitGTK for Tauri's webview; it pulls in GTK 3 and libsoup 3.
+      # GPUI's windowing (X11 and Wayland, xkbcommon), its fonts (fontconfig, FreeType), and GTK 3
+      # for core's clipboard. The renderer opens Vulkan at run time, so it needs no headers. A debug
+      # build of the gpui stack takes many GB: the runner's preinstalled SDKs make room for it.
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev \
+            libxcb1-dev libwayland-dev libfontconfig-dev libfreetype-dev
 
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-        with:
-          version: 10
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 22
-          cache: pnpm
-
+      # rust-toolchain.toml's version, so CI lints with the same clippy as a local run.
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-03
         with:
-          toolchain: stable
+          toolchain: "1.99"
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: src-tauri
 
-      - run: pnpm install --frozen-lockfile
-      # tauri::generate_context! needs the built frontend in dist/ before any cargo step.
-      - run: pnpm check
+      # A release binary rather than `cargo install`: no build, and the checksum pins it.
+      - name: Install nextest
+        env:
+          NEXTEST: cargo-nextest-0.9.148-${{ matrix.nextest }}.tar.gz
+          NEXTEST_SHA256: ${{ matrix.nextest-sha256 }}
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/$NEXTEST" "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.148/$NEXTEST"
+          echo "$NEXTEST_SHA256  $RUNNER_TEMP/$NEXTEST" | shasum -a 256 -c -
+          tar -xzf "$RUNNER_TEMP/$NEXTEST" -C "$HOME/.cargo/bin"
+          cargo nextest --version
+
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo nextest run --workspace --locked
+
+      # The scripts the browser injects into pages, run on stand-in pages; node strips the types.
+      - if: runner.os == 'macOS'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - if: runner.os == 'macOS'
+        run: node --test "crates/browser/tests/js/*.test.ts"
+
+      - if: runner.os == 'Linux'
+        run: scripts/version.sh check

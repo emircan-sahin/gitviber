@@ -1,15 +1,15 @@
-// Pieces of GitViber's own UI, rebuilt from its classes (src/features/*) so the mockups on this
-// page look like the app: same tokens, sizes, fonts and icons. Rendered at the app's real size;
-// <Scaled> fits a whole window into the page.
+// Pieces of GitViber's own UI, rebuilt from the native app's views (crates/*) so the mockups on
+// this page look like the app: same tokens, sizes, fonts and icons. Rendered at the app's real
+// size; <Scaled> fits a whole window into the page.
 import {
   ArrowDown,
   ArrowDownToLine,
   ArrowUp,
   ArrowUpFromLine,
+  Bot,
   Check,
   ChevronDown,
   ChevronRight,
-  ChevronsDownUp,
   ChevronsUpDown,
   CircleCheck,
   CircleDot,
@@ -18,15 +18,17 @@ import {
   Copy,
   Ellipsis,
   FileCode2,
+  Globe,
+  ListFilter,
   FoldVertical,
   FolderGit2,
   GitBranch,
-  GitCompareArrows,
   GitMerge,
   GitPullRequest,
   LoaderCircle,
   Lock,
   Maximize2,
+  PanelBottom,
   PanelLeft,
   PanelLeftClose,
   PanelRight,
@@ -37,14 +39,15 @@ import {
   Redo2,
   Rows2,
   Search,
-  Settings2,
   Space,
+  SlidersHorizontal,
   Sparkles,
+  Square,
   SquareArrowOutUpRight,
   SquareTerminal,
   Trash2,
   Undo2,
-  UserSearch,
+  UserPlus,
   WrapText,
   X,
   ZoomIn,
@@ -61,7 +64,6 @@ import folderSrcOpen from "material-icon-theme/icons/folder-src-open.svg?url";
 import htmlIcon from "material-icon-theme/icons/html.svg?url";
 import markdownIcon from "material-icon-theme/icons/markdown.svg?url";
 import nodeIcon from "material-icon-theme/icons/nodejs.svg?url";
-import readmeIcon from "material-icon-theme/icons/readme.svg?url";
 import tsconfigIcon from "material-icon-theme/icons/tsconfig.svg?url";
 import viteIcon from "material-icon-theme/icons/vite.svg?url";
 import reactIcon from "material-icon-theme/icons/react_ts.svg?url";
@@ -77,7 +79,6 @@ export function fileIcon(path: string) {
   if (name === "package.json") return nodeIcon;
   if (name.startsWith("tsconfig")) return tsconfigIcon;
   if (name.startsWith("vite.config")) return viteIcon;
-  if (name === "README.md") return readmeIcon;
   if (name.endsWith(".html")) return htmlIcon;
   if (/\.test\.tsx?$/.test(path)) return testIcon;
   if (path.endsWith(".tsx")) return reactIcon;
@@ -93,10 +94,11 @@ const folderIconFor = (name: string, open: boolean) => (FOLDERS[name] ?? [folder
 
 export type Status = "M" | "A" | "D";
 const STATUS_COLOR: Record<Status, string> = { M: "text-modified", A: "text-added", D: "text-removed" };
-const STATUS_FILL: Record<Status, [string, string]> = {
-  M: ["bg-modified", "Modified"],
-  A: ["bg-added", "Added"],
-  D: ["bg-removed", "Deleted"],
+/** The file header's chip: the status color at 18% under its own text; Modified takes the accent. */
+const STATUS_PILL: Record<Status, [string, string]> = {
+  M: ["bg-primary/[0.18] text-primary", "Modified"],
+  A: ["bg-added/[0.18] text-added", "Added"],
+  D: ["bg-removed/[0.18] text-removed", "Deleted"],
 };
 
 /** Fits a fixed-size piece of UI into its container's width, like a screenshot would. */
@@ -142,7 +144,7 @@ export function Window({ children, className, lights = true }: { children: React
   );
 }
 
-const divider = <span className="mx-2 h-4 w-px shrink-0 bg-border-strong" />;
+const divider = <span className="mx-1 h-[18px] w-px shrink-0 bg-border" />;
 
 function repoHue(name: string) {
   let h = 0;
@@ -193,8 +195,6 @@ export function TopBar({
   branch,
   worktree,
   worktrees,
-  added,
-  removed,
   menuOpen,
   pull,
   ahead,
@@ -208,8 +208,6 @@ export function TopBar({
   /** Folder of the linked worktree we're in, or undefined for the main one. */
   worktree?: string;
   worktrees: number;
-  added: number;
-  removed: number;
   menuOpen?: boolean;
   pull?: Pull;
   /** Commits to push, and commits to pull. */
@@ -222,7 +220,7 @@ export function TopBar({
   terminalCalling?: boolean;
 }) {
   return (
-    <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-sidebar pr-2 pl-[86px] whitespace-nowrap [&>*]:shrink-0">
+    <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-sidebar pr-2 pl-[80px] whitespace-nowrap [&>*]:shrink-0">
       <span className="flex items-center gap-1.5">
         <Logo className="size-[18px]" />
         <span className="text-[12.5px] font-semibold tracking-tight">GitViber</span>
@@ -231,9 +229,6 @@ export function TopBar({
       <span className="flex h-7 items-center gap-2 rounded-md px-2">
         <ProjectTile name={repo} />
         <span className="text-[12.5px] font-semibold">{repo}</span>
-        <span className="font-mono text-[10.5px]">
-          <span className="text-added">+{added}</span> <span className="text-removed">-{removed}</span>
-        </span>
         <ChevronsUpDown className="size-3 text-subtle" />
       </span>
       <span className="text-[13px] text-border-strong">/</span>
@@ -244,20 +239,25 @@ export function TopBar({
       </span>
       <span
         className={cx(
-          "relative flex h-7 items-center gap-1.5 rounded-md px-2",
+          // Gives way before the buttons on the right do, as the app's chips row clips.
+          "relative flex h-7 min-w-0 !shrink items-center gap-1.5 rounded-md px-2",
           worktree && "bg-primary/10",
           menuOpen && "bg-active",
         )}
       >
-        <FolderGit2 className={cx("size-3.5", worktree ? "text-primary" : "text-subtle")} />
+        <FolderGit2 className={cx("size-3.5 shrink-0", worktree ? "text-primary" : "text-subtle")} />
         {worktree ? (
-          <span className="font-mono text-[12px]">{worktree}</span>
+          // A linked worktree: its branch, then its folder (crates/refs worktree chip).
+          <span className="flex max-w-[224px] min-w-0 items-baseline gap-1.5 font-mono">
+            <span className="truncate text-[12px]">{branch}</span>
+            <span className="truncate text-[10.5px] text-muted">{worktree}</span>
+          </span>
         ) : (
           <span className="text-[12px]">
             Worktrees<span className="text-muted"> ({worktrees})</span>
           </span>
         )}
-        <ChevronsUpDown className="size-3 text-subtle" />
+        <ChevronsUpDown className="size-3 shrink-0 text-subtle" />
         {elsewhere && <NeedsYouDot className="absolute top-1 right-1" />}
       </span>
       {worktree && pull && <PullChip pull={pull} className="h-7 rounded-md px-1.5 text-[11px]" />}
@@ -273,7 +273,6 @@ export function TopBar({
           <ChevronDown className="size-3" />
         </span>
       </span>
-      <span className="mx-1 h-4 w-px bg-border-strong" />
       <Ghost>
         <RefreshCw />
       </Ghost>
@@ -305,9 +304,17 @@ export function TopBar({
           <ChevronDown className="size-3" />
         </span>
       </span>
-      <span className="mx-1 h-4 w-px bg-border-strong" />
+      {/* The Agents menu, there while an agent runs in a terminal; then the browser. */}
+      <span className="ml-1" />
+      <Ghost dot={elsewhere}>
+        <Bot />
+      </Ghost>
+      <Ghost>
+        <Globe />
+      </Ghost>
+      {divider}
       <Ghost active={terminalOpen} dot={terminalCalling}>
-        <SquareTerminal />
+        <PanelBottom />
       </Ghost>
       <Ghost active>
         <PanelLeft />
@@ -316,7 +323,7 @@ export function TopBar({
         <PanelRight />
       </Ghost>
       <Ghost>
-        <Settings2 />
+        <SlidersHorizontal />
       </Ghost>
     </div>
   );
@@ -428,10 +435,10 @@ export function WorktreeMenu({ rows, current, highlighted }: { rows: WorktreeRow
   );
 }
 
-function PathLabel({ path, dim }: { path: string; dim?: boolean }) {
+function PathLabel({ path }: { path: string }) {
   const cut = path.lastIndexOf("/") + 1;
   return (
-    <span className={cx("flex min-w-0 items-baseline", dim && "opacity-45")}>
+    <span className="flex min-w-0 items-baseline">
       <span className="truncate text-subtle">{path.slice(0, cut)}</span>
       <span className="shrink-0 truncate text-fg">{path.slice(cut)}</span>
     </span>
@@ -443,7 +450,7 @@ function Counts({ add, del }: { add: number; del: number }) {
     <span className="font-mono text-[11px] tabular-nums whitespace-nowrap">
       {add > 0 && <span className="text-added">+{add}</span>}
       {add > 0 && del > 0 && " "}
-      {del > 0 && <span className="text-removed">-{del}</span>}
+      {del > 0 && <span className="text-removed">−{del}</span>}
     </span>
   );
 }
@@ -486,7 +493,7 @@ export function ChangeRow({ file, active, className }: { file: ChangeFile; activ
       </span>
       <img src={fileIcon(file.path)} alt="" className="size-4 shrink-0" />
       <span className="min-w-0 flex-1">
-        <PathLabel path={file.path} dim={file.viewed} />
+        <PathLabel path={file.path} />
       </span>
       <Counts add={file.add} del={file.del} />
       <span className={cx("w-3 text-center font-mono text-[11px] font-bold", STATUS_COLOR[file.status])}>{file.status}</span>
@@ -513,7 +520,7 @@ export function GitPanel({
   const del = files.reduce((s, f) => s + f.del, 0);
   const reviewed = files.filter((f) => f.viewed).length;
   return (
-    <div className="flex h-full shrink-0 flex-col border-r border-border bg-panel" style={{ width }}>
+    <div className="flex h-full shrink-0 flex-col border-r border-border bg-sidebar" style={{ width }}>
       <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border pr-1 pl-2">
         <PanelTab active count={files.length}>
           Changes
@@ -522,10 +529,15 @@ export function GitPanel({
         <PanelTab>PRs</PanelTab>
         <PanelTab>Issues</PanelTab>
         <span className="ml-auto grid size-6 place-items-center text-subtle">
-          <GitCompareArrows className="size-3.5" />
-        </span>
-        <span className="grid size-6 place-items-center text-subtle">
           <PanelLeftClose className="size-3.5" />
+        </span>
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5 px-2 pt-2">
+        <span className="flex h-6 min-w-0 flex-1 items-center rounded-md border border-border-strong bg-bg px-2 text-[11.5px] text-subtle">
+          Filter changed files
+        </span>
+        <span className="grid size-6 place-items-center text-muted">
+          <ListFilter className="size-3.5" />
         </span>
       </div>
       <div className="shrink-0 border-b border-border px-3 py-2">
@@ -534,6 +546,8 @@ export function GitPanel({
             <b className="font-semibold text-fg">{files.length}</b> files
           </span>
           <Counts add={add} del={del} />
+          {/* Guided review of the uncommitted changes. */}
+          <Sparkles className="size-3 text-muted" />
           <span className="ml-auto text-muted">
             <span className={cx("font-semibold", files.length && reviewed === files.length ? "text-added" : "text-fg")}>{reviewed}</span>/
             {files.length} reviewed
@@ -543,9 +557,16 @@ export function GitPanel({
           <div className="h-full bg-added transition-[width] duration-500" style={{ width: `${files.length ? (reviewed / files.length) * 100 : 0}%` }} />
         </div>
       </div>
-      <div className="flex h-7 shrink-0 items-center gap-1 border-b border-border pr-1.5 pl-2 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">
+      <div className="flex h-7 shrink-0 items-center gap-1 border-b border-border pr-2 pl-2 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">
         <ChevronDown className="size-3" /> Changes
         <span className="ml-1 font-mono tracking-normal text-muted">{files.length}</span>
+        {files.length > 0 && (
+          <span className="ml-auto flex gap-2.5 text-[11px] font-medium tracking-normal text-fg/85 normal-case">
+            <span>Open all</span>
+            <span>Discard</span>
+            <span>Stage all</span>
+          </span>
+        )}
       </div>
       <div className="flex-1 py-0.5">
         {children ?? files.map((f, i) => <ChangeRow key={f.path} file={f} active={i === active} />)}
@@ -613,11 +634,16 @@ export function CommitBox({ summary, description, caret, asking, pressed, pointe
           {pointer && <Pointer clicking={pointer === "click"} />}
         </span>
         <span className="grid size-6 place-items-center text-muted">
+          <UserPlus className="size-3.5" />
+        </span>
+        <span className="grid size-6 place-items-center text-muted">
           <Ellipsis className="size-3.5" />
         </span>
+        {/* Off until there's a summary, the way the app shows a disabled button. */}
         <span
           className={cx(
-            "ml-auto flex h-7 flex-1 items-center justify-center rounded-md bg-primary text-[12px] font-medium text-primary-fg transition",
+            "ml-auto flex h-7 flex-1 items-center justify-center rounded-md text-[12px] font-medium transition",
+            summary ? "bg-primary text-primary-fg" : "bg-primary/15 text-fg/40",
             pressed && "scale-[0.97] brightness-90",
           )}
         >
@@ -640,13 +666,13 @@ export function EditorTab({ name, kind, preview = true, unsaved }: { name: strin
   return (
     <div className="flex h-9 shrink-0 border-b border-border bg-panel">
       <div className="relative flex items-center gap-1.5 border-r border-border bg-bg pr-1.5 pl-3 text-[12px]">
-        <span className="absolute inset-x-0 top-0 h-px bg-primary" />
+        <span className="absolute inset-x-0 top-0 h-0.5 bg-primary" />
         <span className="absolute inset-x-0 -bottom-px h-px bg-bg" />
         <img src={fileIcon(name)} alt="" className="size-4" />
         <span className={cx(preview && "italic")}>{name}</span>
         {kind && <span className="font-mono text-[10px] text-subtle">{kind}</span>}
-        <span className="grid size-5 place-items-center text-subtle">
-          {unsaved ? <span className="size-2 rounded-full bg-current" /> : <X className="size-3" />}
+        <span className="grid size-[18px] place-items-center text-muted">
+          {unsaved ? <span className="size-[7px] rounded-full bg-current" /> : <X className="size-3" />}
         </span>
       </div>
     </div>
@@ -660,6 +686,8 @@ function IconBtn({ children, active }: { children: ReactNode; active?: boolean }
     </span>
   );
 }
+
+const outlined = "flex h-6 items-center gap-1.5 rounded-md border border-border-strong bg-elevated px-2 text-[11.5px] font-medium";
 
 export function FileHeader({
   path,
@@ -675,31 +703,34 @@ export function FileHeader({
   status: Status;
   /** Without the view toggles and buttons, for a phone-wide panel. */
   compact?: boolean;
-  /** The file itself rather than its diff: Blame and a way back to the changes. */
+  /** The file itself rather than its diff: its name and folder, and Changes and Blame. */
   file?: boolean;
 }) {
-  const [fill, label] = STATUS_FILL[status];
+  const [pill, label] = STATUS_PILL[status];
+  const cut = path.lastIndexOf("/");
+  if (file) {
+    return (
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border bg-bg pr-2 pl-3 text-[12px]">
+        <span className="shrink-0">{path.slice(cut + 1)}</span>
+        <span className="min-w-0 truncate text-[11.5px] text-subtle">{path.slice(0, Math.max(cut, 0))}</span>
+        {!compact && (
+          <span className="ml-auto flex shrink-0 items-center gap-1 text-[11.5px] font-medium">
+            <span className="rounded-md px-2 py-0.5">Changes</span>
+            <span className="rounded-md px-2 py-0.5">Blame</span>
+          </span>
+        )}
+      </div>
+    );
+  }
   return (
     <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border bg-bg pr-2 pl-3">
-      <img src={fileIcon(path)} alt="" className="size-4 shrink-0" />
       <span className="min-w-0 text-[12px]">
         <PathLabel path={path} />
       </span>
       <Copy className="size-3 shrink-0 text-subtle" />
       <Counts add={add} del={del} />
-      <span className={cx("shrink-0 rounded-sm px-1.5 py-px text-[10.5px] font-semibold text-black/85", fill)}>{label}</span>
-      {!compact && file && (
-        <span className="ml-auto flex items-center gap-1">
-          <span className="grid size-6 place-items-center text-subtle">
-            <UserSearch className="size-3.5" />
-          </span>
-          <span className="mx-0.5 h-4 w-px bg-border-strong" />
-          <span className="flex h-6 items-center gap-1.5 rounded-md border border-border-strong bg-elevated px-2 text-[11.5px] font-medium">
-            <GitCompareArrows className="size-3.5" /> Changes
-          </span>
-        </span>
-      )}
-      {!compact && !file && (
+      <span className={cx("shrink-0 rounded-sm px-1.5 text-[11px] leading-[18px]", pill)}>{label}</span>
+      {!compact && (
         <span className="ml-auto flex shrink-0 items-center gap-1 whitespace-nowrap">
           <IconBtn>
             <ArrowUp />
@@ -707,12 +738,11 @@ export function FileHeader({
           <IconBtn>
             <ArrowDown />
           </IconBtn>
-          <span className="mx-0.5 h-4 w-px bg-border-strong" />
-          <span className="flex h-6 overflow-hidden rounded-md border border-border-strong text-[11.5px] font-medium">
-            <span className="flex items-center gap-1 bg-active px-2">
+          <span className="ml-1 flex h-6 items-center gap-0.5 rounded-md border border-border-strong p-0.5 text-[11.5px] font-medium">
+            <span className="flex h-full items-center gap-1 rounded-sm bg-primary/15 px-1.5 text-primary">
               <Rows2 className="size-3.5" /> Unified
             </span>
-            <span className="flex items-center gap-1 border-l border-border-strong px-2 text-subtle">
+            <span className="flex h-full items-center gap-1 px-1.5 text-muted">
               <Columns2 className="size-3.5" /> Split
             </span>
           </span>
@@ -723,12 +753,14 @@ export function FileHeader({
           <IconBtn>
             <Space />
           </IconBtn>
-          <span className="mx-0.5 h-4 w-px bg-border-strong" />
-          <span className="flex h-6 items-center gap-1.5 rounded-md border border-border-strong bg-elevated px-2 text-[11.5px] font-medium">
+          <span className="flex h-6 items-center gap-1.5 px-2 text-[11.5px] font-medium">
+            <Pencil className="size-3.5" /> Edit
+          </span>
+          <span className={outlined}>
             <FileCode2 className="size-3.5" /> Open file
           </span>
-          <span className="flex h-6 items-center gap-1.5 rounded-md border border-border-strong bg-elevated px-2 text-[11.5px] font-medium">
-            <Check className="size-3.5" /> Viewed
+          <span className={outlined}>
+            <Square className="size-3.5" /> Viewed
           </span>
         </span>
       )}
@@ -745,8 +777,8 @@ export interface TerminalTab {
 }
 
 /**
- * The terminal's tab bar (src/features/terminal/TerminalPanel.tsx); `fresh` slides a just-opened
- * tab in. `compact` leaves out the buttons, for a phone-wide panel.
+ * The terminal's tab bar (crates/terminal/src/panel.rs); `fresh` slides a just-opened tab in.
+ * `compact` leaves out the buttons, for a phone-wide panel.
  */
 export function TerminalTabs({ tabs, active = 0, fresh, compact }: { tabs: TerminalTab[]; active?: number; fresh?: number; compact?: boolean }) {
   return (
@@ -769,12 +801,25 @@ export function TerminalTabs({ tabs, active = 0, fresh, compact }: { tabs: Termi
             )}
             <SquareTerminal className={cx("size-3.5 shrink-0", i === active ? "text-primary" : "text-subtle")} />
             <span className="truncate">{tab.folder}</span>
-            <span className="min-w-0 truncate font-mono text-[10.5px] text-subtle">{tab.branch}</span>
-            {tab.calling && <NeedsYouDot />}
-            {tab.panes && (
-              <span className="rounded-sm bg-elevated px-1 font-mono text-[10px] leading-4 text-muted">{tab.panes}</span>
+            <span className="min-w-0 truncate text-[10.5px] text-subtle">{tab.branch}</span>
+            {/* A split shows a dot per pane, the focused (last) one bigger; else the one dot. */}
+            {tab.panes && tab.panes > 1 ? (
+              <span className="flex items-center gap-1">
+                {Array.from({ length: tab.panes }, (_, j) =>
+                  j === tab.panes! - 1 ? (
+                    <span key={j} className="size-1.5 rounded-full bg-muted" />
+                  ) : tab.calling ? (
+                    <NeedsYouDot key={j} />
+                  ) : (
+                    <span key={j} className="size-1 rounded-full bg-subtle" />
+                  ),
+                )}
+              </span>
+            ) : (
+              tab.calling && <NeedsYouDot />
             )}
-            <span className="grid size-5 shrink-0 place-items-center text-subtle">
+            {/* Other tabs show their close button on hover only. */}
+            <span className={cx("grid size-5 shrink-0 place-items-center text-subtle", i !== active && "invisible")}>
               <X className="size-3" />
             </span>
           </div>
@@ -817,14 +862,14 @@ export function TerminalTabs({ tabs, active = 0, fresh, compact }: { tabs: Termi
 }
 
 /**
- * A split pane's title bar: the program's title, else its folder. The focused one carries the
- * accent and its split and kill buttons; the others show them on hover.
+ * A split pane's title bar: its number, then the program's title, else its folder. The focused
+ * one carries the accent and its split and kill buttons; the others show them on hover.
  */
-export function TerminalPaneHeader({ title, focused, calling }: { title: string; focused: boolean; calling?: boolean }) {
+export function TerminalPaneHeader({ n, title, focused, calling }: { n: number; title: string; focused: boolean; calling?: boolean }) {
   return (
     <div className="relative flex h-6 shrink-0 items-center gap-1.5 border-b border-border bg-panel pr-1 pl-2.5 text-[11.5px]">
       {focused && <span className="absolute inset-x-0 top-0 h-0.5 bg-primary" />}
-      <SquareTerminal className={cx("size-3 shrink-0", focused ? "text-primary" : "text-subtle")} />
+      <span className={cx("shrink-0 rounded-sm px-1 text-[10px] leading-4", focused ? "bg-primary text-primary-fg" : "bg-elevated text-muted")}>{n}</span>
       <span className={cx("min-w-0 truncate", focused ? "text-fg" : "text-muted")}>{title}</span>
       {calling && <NeedsYouDot />}
       {focused && (
@@ -845,8 +890,8 @@ export function TerminalPaneHeader({ title, focused, calling }: { title: string;
 }
 
 /**
- * Terminal text: the code font at 12.5px with xterm's 1.2 line height, the app's ANSI colors.
- * `wrap` breaks long lines at the edge the way xterm does in a narrow pane.
+ * Terminal text: the code font at 12.5px on the font's own line height (the app's default), the
+ * app's ANSI colors. `wrap` breaks long lines at the edge the way a narrow pane does.
  */
 export function TerminalBody({ children, className, wrap }: { children: ReactNode; className?: string; wrap?: boolean }) {
   return (
@@ -922,8 +967,8 @@ export function StatusBar({ files, add, del, reviewed, ahead, behind }: { files:
 }
 
 /**
- * The explorer on the right (src/features/explorer/FileTree.tsx): folders first, indent guides,
- * changed files in their status color with the letter, a dot on folders holding changes.
+ * The explorer on the right (crates/files/src/explorer): folders first, indent guides, changed
+ * files in their status color with the letter after the name, a dot after folders holding changes.
  */
 export function ExplorerPanel({
   paths,
@@ -945,17 +990,12 @@ export function ExplorerPanel({
   });
   const changed = Object.keys(status);
   return (
-    <div className="flex h-full shrink-0 flex-col border-l border-border bg-panel" style={{ width }}>
+    <div className="flex h-full shrink-0 flex-col border-l border-border bg-sidebar" style={{ width }}>
       <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border pr-1 pl-2">
         <PanelTab active>Explorer</PanelTab>
         <PanelTab>Search</PanelTab>
+        <PanelTab>Obsidian</PanelTab>
         <span className="ml-auto grid size-6 place-items-center text-subtle">
-          <Search className="size-3.5" />
-        </span>
-        <span className="grid size-6 place-items-center text-subtle">
-          <ChevronsDownUp className="size-3.5" />
-        </span>
-        <span className="grid size-6 place-items-center text-subtle">
           <PanelRightClose className="size-3.5" />
         </span>
       </div>
@@ -990,8 +1030,8 @@ export function ExplorerPanel({
                 </>
               )}
               <span className={cx("truncate", st ? STATUS_COLOR[st] : "text-fg/85")}>{name}</span>
-              {st && <span className={cx("ml-auto font-mono text-[10.5px] font-bold", STATUS_COLOR[st])}>{st}</span>}
-              {dir && changed.some((c) => c.startsWith(p)) && <span className="ml-auto size-1.5 rounded-full bg-modified" />}
+              {st && <span className={cx("shrink-0 font-mono text-[10.5px] font-bold", STATUS_COLOR[st])}>{st}</span>}
+              {dir && changed.some((c) => c.startsWith(p)) && <span className="ml-0.5 size-1.5 shrink-0 rounded-full bg-modified" />}
             </div>
           );
         })}
@@ -1000,12 +1040,13 @@ export function ExplorerPanel({
   );
 }
 
-/** Quick open (src/features/palette/CommandPalette.tsx): the query, then files with the hits in bold. */
+/** Quick open (crates/app/src/palette.rs): the query, then files with the hits in bold. */
 export function QuickOpen({ query, items }: { query: string; items: { path: string; hits: number[] }[] }) {
   return (
-    <div className="menu-in absolute inset-0 z-40 bg-black/55">
-      <div className="absolute top-[12%] left-1/2 flex w-[576px] -translate-x-1/2 flex-col overflow-hidden rounded-md border border-border-strong bg-elevated shadow-lg shadow-black/60">
-        <div className={cx("flex h-10 shrink-0 items-center border-b border-border px-3 text-[13px]", !query && "text-subtle")}>
+    <div className="menu-in absolute inset-0 z-40">
+      <div className="absolute top-[72px] left-1/2 flex w-[576px] -translate-x-1/2 flex-col overflow-hidden rounded-md border border-border-strong bg-elevated shadow-lg shadow-black/60">
+        <div className={cx("flex h-10 shrink-0 items-center gap-2 border-b border-border px-3 text-[13px]", !query && "text-subtle")}>
+          <Search className="size-3.5 shrink-0 text-muted" />
           {query || "Search files by name · type > for commands"}
           {query && <span className="ml-px inline-block h-4 w-px animate-blink bg-fg" />}
         </div>
@@ -1017,7 +1058,7 @@ export function QuickOpen({ query, items }: { query: string; items: { path: stri
             return (
               <div
                 key={item.path}
-                className={cx("flex h-7 items-center gap-2 rounded-sm px-2 text-[12.5px]", i === 0 ? "bg-primary text-primary-fg" : "text-fg")}
+                className={cx("flex h-7 items-center gap-2 rounded-sm px-2 text-[12.5px] text-fg", i === 0 && "bg-active")}
               >
                 <img src={fileIcon(item.path)} alt="" className="size-4 shrink-0" />
                 <span className="shrink-0">{bold(item.path.slice(cut), cut)}</span>

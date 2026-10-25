@@ -1,0 +1,55 @@
+[package]
+name = "gitviber"
+description = "GitViber, the native app: windows, layout, menus, palette and settings."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "gitviber_app"
+
+[[bin]]
+name = "gitviber"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit.workspace = true
+gitviber-ui = { path = "../ui" }
+gitviber-core = { path = "../core" }
+gitviber-diff = { path = "../diff" }
+gitviber-changes = { path = "../changes" }
+gitviber-terminal = { path = "../terminal" }
+gitviber-files = { path = "../files" }
+gitviber-obsidian = { path = "../obsidian" }
+gitviber-browser = { path = "../browser" }
+gitviber-history = { path = "../history" }
+gitviber-refs = { path = "../refs" }
+gitviber-github = { path = "../github" }
+gitviber-review = { path = "../review" }
+gitviber-updater = { path = "../updater" }
+# Already in the tree through gpui-kit and the ui crate.
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+futures.workspace = true
+# The license list, deflated at build time (build.rs). Already in the tree through png and exr.
+miniz_oxide = "=0.8.9"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The settings window's NSWindow, kept out of full screen. Both already in the tree (browser).
+raw-window-handle = "=0.6.2"
+objc2 = "=0.6.4"
+
+[build-dependencies]
+miniz_oxide = "=0.8.9"
+
+[dev-dependencies]
+# Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.
+gpui-test.workspace = true
+
+[features]
+# GITVIBER_SNAPSHOT=out.png draws the main window off screen into a PNG and exits (gitviber-ui's
+# `snapshot`): for checking the whole app without a window on screen. Never in a release.
+snapshot = ["gitviber-ui/snapshot"]

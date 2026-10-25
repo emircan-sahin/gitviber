@@ -1,25 +1,12 @@
-"""The parts of browser-check.sh that parse or print, so they can be tested apart from a running
-app. Run with `python3 -I browser-check.py <command> ...`; replies to parse come on stdin."""
+"""The parts of browser-check-native.sh that parse or print, so they can be tested apart from a
+running app. Run with `python3 -I browser-check.py <command> ...`; replies to parse come on stdin."""
 import json
 import re
-from collections import Counter
 import socket
 import struct
 import sys
 
 PAGE_MARK = re.compile(r"^--- (end )?page content\b")
-
-
-def bridge_value(reply):
-    """dev_bridge.rs's reply: (True, the value as text) or (False, the error)."""
-    try:
-        r = json.loads(reply)
-    except ValueError:
-        return False, f"no reply from the dev bridge: {reply[:200]!r}"
-    if not r.get("ok"):
-        return False, str(r.get("error"))
-    v = r.get("value")
-    return True, v if isinstance(v, str) else json.dumps(v)
 
 
 def eval_value(out):
@@ -99,100 +86,11 @@ def download(out):
     return m.groups() if m else None
 
 
-def file_path(out, name):
-    """The first absolute path in a reply that ends with the file's name."""
-    m = re.search(r"(/[^\n]*?/" + re.escape(name) + r")(?![\w.-])", out)
-    return m.group(1) if m else None
-
-
 def shot_expect(w, h, scale=1.0, cap=2000):
     """A screenshot's pixels for a CSS size: w×h × scale, its longest side `cap` at most."""
     w, h = w * scale, h * scale
     k = min(1.0, cap / max(w, h))
     return round(w * k), round(h * k)
-
-
-SKILL_HEAD = "---\nname: gitviber-browser\n"
-SKILL_MARKER = re.compile(r"^<!-- managed by GitViber (\d+\.\d+\.\d+\S*); edits are replaced -->$")
-
-
-def skill_version(text):
-    """The GitViber version that wrote a gitviber-browser SKILL.md, as browser/skill.rs marks it:
-    its name first, and the marker the first line after the frontmatter. None for anyone else's."""
-    if not text.startswith(SKILL_HEAD):
-        return None
-    rest = text[len(SKILL_HEAD):]
-    body = rest[4:] if rest.startswith("---\n") else rest.partition("\n---\n")[2]
-    m = SKILL_MARKER.match(body.split("\n", 1)[0])
-    return m.group(1) if m else None
-
-
-# A browser other than GitViber's: a tool or a command line naming one.
-OTHER_BROWSER = re.compile(r"mcp__claude-in-chrome|mcp__playwright|playwright|puppeteer|chrome-devtools|Google Chrome|chromium", re.I)
-
-
-def browser_commands(command):
-    """The `gitviber browser` subcommands in a shell command line, flags and --tab's value skipped."""
-    found = []
-    for m in re.finditer(r"gitviber\s+browser\b([^;&|\n]*)", command):
-        words = m.group(1).split()
-        while words and words[0].startswith("--"):
-            flag = words.pop(0)
-            if flag == "--tab" and words:
-                words.pop(0)
-        found.append(words[0] if words else "help")
-    return found
-
-
-def agent_summary(stream):
-    """A `claude -p --output-format stream-json --verbose` run, summed up without its transcript:
-    the answer, the gitviber browser subcommands it ran, any other browser it reached for."""
-    answer, error, tools, commands, other = None, None, 0, [], []
-    for line in stream.splitlines():
-        try:
-            msg = json.loads(line)
-        except ValueError:
-            continue
-        if msg.get("type") == "result":
-            answer, error = str(msg.get("result", "")), bool(msg.get("is_error"))
-        content = msg.get("message", {}).get("content") if msg.get("type") == "assistant" else None
-        for block in content if isinstance(content, list) else []:
-            if block.get("type") != "tool_use":
-                continue
-            tools += 1
-            name, given = block.get("name", ""), block.get("input", {})
-            command = given.get("command", "") if isinstance(given, dict) else ""
-            commands += browser_commands(command)
-            outside = " ".join(filter(None, [name, re.sub(r"gitviber\s+browser\b[^;&|\n]*", "", command)]))
-            if OTHER_BROWSER.search(outside):
-                other.append(name if name != "Bash" else "Bash: " + command[:40])
-    return {"answer": answer, "error": error, "tools": tools, "commands": commands, "other": other}
-
-
-def agent_verdict(summary, status):
-    """PASS when the answer holds the status, the run used gitviber browser (when it shows its
-    tools) and no other browser; a one-line note either way."""
-    answer = summary["answer"]
-    said = "no answer" if answer is None else f"answered {answer.strip()[:40]!r}"
-    used = Counter(summary["commands"])
-    note = f"{said}; {summary['tools']} tool calls, gitviber browser " + (
-        ", ".join(f"{c}×{n}" if n > 1 else c for c, n in used.items()) or "never")
-    if summary["other"]:
-        note += "; other browser: " + ", ".join(sorted(set(summary["other"])))[:80]
-    ok = (answer is not None and not summary["error"] and re.search(rf"\b{status}\b", answer) is not None
-          and not summary["other"] and (summary["tools"] == 0 or bool(summary["commands"])))
-    return ok, note
-
-
-def form_submit(log, run):
-    """Whether the test site saw run `run`'s form posted from a WebKit view that isn't Chrome's
-    (an agent tab's WKWebView), and the user agent it came with."""
-    for line in log.splitlines():
-        if line.startswith(f"form-submit run={run} "):
-            ua = line.partition(" ua=")[2]
-            ok = "AppleWebKit" in ua and not re.search(r"Chrome|Chromium|Firefox|Edg/", ua)
-            return ok, ua
-    return False, None
 
 
 def png_size(data):
@@ -282,24 +180,6 @@ def missing(help_text, needs):
     return [n for n in needs if n not in help_text]
 
 
-def webcontent(ps_out):
-    """{pid: rss in KB} of WebKit's page processes in `ps -axo pid=,rss=,comm=`."""
-    procs = {}
-    for line in ps_out.splitlines():
-        parts = line.split(None, 2)
-        if len(parts) == 3 and "WebContent" in parts[2] and parts[0].isdigit():
-            procs[int(parts[0])] = int(parts[1])
-    return procs
-
-
-def memory_note(before, after, tabs):
-    new = {p: kb for p, kb in after.items() if p not in before}
-    grown = sum(after.values()) - sum(before.values())
-    each = grown / 1024 / tabs if tabs else 0
-    return (f"{tabs} awake tabs: {len(new)} new WebContent processes, "
-            f"{grown / 1024:+.0f} MB RSS in all ({each:.0f} MB a tab)")
-
-
 def table(rows):
     """The results as a table, and whether all passed: rows of (check, result, note)."""
     rows = [r + [""] * (3 - len(r)) for r in rows]
@@ -313,42 +193,8 @@ def table(rows):
     return "\n".join(lines), count["FAIL"] == 0 and count["PASS"] > 0
 
 
-def bridge(port, script):
-    s = socket.create_connection(("127.0.0.1", port), timeout=30)
-    s.sendall(script)
-    s.shutdown(socket.SHUT_WR)
-    return b"".join(iter(lambda: s.recv(65536), b"")).decode()
-
-
-def port_free(port):
-    """Nothing listens on the port, on 127.0.0.1 or ::1 (a dev server may take either). Sockets
-    a closed run left in TIME_WAIT don't count: SO_REUSEADDR lets a bind past them."""
-    for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
-        try:
-            with socket.socket(family) as c:
-                c.settimeout(1)
-                if c.connect_ex((host, port)) == 0:
-                    return False
-        except OSError:
-            pass
-    with socket.socket() as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            s.bind(("127.0.0.1", port))
-            return True
-        except OSError:
-            return False
-
-
 def main(cmd, *args):
     stdin = lambda: sys.stdin.read()
-    if cmd == "bridge":
-        try:
-            ok, value = bridge_value(bridge(int(args[0]), sys.stdin.buffer.read()))
-        except OSError as e:
-            ok, value = False, f"dev bridge: {e}"
-        print(value, file=sys.stdout if ok else sys.stderr)
-        return 0 if ok else 1
     if cmd == "eval-value":
         v = eval_value(stdin())
         print(v if isinstance(v, str) else json.dumps(v))
@@ -366,10 +212,9 @@ def main(cmd, *args):
         if not found:
             return 1
         print(found)
-    elif cmd in ("snapshot-ref", "popup-name", "file-path"):
+    elif cmd in ("snapshot-ref", "popup-name"):
         text = stdin()
-        found = {"snapshot-ref": lambda: snapshot_ref(text, args[0]), "popup-name": lambda: popup_name(text),
-                 "file-path": lambda: file_path(text, args[0])}[cmd]()
+        found = snapshot_ref(text, args[0]) if cmd == "snapshot-ref" else popup_name(text)
         if not found:
             return 1
         print(found)
@@ -380,27 +225,6 @@ def main(cmd, *args):
         if not found:
             return 1
         print("\t".join(found))
-    elif cmd == "skill-ours":
-        try:
-            with open(args[0], encoding="utf-8") as f:
-                return 0 if skill_version(f.read()) else 1
-        except (OSError, ValueError):
-            return 1
-    elif cmd == "agent":
-        with open(args[0], encoding="utf-8", errors="replace") as f:
-            ok, note = agent_verdict(agent_summary(f.read()), args[1])
-        print(note)
-        return 0 if ok else 1
-    elif cmd == "form-submit":
-        with open(args[0]) as f:
-            ok, ua = form_submit(f.read(), args[1])
-        print("from WebKit, not Chrome" if ok else f"user agent: {ua}" if ua else "no submit for this run")
-        return 0 if ok else 1
-    elif cmd == "json-str":
-        print(json.dumps(args[0]))
-    elif cmd == "nonce":
-        import secrets
-        print(secrets.token_hex(6))
     elif cmd == "shot-expect":
         print(*shot_expect(float(args[0]), float(args[1]), float(args[2]) if len(args) > 2 else 1.0))
     elif cmd == "png":
@@ -431,16 +255,11 @@ def main(cmd, *args):
     elif cmd == "missing":
         with open(args[0]) as f:
             print(", ".join(missing(f.read(), args[1:])))
-    elif cmd == "memory":
-        with open(args[0]) as a, open(args[1]) as b:
-            print(memory_note(webcontent(a.read()), webcontent(b.read()), int(args[2])))
     elif cmd == "table":
         with open(args[0]) as f:
             text, ok = table([l.rstrip("\n").split("\t") for l in f if l.strip()])
         print(text)
         return 0 if ok else 1
-    elif cmd == "port-free":
-        return 0 if port_free(int(args[0])) else 1
     elif cmd == "free-port":
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))

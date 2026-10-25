@@ -1,7 +1,7 @@
 name: Homebrew
 
 # Publishing a release commits its cask to emircan-sahin/homebrew-tap, so `brew install` gets it
-# with no step by hand. The checksum comes from the release's SHA256SUMS. It pushes with a deploy
+# with no step by hand. The checksums come from the release's SHA256SUMS. It pushes with a deploy
 # key that can write to the tap and nothing else (the HOMEBREW_TAP_KEY secret, RELEASING.md).
 # Run from the Actions tab with a tag to redo one.
 on:
@@ -42,10 +42,17 @@ jobs:
       - name: Fill in the cask
         run: |
           version="${TAG#v}"
-          dmg="GitViber_${version}_universal.dmg"
-          sha=$(gh release download "$TAG" --pattern SHA256SUMS --output - | awk -v f="$dmg" '$2 == f { print $1 }')
-          [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::No checksum for $dmg in $TAG's SHA256SUMS"; exit 1; }
-          sed -e '/^#/d' -e "s/__VERSION__/$version/" -e "s/__SHA256__/$sha/" packaging/homebrew/gitviber.rb > "$RUNNER_TEMP/gitviber.rb"
+          sums=$(gh release download "$TAG" --pattern SHA256SUMS --output -)
+          sha() {
+            local dmg="GitViber_${version}_$1.dmg" sha
+            sha=$(awk -v f="$dmg" '$2 == f { print $1 }' <<< "$sums")
+            [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::No checksum for $dmg in $TAG's SHA256SUMS" >&2; exit 1; }
+            echo "$sha"
+          }
+          arm=$(sha aarch64)
+          intel=$(sha x64)
+          sed -e '/^#/d' -e "s/__VERSION__/$version/" -e "s/__SHA256_ARM__/$arm/" -e "s/__SHA256_INTEL__/$intel/" \
+            packaging/homebrew/gitviber.rb > "$RUNNER_TEMP/gitviber.rb"
           cat "$RUNNER_TEMP/gitviber.rb"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

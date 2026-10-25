@@ -1,0 +1,28 @@
+[package]
+name = "gitviber-updater"
+description = "GitViber's own updates: checks the release feed, verifies a download's signature, installs it in place."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "gitviber_updater"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+# The rest are already in the tree, at the locked versions; ureq with core's features, so they
+# share one build of it.
+ureq = { version = "=3.4.2", features = ["json"] }
+base64 = "=0.22.1"
+semver = "=1.0.28"
+libc = "=0.2.189"
+# What tauri-plugin-updater 2.11.0 verified with: zero dependencies, MIT (jedisct1).
+minisign-verify = "=0.2.5"
+
+[dev-dependencies]
+# Signs like `tauri signer sign` (examples/sign.rs, used by release.yml) and makes the tests'
+# keys. Never in the app: MIT, jedisct1, the crate the Tauri CLI signs with.
+minisign = "=0.9.1"
