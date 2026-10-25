@@ -52,9 +52,7 @@ const PNG: &[u8] = &[
 
 /// A vault Obsidian lists (through $HOME), its config and state in temporary folders.
 fn setup(name: &str, cx: &mut TestAppContext) -> String {
-    let root =
-        std::env::temp_dir().join(format!("gitviber-obsidian-{name}-{}", std::process::id()));
-    _ = std::fs::remove_dir_all(&root);
+    let root = gitviber_ui::test_support::temp_dir(&format!("obsidian-{name}"));
     let vault = root.join("Vault");
     let write = |rel: &str, bytes: &[u8]| {
         let p = vault.join(rel);

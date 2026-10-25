@@ -328,8 +328,7 @@ impl Vaults {
 
     /// Points core's one vault watcher at `watch_target`, one change at a time.
     fn rewatch(&mut self, cx: &mut Context<Self>) {
-        // Core's watcher thread would wake a test's deterministic executor.
-        if cfg!(test) || self.watching || self.watch_target(cx) == self.watched {
+        if self.watching || self.watch_target(cx) == self.watched {
             return;
         }
         self.watching = true;
