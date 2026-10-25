@@ -6,6 +6,8 @@
 //! Syntax colors come with the code view: it reads `syntax_theme` (a Shiki-style id from
 //! Settings) and installs its highlight theme; this module leaves gpui-component's alone.
 
+#[cfg(target_os = "macos")]
+mod display;
 mod palettes;
 pub mod syntax;
 
@@ -22,7 +24,7 @@ use gpui_kit::{
 use serde::{Deserialize, Serialize};
 
 use crate::keymap::IS_MAC;
-use crate::settings::{CodeFont, Settings, TerminalFont, UiFont, WINDOW_OPACITY};
+use crate::settings::{Appearance, CodeFont, Settings, TerminalFont, UiFont, WINDOW_OPACITY};
 
 /// A palette as the old app's CSS had it: #RRGGBB or #RRGGBBAA.
 pub struct Palette {
@@ -243,7 +245,8 @@ pub struct AppTheme {
     pub border_strong: Hsla,
     pub foreground: Hsla,
     pub muted_foreground: Hsla,
-    /// ≥4.5:1 on every surface up to `elevated`: it's used for 11-12px text.
+    /// ≥4.5:1 on every surface up to `elevated`, hovered and selected rows too: it's used for
+    /// 11-12px text (timestamps, paths, line numbers).
     pub subtle: Hsla,
     pub primary: Hsla,
     pub primary_foreground: Hsla,
@@ -434,7 +437,8 @@ struct InstalledFonts(HashMap<SharedString, bool>);
 
 impl Global for InstalledFonts {}
 
-fn installed(name: &str, cx: &mut App) -> bool {
+/// Whether the family `name` is installed, asked of the OS once per name: for the font pickers.
+pub fn installed(name: &str, cx: &mut App) -> bool {
     if name.starts_with('.') {
         return true;
     }
@@ -527,13 +531,42 @@ fn resolve_fonts(s: &Settings, cx: &mut App) -> Fonts {
     }
 }
 
+/// What the theme follows of the OS besides the settings.
+#[derive(Clone, Copy, Debug)]
+pub struct Os {
+    pub dark: bool,
+    /// Reduce transparency is on: the window stays opaque whatever its opacity setting.
+    pub reduce_transparency: bool,
+}
+
+impl Os {
+    fn now(cx: &App) -> Self {
+        Self {
+            dark: system_dark(cx),
+            #[cfg(target_os = "macos")]
+            reduce_transparency: display::reduce_transparency(),
+            #[cfg(not(target_os = "macos"))]
+            reduce_transparency: false,
+        }
+    }
+}
+
 /// The OS is dark now. GITVIBER_APPEARANCE=dark|light stands in for it: an off-screen
-/// snapshot's test platform always reports light.
+/// snapshot's test platform always reports light. With the `snapshot` feature, `dark,light`
+/// (or `light,dark`) switches a second in, to picture a live switch.
 fn system_dark(cx: &App) -> bool {
-    match std::env::var("GITVIBER_APPEARANCE").as_deref() {
-        Ok("dark") => return true,
-        Ok("light") => return false,
-        _ => {}
+    if let Ok(names) = std::env::var("GITVIBER_APPEARANCE") {
+        #[cfg(feature = "snapshot")]
+        let names = match names.split_once(',') {
+            Some((_, after)) if snapshot_flip::done() => after.to_string(),
+            Some((before, _)) => before.to_string(),
+            None => names,
+        };
+        match names.as_str() {
+            "dark" => return true,
+            "light" => return false,
+            _ => {}
+        }
     }
     matches!(
         cx.window_appearance(),
@@ -541,11 +574,53 @@ fn system_dark(cx: &App) -> bool {
     )
 }
 
-/// The theme the settings and OS appearance make, with `fonts` already resolved.
-pub fn build(settings: &Settings, system_dark: bool, fonts: Fonts) -> AppTheme {
-    let id = settings.theme(system_dark);
+#[cfg(feature = "snapshot")]
+mod snapshot_flip {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    use gpui_kit::App;
+
+    static DONE: AtomicBool = AtomicBool::new(false);
+
+    pub(super) fn done() -> bool {
+        DONE.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn schedule(cx: &mut App) {
+        if !std::env::var("GITVIBER_APPEARANCE").is_ok_and(|v| v.contains(',')) {
+            return;
+        }
+        let timer = cx.background_executor().timer(Duration::from_secs(1));
+        cx.spawn(async move |cx| {
+            timer.await;
+            DONE.store(true, Ordering::Relaxed);
+            cx.update(super::refresh);
+        })
+        .detach();
+    }
+}
+
+/// The appearance the app's native parts (sheets, alerts, menus, web pages shown "as the app")
+/// are held to: the theme's when Appearance is Dark or Light, the OS's under System.
+fn native_appearance(settings: &Settings) -> Option<WindowAppearance> {
+    match settings.appearance {
+        Appearance::System => None,
+        Appearance::Dark => Some(WindowAppearance::Dark),
+        Appearance::Light => Some(WindowAppearance::Light),
+    }
+}
+
+/// What `native_appearance` last gave macOS.
+struct NativeAppearance(Option<WindowAppearance>);
+
+impl Global for NativeAppearance {}
+
+/// The theme the settings and the OS make, with `fonts` already resolved.
+pub fn build(settings: &Settings, os: Os, fonts: Fonts) -> AppTheme {
+    let id = settings.theme(os.dark);
     let p = id.palette();
-    let opacity = if IS_MAC && settings.window_opacity < 100.0 {
+    let opacity = if IS_MAC && settings.window_opacity < 100.0 && !os.reduce_transparency {
         settings.window_opacity.max(appearance_floor(settings))
     } else {
         100.0
@@ -601,7 +676,7 @@ pub fn build(settings: &Settings, system_dark: bool, fonts: Fonts) -> AppTheme {
         tint_c: p.tint_c,
         fonts,
         ui_scale: settings.ui_scale,
-        syntax_theme: settings.code_theme(system_dark).to_string().into(),
+        syntax_theme: settings.code_theme(os.dark).to_string().into(),
         glass,
     }
 }
@@ -690,6 +765,8 @@ pub fn component_config(t: &AppTheme) -> ThemeConfig {
         switch_thumb = hex("#ffffff"),
         // Off, the white thumb on a light gray track nearly vanishes on a white surface.
         switch_border = t.subtle,
+        // Placeholders apart from typed text: muted is too close to it in the light themes.
+        input_placeholder = t.subtle,
         slider_bar = t.primary,
         slider_thumb = hex("#ffffff"),
         progress_bar = t.primary,
@@ -726,8 +803,14 @@ pub fn component_config(t: &AppTheme) -> ThemeConfig {
 /// Recomputes the theme from the settings and the OS appearance; repaints when it changed.
 pub fn refresh(cx: &mut App) {
     let settings = Settings::get(cx).clone();
+    // First: while an appearance is held, the OS's reads as that one.
+    let native = native_appearance(&settings);
+    if cx.try_global::<NativeAppearance>().map(|n| n.0) != Some(native) {
+        cx.set_window_appearance(native);
+        cx.set_global(NativeAppearance(native));
+    }
     let fonts = resolve_fonts(&settings, cx);
-    let next = build(&settings, system_dark(cx), fonts);
+    let next = build(&settings, Os::now(cx), fonts);
     if cx.try_global::<AppTheme>() == Some(&next) {
         return;
     }
@@ -780,11 +863,40 @@ pub(crate) fn init(cx: &mut App) {
     refresh(cx);
     syntax::init(cx);
     cx.observe_global::<Settings>(refresh).detach();
+    #[cfg(target_os = "macos")]
+    watch_display_options(cx);
+    #[cfg(feature = "snapshot")]
+    snapshot_flip::schedule(cx);
+}
+
+/// Reduce transparency switched in System Settings: the window turns opaque or see-through again
+/// at once, not at the next settings change.
+#[cfg(target_os = "macos")]
+fn watch_display_options(cx: &mut App) {
+    use futures::StreamExt as _;
+
+    let (tx, mut rx) = futures::channel::mpsc::unbounded::<()>();
+    display::watch(move || {
+        let _ = tx.unbounded_send(());
+    });
+    cx.spawn(async move |cx| {
+        while rx.next().await.is_some() {
+            cx.update(refresh);
+        }
+    })
+    .detach();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn os(dark: bool) -> Os {
+        Os {
+            dark,
+            reduce_transparency: false,
+        }
+    }
 
     fn fonts() -> Fonts {
         Fonts {
@@ -802,7 +914,7 @@ mod tests {
 
     #[test]
     fn label_weights_step_with_the_setting() {
-        let mut t = build(&Settings::default(), true, fonts());
+        let mut t = build(&Settings::default(), os(true), fonts());
         let w = |t: &AppTheme, weight: FontWeight| t.weight(weight).0;
         // Interface font weight Medium: body 500, labels 600, semibold 700.
         assert_eq!(w(&t, FontWeight::NORMAL), 500.0);
@@ -842,25 +954,26 @@ mod tests {
             light_theme: ThemeId::SolarizedLight,
             ..Settings::default()
         };
-        assert_eq!(build(&s, true, fonts()).id, ThemeId::Nord);
-        assert_eq!(build(&s, false, fonts()).id, ThemeId::SolarizedLight);
+        assert_eq!(build(&s, os(true), fonts()).id, ThemeId::Nord);
+        assert_eq!(build(&s, os(false), fonts()).id, ThemeId::SolarizedLight);
         let dark = Settings {
             appearance: crate::settings::Appearance::Dark,
             ..s.clone()
         };
-        assert_eq!(build(&dark, false, fonts()).id, ThemeId::Nord);
-        assert_eq!(build(&dark, false, fonts()).syntax_theme, "dark-plus");
+        assert_eq!(build(&dark, os(false), fonts()).id, ThemeId::Nord);
+        assert_eq!(build(&dark, os(false), fonts()).syntax_theme, "dark-plus");
     }
 
     #[test]
     fn tokens_map_onto_gpui_component() {
-        let t = build(&Settings::default(), true, fonts());
+        let t = build(&Settings::default(), os(true), fonts());
         assert_eq!(t.background, hex("#171718"));
         let config = component_config(&t);
         assert_eq!(config.mode, ThemeMode::Dark);
         assert_eq!(config.colors.background.as_deref(), Some("#171718ff"));
         assert_eq!(config.colors.sidebar.as_deref(), Some("#0e0e0fff"));
         assert_eq!(config.colors.accent.as_deref(), Some("#ffffff12"));
+        assert_eq!(config.colors.input_placeholder, Some(to_hex(t.subtle)));
         assert_eq!(config.font_size, Some(16.0));
     }
 
@@ -881,7 +994,7 @@ mod tests {
             background_blur: 20.0,
             ..Settings::default()
         };
-        let t = build(&s, true, fonts());
+        let t = build(&s, os(true), fonts());
         if IS_MAC {
             let g = t.glass.unwrap();
             assert!(g.blur);
@@ -890,6 +1003,185 @@ mod tests {
         } else {
             assert!(t.glass.is_none());
         }
-        assert!(build(&Settings::default(), true, fonts()).glass.is_none());
+        assert!(
+            build(&Settings::default(), os(true), fonts())
+                .glass
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn reduce_transparency_keeps_the_window_opaque() {
+        let s = Settings {
+            window_opacity: 85.0,
+            background_blur: 20.0,
+            ..Settings::default()
+        };
+        let reduced = Os {
+            reduce_transparency: true,
+            ..os(true)
+        };
+        let t = build(&s, reduced, fonts());
+        assert!(t.glass.is_none());
+        assert_eq!(t.window_background(), WindowBackgroundAppearance::Opaque);
+        assert_eq!(t.chrome(t.sidebar), t.sidebar);
+        // Turned off again, the same settings are see-through on macOS.
+        assert_eq!(build(&s, os(true), fonts()).glass.is_some(), IS_MAC);
+    }
+
+    #[test]
+    fn native_parts_follow_a_chosen_appearance() {
+        let with = |appearance| Settings {
+            appearance,
+            ..Settings::default()
+        };
+        assert_eq!(native_appearance(&with(Appearance::System)), None);
+        assert_eq!(
+            native_appearance(&with(Appearance::Dark)),
+            Some(WindowAppearance::Dark)
+        );
+        assert_eq!(
+            native_appearance(&with(Appearance::Light)),
+            Some(WindowAppearance::Light)
+        );
+    }
+
+    #[gpui_kit::test]
+    fn refresh_holds_the_native_appearance(cx: &mut gpui_kit::TestAppContext) {
+        crate::test_support::config_dir("theme-native");
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::settings::init(cx);
+            Settings::update(cx, |s| s.appearance = Appearance::Dark);
+            refresh(cx);
+            assert_eq!(
+                cx.global::<NativeAppearance>().0,
+                Some(WindowAppearance::Dark)
+            );
+            Settings::update(cx, |s| s.appearance = Appearance::System);
+            refresh(cx);
+            assert_eq!(cx.global::<NativeAppearance>().0, None);
+        });
+    }
+
+    /// Flipping dark and light live (Auto, macOS switching) re-colors what keeps its own copy of
+    /// the theme: gpui-component's controls, and the highlight theme code views and markdown
+    /// code blocks color with.
+    #[gpui_kit::test]
+    fn a_live_switch_reaches_every_copy_of_the_theme(cx: &mut gpui_kit::TestAppContext) {
+        crate::test_support::config_dir("theme-live");
+        // SAFETY: nextest runs each test in a process of its own.
+        unsafe { std::env::set_var("GITVIBER_APPEARANCE", "dark") };
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::settings::init(cx);
+            init(cx);
+        });
+        let read = |cx: &mut gpui_kit::TestAppContext| {
+            cx.update(|cx| {
+                let component = Theme::global(cx);
+                (
+                    cx.app_theme().clone(),
+                    component.mode,
+                    component.background,
+                    component.highlight_theme.clone(),
+                    syntax::current(cx),
+                )
+            })
+        };
+        let (dark, mode, background, highlight, current) = read(cx);
+        assert_eq!(dark.id, ThemeId::Dark);
+        assert_eq!(mode, ThemeMode::Dark);
+        assert_eq!(to_hex(background), to_hex(dark.background));
+        assert_eq!(*highlight, *current);
+        unsafe { std::env::set_var("GITVIBER_APPEARANCE", "light") };
+        cx.update(refresh);
+        cx.run_until_parked();
+        let (light, mode, background, highlight, current) = read(cx);
+        assert_eq!(light.id, ThemeId::Light);
+        assert_eq!(mode, ThemeMode::Light);
+        assert_eq!(to_hex(background), to_hex(light.background));
+        assert_eq!(*highlight, *current);
+        assert_eq!(
+            *current,
+            syntax::on_palette(&syntax::theme("github-light-default"), &light)
+        );
+    }
+
+    /// `color` over `under`, as the screen shows it.
+    fn over(color: Hsla, under: [f32; 3]) -> [f32; 3] {
+        let c = Rgba::from(color);
+        let mix = |top: f32, below: f32| top * c.a + below * (1.0 - c.a);
+        [mix(c.r, under[0]), mix(c.g, under[1]), mix(c.b, under[2])]
+    }
+
+    fn rgb(color: Hsla) -> [f32; 3] {
+        let c = Rgba::from(color);
+        [c.r, c.g, c.b]
+    }
+
+    #[test]
+    fn small_text_reads_in_every_palette() {
+        for id in ThemeId::ALL {
+            let s = Settings {
+                dark_theme: *id,
+                light_theme: *id,
+                ..Settings::default()
+            };
+            let t = build(&s, os(id.is_dark()), fonts());
+            assert_eq!(t.id, *id);
+            let name = id.as_str();
+            let surfaces = [t.sidebar, t.panel, t.background, t.elevated];
+            // Every row a list can show: plain, hovered, selected.
+            let rows: Vec<(String, [f32; 3])> = ["sidebar", "panel", "background", "elevated"]
+                .iter()
+                .zip(surfaces)
+                .flat_map(|(surface, color)| {
+                    let base = rgb(color);
+                    [
+                        (surface.to_string(), base),
+                        (format!("{surface}, hovered"), over(t.hover, base)),
+                        (format!("{surface}, selected"), over(t.active, base)),
+                    ]
+                })
+                .collect();
+            let worst = |text: Hsla| {
+                rows.iter()
+                    .map(|(row, bg)| (contrast(over(text, *bg), *bg), row.clone()))
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+                    .unwrap()
+            };
+            let (subtle, row) = worst(t.subtle);
+            assert!(subtle >= 4.5, "{name} subtle {subtle:.2}:1 on {row}");
+            let (muted, row) = worst(t.muted_foreground);
+            assert!(muted >= 4.5, "{name} muted {muted:.2}:1 on {row}");
+            assert!(
+                muted > subtle,
+                "{name}: muted text reads weaker than subtle"
+            );
+            for (status, color) in [
+                ("added", t.added),
+                ("removed", t.removed),
+                ("modified", t.modified),
+                ("renamed", t.renamed),
+                ("conflict", t.conflict),
+                ("info", t.info),
+            ] {
+                for s in surfaces {
+                    let c = contrast(over(color, rgb(s)), rgb(s));
+                    assert!(c >= 4.5, "{name} {status} text {c:.2}:1");
+                }
+            }
+            for (status, fill) in [
+                ("added", t.added_fill),
+                ("removed", t.removed_fill),
+                ("modified", t.modified_fill),
+                ("renamed", t.renamed_fill),
+                ("conflict", t.conflict_fill),
+            ] {
+                let c = contrast(over(t.on_status, rgb(fill)), rgb(fill));
+                assert!(c >= 4.5, "{name} {status} pill {c:.2}:1");
+            }
+        }
     }
 }

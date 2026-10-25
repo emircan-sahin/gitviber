@@ -3,8 +3,8 @@
 The crates.io release of gpui-component 0.8.0, byte for byte, except the changes below and this
 file. Wired in through `[patch.crates-io]` in the workspace Cargo.toml (and excluded from the
 workspace). The whole patch: `diff -ru ~/.cargo/registry/src/index.crates.io-*/gpui-component-0.8.0
-vendor/gpui-component`. On a gpui-kit bump, re-apply it to the new version; nothing here is a bug
-fix to offer upstream, it is GitViber's density and cursors.
+vendor/gpui-component`. On a gpui-kit bump, re-apply it to the new version. Most of it is
+GitViber's density and cursors; the two screen-reader changes are fixes upstream could take.
 
 ## Why
 
@@ -38,6 +38,12 @@ size table once beats setting a size at ~360 call sites.
   upstream: the arrow), `notification.rs` (a toast with an `on_click`),
   `searchable_list/item.rs` (disabled: default, upstream not-allowed). Inputs keep the I-beam;
   resize handles already had theirs (gpui-base).
+
+- Screen readers (gpui's AccessKit tree; upstream already names and states Switch, Checkbox,
+  Radio, Tab, Toggle, List and Tree rows): `button/button.rs` `accessibility_name()`, an
+  icon-only button is named by its tooltip's text (upstream: no name, VoiceOver said "button");
+  `menu/menu_item.rs` + `menu/popup_menu.rs`, an item with a check mark is a
+  `MenuItemCheckBox`, toggled on (upstream: a plain item, the check mark unsaid).
 
 Untouched on purpose: icon sizes, tabs, toggles, lists' row padding, the switch's own sizes
 (28×16 at Small is the old app's).

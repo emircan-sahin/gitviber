@@ -22,6 +22,11 @@ gpui-test = { workspace = true, optional = true }
 gpui-snapshot-platform = { workspace = true, optional = true }
 image = { version = "=0.25.10", default-features = false, features = ["png"], optional = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Reduce transparency and its change notification (theme/display.rs); core's versions.
+objc2 = "=0.6.4"
+block2 = "=0.6.2"
+
 [features]
 # dev::run renders off screen into a PNG when GITVIBER_SNAPSHOT is set. For examples only:
 # enable it from a crate's [dev-dependencies], never in the app.

@@ -561,7 +561,8 @@ impl RenderOnce for Input {
         state.set_editor_style(
             gpui_base::input::InputEditorStyle {
                 foreground: cx.theme().foreground,
-                muted_foreground: cx.theme().muted_foreground,
+                // GitViber: placeholders apart from typed text (upstream: muted foreground).
+                muted_foreground: cx.theme().input_placeholder,
                 background: cx.theme().editor_background(),
                 border: cx.theme().border,
                 selection: cx.theme().selection,

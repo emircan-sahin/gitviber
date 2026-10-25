@@ -2,7 +2,7 @@ use crate::{ActiveTheme, Disableable, StyledExt, h_flex};
 use gpui::{
     AnyElement, App, ClickEvent, ElementId, InteractiveElement, IntoElement, MouseButton,
     ParentElement, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
-    StyleRefinement, Styled, Window, prelude::FluentBuilder as _,
+    StyleRefinement, Styled, Toggled, Window, prelude::FluentBuilder as _,
 };
 use gpui_base::TestSupportExt as _;
 use smallvec::SmallVec;
@@ -14,6 +14,7 @@ pub(crate) struct MenuItemElement {
     style: StyleRefinement,
     disabled: bool,
     selected: bool,
+    checked: bool,
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
     on_hover: Option<Box<dyn Fn(&bool, &mut Window, &mut App) + 'static>>,
     children: SmallVec<[AnyElement; 2]>,
@@ -29,6 +30,7 @@ impl MenuItemElement {
             style: StyleRefinement::default(),
             disabled: false,
             selected: false,
+            checked: false,
             on_click: None,
             on_hover: None,
             children: SmallVec::new(),
@@ -38,6 +40,12 @@ impl MenuItemElement {
     /// Set ListItem as the selected item style.
     pub(crate) fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    /// GitViber: the item shows a check mark, so a screen reader says it's checked.
+    pub(crate) fn checked(mut self, checked: bool) -> Self {
+        self.checked = checked;
         self
     }
 
@@ -94,7 +102,12 @@ impl RenderOnce for MenuItemElement {
         h_flex()
             .id(self.id)
             .test_support()
-            .role(Role::MenuItem)
+            .role(if self.checked {
+                Role::MenuItemCheckBox
+            } else {
+                Role::MenuItem
+            })
+            .when(self.checked, |this| this.aria_toggled(Toggled::True))
             .when_some(self.aria_label, |this, label| this.aria_label(label))
             .aria_selected(self.selected)
             .gap_x_1()
@@ -152,5 +165,62 @@ mod tests {
         let item = MenuItemElement::new("open").aria_label("Open");
 
         assert_eq!(item.aria_label, Some("Open".into()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use gpui::{Context, Element as _, Render, TestAppContext, accesskit, canvas};
+
+    use super::*;
+
+    #[gpui::test]
+    fn a_checked_item_is_announced_checked(cx: &mut TestAppContext) {
+        type Node = (Option<Role>, accesskit::Node);
+        type Captured = Arc<Mutex<Vec<Node>>>;
+
+        struct Probe(Captured);
+
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let captured = self.0.clone();
+                canvas(
+                    move |_, window, cx| {
+                        let mut info = |item: MenuItemElement| {
+                            let element = item.render(window, cx).into_element();
+                            let mut node = accesskit::Node::new(Role::MenuItem);
+                            element.write_a11y_info(&mut node);
+                            (element.a11y_role(), node)
+                        };
+                        let plain = info(MenuItemElement::new("plain").aria_label("Copy"));
+                        let checked = info(
+                            MenuItemElement::new("checked")
+                                .aria_label("Wrap")
+                                .checked(true),
+                        );
+                        *captured.lock().unwrap() = vec![plain, checked];
+                    },
+                    |_, _, _, _| {},
+                )
+            }
+        }
+
+        cx.update(crate::init);
+        let captured: Captured = Arc::default();
+        let (_, cx) = cx.add_window_view({
+            let captured = captured.clone();
+            move |_, _| Probe(captured)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let nodes = captured.lock().unwrap();
+        let (plain_role, plain) = &nodes[0];
+        let (checked_role, checked) = &nodes[1];
+        assert_eq!(*plain_role, Some(Role::MenuItem));
+        assert_eq!(plain.toggled(), None);
+        assert_eq!(*checked_role, Some(Role::MenuItemCheckBox));
+        assert_eq!(checked.toggled(), Some(Toggled::True));
+        assert_eq!(checked.label(), Some("Wrap"));
     }
 }

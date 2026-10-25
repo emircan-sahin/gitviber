@@ -560,6 +560,10 @@ pub struct ThemeConfigColors {
     /// GitViber: the ring of an unchecked switch's track.
     #[serde(rename = "switch.border")]
     pub switch_border: Option<SharedString>,
+    /// GitViber: an input's placeholder, and an editor's other quiet text (line numbers,
+    /// whitespace marks).
+    #[serde(rename = "input.placeholder")]
+    pub input_placeholder: Option<SharedString>,
     /// Tab background color.
     #[serde(rename = "tab.background")]
     pub tab: Option<SharedString>,
@@ -1001,6 +1005,7 @@ impl ThemeColor {
         apply_background_color!(switch, fallback = tokens.secondary_active);
         apply_background_color!(switch_thumb, fallback = tokens.background);
         apply_color!(switch_border, fallback = gpui::transparent_black());
+        apply_color!(input_placeholder, fallback = self.muted_foreground);
         apply_background_color!(tab, fallback = tokens.background);
         apply_background_color!(tab_active, fallback = tokens.background);
         apply_color!(tab_active_foreground, fallback = self.foreground);

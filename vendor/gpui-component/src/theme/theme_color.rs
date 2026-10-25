@@ -262,6 +262,9 @@ pub struct ThemeColor {
     /// GitViber: the 1px ring of an unchecked switch's track, which alone can sit close to the
     /// surface behind it (a light gray track on white). Transparent unless a theme sets it.
     pub switch_border: Hsla,
+    /// GitViber: an input's placeholder, and an editor's other quiet text (line numbers,
+    /// whitespace marks). The muted foreground unless a theme sets it.
+    pub input_placeholder: Hsla,
     /// Tab background color.
     pub tab: Hsla,
     /// Tab active background color.
@@ -508,6 +511,7 @@ define_theme_tokens! {
     switch,
     switch_thumb,
     switch_border,
+    input_placeholder,
     tab,
     tab_active,
     tab_active_foreground,

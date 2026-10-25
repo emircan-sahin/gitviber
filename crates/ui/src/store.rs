@@ -77,17 +77,35 @@ pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     written
 }
 
-/// Moves an unreadable file aside to `<name>.bad-<unix seconds>`, for the user to look at.
-pub fn quarantine(path: &Path) -> Option<PathBuf> {
+/// `<name>.bad-<unix seconds>` beside `path`.
+fn aside(path: &Path) -> Option<PathBuf> {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or_default();
     let name = path.file_name()?.to_string_lossy().into_owned();
-    let aside = path.with_file_name(format!("{name}.bad-{secs}"));
+    Some(path.with_file_name(format!("{name}.bad-{secs}")))
+}
+
+/// Moves an unreadable file aside to `<name>.bad-<unix seconds>`, for the user to look at.
+pub fn quarantine(path: &Path) -> Option<PathBuf> {
+    let aside = aside(path)?;
     std::fs::rename(path, &aside).ok()?;
     eprintln!(
         "gitviber: {} couldn't be read; it's kept as {}",
+        path.display(),
+        aside.display()
+    );
+    Some(aside)
+}
+
+/// Copies a file that read only in part to `<name>.bad-<unix seconds>`, before it's saved
+/// without what didn't read.
+pub fn keep_copy(path: &Path) -> Option<PathBuf> {
+    let aside = aside(path)?;
+    std::fs::copy(path, &aside).ok()?;
+    eprintln!(
+        "gitviber: part of {} couldn't be read and is left out; the file as it was is kept as {}",
         path.display(),
         aside.display()
     );
@@ -285,10 +303,7 @@ mod tests {
     use super::*;
 
     fn temp(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-store-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::test_support::temp_dir(&format!("store-{name}"))
     }
 
     #[test]

@@ -395,6 +395,19 @@ impl Button {
         self
     }
 
+    /// The name a screen reader announces: the [`accessibility_label`](Self::accessibility_label),
+    /// else the label. GitViber: else the tooltip's text, on a button with nothing else to say
+    /// what it does (an icon-only one); children are read as they are.
+    pub fn accessibility_name(&self) -> Option<SharedString> {
+        self.accessibility_label
+            .clone()
+            .or_else(|| self.label.clone())
+            .or_else(|| {
+                let (tooltip, _) = self.tooltip.as_ref().filter(|_| self.children.is_empty())?;
+                Some(tooltip.clone())
+            })
+    }
+
     /// Set the icon of the button, if the Button have no label, the button well in Icon Button mode.
     pub fn icon(mut self, icon: impl Into<ButtonIcon>) -> Self {
         self.icon = Some(icon.into());
@@ -615,6 +628,9 @@ impl RenderOnce for Button {
         let loading = self.loading;
         let tooltip_placement = self.tooltip_placement;
         let tooltip_show_delay = self.tooltip_show_delay;
+        // The explicit name wins: it exists precisely for the cases where the
+        // visible content is not what a listener needs to hear.
+        let accessibility_label = self.accessibility_name();
         let hover_group = self.hover_group;
         let hover_group_held = self.hover_group_held;
         let mut base = self.base;
@@ -758,12 +774,6 @@ impl RenderOnce for Button {
             .line_height(relative(1.25))
             .refine_style(&instance_style);
 
-        // The explicit name wins: it exists precisely for the cases where the
-        // visible content is not what a listener needs to hear.
-        let accessibility_label = self
-            .accessibility_label
-            .clone()
-            .or_else(|| self.label.clone());
         let content = h_flex()
             .id("label")
             .size_full()

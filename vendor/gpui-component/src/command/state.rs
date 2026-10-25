@@ -173,7 +173,9 @@ impl CommandState {
 
     /// Apply the presentation of the latest [`crate::command::Command`] render.
     pub(crate) fn set_options(&mut self, options: CommandOptions) {
-        if self.options.style.text != options.style.text {
+        if self.options.style.text != options.style.text
+            || self.options.row_style != options.row_style
+        {
             self.needs_measure = true;
         }
         self.options = options;
@@ -732,9 +734,13 @@ impl CommandState {
             .py_1p5()
             .text_sm()
             .rounded(self.item_radius(window, cx))
+            .refine_style(&self.options.row_style)
             .when(selected, |this| {
-                this.bg(cx.theme().accent)
-                    .text_color(cx.theme().accent_foreground)
+                let (background, foreground) = self
+                    .options
+                    .selected_colors
+                    .unwrap_or((cx.theme().accent, cx.theme().accent_foreground));
+                this.bg(background).text_color(foreground)
             })
     }
 

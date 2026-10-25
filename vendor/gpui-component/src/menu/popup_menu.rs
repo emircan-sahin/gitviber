@@ -1251,6 +1251,7 @@ impl PopupMenu {
             .rounded(radius)
             .items_center()
             .selected(selected)
+            .checked(item.is_checked())
             .on_hover(cx.listener(move |this, hovered, window, cx| {
                 if *hovered {
                     // Pointing elsewhere closes the open submenu; take back

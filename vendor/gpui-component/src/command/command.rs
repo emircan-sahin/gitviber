@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, DefiniteLength, Entity, IntoElement, RenderOnce, SharedString,
+    AnyElement, App, DefiniteLength, Entity, Hsla, IntoElement, RenderOnce, SharedString,
     StyleRefinement, Styled, Window, rems,
 };
 
@@ -24,6 +24,9 @@ pub(crate) struct CommandOptions {
     pub(crate) bordered: bool,
     pub(crate) header: Option<Rc<CommandSlot>>,
     pub(crate) footer: Option<Rc<CommandSlot>>,
+    /// GitViber: the current row's background and text, and every item row's frame.
+    pub(crate) selected_colors: Option<(Hsla, Hsla)>,
+    pub(crate) row_style: StyleRefinement,
 }
 
 impl Default for CommandOptions {
@@ -37,6 +40,8 @@ impl Default for CommandOptions {
             bordered: true,
             header: None,
             footer: None,
+            selected_colors: None,
+            row_style: StyleRefinement::default(),
         }
     }
 }
@@ -212,6 +217,24 @@ impl Command {
     /// such as a [`crate::Dialog`].
     pub fn bordered(mut self, bordered: bool) -> Self {
         self.options.bordered = bordered;
+        self
+    }
+
+    /// GitViber: the current row's background and text, default: the theme's accent and accent
+    /// foreground. A custom child inherits the text color.
+    pub fn selected_colors(
+        mut self,
+        background: impl Into<Hsla>,
+        foreground: impl Into<Hsla>,
+    ) -> Self {
+        self.options.selected_colors = Some((background.into(), foreground.into()));
+        self
+    }
+
+    /// GitViber: refines every item row's frame (padding, text size, radius). Rows are measured
+    /// with it, so the list keeps its height right.
+    pub fn row_style(mut self, style: StyleRefinement) -> Self {
+        self.options.row_style = style;
         self
     }
 
