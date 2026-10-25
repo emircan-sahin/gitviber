@@ -699,6 +699,7 @@ impl BranchPicker {
                     cx.notify();
                 }
             }))
+            .cursor_pointer()
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.index = Some(i);
                 this.choose(window, cx);

@@ -164,6 +164,7 @@ impl Toast {
                                 .id("toast-details-toggle")
                                 .text_size(rems(0.6875))
                                 .text_color(t.subtle)
+                                .cursor_pointer()
                                 .hover(|s| s.text_color(t.foreground))
                                 .child(if open { "▾ Details" } else { "▸ Details" })
                                 .on_click(move |_, _, cx| {

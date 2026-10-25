@@ -2825,6 +2825,7 @@ impl ChangesPanel {
                         .tooltip(move |window, cx| {
                             gpui_kit::component::tooltip::Tooltip::new(check_tip).build(window, cx)
                         })
+                        .cursor_pointer()
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
                             let _ = &sel_check;
