@@ -160,7 +160,9 @@ impl ImageCompare {
         self.asked = [None, None];
         self._crop = Task::ready(());
         for crop in self.crops.iter_mut().filter_map(Option::take) {
-            cx.drop_image(crop.image, None);
+            // Dropped once this update is over: the window it runs in is out of the app's list
+            // until then, and would keep the picture.
+            cx.defer(move |cx| cx.drop_image(crop.image, None));
         }
     }
 
@@ -346,7 +348,7 @@ impl ImageCompare {
                         _ => None,
                     };
                     if let Some(old) = old {
-                        cx.drop_image(old, None);
+                        cx.defer(move |cx| cx.drop_image(old, None));
                     }
                     cx.notify();
                 })
@@ -399,7 +401,7 @@ impl ImageCompare {
                     if let Side::Ready(v) = &mut self.sides[i]
                         && let Some(old) = v.image.replace(image)
                     {
-                        cx.drop_image(old, None);
+                        cx.defer(move |cx| cx.drop_image(old, None));
                     }
                     shown = true;
                 }
@@ -467,7 +469,7 @@ impl ImageCompare {
             if w.is_none()
                 && let Some(crop) = self.crops[i].take()
             {
-                cx.drop_image(crop.image, None);
+                cx.defer(move |cx| cx.drop_image(crop.image, None));
             }
         }
         let keys = want.map(|w| w.map(|(key, ..)| key));
@@ -523,7 +525,7 @@ impl ImageCompare {
             this.update(cx, |this, cx| {
                 for (i, crop) in drawn {
                     if let Some(old) = this.crops[i].replace(crop) {
-                        cx.drop_image(old.image, None);
+                        cx.defer(move |cx| cx.drop_image(old.image, None));
                     }
                 }
                 cx.notify();

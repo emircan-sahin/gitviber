@@ -19,7 +19,7 @@ use crate::paint::{self, Metrics};
 use crate::source::{Compare, DiffSource};
 use crate::style::{DiffOptions, DiffStyle, ImageMode, Layout, Whitespace};
 use gitviber_core::Core;
-use gitviber_ui::keymap::editor;
+use gitviber_ui::keymap::{editor, find as find_keys};
 use gitviber_ui::widgets::{Toggle as _, segmented};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::input::Rope;
@@ -31,7 +31,7 @@ use gpui_kit::component::{Icon, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Bounds, ClipboardItem, Context, Entity, EventEmitter,
     FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, ParentElement as _, Pixels, Render, SharedString,
+    MouseMoveEvent, ParentElement as _, Pixels, Render, ScrollHandle, SharedString,
     StatefulInteractiveElement as _, Styled as _, StyledText, Subscription, Task, WeakEntity,
     Window, canvas, div, prelude::FluentBuilder as _, px,
 };
@@ -222,6 +222,8 @@ pub struct DiffView {
     web: Option<Option<String>>,
     /// Where the lines are drawn, for the column a click lands on.
     body_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// The header bar's sideways scroll in a narrow center, for the fade at its end.
+    header_scroll: ScrollHandle,
     /// The overview's marks; None once the lines, their heights or find's matches change.
     overview: Option<Rc<Marks>>,
     _edit: Option<Subscription>,
@@ -304,6 +306,7 @@ impl DiffView {
             preview_stale: true,
             web: None,
             body_bounds: Rc::default(),
+            header_scroll: ScrollHandle::new(),
             overview: None,
             _edit: None,
             _load: Task::ready(()),
@@ -401,6 +404,16 @@ impl DiffView {
     pub fn set_notes(&mut self, notes: bool, cx: &mut Context<Self>) {
         self.notes = notes;
         cx.notify();
+    }
+
+    /// ⌘G / ⇧⌘G: the next or previous match of an open find. With none open the key goes on,
+    /// so ⇧⌘G still focuses the Git panel.
+    fn find_key(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if self.find.is_some() {
+            self.find_step(forward, cx);
+        } else {
+            cx.propagate();
+        }
     }
 
     /// Lines added and removed, once loaded.
@@ -1677,7 +1690,10 @@ impl DiffView {
             .h(m.line)
             .line_height(m.line)
             .font_family(style.font_family.clone())
+            // The line numbers' and signs' weight, as the code's: unset, they took the UI's.
+            .font_weight(crate::style::code_weight(cx))
             .text_size(style.font_size)
+            .cursor_text()
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, e: &MouseDownEvent, window, cx| {
@@ -1762,6 +1778,7 @@ impl DiffView {
                 .flex_1()
                 .min_w_0()
                 .h_full()
+                .cursor_text()
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, e: &MouseDownEvent, window, cx| {
@@ -1802,6 +1819,8 @@ impl DiffView {
             .h(m.line)
             .line_height(m.line)
             .font_family(style.font_family.clone())
+            // The line numbers' and signs' weight, as the code's: unset, they took the UI's.
+            .font_weight(crate::style::code_weight(cx))
             .text_size(style.font_size)
             .child(left)
             .child(right)
@@ -2012,11 +2031,21 @@ impl DiffView {
         };
         let svg_controls = self.svg_controls(style, cx);
         let preview_switch = self.preview_switch(cx);
-        h_flex()
+        // In a narrow center the folder gives way first, then the bar scrolls sideways (the
+        // wheel too): the file's name stays whole and the buttons never spill over the code.
+        let gap = px(8.);
+        let (dir, name) = match self.source.path.rsplit_once('/') {
+            Some((d, n)) => (Some(format!("{d}/")), n.to_string()),
+            None => (None, self.source.path.clone()),
+        };
+        let bar = h_flex()
+            .id("diff-header")
+            .overflow_x_scroll()
+            .track_scroll(&self.header_scroll)
             .h(px(34.))
             .flex_none()
             .w_full()
-            .gap_2()
+            .gap(gap)
             .pl_3()
             .pr_2()
             .border_b_1()
@@ -2024,7 +2053,16 @@ impl DiffView {
             .bg(c.background)
             .text_size(style.ui_font_size)
             .text_color(c.foreground)
-            .child(paint::path_label(&self.source.path, style))
+            .when_some(dir.clone(), |el, dir| {
+                el.child(div().min_w_0().truncate().text_color(c.subtle).child(dir))
+            })
+            // Its own item, so it can't shrink; flush against its folder, past the bar's gap.
+            .child(
+                div()
+                    .flex_none()
+                    .when(dir.is_some(), |d| d.ml(-gap))
+                    .child(name),
+            )
             .child(
                 icon_button("copy-path", Lucide::Copy, "Copy path")
                     .on_click(cx.listener(|this, _, window, cx| this.copy_path(window, cx))),
@@ -2143,7 +2181,13 @@ impl DiffView {
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(DiffEvent::ToggleViewed))),
                 )
             })
-            .children(preview_switch)
+            .children(preview_switch);
+        div()
+            .relative()
+            .flex_none()
+            .w_full()
+            .child(bar)
+            .child(more_right(self.header_scroll.clone(), c.background))
             .into_any_element()
     }
 
@@ -2159,6 +2203,32 @@ impl DiffView {
             .child(text)
             .into_any_element()
     }
+}
+
+/// A fade over the header's end while more of it is to the right. Painted, not laid out: the
+/// bar's scroll is only known once it's laid out, in this same frame.
+fn more_right(scroll: ScrollHandle, bg: gpui_kit::Hsla) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            if scroll.max_offset().x + scroll.offset().x > px(1.) {
+                window.paint_quad(gpui_kit::fill(
+                    bounds,
+                    gpui_kit::linear_gradient(
+                        90.,
+                        gpui_kit::linear_color_stop(bg.opacity(0.), 0.),
+                        gpui_kit::linear_color_stop(bg, 1.),
+                    ),
+                ));
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .right_0()
+    // Clear of the bar's bottom border.
+    .bottom(px(1.))
+    .w(px(32.))
 }
 
 fn icon_button(id: &'static str, icon: Lucide, tip: &'static str) -> Button {
@@ -2407,6 +2477,8 @@ impl Render for DiffView {
             .on_action(cx.listener(|this, _: &SelectDown, _, cx| this.select_step(true, cx)))
             .map(|el| on_scroll_keys(el, Self::scroll_key, cx))
             .on_action(cx.listener(|this, _: &editor::Find, window, cx| this.open_find(window, cx)))
+            .on_action(cx.listener(|this, _: &find_keys::Next, _, cx| this.find_key(true, cx)))
+            .on_action(cx.listener(|this, _: &find_keys::Prev, _, cx| this.find_key(false, cx)))
             .on_action(cx.listener(|this, _: &editor::CopyGitHubLink, window, cx| {
                 this.github_link(false, window, cx)
             }))
@@ -2462,5 +2534,60 @@ mod tests {
             v.step_change(true, cx);
             assert_eq!(v.picked(false).map(|p| p.added.len()), Some(30));
         });
+    }
+
+    /// Whatever holds the diff: it sees the find keys the diff lets go on.
+    struct Host {
+        view: Entity<DiffView>,
+        went_on: Rc<Cell<usize>>,
+    }
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let went_on = self.went_on.clone();
+            div()
+                .size_full()
+                .on_action(move |_: &find_keys::Prev, _, _| went_on.set(went_on.get() + 1))
+                .child(self.view.clone())
+        }
+    }
+
+    #[gpui_kit::test]
+    fn find_keys_step_an_open_find_and_go_on_without_one(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            crate::set_core(Arc::new(Core::new(Arc::new(|_| {}))), cx);
+        });
+        let source = DiffSource::new(Compare::Unstaged, "f.txt");
+        let data = DiffData::from_texts("a\n", "x1\nb\nx2\nc\nx3\n", &source);
+        let went_on = Rc::new(Cell::new(0));
+        let mut view = None;
+        let handle = cx.add_window(|window, cx| {
+            let v = cx.new(|cx| DiffView::with_data(source.clone(), data, cx));
+            view = Some(v.clone());
+            let went_on = went_on.clone();
+            let host = cx.new(|_| Host { view: v, went_on });
+            gpui_kit::base::Root::new(host, window, cx)
+        });
+        let view = view.unwrap();
+        let cx = gpui_kit::VisualTestContext::from_window(*handle, cx).into_mut();
+        cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+        cx.run_until_parked();
+        cx.dispatch_action(find_keys::Prev);
+        assert_eq!(went_on.get(), 1, "with no find open, ⇧⌘G goes on");
+        cx.dispatch_action(editor::Find);
+        cx.run_until_parked();
+        cx.update(|window, cx| view.update(cx, |v, cx| v.set_find_query("x", window, cx)));
+        cx.run_until_parked();
+        let current = |cx: &mut gpui_kit::VisualTestContext| {
+            view.read_with(cx, |v, _| v.find_state())
+                .map(|(at, n, _)| (at, n))
+        };
+        assert_eq!(current(cx), Some((0, 3)));
+        cx.dispatch_action(find_keys::Next);
+        assert_eq!(current(cx), Some((1, 3)));
+        cx.dispatch_action(find_keys::Prev);
+        cx.dispatch_action(find_keys::Prev);
+        assert_eq!(current(cx), Some((2, 3)), "round the first match");
+        assert_eq!(went_on.get(), 1, "an open find takes them");
     }
 }

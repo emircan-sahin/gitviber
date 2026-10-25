@@ -269,13 +269,15 @@ impl ImageCompare {
             if let Side::Ready(old) = std::mem::replace(&mut self.sides[i], side)
                 && let Some(image) = old.image
             {
-                cx.drop_image(image, None);
+                // Dropped once this update is over: the window it runs in is out of the app's list
+                // until then, and would keep the picture.
+                cx.defer(move |cx| cx.drop_image(image, None));
             }
             self.sized[i] = None;
             self._sized[i] = Task::ready(());
             self.players[i] = None;
             if let Some(crop) = self.crops[i].take() {
-                cx.drop_image(crop.image, None);
+                cx.defer(move |cx| cx.drop_image(crop.image, None));
             }
             self.asked[i] = None;
         }
@@ -288,7 +290,7 @@ impl ImageCompare {
             if let Side::Ready(v) = std::mem::replace(side, Side::Loading)
                 && let Some(image) = v.image
             {
-                cx.drop_image(image, None);
+                cx.defer(move |cx| cx.drop_image(image, None));
             }
         }
         self.drop_crops(cx);

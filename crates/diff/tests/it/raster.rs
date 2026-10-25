@@ -28,12 +28,7 @@ const BLUE: [u8; 4] = [0, 0, 255, 255];
 
 /// A repo whose a.png changed from `before` to `after`, not staged.
 fn repo(name: &str, before: &[u8], after: &[u8]) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "gitviber-diff-raster-{name}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = gitviber_ui::test_support::temp_dir(&format!("diff-raster-{name}"));
     git(&dir, &["init", "-q", "-b", "main"]);
     git(&dir, &["config", "user.name", "Test"]);
     git(&dir, &["config", "user.email", "test@example.com"]);

@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::model::indent::Shown;
+use crate::permalink::permalink_url;
 use gitviber_core::definitions::{self, Location};
 use gitviber_core::{api, git, github};
 use gitviber_ui::workspace::{Selection, Toast, Workspace};
@@ -67,38 +68,6 @@ pub(crate) fn github_side(source: &DiffSource, side: Side) -> Option<GitHubSide>
         }
         _ => None,
     }
-}
-
-/// GitHub's page of `path` at `sha`, to `lines` (`#L10-L24`) if any.
-pub(crate) fn permalink_url(
-    web: &str,
-    sha: &str,
-    path: &str,
-    tree: bool,
-    lines: Option<(u32, u32)>,
-) -> String {
-    let at: String = path
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .map(|seg| {
-            let mut out = String::from("/");
-            for b in seg.bytes() {
-                if b.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&b) {
-                    out.push(b as char);
-                } else {
-                    out.push_str(&format!("%{b:02X}"));
-                }
-            }
-            out
-        })
-        .collect();
-    let anchor = match lines {
-        Some((a, b)) if a == b => format!("#L{a}"),
-        Some((a, b)) => format!("#L{a}-L{b}"),
-        None => String::new(),
-    };
-    let kind = if tree { "tree" } else { "blob" };
-    format!("{web}/{kind}/{sha}{at}{anchor}")
 }
 
 /// origin's page on GitHub; None off github.com.
@@ -554,6 +523,7 @@ impl DiffView {
         let p = self.places.as_ref()?;
         let c = &style.colors;
         let features = crate::style::code_features(cx);
+        let weight = crate::style::code_weight(cx);
         let (path, _) = definition_side(&self.source, p.side);
         let side = p.side;
         let peeking = p.peek.as_ref().map(|k| k.at);
@@ -635,6 +605,7 @@ impl DiffView {
                         .bg(c.background)
                         .cursor_pointer()
                         .font_family(style.font_family.clone())
+                        .font_weight(weight)
                         .font_features(features)
                         .text_size(style.font_size)
                         .line_height(self.line)
@@ -700,22 +671,6 @@ mod tests {
     const WEB: &str = "https://github.com/o/r";
 
     #[test]
-    fn links_to_a_file_its_lines_or_a_folder() {
-        assert_eq!(
-            permalink_url(WEB, "abc", "src/a b.rs", false, Some((3, 9))),
-            "https://github.com/o/r/blob/abc/src/a%20b.rs#L3-L9"
-        );
-        assert_eq!(
-            permalink_url(WEB, "abc", "x.rs", false, Some((4, 4))),
-            "https://github.com/o/r/blob/abc/x.rs#L4"
-        );
-        assert_eq!(
-            permalink_url(WEB, "abc", "d", true, None),
-            "https://github.com/o/r/tree/abc/d"
-        );
-    }
-
-    #[test]
     fn which_sides_github_has() {
         let file = |status: &str| crate::FileFacts {
             status: status.into(),
@@ -759,9 +714,7 @@ mod tests {
 
     #[test]
     fn a_commit_links_once_origin_has_it() {
-        let dir = std::env::temp_dir().join(format!("gitviber-diff-links-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = gitviber_ui::test_support::temp_dir("diff-links");
         git(&dir, &["init", "-q", "-b", "main"]);
         git(&dir, &["config", "user.name", "Test"]);
         git(&dir, &["config", "user.email", "test@example.com"]);

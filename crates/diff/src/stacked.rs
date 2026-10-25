@@ -1105,6 +1105,7 @@ impl StackedDiff {
                     .h(m.line)
                     .line_height(m.line)
                     .font_family(style.font_family.clone())
+                    .font_weight(m.font.weight)
                     .text_size(style.font_size)
                     .bg(t.line)
                     .child(paint::number(

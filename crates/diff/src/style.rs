@@ -3,7 +3,9 @@
 //! and the app observes them to save the settings.
 
 use gpui_kit::component::highlighter::HighlightTheme;
-use gpui_kit::{App, Font, FontFeatures, Global, Hsla, Pixels, Rgba, SharedString, font, px};
+use gpui_kit::{
+    App, Font, FontFeatures, FontWeight, Global, Hsla, Pixels, Rgba, SharedString, font, px,
+};
 use std::sync::Arc;
 
 /// The diff's colors: the old app's tokens of the same names.
@@ -154,11 +156,12 @@ impl DiffStyle {
         (self.font_size * self.line_height).round()
     }
 
-    /// The code font, with ligatures as Settings → Editor has them (off: `->` and `!=` draw as
-    /// their characters).
+    /// The code font at Settings → Editor's weight, with ligatures as it has them (off: `->` and
+    /// `!=` draw as their characters).
     pub fn code_font(&self, cx: &App) -> Font {
         Font {
             features: code_features(cx),
+            weight: code_weight(cx),
             ..font(self.font_family.clone())
         }
     }
@@ -185,6 +188,12 @@ pub(crate) fn code_features(cx: &App) -> FontFeatures {
     } else {
         FontFeatures::disable_ligatures()
     }
+}
+
+/// Settings → Editor's font weight, as the theme has it.
+pub(crate) fn code_weight(cx: &App) -> FontWeight {
+    cx.try_global::<gitviber_ui::AppTheme>()
+        .map_or(FontWeight::NORMAL, |t| t.fonts.code_weight)
 }
 
 fn default_style() -> &'static DiffStyle {
@@ -272,5 +281,23 @@ impl DiffOptions {
         let mut o = DiffOptions::get(cx);
         f(&mut o);
         DiffOptions::set(o, cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gitviber_ui::ActiveAppTheme as _;
+
+    #[gpui_kit::test]
+    fn the_code_font_draws_at_the_editors_weight(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            // Without the app's theme (a diff on its own), the regular weight.
+            assert_eq!(DiffStyle::dark().code_font(cx).weight, FontWeight::NORMAL);
+            gitviber_ui::init(cx);
+            let want = cx.app_theme().fonts.code_weight;
+            assert_ne!(want, FontWeight::NORMAL, "the setting's default is 500");
+            assert_eq!(DiffStyle::dark().code_font(cx).weight, want);
+        });
     }
 }

@@ -26,9 +26,7 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 fn repo() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("gitviber-diff-stacked-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = gitviber_ui::test_support::temp_dir("diff-stacked");
     git(&dir, &["init", "-q", "-b", "main"]);
     git(&dir, &["config", "user.name", "Test"]);
     git(&dir, &["config", "user.email", "test@example.com"]);
