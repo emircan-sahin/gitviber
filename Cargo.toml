@@ -115,3 +115,51 @@ codegen-units = 1
 lto = true
 opt-level = 3
 strip = true
+
+# Built for size: code that runs seldom and never on a hot path (terminal, diff, code view, lists,
+# git): diagrams and math, rare image formats (weezl stays at 3 for GIF), HTML inside markdown,
+# HTTPS (network bound; ring's crypto is assembly) and the updater.
+[profile.release.package.mermaid-rs-renderer]
+opt-level = "s"
+[profile.release.package.ratex-font]
+opt-level = "s"
+[profile.release.package.ratex-font-loader]
+opt-level = "s"
+[profile.release.package.ratex-layout]
+opt-level = "s"
+[profile.release.package.ratex-lexer]
+opt-level = "s"
+[profile.release.package.ratex-parser]
+opt-level = "s"
+[profile.release.package.ratex-render]
+opt-level = "s"
+[profile.release.package.ratex-types]
+opt-level = "s"
+[profile.release.package.ratex-unicode-font]
+opt-level = "s"
+[profile.release.package.exr]
+opt-level = "s"
+[profile.release.package.tiff]
+opt-level = "s"
+[profile.release.package.fax]
+opt-level = "s"
+[profile.release.package.qoi]
+opt-level = "s"
+[profile.release.package.html5ever]
+opt-level = "s"
+[profile.release.package.markup5ever]
+opt-level = "s"
+[profile.release.package.markup5ever_rcdom]
+opt-level = "s"
+[profile.release.package.rustls]
+opt-level = "s"
+[profile.release.package.rustls-webpki]
+opt-level = "s"
+[profile.release.package.ureq]
+opt-level = "s"
+[profile.release.package.ureq-proto]
+opt-level = "s"
+[profile.release.package.http]
+opt-level = "s"
+[profile.release.package.gitviber-updater]
+opt-level = "s"

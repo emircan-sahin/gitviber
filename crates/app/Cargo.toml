@@ -34,11 +34,16 @@ serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
 futures.workspace = true
+# The license list, deflated at build time (build.rs). Already in the tree through png and exr.
+miniz_oxide = "=0.8.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The settings window's NSWindow, kept out of full screen. Both already in the tree (browser).
 raw-window-handle = "=0.6.2"
 objc2 = "=0.6.4"
+
+[build-dependencies]
+miniz_oxide = "=0.8.9"
 
 [dev-dependencies]
 # Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.

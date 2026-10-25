@@ -143,7 +143,8 @@ dmg() {
   # ditto keeps the signature's extended attributes and the stapled ticket.
   ditto "$APP" "$stage/GitViber.app"
   ln -s /Applications "$stage/Applications"
-  hdiutil create -volname GitViber -srcfolder "$stage" -fs HFS+ -format UDZO -imagekey zlib-level=9 -ov "$dmg"
+  # LZMA (ULMO, macOS 10.15+): 19.5 MB for arm64 where zlib gave 29.3 MB.
+  hdiutil create -volname GitViber -srcfolder "$stage" -fs HFS+ -format ULMO -ov "$dmg"
   rm -rf "$stage"
   local identity=${APPLE_SIGNING_IDENTITY:--}
   if [ "$identity" != - ]; then

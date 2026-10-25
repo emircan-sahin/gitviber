@@ -2290,6 +2290,7 @@ dependencies = [
  "gitviber-updater",
  "gpui-kit",
  "gpui-pre",
+ "miniz_oxide 0.8.9",
  "objc2 0.6.4",
  "raw-window-handle",
  "serde",

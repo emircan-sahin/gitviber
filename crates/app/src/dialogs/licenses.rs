@@ -19,8 +19,8 @@ use gpui_kit::{
     Subscription, Window, div, prelude::FluentBuilder as _, px, rems, uniform_list,
 };
 
-/// The generated list, in the binary: read-only pages, mapped as they're read.
-const JSON: &str = include_str!("../../licenses/third-party-licenses.json");
+/// The generated list, deflated by build.rs: 0.1 MB in the binary instead of 1.3.
+const JSON_Z: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/licenses.json.z"));
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Package {
@@ -44,8 +44,12 @@ pub struct Licenses {
     pub texts: Vec<String>,
 }
 
+/// The inflated JSON lives only while it's parsed.
 pub fn load() -> Licenses {
-    serde_json::from_str(JSON).unwrap_or_default()
+    miniz_oxide::inflate::decompress_to_vec_zlib(JSON_Z)
+        .ok()
+        .and_then(|json| serde_json::from_slice(&json).ok())
+        .unwrap_or_default()
 }
 
 /// The packages a filter keeps: by name or license, ignoring case.
@@ -543,6 +547,7 @@ mod tests {
     #[test]
     fn the_list_reads_and_filters() {
         let list = load();
+        assert!(!list.packages.is_empty(), "the deflated list didn't read");
         for p in &list.packages {
             assert!(p.texts.iter().all(|i| *i < list.texts.len()), "{}", p.name);
         }
