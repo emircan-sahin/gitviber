@@ -486,7 +486,7 @@ impl Render for TopPart {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         match self.part {
             Part::Activity => activity(&self.state, cx),
-            Part::Undo => undo_controls(&self.state, window, cx),
+            Part::Undo => then_divider(undo_controls(&self.state, window, cx), cx),
             Part::Fetch => {
                 let state = self.state.clone();
                 let busy = state.read(cx).busy().is_some();
@@ -500,9 +500,22 @@ impl Render for TopPart {
                     .into_any_element()
             }
             Part::Pull => pull_button(&self.state, cx),
-            Part::Push => push_button(&self.state, cx),
+            Part::Push => then_divider(push_button(&self.state, cx), cx),
         }
     }
+}
+
+/// A group's end: undo and redo | fetch, pull and push | what follows. The bar's own divider's
+/// look, with the bar's gap kept between the two.
+fn then_divider(group: AnyElement, cx: &App) -> AnyElement {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap_1()
+        .child(group)
+        .child(div().w(px(1.)).h(px(18.)).mx_1().bg(cx.app_theme().border))
+        .into_any_element()
 }
 
 fn tip(title: &str, command: &str, cx: &App) -> String {
