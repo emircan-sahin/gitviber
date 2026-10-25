@@ -68,6 +68,12 @@ futures = "=0.3.34"
 # lines (review notes).
 [patch.crates-io]
 gpui-base = { path = "vendor/gpui-base" }
+# gpui-component with the old app's control sizes and overlay text (vendor/gpui-component/PATCH.md).
+gpui-component = { path = "vendor/gpui-component" }
+# gpui's Metal renderer and macOS window, giving GPU memory back: path textures sized to the
+# paths, a hidden window's drawables freed, a smaller first color atlas (their PATCH.md).
+gpui-pre-apple = { path = "vendor/gpui-pre-apple" }
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
 
 # Line tables keep file:line in backtraces and panics; full debug info only slows the link.
 [profile.dev]
@@ -76,9 +82,15 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
-# The vendored gpui-base is a path package, so cargo would build it incrementally like our own
-# crates; we don't edit it day to day, and its incremental data ran ~400 MB a build variant.
+# The vendored crates are path packages, so cargo would build them incrementally like our own
+# crates; we don't edit them day to day, and gpui-base's incremental data ran ~400 MB a build variant.
 [profile.dev.package.gpui-base]
+incremental = false
+[profile.dev.package.gpui-component]
+incremental = false
+[profile.dev.package.gpui-pre-apple]
+incremental = false
+[profile.dev.package.gpui-pre-macos]
 incremental = false
 
 # The hot loops of the terminal and the diff, optimized even in a debug build, so a debug app

@@ -2290,6 +2290,8 @@ dependencies = [
  "gitviber-updater",
  "gpui-kit",
  "gpui-pre",
+ "objc2 0.6.4",
+ "raw-window-handle",
  "serde",
  "serde_json",
 ]
@@ -2369,6 +2371,7 @@ dependencies = [
  "gitviber-ui",
  "gpui-kit",
  "gpui-pre",
+ "image",
  "regex",
 ]
 
@@ -2506,6 +2509,9 @@ dependencies = [
  "gitviber-ui",
  "gpui-kit",
  "gpui-pre",
+ "gpui-pre-apple",
+ "gpui-pre-platform",
+ "libc",
  "objc2 0.6.4",
  "serde",
  "serde_json",
@@ -2737,8 +2743,6 @@ dependencies = [
 [[package]]
 name = "gpui-component"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4097e161cc81e86323b439664be0cdd4f7c56148e867ed6f67fd72b966b6c2d1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2929,8 +2933,6 @@ dependencies = [
 [[package]]
 name = "gpui-pre-apple"
 version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b52f58893fe1a0836464428dfad2b5eaf42c9c303a9638f4c2aced5a69072a15"
 dependencies = [
  "anyhow",
  "async-task",
@@ -3057,8 +3059,6 @@ dependencies = [
 [[package]]
 name = "gpui-pre-macos"
 version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7c988b7e49775cc8542dbe48d5a10e073d8e898a023ef3ff3d24f33363e9863"
 dependencies = [
  "accesskit",
  "accesskit_macos",
