@@ -389,6 +389,12 @@ fn relay(rx: mpsc::Receiver<(Kind, PathBuf)>, root: &Path, live: &AtomicBool, ev
     })
 }
 
+/// How long a test waits for a watcher to come up. fseventsd starts streams one at a time, and
+/// one asked for by a binary in target/debug/deps (557K stale .o files there) took 1–25 s; the
+/// same binary elsewhere, 1 ms.
+#[cfg(test)]
+pub(crate) const UP: Duration = Duration::from_secs(240);
+
 /// Holds a repo watcher's start the way a busy fseventsd did, which a test can't make happen.
 #[cfg(test)]
 pub(crate) mod held {

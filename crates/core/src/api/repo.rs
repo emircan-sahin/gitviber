@@ -226,6 +226,9 @@ mod close_tests {
             .arg(&dir)
             .status();
         let core = Core::new(Arc::new(|_| {}));
+        // Held until it's closed, so it never starts: fseventsd starts streams one at a time, and
+        // the watcher tests wait behind each one.
+        let _held = watch::held::hold(&dir.canonicalize().unwrap());
         if init.is_ok_and(|s| s.success()) {
             open_repo(&core, dir.to_string_lossy().into_owned()).unwrap();
             assert!(core.repo().is_ok());
@@ -293,9 +296,7 @@ mod open_tests {
         std::fs::write(dir.join("early.txt"), "a").unwrap();
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
         drop(held);
-        let caught = rx
-            .recv_timeout(Duration::from_secs(20))
-            .expect("a catch-up");
+        let caught = rx.recv_timeout(watch::UP).expect("a catch-up");
         assert!(caught.git && caught.worktree, "{caught:?}");
         assert_eq!(Path::new(&caught.root), dir);
         let status = crate::api::changes::status(&core).unwrap();
@@ -345,10 +346,7 @@ mod open_tests {
         assert!(rx.recv_timeout(Duration::from_secs(1)).is_err());
         watch_again(&core, dir.to_string_lossy().into_owned());
         // Sent once the watcher is up.
-        match rx
-            .recv_timeout(Duration::from_secs(20))
-            .expect("a catch-up")
-        {
+        match rx.recv_timeout(watch::UP).expect("a catch-up") {
             Event::RepoChanged(c) => assert!(c.git && c.worktree && Path::new(&c.root) == dir),
             other => panic!("{other:?}"),
         }
@@ -372,9 +370,7 @@ mod open_tests {
         // b's catch-up or its write, however long fseventsd takes; then whatever else comes.
         let mut heard = vec![];
         while !heard.contains(&b) {
-            let change = rx
-                .recv_timeout(Duration::from_secs(20))
-                .expect("b's watcher");
+            let change = rx.recv_timeout(watch::UP).expect("b's watcher");
             heard.push(PathBuf::from(change.root));
         }
         heard.extend(

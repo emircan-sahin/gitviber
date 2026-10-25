@@ -1093,11 +1093,14 @@ mod tests {
             })
         };
         assert_eq!(watch.track(5, &file, status, sink), Some("working"));
-        // Most likely before the watcher is up, which a busy fseventsd takes seconds for: its
-        // catch-up tells this one.
-        let next = || rx.recv_timeout(Duration::from_secs(20)).unwrap();
+        // Most likely before the watcher is up: its catch-up tells this one. Told either way
+        // only once it's up, so from here on each write is FSEvents' to tell.
         write("idle");
-        assert_eq!(next(), (5, Some("idle")));
+        assert_eq!(
+            rx.recv_timeout(crate::watch::UP).unwrap(),
+            (5, Some("idle"))
+        );
+        let next = || rx.recv_timeout(Duration::from_secs(20)).unwrap();
         // A background shell started after the turn: still idle, not a second finish.
         write("shell");
         // Unknown to the table: no change told, the last state stands.
