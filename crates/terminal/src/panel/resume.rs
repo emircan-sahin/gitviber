@@ -4,7 +4,7 @@
 
 use gitviber_core::conversations::Conversation;
 use gitviber_ui::memory::Live;
-use gpui::{FontWeight, Render, SharedString, rems};
+use gpui::{Render, SharedString, rems};
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
 
@@ -192,7 +192,7 @@ impl Render for ConversationPicker {
                     .px_3()
                     .pt_2()
                     .text_size(rems(0.6875))
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .font_weight(t.semibold())
                     .text_color(t.muted_foreground)
                     .child("Resume a Conversation"),
             )

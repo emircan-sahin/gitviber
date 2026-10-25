@@ -655,7 +655,7 @@ impl TerminalPane {
                         .sync_timeout()
                         .is_some_and(|t| t <= Instant::now())
                     {
-                        emu.parser.stop_sync(&mut emu.term);
+                        emu.stop_sync();
                     }
                     cx.notify();
                 });

@@ -514,6 +514,8 @@ mod tests {
             ..ts.find("] as const satisfies").unwrap()];
         // The page's reload: there's no page to reload in the native app.
         const DROPPED: &[&str] = &["window.reload"];
+        // The old app's terminal tabs were a Tab stop of the page; here a pane's Tab is the shell's.
+        const NEW: &[&str] = &["terminal.focusTabs"];
         // The old app's Linux "ctrl+alt" was Super+Alt, not the Ctrl+Alt its docs named.
         const MOVED_OFF_SUPER: &[(&str, &str)] = &[
             ("terminal.prevPane", "alt+cmd+left"),
@@ -579,7 +581,10 @@ mod tests {
             );
             seen += 1;
         }
-        assert_eq!(seen, COMMANDS.len());
+        for id in NEW {
+            assert!(command(id).is_some(), "{id} missing");
+        }
+        assert_eq!(seen + NEW.len(), COMMANDS.len());
     }
 
     #[test]

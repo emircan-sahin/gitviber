@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Term, TermMode};
-use alacritty_terminal::vte::ansi::{Processor, Rgb, StdSyncHandler};
+use alacritty_terminal::vte::ansi::Rgb;
 use gitviber_core::{Core, api::app as pty, pty::Exit};
 
 use crate::input::{MAX_OSC52_TEXT, osc52_accepts};
@@ -263,7 +263,7 @@ impl EventListener for Listener {
 /// The terminal and the parsers that feed it.
 pub(crate) struct Emu {
     pub term: Term<Listener>,
-    pub parser: Processor<StdSyncHandler>,
+    pub parser: crate::vt::Parser,
     scanner: Scanner,
     pub marks: Marks,
     found: Vec<(usize, Found)>,
@@ -285,7 +285,7 @@ impl Emu {
         let size = alacritty_terminal::term::test::TermSize::new(columns.max(2), lines.max(1));
         Emu {
             term: Term::new(config, &size, Listener(outbox.clone())),
-            parser: Processor::new(),
+            parser: crate::vt::Parser::new(),
             scanner: Scanner::default(),
             marks: Marks::default(),
             found: Vec::new(),
@@ -301,6 +301,26 @@ impl Emu {
 
     /// Parses `bytes`, acting on the marks and queries between them where each one ends.
     pub fn feed(&mut self, bytes: &[u8]) {
+        self.or_reset(|e| e.parse(bytes));
+    }
+
+    /// Shows a synchronized frame that never ended.
+    pub fn stop_sync(&mut self) {
+        self.or_reset(|e| e.parser.stop_sync(&mut e.term));
+    }
+
+    /// A panic in the emulator ended core's reader thread: the pane froze, its program blocked on
+    /// a full PTY. The terminal starts over instead, as at a program's RIS.
+    fn or_reset(&mut self, f: impl FnOnce(&mut Self)) {
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self))).is_err() {
+            self.scanner = Scanner::default();
+            self.skipping = false;
+            self.parser = crate::vt::Parser::new();
+            self.parser.advance(&mut self.term, b"\x1bc");
+        }
+    }
+
+    fn parse(&mut self, bytes: &[u8]) {
         self.found.clear();
         self.scanner.feed(bytes, &mut self.found);
         if self.found.is_empty() {
@@ -334,7 +354,7 @@ impl Emu {
     /// A fresh parser gives back the one that held a big OSC, unless a synchronized frame is in it.
     fn renew_parser(&mut self) {
         if self.parser.sync_timeout().sync_timeout().is_none() {
-            self.parser = Processor::new();
+            self.parser.renew();
         }
     }
 
@@ -824,5 +844,67 @@ mod tests {
             })
             .collect();
         assert_eq!(row, "ok");
+    }
+
+    fn screen(emu: &Emu) -> String {
+        use alacritty_terminal::grid::Dimensions as _;
+        use alacritty_terminal::index::{Column, Line};
+        let grid = emu.term.grid();
+        (0..grid.screen_lines() as i32)
+            .map(|l| {
+                let row: String = (0..grid.columns())
+                    .map(|c| grid[Line(l)][Column(c)].c)
+                    .collect();
+                row.trim_end().to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// alacritty 0.26 panicked at the 4097th push, on core's reader thread: no more output was
+    /// read, so the pane froze with its shell blocked on a full PTY.
+    #[test]
+    fn a_shell_pushing_the_kitty_keys_ten_thousand_times_keeps_its_pane() {
+        // SAFETY: nextest gives each test its own process; nothing else reads it meanwhile.
+        unsafe { std::env::set_var("SHELL", "/bin/sh") };
+        let core = Arc::new(Core::new(Arc::new(|_| {})));
+        let session = Session::new(core, test_config());
+        session.spawn(Spawn {
+            cwd: std::env::temp_dir().to_string_lossy().into_owned(),
+            folder: None,
+            cols: 60,
+            rows: 8,
+            integration: false,
+        });
+        session.write(
+            "echo kept-$((2*3)); i=0; while [ $i -lt 10000 ]; do printf '\\033[>1u'; i=$((i+1)); done; echo done-$((6*7))\r",
+        );
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !screen(&session.emu.lock()).contains("done-42") {
+            assert!(Instant::now() < deadline, "{}", screen(&session.emu.lock()));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // Not by starting over (or_reset): what was on the screen before the pushes stays.
+        assert!(screen(&session.emu.lock()).contains("kept-6"));
+        assert!(
+            session
+                .emu
+                .lock()
+                .mode()
+                .contains(TermMode::DISAMBIGUATE_ESC_CODES)
+        );
+        session.close();
+    }
+
+    #[test]
+    fn a_panic_in_the_emulator_starts_the_terminal_over() {
+        let outbox = Arc::new(Outbox::default());
+        let mut emu = Emu::new(20, 5, test_config(), outbox);
+        emu.feed(b"before\x1b[?1049h\x1b[?2026hframe");
+        emu.or_reset(|_| panic!("an emulator bug"));
+        assert!(emu.parser.sync_timeout().sync_timeout().is_none());
+        assert!(!emu.mode().contains(TermMode::ALT_SCREEN));
+        emu.feed(b"after");
+        assert_eq!(screen(&emu), "after\n\n\n\n");
     }
 }

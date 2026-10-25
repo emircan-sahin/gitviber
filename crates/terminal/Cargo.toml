@@ -23,6 +23,8 @@ serde.workspace = true
 serde_json.workspace = true
 # VT parsing, grid, scrollback, modes, selection and search; core owns the PTY.
 alacritty_terminal = "=0.26.0"
+# The widths alacritty itself uses (its own dependency), to bound zero-width marks per cell.
+unicode-width = "=0.2.2"
 # A link's host as a browser reads it; core's own version.
 url = "=2.5.8"
 

@@ -2515,6 +2515,7 @@ dependencies = [
  "objc2 0.6.4",
  "serde",
  "serde_json",
+ "unicode-width",
  "url",
 ]
 

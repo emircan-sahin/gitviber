@@ -486,7 +486,7 @@ pub struct ScrollCounter {
 impl ScrollCounter {
     pub fn advance<T: alacritty_terminal::event::EventListener>(
         &mut self,
-        parser: &mut alacritty_terminal::vte::ansi::Processor,
+        parser: &mut crate::vt::Parser,
         term: &mut Term<T>,
         bytes: &[u8],
     ) -> usize {
@@ -574,9 +574,9 @@ fn find_mark<T>(term: &Term<T>, id: u32, from: Line) -> Option<Line> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vt::Parser;
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::term::{Config, test::TermSize};
-    use alacritty_terminal::vte::ansi::Processor;
 
     fn mark(kind: MarkKind) -> Mark {
         Mark {
@@ -727,7 +727,7 @@ mod tests {
     /// A shell's session as the integration marks it, fed to a terminal 20 columns by 5 rows.
     struct Shell {
         term: Term<VoidListener>,
-        parser: Processor,
+        parser: Parser,
         marks: Marks,
         counter: ScrollCounter,
         effects: Vec<Effect>,
@@ -741,7 +741,7 @@ mod tests {
             };
             Shell {
                 term: Term::new(config, &TermSize::new(20, 5), VoidListener),
-                parser: Processor::new(),
+                parser: Parser::new(),
                 marks: Marks::default(),
                 counter: ScrollCounter::default(),
                 effects: vec![],

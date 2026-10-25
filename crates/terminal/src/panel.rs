@@ -1454,8 +1454,16 @@ impl TerminalPanel {
         cx.notify();
     }
 
-    /// Keys on the focused tab strip: ←/→ (Home/End) open another tab and stay on the strip, ↵ or
-    /// Space go into the terminal, ⌫ kills it. ⌥←/⌥→ are tab.moveLeft/moveRight (`move_group`).
+    /// Keys to the tab strip (terminal.focusTabs): from a pane Tab is the shell's.
+    pub fn focus_strip(&self, window: &mut Window, cx: &mut App) {
+        if self.set().is_some_and(|s| !s.groups.is_empty()) {
+            window.focus(&self.strip_focus, cx);
+        }
+    }
+
+    /// Keys on the focused tab strip: ←/→ (Home/End) open another tab and stay on the strip, ↵,
+    /// Space or Esc go into the terminal, ⌫ kills it (⌘W too, as tab.close). ⌥←/⌥→ are
+    /// tab.moveLeft/moveRight (`move_group`).
     fn strip_key(&mut self, e: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(set) = self.set() else { return };
         // A tab's name field has its own keys (a space is typed).
@@ -1483,7 +1491,7 @@ impl TerminalPanel {
                 self.apply_dims(cx);
                 cx.notify();
             }
-            "enter" | "space" => self.focus_active(window, cx),
+            "enter" | "space" | "escape" => self.focus_active(window, cx),
             "backspace" | "delete" => self.close_group(ids[at], window, cx),
             _ => return,
         }
@@ -1920,6 +1928,11 @@ impl TerminalPanel {
             .on_key_down(cx.listener(Self::strip_key))
             .on_action(cx.listener(|this, _: &tab::MoveLeft, _, cx| this.move_group(-1, cx)))
             .on_action(cx.listener(|this, _: &tab::MoveRight, _, cx| this.move_group(1, cx)))
+            .on_action(cx.listener(|this, _: &tab::Close, window, cx| {
+                if let Some(gid) = this.set().and_then(|s| s.active) {
+                    this.close_group(gid, window, cx);
+                }
+            }))
             .flex_1()
             .min_w_0()
             .h_full()
@@ -1959,6 +1972,7 @@ impl TerminalPanel {
                     .items_center()
                     .justify_center()
                     .rounded_sm()
+                    .cursor_pointer()
                     .hover(|s| s.bg(t.active))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.focus_pane(id, cx);
@@ -2334,6 +2348,7 @@ impl TerminalPanel {
                     .items_center()
                     .justify_center()
                     .rounded_sm()
+                    .cursor_pointer()
                     .text_color(t.subtle)
                     .hover(|s| s.bg(t.active).text_color(t.foreground))
                     .when(!active, |d| {
@@ -2526,6 +2541,7 @@ impl TerminalPanel {
             .id("rename")
             .debug_selector(|| "terminal-rename".into())
             .w(px(width))
+            .cursor_text()
             .on_click(|_, _, cx| cx.stop_propagation())
             .child(Input::new(input).xsmall())
             .into_any_element()
@@ -2584,6 +2600,7 @@ impl TerminalPanel {
             .border_color(t.border)
             .bg(t.panel)
             .text_size(px(11.5))
+            .cursor_pointer()
             .when(focused, |d| {
                 d.child(
                     div()
@@ -2842,6 +2859,7 @@ impl Render for TerminalPanel {
                 }),
             )
             .on_action(cx.listener(|this, _: &terminal::Close, w, cx| this.close_focused(w, cx)))
+            .on_action(cx.listener(|this, _: &terminal::FocusTabs, w, cx| this.focus_strip(w, cx)))
             .on_action(cx.listener(|this, _: &terminal::PrevPane, w, cx| this.step_pane(-1, w, cx)))
             .on_action(cx.listener(|this, _: &terminal::NextPane, w, cx| this.step_pane(1, w, cx)))
             .on_action(cx.listener(|this, _: &terminal::FocusLeft, w, cx| {
@@ -3269,6 +3287,7 @@ mod tests {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             let elsewhere = self.elsewhere.clone();
             v_flex()
+                .key_context(gitviber_ui::keymap::ROOT_CONTEXT)
                 .size_full()
                 .child(
                     div()
@@ -3312,6 +3331,66 @@ mod tests {
 
     fn draw(cx: &mut VisualTestContext) {
         cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+
+    /// Row 66: a pane's Tab is the shell's, so terminal.focusTabs takes the keys to the strip.
+    /// There ←/→ open tabs, ⌥← moves one, ⌘W closes it and the keys stay, Esc and ↵ go back in.
+    #[gpui::test]
+    fn focus_tabs_steps_out_to_the_strip_and_esc_goes_back(cx: &mut TestAppContext) {
+        let (panel, _, cx) = beside(cx);
+        let mac = cfg!(target_os = "macos");
+        cx.update(|_, cx| {
+            cx.bind_keys(gitviber_ui::keymap::key_bindings(&Default::default(), mac))
+        });
+        let dir = std::env::temp_dir();
+        for _ in 0..3 {
+            panel.update_in(cx, |p, window, cx| {
+                p.open_terminal(dir.clone(), None, window, cx)
+            });
+        }
+        draw(cx);
+        let groups = |cx: &mut VisualTestContext| {
+            panel.read_with(cx, |p, _| {
+                let s = p.set().expect("a set");
+                (s.groups.iter().map(|g| g.id).collect::<Vec<_>>(), s.active)
+            })
+        };
+        let on_strip = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| panel.read(cx).strip_focus.is_focused(window))
+        };
+        let in_pane = |cx: &mut VisualTestContext| {
+            let pane = panel.read_with(cx, |p, _| p.active_pane()).expect("a pane");
+            cx.update(|window, cx| pane.read(cx).focus_handle(cx).is_focused(window))
+        };
+        // Unbound off macOS: there the palette runs it.
+        let focus_tabs = |cx: &mut VisualTestContext| {
+            if mac {
+                cx.simulate_keystrokes("ctrl-cmd-t");
+            } else {
+                cx.dispatch_action(terminal::FocusTabs);
+            }
+            draw(cx);
+        };
+        let (ids, _) = groups(cx);
+        assert!(in_pane(cx));
+        focus_tabs(cx);
+        assert!(on_strip(cx));
+        cx.simulate_keystrokes("left");
+        assert_eq!(groups(cx).1, Some(ids[1]));
+        cx.simulate_keystrokes("alt-left");
+        assert_eq!(groups(cx), (vec![ids[1], ids[0], ids[2]], Some(ids[1])));
+        cx.simulate_keystrokes("escape");
+        assert!(in_pane(cx));
+        focus_tabs(cx);
+        cx.simulate_keystrokes("cmd-w");
+        draw(cx);
+        assert_eq!(groups(cx).0, vec![ids[0], ids[2]]);
+        assert!(on_strip(cx));
+        cx.simulate_keystrokes("enter");
+        assert!(in_pane(cx));
+        panel.update(cx, |p, cx| p.close_all(cx));
+        cx.update(|window, _| window.remove_window());
         cx.run_until_parked();
     }
 

@@ -36,7 +36,7 @@ workbench: [ShowCommands, QuickOpen, OpenChange, OpenSettings, ShortcutOverlay],
     editor: [ToggleWrap, ToggleBlame, CopyGitHubLink, OpenOnGitHub, FontZoomIn, FontZoomOut, FontZoomReset, Find, GoToDefinition, PeekDefinition, GoToReferences],
     search: [FindInFiles],
     media: [ZoomIn, ZoomOut, Fit],
-    terminal: [Toggle, NewInProject, ShowAgents, ResumeConversation, New, Split, SplitDown, Clear, Close, PrevPane, NextPane, FocusLeft, FocusRight, FocusUp, FocusDown, ToggleMaximize, ZoomPane, EqualizePanes, RenamePane, FontZoomIn, FontZoomOut, FontZoomReset, PrevCommand, NextCommand, Hints],
+    terminal: [Toggle, NewInProject, ShowAgents, ResumeConversation, New, Split, SplitDown, Clear, Close, PrevPane, NextPane, FocusLeft, FocusRight, FocusUp, FocusDown, ToggleMaximize, ZoomPane, EqualizePanes, RenamePane, FontZoomIn, FontZoomOut, FontZoomReset, PrevCommand, NextCommand, Hints, FocusTabs],
     browser: [Open, FocusAddress, Reload, Back, Forward, Inspect, Pick, ToggleDevice, ClearData, Find, FindNext, FindPrev, ZoomIn, ZoomOut, ZoomReset],
     explorer: [Rename, Delete],
     git: [SwitchBranch, NewBranch, CompareBranches, SwitchWorktree, NewWorktree, Fetch, Pull, Push, Sync, ApplyPatch, Undo, Redo, ToggleStage, Discard, Commit, RenameBranch, SelectAllChanges, CreateTag, SuggestMessage],
@@ -569,6 +569,16 @@ pub static COMMANDS: &[Command] = &[
     .other(&["shift+cmd+space"])
     .local("Terminal")
     .no_repeat(),
+    // Tab can't reach the tabs from a pane: the shell takes it. On them ←/→ open one, ⌥←/⌥→ move it,
+    // ⌫ or ⌘W closes it, ↵ or Esc goes back in. Unbound elsewhere: Super chords are the desktop's.
+    cmd::<terminal::FocusTabs>(
+        "terminal.focusTabs",
+        "Focus Terminal Tabs",
+        Terminal,
+        &["ctrl+cmd+t"],
+    )
+    .other(&[])
+    .local("Terminal"),
     // A browser tab (features/browser), new each time; in it ⌘L, ⌘R, ⌘[ and ⌘] are a browser's, as typed in its page too.
     cmd::<browser::Open>("browser.open", "Open Browser", Browser, &["shift+cmd+b"]),
     cmd::<browser::FocusAddress>(

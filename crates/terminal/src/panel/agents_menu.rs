@@ -4,7 +4,7 @@
 
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{BarItem, BarSlot, PanelContext, Toast, register_bar_item};
-use gpui::{Anchor, AnyWindowHandle, FontWeight, Render, SharedString, rems};
+use gpui::{Anchor, AnyWindowHandle, Render, SharedString, rems};
 use gpui_kit::component::popover::Popover;
 
 use super::attention::{AgentNews, all_agents, look_dot};
@@ -184,7 +184,7 @@ impl Render for AgentsButton {
                         .px_2()
                         .py_1()
                         .text_size(rems(0.6875))
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_weight(t.semibold())
                         .text_color(t.muted_foreground)
                         .child("Agents"),
                 );
@@ -260,7 +260,7 @@ impl Render for AgentsButton {
                                                 .child(
                                                     div()
                                                         .truncate()
-                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .font_weight(t.medium())
                                                         .child(e.name.clone()),
                                                 )
                                                 .when(e.of > 1, |d| {
