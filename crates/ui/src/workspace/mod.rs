@@ -162,7 +162,8 @@ impl Workspace {
             review: None,
             left: side(!sizes.left.collapsed, cx),
             right: side(!sizes.right.collapsed, cx),
-            // The terminal starts as it was left; hidden the first time.
+            // The terminal starts as it was left; hidden the first time, which is when it has no
+            // height yet (the app gives it one when it's first drawn).
             bottom: side(sizes.bottom.size.is_some() && !sizes.bottom.collapsed, cx),
             bottom_maximized: false,
             center_focus: cx.focus_handle(),
@@ -501,18 +502,26 @@ impl Workspace {
     fn save_snapshot_as(&self, root: &str, cx: &mut App) {
         let snapshot = self.snapshot();
         let root = root.to_string();
-        let panels = (!self.left.open, !self.right.open, !self.bottom.open);
+        UiState::update_later(cx, move |s| s.save_workspace(&root, snapshot));
+    }
+
+    /// Which panels are closed, for every project and the next launch: saved on each change,
+    /// not with the tabs, which wait for a repo to be open.
+    fn save_layout(&self, cx: &mut App) {
+        let closed = (!self.left.open, !self.right.open, !self.bottom.open);
         UiState::update_later(cx, move |s| {
-            s.save_workspace(&root, snapshot);
             (
                 s.panels.left.collapsed,
                 s.panels.right.collapsed,
                 s.panels.bottom.collapsed,
-            ) = panels;
+            ) = closed;
         });
     }
 
     fn changed(&mut self, event: WorkspaceEvent, cx: &mut Context<Self>) {
+        if event == WorkspaceEvent::LayoutChanged {
+            self.save_layout(cx);
+        }
         self.save_snapshot(cx);
         cx.emit(event);
         cx.notify();
@@ -1298,6 +1307,52 @@ mod tests {
         });
         cx.run_until_parked();
         first.assert_released();
+    }
+
+    #[gpui_kit::test]
+    fn the_panels_come_back_as_left_through_projects_and_launches(cx: &mut TestAppContext) {
+        setup(cx);
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        let open = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+            ws.read_with(cx, |ws, _| {
+                [Slot::Left, Slot::Right, Slot::Bottom].map(|s| ws.is_open(s))
+            })
+        };
+        // The terminal is hidden the first time.
+        assert_eq!(open(&ws, cx), [true, true, false]);
+        // Set before any repo is open, so with no tabs to be saved along.
+        cx.update(|_, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.set_open(Slot::Left, false, cx);
+                ws.set_open(Slot::Bottom, true, cx);
+            });
+            // The height the app gives it when it's first drawn.
+            UiState::update_later(cx, |s| s.panels.bottom.size = Some(240.));
+        });
+        // Projects opened, a tab opened, a project closed: none of them shows or hides a panel.
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_project(PathBuf::from("/tmp/gitviber-project-p"), window, cx);
+                ws.open_tab("doc", false, |_, cx| cx.new(|_| Doc), window, cx);
+                ws.open_project(PathBuf::from("/tmp/gitviber-project-q"), window, cx);
+            })
+        });
+        assert_eq!(open(&ws, cx), [false, true, true]);
+        cx.update(|_, cx| ws.update(cx, |ws, cx| ws.close_project(cx)));
+        assert_eq!(open(&ws, cx), [false, true, true]);
+        // The next launch's workspace.
+        let next = cx.update(|_, cx| cx.new(Workspace::new));
+        assert_eq!(open(&next, cx), [false, true, true]);
+        cx.update(|_, cx| {
+            next.update(cx, |ws, cx| {
+                ws.set_open(Slot::Left, true, cx);
+                ws.set_open(Slot::Right, false, cx);
+                ws.set_open(Slot::Bottom, false, cx);
+            })
+        });
+        let after = cx.update(|_, cx| cx.new(Workspace::new));
+        assert_eq!(open(&after, cx), [true, false, false]);
     }
 
     #[gpui_kit::test]

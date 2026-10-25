@@ -44,11 +44,16 @@ pub const MIN_SIZE: (f32, f32) = (900., 560.);
 /// A sidebar, for what shows while the pointer is over it.
 const SIDE_GROUP: &str = "side-panel";
 
-/// The drags of the panels' edges, drawn as nothing: the panel itself follows the pointer.
+/// The drags of the panels' edges, drawn as nothing: the panel itself follows the pointer. A
+/// sidebar's keeps the width it had when the drag began, which it reopens at after a drag closed it.
 #[derive(Clone)]
-struct ResizeLeft;
+struct ResizeLeft {
+    from: Option<f32>,
+}
 #[derive(Clone)]
-struct ResizeRight;
+struct ResizeRight {
+    from: Option<f32>,
+}
 #[derive(Clone)]
 struct ResizeBottom;
 
@@ -72,7 +77,11 @@ pub struct WorkspaceView {
     /// The sidebars' header tabs, which scroll sideways when the panel is narrow: a double click
     /// on the divider widens it to show them.
     header_tabs: [ScrollHandle; 2],
+    /// As the user left them; what a window too small for them draws is `drawn_sides`.
     sizes: PanelSizes,
+    /// The sidebars' widths in the last frame (None: not drawn), for the drags and double
+    /// clicks, which never take room from the other side.
+    drawn_sides: (Option<f32>, Option<f32>),
     /// A frame was drawn: GPUI can tell which commands apply only from one.
     drawn: bool,
     /// The window's title as last set.
@@ -213,6 +222,7 @@ impl WorkspaceView {
             strip: StripKeys::new(cx),
             header_tabs: [ScrollHandle::new(), ScrollHandle::new()],
             sizes: UiState::get(cx).panels.clone(),
+            drawn_sides: (None, None),
             drawn: false,
             title: String::new(),
             find_resent: Rc::default(),
@@ -320,9 +330,9 @@ impl WorkspaceView {
 
     /// A sidebar's divider double-clicked: as wide as its header needs, at least its base.
     fn fit_side(&mut self, slot: Slot, drawn: f32, total: f32, cx: &mut Context<Self>) {
-        let (limits, at) = match slot {
-            Slot::Left => (LEFT, 0),
-            _ => (RIGHT, 1),
+        let (limits, at, other) = match slot {
+            Slot::Left => (LEFT, 0, self.drawn_sides.1),
+            _ => (RIGHT, 1, self.drawn_sides.0),
         };
         let tabs = &self.header_tabs[at];
         let n = Registry::get(cx).panels(slot).len();
@@ -333,12 +343,41 @@ impl WorkspaceView {
             return;
         };
         let spare = f32::from(tabs.bounds().size.width - (last.right() - first.left()));
-        let size = Some(layout::fit_header(limits, drawn, spare, total));
+        let size = Some(layout::fit_header(
+            limits,
+            drawn,
+            spare,
+            total,
+            other.unwrap_or(0.),
+        ));
         match slot {
             Slot::Left => self.sizes.left.size = size,
             _ => self.sizes.right.size = size,
         }
         self.save_sizes(cx);
+        cx.notify();
+    }
+
+    /// A sidebar's edge dragged to `want` in a body `total` wide: it follows within its limits,
+    /// never into the other side's room. Pulled under half its min it closes, keeping the width
+    /// the drag began at (`from`); dragged back out in the same drag, it opens again.
+    fn drag_side(
+        &mut self,
+        slot: Slot,
+        want: f32,
+        total: f32,
+        from: Option<f32>,
+        cx: &mut Context<Self>,
+    ) {
+        let (limits, other, saved) = match slot {
+            Slot::Left => (LEFT, self.drawn_sides.1, &mut self.sizes.left.size),
+            _ => (RIGHT, self.drawn_sides.0, &mut self.sizes.right.size),
+        };
+        let size = layout::dragged(want, limits, total, other.unwrap_or(0.));
+        *saved = size.or(from);
+        self.save_sizes(cx);
+        self.workspace
+            .update(cx, |ws, cx| ws.set_open(slot, size.is_some(), cx));
         cx.notify();
     }
 
@@ -489,9 +528,7 @@ impl WorkspaceView {
                     .xsmall()
                     .icon(close_icon)
                     .tooltip(close_title)
-                    .on_click(move |_, _, cx| {
-                        ws.update(cx, |ws, cx| ws.set_open(close, false, cx))
-                    }),
+                    .on_click(move |_, window, cx| hide_slot(&ws, close, window, cx)),
             )
             .into_any_element()
     }
@@ -588,12 +625,22 @@ impl WorkspaceView {
             Slot::Left => resize_handle::<ResizeLeft, ResizeLeft>("resize-left", Axis::Horizontal)
                 .inside(edge)
                 .on_double_click(fit)
-                .on_drag(ResizeLeft, |d, _, _, cx| cx.new(|_| d.clone()))
+                .on_drag(
+                    ResizeLeft {
+                        from: self.sizes.left.size,
+                    },
+                    |d, _, _, cx| cx.new(|_| d.clone()),
+                )
                 .into_any_element(),
             _ => resize_handle::<ResizeRight, ResizeRight>("resize-right", Axis::Horizontal)
                 .inside(edge)
                 .on_double_click(fit)
-                .on_drag(ResizeRight, |d, _, _, cx| cx.new(|_| d.clone()))
+                .on_drag(
+                    ResizeRight {
+                        from: self.sizes.right.size,
+                    },
+                    |d, _, _, cx| cx.new(|_| d.clone()),
+                )
                 .into_any_element(),
         };
         div()
@@ -602,6 +649,7 @@ impl WorkspaceView {
             } else {
                 "right-panel"
             })
+            .debug_selector(move || format!("{slot:?}-panel"))
             .track_focus(&focus)
             .group(SIDE_GROUP)
             .relative()
@@ -679,6 +727,7 @@ impl WorkspaceView {
         let focus = self.workspace.read(cx).slot_focus(Slot::Bottom).clone();
         div()
             .id("bottom-panel")
+            .debug_selector(|| "Bottom-panel".into())
             .key_context("BottomPanel")
             .track_focus(&focus)
             .relative()
@@ -693,7 +742,7 @@ impl WorkspaceView {
             .child(div().flex_1().min_h_0().children(panel.map(|p| p.view())))
             .children(focus_line(&focus, window, cx))
             .when(height.is_some(), |d| {
-                // A double click puts it back to its share of the column.
+                // A double click puts it back to its share of the column (the next frame sizes it).
                 let view = cx.entity().downgrade();
                 d.child(
                     resize_handle::<ResizeBottom, ResizeBottom>("resize-bottom", Axis::Vertical)
@@ -728,6 +777,7 @@ impl WorkspaceView {
         let line = focus_line(&focus, window, cx);
         div()
             .id("center")
+            .debug_selector(|| "center".into())
             .key_context("CodeArea")
             .track_focus(&focus)
             .relative()
@@ -743,6 +793,26 @@ impl WorkspaceView {
             .children(line)
             .into_any_element()
     }
+}
+
+/// ⌘B, ⌥⌘B, ⌘J: a hidden panel shows with focus in it, a shown one hides.
+fn toggle_slot(ws: &Entity<Workspace>, slot: Slot, window: &mut Window, cx: &mut App) {
+    if ws.read(cx).is_open(slot) {
+        hide_slot(ws, slot, window, cx);
+    } else {
+        ws.update(cx, |ws, cx| ws.focus_slot(slot, window, cx));
+    }
+}
+
+/// Hides a panel; focus in it goes to the code view rather than out of every part.
+fn hide_slot(ws: &Entity<Workspace>, slot: Slot, window: &mut Window, cx: &mut App) {
+    ws.update(cx, |ws, cx| {
+        let had = ws.slot_focus(slot).contains_focused(window, cx);
+        ws.set_open(slot, false, cx);
+        if had {
+            ws.focus_center(window, cx);
+        }
+    });
 }
 
 /// Marks the part the keys go to: a thin accent along its top while focus is inside.
@@ -803,6 +873,15 @@ impl Render for WorkspaceView {
                 ws.terminal_maximized(),
             )
         };
+        let column =
+            f32::from(viewport.height) - f32::from(windows::TOP_BAR_HEIGHT) - STATUS_BAR_HEIGHT;
+        // Its first height, or the one a double click on its edge asked for: from the column
+        // now, kept in points from then on.
+        if ws_has_project && bottom_open && self.sizes.bottom.size.is_none() {
+            self.sizes.bottom.size = Some(layout::bottom_base(column));
+            self.save_sizes(cx);
+        }
+        self.drawn_sides = (None, None);
         let body: AnyElement = if !ws_has_project {
             match crate::dialogs::needs_git::missing(cx) {
                 Some(info) => crate::dialogs::needs_git::screen(info, cx),
@@ -811,15 +890,14 @@ impl Render for WorkspaceView {
         } else if maximized {
             self.bottom(None, window, cx)
         } else {
-            let total = f32::from(viewport.width);
             let (left_w, right_w) = layout::fit_sides(
-                total,
+                f32::from(viewport.width),
                 left_open.then_some(self.sizes.left.size),
                 right_open.then_some(self.sizes.right.size),
             );
-            let column =
-                f32::from(viewport.height) - f32::from(windows::TOP_BAR_HEIGHT) - STATUS_BAR_HEIGHT;
-            let bottom_h = bottom_open.then(|| layout::fit_bottom(column, self.sizes.bottom.size));
+            self.drawn_sides = (left_w, right_w);
+            let bottom_h = bottom_open
+                .then(|| layout::fit_bottom(column, self.sizes.bottom.size.unwrap_or(0.)));
             let left = left_w.map(|w| self.side(Slot::Left, w, window, cx));
             let right = right_w.map(|w| self.side(Slot::Right, w, window, cx));
             let center = self.center(window, cx);
@@ -830,28 +908,14 @@ impl Render for WorkspaceView {
                 .flex_1()
                 .min_h_0()
                 .on_drag_move(cx.listener(|this, e: &DragMoveEvent<ResizeLeft>, _, cx| {
-                    let total = f32::from(e.bounds.size.width);
                     let want = f32::from(e.event.position.x - e.bounds.left());
-                    match layout::dragged(want, LEFT, total) {
-                        Some(w) => this.sizes.left.size = Some(w),
-                        None => this
-                            .workspace
-                            .update(cx, |ws, cx| ws.set_open(Slot::Left, false, cx)),
-                    }
-                    this.save_sizes(cx);
-                    cx.notify();
+                    let from = e.drag(cx).from;
+                    this.drag_side(Slot::Left, want, f32::from(e.bounds.size.width), from, cx);
                 }))
                 .on_drag_move(cx.listener(|this, e: &DragMoveEvent<ResizeRight>, _, cx| {
-                    let total = f32::from(e.bounds.size.width);
                     let want = f32::from(e.bounds.right() - e.event.position.x);
-                    match layout::dragged(want, RIGHT, total) {
-                        Some(w) => this.sizes.right.size = Some(w),
-                        None => this
-                            .workspace
-                            .update(cx, |ws, cx| ws.set_open(Slot::Right, false, cx)),
-                    }
-                    this.save_sizes(cx);
-                    cx.notify();
+                    let from = e.drag(cx).from;
+                    this.drag_side(Slot::Right, want, f32::from(e.bounds.size.width), from, cx);
                 }))
                 .children(left)
                 .child(
@@ -866,7 +930,7 @@ impl Render for WorkspaceView {
                                 let total = f32::from(e.bounds.size.height);
                                 let want = f32::from(e.bounds.bottom() - e.event.position.y);
                                 this.sizes.bottom.size =
-                                    Some(layout::fit_bottom(total, Some(want)));
+                                    Some(layout::fit_bottom(total, want.round()));
                                 this.save_sizes(cx);
                                 cx.notify();
                             },
@@ -1075,22 +1139,14 @@ impl WorkspaceView {
             )
             .on_action(cx.listener(|this, _: &view::Pulls, w, cx| this.show_left("pulls", w, cx)))
             .on_action(cx.listener(|this, _: &view::Issues, w, cx| this.show_left("issues", w, cx)))
-            .on_action(cx.listener(|this, _: &view::ToggleGitPanel, _, cx| {
-                this.workspace
-                    .update(cx, |ws, cx| ws.toggle(Slot::Left, cx))
+            .on_action(cx.listener(|this, _: &view::ToggleGitPanel, w, cx| {
+                toggle_slot(&this.workspace, Slot::Left, w, cx)
             }))
-            .on_action(cx.listener(|this, _: &view::ToggleExplorer, _, cx| {
-                this.workspace
-                    .update(cx, |ws, cx| ws.toggle(Slot::Right, cx))
+            .on_action(cx.listener(|this, _: &view::ToggleExplorer, w, cx| {
+                toggle_slot(&this.workspace, Slot::Right, w, cx)
             }))
-            .on_action(cx.listener(|this, _: &terminal::Toggle, window, cx| {
-                this.workspace.update(cx, |ws, cx| {
-                    if ws.is_open(Slot::Bottom) {
-                        ws.set_open(Slot::Bottom, false, cx);
-                    } else {
-                        ws.focus_slot(Slot::Bottom, window, cx);
-                    }
-                })
+            .on_action(cx.listener(|this, _: &terminal::Toggle, w, cx| {
+                toggle_slot(&this.workspace, Slot::Bottom, w, cx)
             }))
             .on_action(cx.listener(|this, _: &view::FocusGitPanel, w, cx| {
                 this.workspace
@@ -1483,5 +1539,429 @@ mod tests {
     #[gpui_kit::test]
     fn find_a_tab_has_none_of_comes_back_once_and_focus_stays(cx: &mut TestAppContext) {
         assert_eq!(find_with_focus_outside(false, cx), (0, false));
+    }
+
+    /// The main window as the app lays it out: panels shown, hidden and sized only by the user.
+    mod layout {
+        use gitviber_ui::state::{self, UiState};
+        use gpui_kit::{
+            Bounds, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, TestAppContext,
+            VisualTestContext, point,
+        };
+
+        use super::super::*;
+        use super::Tab;
+        use gitviber_ui::workspace::Part;
+
+        const START: (f32, f32) = DEFAULT_SIZE;
+        const L: usize = 0;
+        const R: usize = 1;
+        const B: usize = 2;
+
+        /// A project folder (without core it's taken as open where it's asked) and a config dir
+        /// of the test's own.
+        fn setup(tag: &str, cx: &mut TestAppContext) -> PathBuf {
+            let dir = std::env::temp_dir()
+                .join(format!("gitviber-app-layout-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let project = dir.join("project");
+            std::fs::create_dir_all(&project).unwrap();
+            // SAFETY: the tests that read the config dir all point it at a temporary folder.
+            unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", dir.join("config")) };
+            cx.update(|cx| {
+                gitviber_ui::init(cx);
+                crate::placeholders::register(cx);
+            });
+            project
+        }
+
+        /// The main window as a launch opens it, `size` big.
+        fn launch(
+            project: Option<PathBuf>,
+            size: (f32, f32),
+            cx: &mut TestAppContext,
+        ) -> VisualTestContext {
+            let window: AnyWindowHandle = cx
+                .add_window(|window, cx| {
+                    let view = main_view(project, window, cx);
+                    gpui_kit::base::Root::new(view, window, cx)
+                })
+                .into();
+            let mut vcx = VisualTestContext::from_window(window, cx);
+            resize(&mut vcx, size);
+            vcx
+        }
+
+        /// A quit (what's saved is written out), then the next launch, which reads it back.
+        fn relaunch(
+            project: Option<PathBuf>,
+            size: (f32, f32),
+            cx: &mut VisualTestContext,
+        ) -> VisualTestContext {
+            cx.update(|window, cx| {
+                state::flush(cx);
+                window.remove_window();
+            });
+            cx.run_until_parked();
+            let text = std::fs::read_to_string(state::state_path()).unwrap();
+            let saved: UiState = serde_json::from_str(&text).unwrap();
+            let app: &mut TestAppContext = cx;
+            app.update(|cx| cx.set_global(saved));
+            launch(project, size, app)
+        }
+
+        fn draw(cx: &mut VisualTestContext) {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        }
+
+        fn resize(cx: &mut VisualTestContext, (w, h): (f32, f32)) {
+            cx.simulate_resize(size(px(w), px(h)));
+            draw(cx);
+        }
+
+        fn keys(cx: &mut VisualTestContext, keys: &str) {
+            cx.simulate_keystrokes(keys);
+            draw(cx);
+        }
+
+        fn bounds(cx: &mut VisualTestContext, slot: usize) -> Option<Bounds<Pixels>> {
+            cx.debug_bounds(["Left-panel", "Right-panel", "Bottom-panel"][slot])
+        }
+
+        /// The sidebars' widths and the terminal's height as drawn; None: not drawn.
+        fn drawn(cx: &mut VisualTestContext) -> [Option<f32>; 3] {
+            let w = |b: Option<Bounds<Pixels>>| b.map(|b| f32::from(b.size.width));
+            [
+                w(bounds(cx, L)),
+                w(bounds(cx, R)),
+                bounds(cx, B).map(|b| f32::from(b.size.height)),
+            ]
+        }
+
+        fn workspace(cx: &mut VisualTestContext) -> Entity<Workspace> {
+            cx.update(|window, cx| Workspace::for_window(window, cx).unwrap())
+        }
+
+        fn open(cx: &mut VisualTestContext) -> [bool; 3] {
+            let ws = workspace(cx);
+            ws.read_with(cx, |ws, _| {
+                [Slot::Left, Slot::Right, Slot::Bottom].map(|s| ws.is_open(s))
+            })
+        }
+
+        /// The terminal's column in a window `h` tall.
+        fn column(h: f32) -> f32 {
+            h - f32::from(windows::TOP_BAR_HEIGHT) - STATUS_BAR_HEIGHT
+        }
+
+        /// What a window can go through: bigger, full screen on a big display, the smallest
+        /// window, a display of another scale, back.
+        const RESIZES: [(f32, f32); 6] = [
+            (1800., 1100.),
+            (2560., 1440.),
+            (3008., 1692.),
+            MIN_SIZE,
+            (1200., 700.),
+            START,
+        ];
+
+        /// A drag of a panel's edge to each of `to`, released at the last.
+        fn drag(cx: &mut VisualTestContext, slot: usize, to: &[(f32, f32)]) {
+            let from = edge(cx, slot);
+            let at = |(x, y): (f32, f32)| point(px(x), px(y));
+            cx.simulate_mouse_down(at(from), MouseButton::Left, Modifiers::default());
+            draw(cx);
+            for p in to {
+                cx.simulate_mouse_move(at(*p), MouseButton::Left, Modifiers::default());
+                draw(cx);
+            }
+            let end = *to.last().unwrap_or(&from);
+            cx.simulate_mouse_up(at(end), MouseButton::Left, Modifiers::default());
+            draw(cx);
+        }
+
+        fn double_click(cx: &mut VisualTestContext, slot: usize) {
+            let (x, y) = edge(cx, slot);
+            for click_count in [1, 2] {
+                cx.simulate_event(MouseDownEvent {
+                    position: point(px(x), px(y)),
+                    modifiers: Modifiers::default(),
+                    button: MouseButton::Left,
+                    click_count,
+                    first_mouse: false,
+                });
+                cx.simulate_event(MouseUpEvent {
+                    position: point(px(x), px(y)),
+                    modifiers: Modifiers::default(),
+                    button: MouseButton::Left,
+                    click_count,
+                });
+                draw(cx);
+            }
+        }
+
+        /// A point on a panel's edge: the sidebars' inner edges, the terminal's top.
+        fn edge(cx: &mut VisualTestContext, slot: usize) -> (f32, f32) {
+            let b = bounds(cx, slot).expect("drawn");
+            let mid_y = f32::from(b.center().y);
+            match slot {
+                L => (f32::from(b.right()) - 2., mid_y),
+                R => (f32::from(b.left()) + 2., mid_y),
+                _ => (f32::from(b.center().x), f32::from(b.top()) + 2.),
+            }
+        }
+
+        #[gpui_kit::test]
+        fn the_git_panel_hidden_with_cmd_b_stays_hidden_as_the_window_grows(
+            cx: &mut TestAppContext,
+        ) {
+            let project = setup("report", cx);
+            let cx = &mut launch(Some(project), (1200., 800.), cx);
+            assert_eq!(drawn(cx), [Some(320.), Some(260.), None]);
+            keys(cx, "cmd-b");
+            for size in [(1600., 1000.), (2400., 1350.), (3008., 1692.)] {
+                resize(cx, size);
+                assert_eq!(drawn(cx)[L], None, "shown again at {size:?}");
+                assert!(!open(cx)[L]);
+            }
+            keys(cx, "cmd-b");
+            assert_eq!(
+                drawn(cx),
+                [Some(320.), Some(260.), None],
+                "back at its width"
+            );
+        }
+
+        #[gpui_kit::test]
+        fn a_hidden_panel_stays_hidden_through_any_resize_and_comes_back_at_its_size(
+            cx: &mut TestAppContext,
+        ) {
+            let project = setup("resizes", cx);
+            let cx = &mut launch(Some(project), START, cx);
+            keys(cx, "cmd-j");
+            let shown = drawn(cx);
+            let bottom = layout::bottom_base(column(START.1));
+            assert_eq!(shown, [Some(320.), Some(260.), Some(bottom)]);
+            let toggles: [(&str, Box<dyn gpui_kit::Action>); 3] = [
+                ("cmd-b", Box::new(view::ToggleGitPanel)),
+                ("alt-cmd-b", Box::new(view::ToggleExplorer)),
+                ("cmd-j", Box::new(terminal::Toggle)),
+            ];
+            for (slot, (key, menu)) in toggles.into_iter().enumerate() {
+                // Hidden by its key, shown by its menu item.
+                keys(cx, key);
+                for size in RESIZES {
+                    resize(cx, size);
+                    assert_eq!(drawn(cx)[slot], None, "slot {slot} at {size:?}");
+                    if size == (1200., 700.) {
+                        cx.simulate_scale_factor_change(1.);
+                        draw(cx);
+                        assert_eq!(drawn(cx)[slot], None, "slot {slot} on a 1x display");
+                        cx.simulate_scale_factor_change(2.);
+                    }
+                }
+                cx.update(|window, cx| window.dispatch_action(menu, cx));
+                draw(cx);
+                assert_eq!(drawn(cx), shown, "slot {slot} came back as it was");
+            }
+        }
+
+        #[gpui_kit::test]
+        fn panels_keep_their_points_and_a_small_window_squeezes_the_code_view_first(
+            cx: &mut TestAppContext,
+        ) {
+            let project = setup("points", cx);
+            let cx = &mut launch(Some(project), START, cx);
+            keys(cx, "cmd-j");
+            // Sized by the user: 400, 300 and 500 tall.
+            drag(cx, L, &[(390., 400.), (400., 400.)]);
+            drag(cx, R, &[(1190., 400.), (1180., 400.)]);
+            let top = 920. - STATUS_BAR_HEIGHT - 500.;
+            drag(cx, B, &[(700., top + 10.), (700., top)]);
+            let set = [Some(400.), Some(300.), Some(500.)];
+            assert_eq!(drawn(cx), set);
+            // Bigger: as set, the code view takes the room.
+            for size in [(1800., 1100.), (3008., 1692.)] {
+                resize(cx, size);
+                assert_eq!(drawn(cx), set, "at {size:?}");
+            }
+            // Smaller: the code view gives way first...
+            resize(cx, (1200., 920.));
+            assert_eq!(drawn(cx), set);
+            // ...then the right side, then the left, each down to its min; the terminal leaves
+            // the code view its min.
+            resize(cx, MIN_SIZE);
+            let squeezed = [Some(340.), Some(200.), Some(column(MIN_SIZE.1) - 120.)];
+            assert_eq!(drawn(cx), squeezed);
+            let center = cx.debug_bounds("center").unwrap();
+            assert_eq!(f32::from(center.size.width), 360.);
+            // The room back, the sizes back.
+            resize(cx, START);
+            assert_eq!(drawn(cx), set);
+            assert_eq!(open(cx), [true; 3]);
+        }
+
+        #[gpui_kit::test]
+        fn drags_clamp_close_under_half_the_min_and_open_again_dragged_back(
+            cx: &mut TestAppContext,
+        ) {
+            let project = setup("drags", cx);
+            let cx = &mut launch(Some(project), START, cx);
+            let y = 400.;
+            drag(cx, L, &[(330., y), (500., y)]);
+            assert_eq!(drawn(cx)[L], Some(500.));
+            // A double click fits it to its header's tabs, from its base up.
+            double_click(cx, L);
+            let fit = drawn(cx)[L].unwrap();
+            assert!((320. ..500.).contains(&fit), "{fit}");
+            drag(cx, L, &[(330., y), (500., y)]);
+            // Never past its share of the window, nor into the right side's room.
+            drag(cx, L, &[(900., y), (1400., y)]);
+            assert_eq!(drawn(cx)[L], Some(666.));
+            assert_eq!(drawn(cx)[R], Some(260.));
+            drag(cx, R, &[(1000., y), (100., y)]);
+            assert_eq!(drawn(cx)[R], Some(START.0 - 360. - 666.));
+            assert_eq!(drawn(cx)[L], Some(666.));
+            // Under half its min it closes; back out in the same drag, it opens there.
+            drag(cx, L, &[(400., y), (100., y), (300., y)]);
+            assert_eq!(drawn(cx)[L], Some(300.));
+            let (x, _) = edge(cx, L);
+            cx.simulate_mouse_down(point(px(x), px(y)), MouseButton::Left, Modifiers::default());
+            for to in [250., 100., 60.] {
+                cx.simulate_mouse_move(
+                    point(px(to), px(y)),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                );
+                draw(cx);
+            }
+            assert_eq!(drawn(cx)[L], None, "closed mid-drag");
+            cx.simulate_mouse_up(
+                point(px(60.), px(y)),
+                MouseButton::Left,
+                Modifiers::default(),
+            );
+            draw(cx);
+            assert!(!open(cx)[L]);
+            // It opens again at the width the drag began with.
+            keys(cx, "cmd-b");
+            assert_eq!(drawn(cx)[L], Some(300.));
+            // The terminal stops where the code view keeps its min, and a double click on its
+            // edge puts it back to its share of the column.
+            keys(cx, "cmd-j");
+            drag(cx, B, &[(700., 300.), (700., 0.)]);
+            assert_eq!(drawn(cx)[B], Some(column(START.1) - 120.));
+            double_click(cx, B);
+            assert_eq!(drawn(cx)[B], Some(layout::bottom_base(column(START.1))));
+        }
+
+        #[gpui_kit::test]
+        fn a_relaunch_brings_back_the_panels_as_they_were_left(cx: &mut TestAppContext) {
+            let project = setup("relaunch", cx);
+            let cx = &mut launch(Some(project.clone()), START, cx);
+            // The terminal shown and never sized: it comes back, at the height it had.
+            keys(cx, "cmd-j");
+            let first = drawn(cx);
+            let cx = &mut relaunch(Some(project.clone()), START, cx);
+            assert_eq!(drawn(cx), first);
+            // Sized, one side hidden, the terminal hidden.
+            drag(cx, L, &[(390., 400.), (410., 400.)]);
+            drag(cx, R, &[(1190., 400.), (1170., 400.)]);
+            keys(cx, "cmd-b cmd-j");
+            assert_eq!(drawn(cx), [None, Some(310.), None]);
+            let cx = &mut relaunch(Some(project.clone()), (1600., 1000.), cx);
+            assert_eq!(drawn(cx), [None, Some(310.), None]);
+            assert_eq!(open(cx), [false, true, false]);
+            keys(cx, "cmd-b cmd-j");
+            assert_eq!(drawn(cx), [Some(410.), Some(310.), first[B]]);
+            // Relaunched in a window too small for them: squeezed, and saved as they were.
+            let cx = &mut relaunch(Some(project), MIN_SIZE, cx);
+            assert_eq!(drawn(cx), [Some(340.), Some(200.), first[B]]);
+            resize(cx, START);
+            assert_eq!(drawn(cx), [Some(410.), Some(310.), first[B]]);
+        }
+
+        #[gpui_kit::test]
+        fn projects_tabs_and_the_welcome_screen_leave_the_panels_alone(cx: &mut TestAppContext) {
+            let project = setup("projects", cx);
+            let other = project.with_file_name("other");
+            std::fs::create_dir_all(&other).unwrap();
+            let cx = &mut launch(None, START, cx);
+            assert_eq!(drawn(cx), [None, None, None], "the welcome screen");
+            let ws = workspace(cx);
+            cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(project, window, cx)));
+            draw(cx);
+            assert_eq!(drawn(cx), [Some(320.), Some(260.), None]);
+            keys(cx, "alt-cmd-b");
+            cx.update(|window, cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.open_tab(
+                        "tab",
+                        false,
+                        |_, cx| {
+                            cx.new(|cx| Tab {
+                                focus: cx.focus_handle(),
+                                finds: false,
+                                found: Rc::default(),
+                            })
+                        },
+                        window,
+                        cx,
+                    );
+                    ws.open_project(other, window, cx);
+                })
+            });
+            draw(cx);
+            assert_eq!(drawn(cx), [Some(320.), None, None]);
+            cx.update(|_, cx| ws.update(cx, |ws, cx| ws.close_project(cx)));
+            resize(cx, (2400., 1350.));
+            assert_eq!(drawn(cx), [None, None, None]);
+            assert_eq!(open(cx), [true, false, false]);
+        }
+
+        #[gpui_kit::test]
+        fn a_maximized_terminal_stays_maximized_through_resizes(cx: &mut TestAppContext) {
+            let project = setup("maximized", cx);
+            let cx = &mut launch(Some(project), START, cx);
+            keys(cx, "cmd-j");
+            let height = drawn(cx)[B];
+            let ws = workspace(cx);
+            cx.update(|_, cx| ws.update(cx, |ws, cx| ws.set_terminal_maximized(true, cx)));
+            for size in RESIZES {
+                resize(cx, size);
+                assert_eq!(drawn(cx), [None, None, Some(column(size.1))], "at {size:?}");
+            }
+            cx.update(|_, cx| ws.update(cx, |ws, cx| ws.set_terminal_maximized(false, cx)));
+            draw(cx);
+            assert_eq!(drawn(cx), [Some(320.), Some(260.), height]);
+        }
+
+        #[gpui_kit::test]
+        fn a_toggle_shows_a_panel_with_focus_and_hides_it_leaving_focus_to_the_code_view(
+            cx: &mut TestAppContext,
+        ) {
+            let project = setup("focus", cx);
+            let cx = &mut launch(Some(project), START, cx);
+            let ws = workspace(cx);
+            let focused = |cx: &mut VisualTestContext| {
+                cx.update(|window, cx| ws.read(cx).focused_part(window, cx))
+            };
+            // The terminal's view built, as a panel shown before is.
+            cx.update(|_, cx| ws.update(cx, |ws, cx| ws.set_open(Slot::Bottom, true, cx)));
+            draw(cx);
+            keys(cx, "cmd-j");
+            assert_eq!(drawn(cx)[B], None);
+            keys(cx, "cmd-b");
+            keys(cx, "cmd-b");
+            assert_eq!(focused(cx), Some(Part::Slot(Slot::Left)));
+            keys(cx, "cmd-b");
+            assert_eq!(focused(cx), Some(Part::Center));
+            keys(cx, "cmd-j");
+            assert_eq!(focused(cx), Some(Part::Slot(Slot::Bottom)));
+            keys(cx, "cmd-j");
+            assert_eq!(focused(cx), Some(Part::Center));
+        }
     }
 }
