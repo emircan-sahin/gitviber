@@ -6,7 +6,7 @@
 use crate::events::{Event, EventSink};
 use crate::fs::{confine, read_media_at, read_text_at};
 use crate::git::FileText;
-use crate::watch::{debounce, Watching};
+use crate::watch::{debounce, only_read, Watching};
 use notify::{recommended_watcher, EventKind, RecursiveMode, Watcher};
 use serde::Serialize;
 use std::collections::HashSet;
@@ -253,6 +253,9 @@ pub(crate) fn vault_event(
     real: &Path,
     event: &notify::Event,
 ) -> Option<(bool, Vec<String>)> {
+    if only_read(event) {
+        return None;
+    }
     if event.need_rescan() {
         return Some((true, vec![]));
     }
@@ -430,7 +433,9 @@ mod tests {
 
     #[test]
     fn a_watcher_event_counts_unless_hidden_and_says_when_files_came_or_went() {
-        use notify::event::{CreateKind, DataChange, ModifyKind, RenameMode};
+        use notify::event::{
+            AccessKind, AccessMode, CreateKind, DataChange, ModifyKind, RenameMode,
+        };
         let (root, real) = (Path::new("/v"), Path::new("/private/v"));
         let event = |kind, paths: &[&str]| notify::Event {
             kind,
@@ -474,5 +479,8 @@ mod tests {
             vault_event(root, real, &event(edit, &["/elsewhere/x.md"])),
             None
         );
+        // inotify's open: the note read on hearing of a change isn't one.
+        let open = EventKind::Access(AccessKind::Open(AccessMode::Any));
+        assert_eq!(vault_event(root, real, &event(open, &["/v/A.md"])), None);
     }
 }

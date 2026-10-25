@@ -182,6 +182,31 @@ fn watcher_reloads_after_dropped_events() {
     assert!(kinds(&objects).is_empty());
 }
 
+/// inotify tells of every file opened: git reading HEAD for the refresh a change asked for is no
+/// change, or each refresh asks for the next.
+#[test]
+fn a_file_opened_or_read_is_no_change() {
+    use crate::watch::{route, ExternalGitDirs};
+    use notify::event::{AccessKind, AccessMode, Event, EventKind};
+    let sb = Sandbox::new("watchread");
+    let r = sb.path("r");
+    init(&r);
+    let r = r.canonicalize().unwrap();
+    let ext = ExternalGitDirs::find(&r);
+    for path in [r.join(".git/HEAD"), r.join("a.txt")] {
+        let heard = |kind| {
+            route(
+                &r,
+                &ext,
+                &Event::new(EventKind::Access(kind)).add_path(path.clone()),
+            )
+        };
+        assert!(heard(AccessKind::Open(AccessMode::Any)).is_empty());
+        assert!(heard(AccessKind::Close(AccessMode::Read)).is_empty());
+        assert_eq!(heard(AccessKind::Close(AccessMode::Write)).len(), 1);
+    }
+}
+
 /// Quitting (or closing the repo) drops the watchers while files keep changing. FSEvents' stop
 /// waits on fseventsd, which took 4–70 s here while builds kept it busy: the drop must not.
 #[test]

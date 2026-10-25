@@ -653,7 +653,7 @@ fn watch_in_background(files: Weak<Files>, sink: Sink) -> Option<mpsc::Sender<Pa
             let (heard, told) = (files.clone(), sink.clone());
             let Ok(mut watcher) =
                 recommended_watcher(move |event: notify::Result<notify::Event>| {
-                    if let Ok(event) = event {
+                    if let Some(event) = event.ok().filter(|e| !crate::watch::only_read(e)) {
                         changed(&heard, &event.paths, &told);
                     }
                 })

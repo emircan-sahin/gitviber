@@ -3,7 +3,8 @@
 
 use crate::errors;
 use crate::events::{Event, EventSink};
-use notify::{recommended_watcher, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::event::{AccessKind, AccessMode};
+use notify::{recommended_watcher, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -202,12 +203,21 @@ pub(crate) fn not_ignored(root: &Path, paths: &HashSet<PathBuf>) -> bool {
     rels.iter().any(|r| !ignored.contains(r))
 }
 
+/// A file opened, or closed without a write: inotify reports both (FSEvents neither). Taken for
+/// a change, each read made on hearing one was heard again, a refresh loop on Linux.
+pub(crate) fn only_read(event: &notify::Event) -> bool {
+    matches!(event.kind, EventKind::Access(kind) if kind != AccessKind::Close(AccessMode::Write))
+}
+
 /// What one watcher event means for the window, path by path.
 pub(crate) fn route(
     root: &Path,
     external: &ExternalGitDirs,
     event: &notify::Event,
 ) -> Vec<(Kind, PathBuf)> {
+    if only_read(event) {
+        return vec![];
+    }
     // Events were dropped (FSEvents' MustScanSubDirs, inotify's overflow): for the repo or a git
     // dir itself, which classify to nothing, anything may have changed. A folder in the worktree
     // counts as written to, so ignored build output and nested worktrees still stay out.
