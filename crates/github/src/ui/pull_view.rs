@@ -13,6 +13,7 @@ use gitviber_core::github::{Annotation, CheckFailure, PullDetail, PullFiles};
 use gitviber_markdown::MarkdownView;
 use gitviber_ui::AppTheme;
 use gitviber_ui::actions::editor;
+use gitviber_ui::keymap::scroll::{self, Step};
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{FileIcon, LineCounts, PathLabel, StatusLetter};
 use gitviber_ui::workspace::{PullRange, TabIcon, TabItem, Toast, Workspace};
@@ -398,6 +399,13 @@ impl PullView {
 
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.find.open(self, None, &self.focus, window, cx);
+    }
+
+    /// A scroll key, from the page or a text focused in it, moves the page.
+    fn scroll_key(&mut self, step: Step, cx: &mut Context<Self>) {
+        if scroll::step_list(&self.page, step) {
+            cx.notify();
+        }
     }
 
     /// Scrolls the page's list to item `ix`'s top unless some of it is in view; what's in it
@@ -1896,6 +1904,7 @@ impl PullView {
             s.child(
                 div()
                     .id("commits")
+                    .key_context("PullCommits")
                     .track_focus(&self.commits_focus)
                     .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
                         this.commit_key(ev, cx);
@@ -2848,6 +2857,7 @@ impl Render for PullView {
             .key_context("PullView")
             .track_focus(&self.focus)
             .size_full()
+            .map(|el| scroll::on_keys(el, Self::scroll_key, cx))
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
                 let m = ev.keystroke.modifiers;
                 if m.alt || m.platform || m.control || m.shift || this.pick.is_none() {
@@ -3261,5 +3271,41 @@ mod tests {
         // Scrolled down the page and back up to the title.
         let top = view.read_with(cx, |v, _| v.page.logical_scroll_top());
         assert_eq!((top.item_ix, top.offset_in_item), (0, px(0.)));
+    }
+
+    #[gpui_kit::test]
+    fn a_long_page_scrolls_from_the_keyboard(cx: &mut TestAppContext) {
+        let (view, cx) = open_long(300, cx);
+        let focus = view.read_with(cx, |v, _| v.focus.clone());
+        cx.update(|window, cx| focus.focus(window, cx));
+        // How far it's scrolled, how far it can be, the view's height, the last comment in view.
+        let scrolled = |cx: &mut VisualTestContext| {
+            draw(cx);
+            draw(cx);
+            view.read_with(cx, |v, _| {
+                let view = v.page.viewport_bounds();
+                (
+                    f32::from(-v.page.scroll_px_offset_for_scrollbar().y),
+                    f32::from(v.page.max_offset_for_scrollbar().y),
+                    f32::from(view.size.height),
+                    v.page
+                        .bounds_for_item(300)
+                        .is_some_and(|b| b.intersects(&view)),
+                )
+            })
+        };
+        let (_, _, height, _) = scrolled(cx);
+        cx.simulate_keystrokes("pagedown");
+        let (top, ..) = scrolled(cx);
+        assert!((top - height * scroll::PAGE).abs() < 0.5, "{top} {height}");
+        // To the last comment, which was never drawn.
+        cx.simulate_keystrokes("end");
+        let (top, max, _, last) = scrolled(cx);
+        assert!(
+            last && top > height && (top - max).abs() < 0.5,
+            "{top} of {max}"
+        );
+        cx.simulate_keystrokes("home");
+        assert_eq!(scrolled(cx).0, 0.);
     }
 }

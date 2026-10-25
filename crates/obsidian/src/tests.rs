@@ -546,7 +546,7 @@ fn a_link_to_a_block_scrolls_to_the_block(cx: &mut TestAppContext) {
     let note = cx.update(|_, cx| view.read(cx).note().expect("the note"));
     cx.update(|_, cx| note.update(cx, |n, cx| n.reveal("^b1", cx)));
     show(&host, Some(view.clone().into()), cx);
-    let top = cx.update(|_, cx| note.read(cx).scroll_top());
+    let top = cx.update(|_, cx| note.read(cx).list().logical_scroll_top());
     assert_eq!(top.item_ix, 0);
     assert!(top.offset_in_item > gpui_kit::px(1000.), "{top:?}");
 }
@@ -689,4 +689,63 @@ fn cmd_g_steps_through_a_notes_matches_and_goes_on_without_its_box(cx: &mut Test
     cx.simulate_keystrokes(next);
     cx.simulate_keystrokes(prev);
     assert_eq!(went_on.get(), 2);
+}
+
+#[gpui_kit::test]
+fn a_long_note_scrolls_from_the_keyboard_but_not_from_its_find_box(cx: &mut TestAppContext) {
+    use gitviber_ui::keymap::scroll;
+    let vault = setup("scroll-keys", cx);
+    // A part a heading, the ones far down not measured until they come near.
+    let long: String = (1..=12)
+        .map(|i| {
+            format!(
+                "## Part {i}\n\n{}",
+                "A paragraph of words to read.\n\n".repeat(15)
+            )
+        })
+        .collect();
+    std::fs::write(Path::new(&vault).join("Long.md"), long).unwrap();
+    let (host, cx) = cx.add_window_view(|_, _| Host(None));
+    let view = cx.update(|window, cx| tab(&vault, "Long.md", window, cx));
+    show(&host, Some(view.clone().into()), cx);
+    let note = cx.update(|_, cx| view.read(cx).note().expect("the note"));
+    let shown = cx.update(|_, cx| TabItem::tab_focus(view.read(cx), cx).unwrap());
+    cx.update(|window, cx| window.focus(&shown, cx));
+    // How far it's scrolled, how far it can be, the view's height, and the last part in view.
+    let scrolled = |cx: &mut VisualTestContext| {
+        for _ in 0..2 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        }
+        note.read_with(cx, |n, _| {
+            let list = n.list();
+            let view = list.viewport_bounds();
+            let last = list
+                .bounds_for_item(n.doc().len() - 1)
+                .is_some_and(|b| b.intersects(&view));
+            (
+                f32::from(-list.scroll_px_offset_for_scrollbar().y),
+                f32::from(list.max_offset_for_scrollbar().y),
+                f32::from(view.size.height),
+                last,
+            )
+        })
+    };
+    let (_, _, height, _) = scrolled(cx);
+    assert!(height > 100., "{height}");
+    cx.simulate_keystrokes("pagedown");
+    let (top, ..) = scrolled(cx);
+    assert!((top - height * scroll::PAGE).abs() < 0.5, "{top} {height}");
+    cx.simulate_keystrokes("end");
+    let (top, max, _, last) = scrolled(cx);
+    assert!(
+        last && top > height && (top - max).abs() < 0.5,
+        "{top} of {max}"
+    );
+    // In the find box, they stay there.
+    cx.simulate_keystrokes("cmd-f home pageup up");
+    assert_eq!(scrolled(cx).0, top);
+    cx.update(|window, cx| window.focus(&shown, cx));
+    cx.simulate_keystrokes("home");
+    assert_eq!(scrolled(cx).0, 0.);
 }

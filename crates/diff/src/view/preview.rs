@@ -18,6 +18,8 @@ pub(super) enum Preview {
     Markdown {
         view: Entity<MarkdownView>,
         _links: Subscription,
+        /// The diff's own focus goes on to the preview (a tab shown again focuses the diff).
+        _focus: Subscription,
     },
     Svg(Entity<ImageCompare>),
 }
@@ -97,6 +99,8 @@ impl DiffView {
     }
 
     /// Builds or drops the preview to match the switch, and hands it the texts once they changed.
+    /// The keyboard, when it was in the diff, goes into what shows: a markdown preview takes it
+    /// for its scroll keys.
     pub(super) fn sync_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let want = self.preview_kind().filter(|&k| self.wants_preview(k, cx));
         let has = match &self.preview {
@@ -104,6 +108,25 @@ impl DiffView {
             Some(Preview::Svg(_)) => Some(Kind::Svg),
             None => None,
         };
+        // Asked before the preview goes: its focus goes with it.
+        let had_focus = want != has && self.focus.contains_focused(window, cx);
+        self.fill_preview(want, has, window, cx);
+        if had_focus {
+            let shown = match &self.preview {
+                Some(Preview::Markdown { view, .. }) => view.focus_handle(cx),
+                _ => self.focus.clone(),
+            };
+            window.focus(&shown, cx);
+        }
+    }
+
+    fn fill_preview(
+        &mut self,
+        want: Option<Kind>,
+        has: Option<Kind>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if want != has {
             self.preview = None;
             self.preview_stale = true;
@@ -144,7 +167,16 @@ impl DiffView {
                     let MarkdownEvent::OpenFile { path, line } = e;
                     links::open_file(path, line.map(|l| (l, 0)), window, cx);
                 });
-                self.preview = Some(Preview::Markdown { view, _links: sub });
+                let focus = cx.on_focus(&self.focus, window, |this, window, cx| {
+                    if let Some(Preview::Markdown { view, .. }) = &this.preview {
+                        window.focus(&view.focus_handle(cx), cx);
+                    }
+                });
+                self.preview = Some(Preview::Markdown {
+                    view,
+                    _links: sub,
+                    _focus: focus,
+                });
             }
             (None, Kind::Svg) => {
                 let source = self.source.clone();
@@ -155,6 +187,15 @@ impl DiffView {
                 });
                 self.preview = Some(Preview::Svg(view));
             }
+        }
+    }
+
+    /// The markdown preview on show (tests).
+    #[doc(hidden)]
+    pub fn markdown_preview(&self) -> Option<&Entity<MarkdownView>> {
+        match &self.preview {
+            Some(Preview::Markdown { view, .. }) => Some(view),
+            _ => None,
         }
     }
 

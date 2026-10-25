@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use gitviber_core::git::FileChange;
 use gitviber_core::github::{Issue, Label, Pull};
+use gitviber_ui::keymap::scroll;
 use gitviber_ui::workspace::{
     PanelSpec, Project, ProjectEvent, PullRange, Selection, Slot, TabHandle, Toast, Workspace,
     register_opener, register_panel,
@@ -34,6 +35,9 @@ use crate::cache::Cache;
 use crate::model::{IssueItem, PullItem, PullState};
 
 pub(crate) fn init(cx: &mut App) {
+    // A page's scroll keys; a PR's commits list keeps its own ↑/↓, Space and Home/End.
+    scroll::bind(cx, "PullView && !PullCommits", false);
+    scroll::bind(cx, "IssueView", false);
     follow_projects(cx);
     follow_branch_lists(cx);
     register_panel(

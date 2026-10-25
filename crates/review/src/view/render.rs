@@ -1342,6 +1342,9 @@ impl GuideView {
         }
         div()
             .id("guide-column")
+            .key_context(GUIDE_CONTEXT)
+            .track_focus(&self.guide_focus)
+            .map(|el| scroll::on_keys(el, Self::scroll_key, cx))
             .h_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)

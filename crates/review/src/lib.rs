@@ -47,9 +47,10 @@ pub(crate) fn take_request(cx: &mut App, key: &str) -> bool {
         && cx.default_global::<Requested>().0.remove(key)
 }
 
-/// The `guide` tabs' opener, review notes on a repo file's own view, and on the first launch
-/// the old app's guides and review notes. Once at startup.
+/// The `guide` tabs' opener and their column's scroll keys, review notes on a repo file's own
+/// view, and on the first launch the old app's guides and review notes. Once at startup.
 pub fn init(cx: &mut App) {
+    gitviber_ui::keymap::scroll::bind(cx, view::GUIDE_CONTEXT, false);
     store::import_legacy(cx);
     note_store::import_legacy(cx);
     register_opener(cx, "guide", |sel, window, cx| match sel {

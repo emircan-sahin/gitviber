@@ -1077,3 +1077,51 @@ fn a_guides_note_and_ask_boxes_give_the_keys_back_to_its_diffs(cx: &mut TestAppC
     assert!(!view.read_with(cx, |v, _| v.has_note_draft()));
     assert!(focused(cx), "the keys back on the diffs");
 }
+
+#[gpui_kit::test]
+fn a_long_guide_scrolls_from_the_keyboard(cx: &mut TestAppContext) {
+    let (repo, agent) = setup("guide-scroll-keys");
+    boot(cx, &agent);
+    let sections: Vec<_> = (1..=40)
+        .map(|i| {
+            serde_json::json!({"title": format!("Part {i}"), "category": "core",
+                "summary": "What changed here and why it matters.", "files": ["src/retry.ts"]})
+        })
+        .collect();
+    let long =
+        serde_json::json!({"title": "Long", "overview": "Many parts.", "sections": sections});
+    let root = repo.to_string_lossy().into_owned();
+    let (_host, _ws, view, cx) = drawn_guide(cx, &repo, |cx| {
+        let of = head_commit(cx);
+        let id = crate::store::guide_id(&root, &of, Some("main"));
+        let run = kept(&long.to_string(), rev(&repo, "HEAD~1"), rev(&repo, "HEAD"));
+        cx.update(|_, cx| Guides::keep(cx, RunKind::Guide, &id, run));
+        of
+    });
+    let (focus, scroll) = view.read_with(cx, |v, _| {
+        let (focus, scroll) = v.column_keys();
+        (focus.clone(), scroll.clone())
+    });
+    cx.update(|window, cx| focus.focus(window, cx));
+    let scrolled = |cx: &mut VisualTestContext| {
+        draw(cx);
+        let (top, max) = (-scroll.offset().y, scroll.max_offset().y);
+        (
+            f32::from(top),
+            f32::from(max),
+            f32::from(scroll.bounds().size.height),
+        )
+    };
+    let (_, max, height) = scrolled(cx);
+    assert!(height > 100. && max > height, "{height} {max}");
+    cx.simulate_keystrokes("pagedown");
+    let (top, ..) = scrolled(cx);
+    assert!(
+        (top - height * gitviber_ui::keymap::scroll::PAGE).abs() < 0.5,
+        "{top} {height}"
+    );
+    cx.simulate_keystrokes("end");
+    assert_eq!(scrolled(cx).0, max);
+    cx.simulate_keystrokes("home");
+    assert_eq!(scrolled(cx).0, 0.);
+}

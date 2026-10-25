@@ -9,6 +9,7 @@ use gitviber_core::github::IssueDetail;
 use gitviber_markdown::MarkdownView;
 use gitviber_ui::actions::editor;
 use gitviber_ui::actions::github::PostComment;
+use gitviber_ui::keymap::scroll::{self, Step};
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{TabIcon, TabItem, Toast, Workspace};
 use gpui_kit::assets::IconName;
@@ -264,6 +265,13 @@ impl IssueView {
 
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.find.open(self, None, &self.focus, window, cx);
+    }
+
+    /// A scroll key, from the page or a text focused in it, moves the page.
+    fn scroll_key(&mut self, step: Step, cx: &mut Context<Self>) {
+        if scroll::step_list(&self.page, step) {
+            cx.notify();
+        }
     }
 
     /// Scrolls the page's list to item `ix`'s top unless some of it is in view; what's in it
@@ -1205,8 +1213,10 @@ impl Render for IssueView {
             .child(
                 div()
                     .id("issue")
+                    .key_context("IssueView")
                     .track_focus(&self.focus)
                     .size_full()
+                    .map(|el| scroll::on_keys(el, Self::scroll_key, cx))
                     .child(page),
             )
             .children(self.find.bar(cx))
@@ -1467,5 +1477,49 @@ mod tests {
             assert_eq!(current, Some(n % 5));
             assert_eq!(waiting, None, "match {n} was never drawn");
         }
+    }
+
+    /// How far the page is scrolled, how far it can be, the view's height, and item `last` in
+    /// view, drawn.
+    fn scrolled(
+        view: &Entity<IssueView>,
+        last: usize,
+        cx: &mut VisualTestContext,
+    ) -> (f32, f32, f32, bool) {
+        draw(cx);
+        draw(cx);
+        let at = view.read_with(cx, |v, _| {
+            (
+                f32::from(-v.page.scroll_px_offset_for_scrollbar().y),
+                f32::from(v.page.max_offset_for_scrollbar().y),
+                f32::from(v.page.viewport_bounds().size.height),
+            )
+        });
+        (at.0, at.1, at.2, shown(view, last, cx))
+    }
+
+    #[gpui_kit::test]
+    fn a_long_thread_scrolls_from_the_keyboard_but_not_from_the_box(cx: &mut TestAppContext) {
+        let (view, cx) = open_long(300, cx);
+        let focus = view.read_with(cx, |v, _| v.focus.clone());
+        cx.update(|window, cx| focus.focus(window, cx));
+        let (_, _, height, _) = scrolled(&view, 301, cx);
+        cx.simulate_keystrokes("pagedown");
+        let (top, ..) = scrolled(&view, 301, cx);
+        assert!((top - height * scroll::PAGE).abs() < 0.5, "{top} {height}");
+        // To the box at the end, which was never drawn.
+        cx.simulate_keystrokes("end");
+        let (top, max, _, last) = scrolled(&view, 301, cx);
+        assert!(
+            last && top > height && (top - max).abs() < 0.5,
+            "{top} of {max}"
+        );
+        let input = view.read_with(cx, |v, cx| v.comment.read(cx).input().clone());
+        cx.update(|window, cx| input.update(cx, |i, cx| i.focus(window, cx)));
+        cx.simulate_keystrokes("home pageup up");
+        assert_eq!(scrolled(&view, 301, cx).0, top);
+        cx.update(|window, cx| focus.focus(window, cx));
+        cx.simulate_keystrokes("home");
+        assert_eq!(scrolled(&view, 301, cx).0, 0.);
     }
 }

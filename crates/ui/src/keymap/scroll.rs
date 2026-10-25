@@ -1,7 +1,9 @@
 //! The keys that scroll a page from the keyboard (a diff's lines, a rendered document), for the
 //! views that bind them in their own key context and move by each key's [`Step`].
 
-use gpui_kit::{App, Context, InteractiveElement, KeyBinding, ListState, Pixels, px};
+use gpui_kit::{
+    App, Context, InteractiveElement, KeyBinding, ListState, Pixels, ScrollHandle, point, px,
+};
 
 use super::{INPUT_CONTEXT, IS_MAC};
 
@@ -81,12 +83,39 @@ pub const LINE: Pixels = px(40.);
 /// The share of the view a rendered page's page step moves, WebKit's too.
 pub const PAGE: f32 = 0.875;
 
-/// Moves a `gpui::list` of rendered content by `step` (not sideways), within its content;
-/// false when it didn't move.
+/// Moves a `gpui::list` of rendered content by `step` (not sideways); false when it didn't
+/// move. Only the rows near the view are measured, so a step down isn't held to the height
+/// measured so far: the list's layout stops it at the end.
 pub fn step_list(list: &ListState, step: Step) -> bool {
     let top = -list.scroll_px_offset_for_scrollbar().y;
-    let max = list.max_offset_for_scrollbar().y;
+    // The rows up to the end are measured once it's in reach: then it's the real end.
+    let at_end = top >= list.max_offset_for_scrollbar().y;
     let page = (list.viewport_bounds().size.height * PAGE).max(LINE);
+    let by = match step {
+        Step::Lines(n) => LINE * n,
+        Step::Pages(n) => page * n,
+        Step::Start => -top,
+        Step::End if at_end => return false,
+        Step::End => {
+            list.scroll_to_end();
+            return true;
+        }
+        Step::Side(_) => return false,
+    };
+    if by == px(0.) || (by > px(0.) && at_end) || (by < px(0.) && top <= px(0.)) {
+        return false;
+    }
+    list.scroll_by(by);
+    true
+}
+
+/// Moves a div that scrolls (`overflow_y_scroll` + `track_scroll`) by `step` (not sideways);
+/// false when it didn't move. The view shows the new offset once it's drawn again.
+pub fn step_handle(handle: &ScrollHandle, step: Step) -> bool {
+    let offset = handle.offset();
+    let top = -offset.y;
+    let max = handle.max_offset().y;
+    let page = (handle.bounds().size.height * PAGE).max(LINE);
     let to = match step {
         Step::Lines(n) => top + LINE * n,
         Step::Pages(n) => top + page * n,
@@ -94,10 +123,11 @@ pub fn step_list(list: &ListState, step: Step) -> bool {
         Step::End => max,
         Step::Side(_) => top,
     }
-    .clamp(px(0.), max);
+    .min(max)
+    .max(px(0.));
     if to == top {
         return false;
     }
-    list.scroll_by(to - top);
+    handle.set_offset(point(offset.x, -to));
     true
 }

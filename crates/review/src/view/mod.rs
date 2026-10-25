@@ -25,6 +25,7 @@ use gitviber_diff::{
 use gitviber_markdown::{MarkdownBase, MarkdownView};
 use gitviber_refs::toast::{Fixes, Note, git_failed};
 use gitviber_refs::{RepoEvent, RepoState};
+use gitviber_ui::keymap::scroll::{self, Step};
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{now_unix, relative_time};
 use gitviber_ui::workspace::{
@@ -58,6 +59,9 @@ use parts::{category_icon, category_tag, category_tone, count, icon, importance_
 
 /// After the repo changes: a burst of saves asks once.
 const STAMP_WAIT: Duration = Duration::from_millis(800);
+
+/// The guide column's key context: its scroll keys.
+pub(crate) const GUIDE_CONTEXT: &str = "Guide";
 
 /// The category shown, and whether only the high importance sections.
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -150,7 +154,9 @@ pub struct GuideView {
     md: RefCell<HashMap<SharedString, Entity<TextViewState>>>,
     /// The uncommitted changes' stamp now, to tell a guide of them is outdated.
     stamp: Option<String>,
+    /// The guide column's scroll, and its focus for the scroll keys.
     scroll: ScrollHandle,
+    guide_focus: FocusHandle,
     _stamp: Option<Task<()>>,
     _tick: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -242,6 +248,7 @@ impl GuideView {
             md: RefCell::default(),
             stamp: None,
             scroll: ScrollHandle::new(),
+            guide_focus: cx.focus_handle(),
             _stamp: None,
             _tick: None,
             _subscriptions: subscriptions,
@@ -831,6 +838,13 @@ impl GuideView {
         cx.notify();
     }
 
+    /// A scroll key, from the guide column or a text focused in it, moves the column.
+    fn scroll_key(&mut self, step: Step, cx: &mut Context<Self>) {
+        if scroll::step_handle(&self.scroll, step) {
+            cx.notify();
+        }
+    }
+
     /// Where section `n`'s card is among the guide column's children.
     fn card_index(&self, n: usize) -> Option<usize> {
         let g = self.guide.as_ref()?;
@@ -1124,6 +1138,11 @@ impl GuideView {
     #[doc(hidden)]
     pub fn stacked(&self) -> &Entity<StackedDiff> {
         &self.stacked
+    }
+
+    #[cfg(test)]
+    pub(crate) fn column_keys(&self) -> (&FocusHandle, &ScrollHandle) {
+        (&self.guide_focus, &self.scroll)
     }
 
     #[doc(hidden)]

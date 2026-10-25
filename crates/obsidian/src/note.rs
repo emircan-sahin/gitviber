@@ -17,6 +17,7 @@ use gitviber_markdown::{
     BoundedImageCache, Callouts, FindBar, FindBarEvent, MarkdownBase, MarkdownEvent, MarkdownView,
 };
 use gitviber_ui::ActiveAppTheme as _;
+use gitviber_ui::keymap::scroll::{self, Step};
 use gitviber_ui::keymap::{editor, find};
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{Selection, Toast, Workspace};
@@ -795,14 +796,21 @@ impl NoteView {
         &self.focus
     }
 
+    /// A scroll key, from the note or a part's view focused in it, moves the note.
+    fn scroll_key(&mut self, step: Step, cx: &mut Context<Self>) {
+        if scroll::step_list(&self.list, step) {
+            cx.notify();
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn doc(&self) -> &Doc {
         &self.doc
     }
 
     #[cfg(test)]
-    pub(crate) fn scroll_top(&self) -> ListOffset {
-        self.list.logical_scroll_top()
+    pub(crate) fn list(&self) -> &ListState {
+        &self.list
     }
 
     fn render_part(
@@ -847,6 +855,7 @@ impl Render for NoteView {
             .track_focus(&self.focus)
             .relative()
             .size_full()
+            .map(|el| scroll::on_keys(el, Self::scroll_key, cx))
             .on_action(cx.listener(|this, _: &editor::Find, window, cx| this.open_find(window, cx)))
             .on_action(cx.listener(|this, _: &find::Next, _, cx| this.find_key(1, cx)))
             .on_action(cx.listener(|this, _: &find::Prev, _, cx| this.find_key(-1, cx)))
