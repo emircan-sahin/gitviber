@@ -858,6 +858,8 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         use std::os::unix::fs::PermissionsExt as _;
+        // The push's progress comes from its stderr reader thread and wakes the bar's task.
+        cx.executor().allow_parking();
         let dir = scratch("secret");
         git(&dir, &["commit", "-q", "--allow-empty", "-m", "one"]);
         git(&dir, &["commit", "-q", "--allow-empty", "-m", "token"]);
