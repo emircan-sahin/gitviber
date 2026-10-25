@@ -40,7 +40,10 @@ pub fn clone_url(input: &str) -> String {
         word(owner, false) && word(name, true) && !name.contains('/')
     });
     if shorthand {
-        format!("https://github.com/{}.git", s.trim_end_matches(".git"))
+        format!(
+            "https://github.com/{}.git",
+            s.strip_suffix(".git").unwrap_or(s)
+        )
     } else {
         s.to_string()
     }
@@ -540,6 +543,17 @@ mod tests {
             clone_url("git@github.com:a/b.git"),
             "git@github.com:a/b.git"
         );
+        // Only the last .git is the URL's: a repository named repo.git keeps its own.
+        assert_eq!(
+            clone_url("me/repo.git.git"),
+            "https://github.com/me/repo.git.git"
+        );
+        assert_eq!(
+            clone_url("me/repo.js.git"),
+            "https://github.com/me/repo.js.git"
+        );
+        assert_eq!(clone_url("a/b/c"), "a/b/c");
+        assert_eq!(clone_url("../x"), "../x");
         assert_eq!(clone_url("https://x.org/a/b"), "https://x.org/a/b");
         assert_eq!(clone_url("./a"), "./a");
         assert_eq!(
@@ -550,5 +564,12 @@ mod tests {
         assert_eq!(clone_folder_name("https://x.org/a/b/?q=1"), "b");
         assert_eq!(clone_folder_name("/srv/repo/.git"), "repo");
         assert_eq!(clone_folder_name("https://x.org/.."), "");
+        assert_eq!(clone_folder_name("git@host:repo.git"), "repo");
+        assert_eq!(
+            clone_folder_name("ssh://git@host:2222/me/my.repo.git"),
+            "my.repo"
+        );
+        assert_eq!(clone_folder_name("file:///tmp/work/.git"), "work");
+        assert_eq!(clone_folder_name(""), "");
     }
 }

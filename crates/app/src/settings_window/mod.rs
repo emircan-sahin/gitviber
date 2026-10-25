@@ -389,7 +389,7 @@ impl SettingsWindow {
                 .min(WINDOW_OPACITY.min)
                 .max(WINDOW_OPACITY.max)
                 .step(WINDOW_OPACITY.step)
-                .default_value(s.window_opacity)
+                .default_value(shown_opacity(&s))
         });
         let mut subs = theme::attach(window, cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
@@ -414,6 +414,16 @@ impl SettingsWindow {
                 Settings::update(cx, |s| s.window_opacity = v);
             }
         }));
+        // A reset, a drag under the floor, a theme with a higher floor: the thumb goes where the
+        // opacity is.
+        subs.push(
+            cx.observe_global_in::<Settings>(window, |this, window, cx| {
+                let v = shown_opacity(Settings::get(cx));
+                if this.opacity.read(cx).value().start() != v {
+                    this.opacity.update(cx, |o, cx| o.set_value(v, window, cx));
+                }
+            }),
+        );
         let mut last_agent = (s.browser_agent_control, s.browser_agent_skill);
         subs.push(cx.observe_global::<Settings>(move |this, cx| {
             let s = Settings::get(cx);
@@ -1065,8 +1075,39 @@ pub fn open_notification_settings(cx: &mut App) {
     .detach();
 }
 
+/// The window's opacity as it's drawn: never under the floor the themes stay readable at.
+fn shown_opacity(s: &Settings) -> f32 {
+    s.window_opacity.max(appearance_floor(s))
+}
+
+/// Why Send Test sends nothing, and what changes that: macOS's own settings, or its prompt.
+fn refused(permission: Option<Permission>) -> Option<(&'static str, &'static str)> {
+    match permission? {
+        Permission::Denied => Some((
+            "macOS isn't allowing GitViber to show notifications",
+            "settings",
+        )),
+        Permission::Prompt => Some(("macOS hasn't been asked yet", "ask")),
+        _ => None,
+    }
+}
+
+/// Send Test's answer when macOS won't show one: why, with the button that changes it.
+fn refusal(why: &'static str, fix: &'static str, settings: WeakEntity<SettingsWindow>) -> Toast {
+    let toast = Toast::info("Nothing was sent.").title(why);
+    if fix == "ask" {
+        toast.action("Ask macOS", move |_, cx| {
+            let _ = settings.update(cx, |w, cx| w.ask_notifications(false, cx));
+        })
+    } else {
+        toast.action("Open System Settings", |_, cx| {
+            open_notification_settings(cx)
+        })
+    }
+}
+
 /// Send Test: sent where macOS can show it, and otherwise says why not. Never asks by itself.
-pub fn send_test_notification(cx: &mut App) {
+pub fn send_test_notification(settings: WeakEntity<SettingsWindow>, cx: &mut App) {
     let core = gitviber_ui::core(cx);
     let sent = cx.background_spawn(async move {
         let permission = if IS_MAC {
@@ -1074,13 +1115,8 @@ pub fn send_test_notification(cx: &mut App) {
         } else {
             None
         };
-        let refused = match permission {
-            Some(Permission::Denied) => Some("macOS isn't allowing GitViber to show notifications"),
-            Some(Permission::Prompt) => Some("macOS hasn't been asked yet"),
-            _ => None,
-        };
-        if let Some(why) = refused {
-            return Ok::<_, String>(Err(why));
+        if let Some(refused) = refused(permission) {
+            return Ok::<_, String>(Err(refused));
         }
         api::app::notification_send(
             &core,
@@ -1100,7 +1136,7 @@ pub fn send_test_notification(cx: &mut App) {
                 });
                 toast.title("Test notification sent")
             }
-            Ok(Err(why)) => Toast::info("Nothing was sent.").title(why),
+            Ok(Err((why, fix))) => refusal(why, fix, settings),
             Err(err) => Toast::error(err).title("Couldn't send a notification"),
         };
         cx.update(|cx| crate::help::toast(shown, cx));
@@ -1379,6 +1415,82 @@ mod tests {
             (1 << 2) | (1 << 9)
         );
         assert_eq!(without_full_screen(1 << 8), 1 << 9);
+    }
+
+    #[test]
+    fn send_test_says_why_nothing_was_sent_with_the_button_that_changes_it() {
+        for sent in [None, Some(Permission::Granted), Some(Permission::Quiet)] {
+            assert_eq!(refused(sent), None, "{sent:?}");
+        }
+        let said = |p| {
+            let (why, fix) = refused(Some(p)).unwrap();
+            let toast = refusal(why, fix, WeakEntity::new_invalid());
+            (
+                toast.title.unwrap().to_string(),
+                toast.action.unwrap().label.to_string(),
+            )
+        };
+        assert_eq!(
+            said(Permission::Denied),
+            (
+                "macOS isn't allowing GitViber to show notifications".into(),
+                "Open System Settings".into()
+            )
+        );
+        assert_eq!(
+            said(Permission::Prompt),
+            ("macOS hasn't been asked yet".into(), "Ask macOS".into())
+        );
+    }
+
+    /// The refusal's Ask macOS asks from the settings window, as the page's own button does.
+    #[cfg(target_os = "macos")]
+    #[gpui_kit::test]
+    fn the_refusals_ask_macos_asks(cx: &mut gpui_kit::TestAppContext) {
+        gitviber_ui::test_support::config_dir("settings-ask");
+        cx.update(gitviber_ui::init);
+        let (handle, view) = opened(cx);
+        let (why, fix) = refused(Some(Permission::Prompt)).unwrap();
+        let run = refusal(why, fix, view.clone()).action.unwrap().run;
+        let _ = handle.update(cx, |_, window, cx| run(window, cx));
+        let asking = view.upgrade().unwrap().read_with(cx, |w, _| w.data.asking);
+        assert!(asking, "waiting for macOS's prompt");
+    }
+
+    /// The opacity slider shows what's set: after a reset, and at the floor when dragged under it.
+    #[gpui_kit::test]
+    fn the_opacity_thumb_follows_the_setting(cx: &mut gpui_kit::TestAppContext) {
+        gitviber_ui::test_support::config_dir("settings-opacity");
+        cx.update(gitviber_ui::init);
+        let (handle, view) = opened(cx);
+        let slider = view
+            .upgrade()
+            .unwrap()
+            .read_with(cx, |w, _| w.opacity.clone());
+        let thumb =
+            |cx: &mut gpui_kit::TestAppContext| slider.read_with(cx, |s, _| s.value().start());
+        // As a drag does: the thumb moves, then says so.
+        let drag = |v: f32, cx: &mut gpui_kit::TestAppContext| {
+            let _ = handle.update(cx, |_, window, cx| {
+                slider.update(cx, |s, cx| {
+                    s.set_value(v, window, cx);
+                    cx.emit(SliderEvent::Change(v.into()));
+                })
+            });
+            cx.run_until_parked();
+        };
+        let floor = cx.update(|cx| appearance_floor(Settings::get(cx)));
+        assert_eq!(thumb(cx), 100.);
+        drag(90., cx);
+        assert_eq!(cx.update(|cx| Settings::get(cx).window_opacity), 90.);
+        // The row's reset, or Reset All.
+        cx.update(|cx| Settings::update(cx, |s| s.window_opacity = 100.));
+        cx.run_until_parked();
+        assert_eq!(thumb(cx), 100.);
+        // Under the floor, which the slider's 50 can be: held at the floor.
+        drag(floor - 5., cx);
+        assert_eq!(cx.update(|cx| Settings::get(cx).window_opacity), floor);
+        assert_eq!(thumb(cx), floor);
     }
 
     #[test]

@@ -19,7 +19,7 @@ use gpui_kit::{
 };
 
 /// Off macOS "cmd" is Ctrl (the keymap's rule), so that's the key to hold there.
-const HOLD: Duration = Duration::from_millis(1450);
+pub(crate) const HOLD: Duration = Duration::from_millis(1450);
 /// Between two chords: a range (⌘1 … ⌘8) rather than alternatives.
 const THROUGH: &str = "…";
 /// The fade at the list's foot, as tall as the padding under its last row.
@@ -250,9 +250,7 @@ impl ShortcutOverlay {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let m = &e.modifiers;
-        let held = if IS_MAC { m.platform } else { m.control };
-        let alone = held && !m.alt && !m.shift && !(if IS_MAC { m.control } else { m.platform });
+        let (held, alone) = (held(&e.modifiers, IS_MAC), alone(&e.modifiers, IS_MAC));
         if alone {
             if self.shown.is_none() && self.hold.is_none() && Settings::get(cx).shortcut_overlay {
                 self.hold = Some(cx.spawn_in(window, async move |this, cx| {
@@ -298,11 +296,21 @@ impl ShortcutOverlay {
     /// takes ⌘'s release and the window stays key, so the first move, scroll or click after it
     /// is what says ⌘ is up.
     fn still_held(&mut self, m: &Modifiers, cx: &mut Context<Self>) {
-        let held = if IS_MAC { m.platform } else { m.control };
-        if self.shown == Some(Shown::Held) && !held {
+        if self.shown == Some(Shown::Held) && !held(m, IS_MAC) {
             self.hide(cx);
         }
     }
+}
+
+/// The key the overlay is held up by: ⌘, or off macOS Ctrl (the keymap's "cmd").
+fn held(m: &Modifiers, mac: bool) -> bool {
+    if mac { m.platform } else { m.control }
+}
+
+/// That key by itself: with another modifier it's a chord on its way, which starts no hold.
+fn alone(m: &Modifiers, mac: bool) -> bool {
+    let other = if mac { m.control } else { m.platform };
+    held(m, mac) && !m.alt && !m.shift && !other
 }
 
 fn keycap(key: &str, cx: &App) -> AnyElement {
@@ -571,6 +579,35 @@ impl Render for ShortcutOverlay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_cmd_holds_it_and_off_macos_ctrl_does() {
+        let m = |platform, control, alt, shift| Modifiers {
+            platform,
+            control,
+            alt,
+            shift,
+            ..Modifiers::default()
+        };
+        // macOS: ⌘ alone starts it; with ⇧ or ⌥ it's still held but starts nothing.
+        assert!(alone(&m(true, false, false, false), true));
+        for chord in [
+            m(true, false, false, true),
+            m(true, false, true, false),
+            m(true, true, false, false),
+        ] {
+            assert!(held(&chord, true) && !alone(&chord, true), "{chord:?}");
+        }
+        assert!(!held(&m(false, true, false, false), true), "Ctrl isn't ⌘");
+        // Elsewhere Ctrl is the key, and the platform (Super) key is the other one.
+        assert!(alone(&m(false, true, false, false), false));
+        assert!(!held(&m(true, false, false, false), false));
+        assert!(
+            held(&m(true, true, false, false), false)
+                && !alone(&m(true, true, false, false), false)
+        );
+        assert!(!alone(&Modifiers::default(), true) && !alone(&Modifiers::default(), false));
+    }
 
     #[test]
     fn tabs_read_as_one_row_and_fixed_groups_close_the_list() {

@@ -2,6 +2,8 @@
 //! is saved, a window too small for it squeezes what's drawn, and the saved size comes back with
 //! the room. Nothing here opens or closes a panel. Pure, so it's tested without a window.
 
+use gitviber_ui::state::PanelSizes;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Limits {
     /// Its size until the user sets one.
@@ -42,6 +44,19 @@ impl Limits {
             .min(total - CENTER_MIN - other)
             .max(self.min)
     }
+}
+
+/// The sizes a launch draws from: one that can't be drawn (≤ 0, only from a corrupt state.json)
+/// counts as never set, so the panel opens at its base size, not its min.
+pub fn saved(mut sizes: PanelSizes) -> PanelSizes {
+    for size in [
+        &mut sizes.left.size,
+        &mut sizes.right.size,
+        &mut sizes.bottom.size,
+    ] {
+        *size = size.filter(|s| s.is_finite() && *s > 0.);
+    }
+    sizes
 }
 
 /// A drag of a sidebar's edge to `want` pixels beside the other one drawn `other` wide: None
@@ -109,6 +124,181 @@ pub fn fit_bottom(total: f32, want: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gitviber_ui::state::PanelSize;
+
+    /// xorshift64: the same "random" cases every run, without a crate for it.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        /// In `lo..hi`.
+        fn range(&mut self, lo: f32, hi: f32) -> f32 {
+            lo + (self.next() % 1_000_000) as f32 / 1_000_000. * (hi - lo)
+        }
+    }
+
+    fn stored(size: f32) -> PanelSize {
+        PanelSize {
+            size: Some(size),
+            collapsed: false,
+        }
+    }
+
+    #[test]
+    fn a_saved_size_that_cant_be_drawn_opens_at_the_base() {
+        let s = saved(PanelSizes {
+            left: stored(-50.),
+            right: stored(0.),
+            bottom: stored(f32::NAN),
+        });
+        assert_eq!(
+            (s.left.size, s.right.size, s.bottom.size),
+            (None, None, None)
+        );
+        assert_eq!(
+            fit_sides(1480., Some(s.left.size), Some(s.right.size)),
+            (Some(LEFT.base), Some(RIGHT.base))
+        );
+        let s = saved(PanelSizes {
+            left: stored(400.),
+            bottom: stored(f32::INFINITY),
+            ..PanelSizes::default()
+        });
+        assert_eq!((s.left.size, s.bottom.size), (Some(400.), None));
+    }
+
+    /// Whatever state.json held, a panel opens drawable: at least its min, finite, and the code
+    /// view keeps its room.
+    #[test]
+    fn any_stored_size_opens_positive() {
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        let mut sizes = vec![
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::MIN,
+            f32::MAX,
+            -1e30,
+            -50.,
+            -0.,
+            0.,
+            f32::MIN_POSITIVE,
+            1.,
+            239.,
+            240.,
+            5000.,
+        ];
+        sizes.extend((0..200).map(|_| rng.range(-1e4, 1e4)));
+        for &size in &sizes {
+            let s = saved(PanelSizes {
+                left: stored(size),
+                right: stored(size),
+                bottom: stored(size),
+            });
+            for total in [900., 1200., 1480., 3008., 6000.] {
+                let (l, r) = fit_sides(total, Some(s.left.size), Some(s.right.size));
+                for (w, min) in [(l, LEFT.min), (r, RIGHT.min)] {
+                    if let Some(w) = w {
+                        assert!(w.is_finite() && w >= min, "{size} at {total}: {w}");
+                    }
+                }
+                let sides = l.unwrap_or(0.) + r.unwrap_or(0.);
+                assert!(
+                    sides <= total - CENTER_MIN + 0.01,
+                    "{size} at {total}: {l:?} {r:?}"
+                );
+                let column = total * 0.6;
+                let h = fit_bottom(column, s.bottom.size.unwrap_or_else(|| bottom_base(column)));
+                assert!(h.is_finite() && h >= BOTTOM_MIN, "{size} at {column}: {h}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_fitted_header_is_never_under_the_base_nor_past_the_room() {
+        let mut rng = Rng(42);
+        for _ in 0..2000 {
+            let limits = if rng.next().is_multiple_of(2) { LEFT } else { RIGHT };
+            let total = rng.range(900., 4000.);
+            let other = rng.range(0., 0.4 * total);
+            let drawn = rng.range(limits.min, total);
+            let spare = rng.range(-2000., 2000.);
+            let fit = fit_header(limits, drawn, spare, total, other);
+            let widest = limits.widest(total, other);
+            assert!(fit >= limits.min && fit <= widest, "{fit} of {widest}");
+            if widest >= limits.base {
+                assert!(fit >= limits.base, "{fit} under the base");
+            }
+            // The tabs' row needs drawn - spare; it gets that when there's room for it.
+            let need = drawn - spare;
+            if need >= limits.base && need <= widest {
+                assert_eq!(fit, need);
+            }
+        }
+    }
+
+    /// A session of resizes, drags and toggles: what's drawn stays inside the limits, a closed
+    /// side is never drawn, and the same state draws the same.
+    #[test]
+    fn random_resizes_drags_and_toggles_keep_the_layout_drawable() {
+        let mut rng = Rng(7);
+        let (mut left, mut right) = (None::<f32>, None::<f32>);
+        let (mut left_open, mut right_open) = (true, true);
+        let mut total = 1480.;
+        for step in 0..5000 {
+            let drawn = fit_sides(
+                total,
+                left_open.then_some(left),
+                right_open.then_some(right),
+            );
+            match rng.next() % 5 {
+                0 => total = rng.range(900., 6000.),
+                1 => left_open = !left_open,
+                2 => right_open = !right_open,
+                3 if drawn.0.is_some() => {
+                    let want = rng.range(0., total);
+                    match dragged(want, LEFT, total, drawn.1.unwrap_or(0.)) {
+                        Some(w) => left = Some(w),
+                        None => left_open = false,
+                    }
+                }
+                4 if drawn.1.is_some() => {
+                    let want = rng.range(0., total);
+                    match dragged(want, RIGHT, total, drawn.0.unwrap_or(0.)) {
+                        Some(w) => right = Some(w),
+                        None => right_open = false,
+                    }
+                }
+                _ => {}
+            }
+            let (l, r) = fit_sides(
+                total,
+                left_open.then_some(left),
+                right_open.then_some(right),
+            );
+            assert!(left_open || l.is_none(), "step {step}");
+            assert!(right_open || r.is_none(), "step {step}");
+            if let Some(l) = l {
+                assert!(l >= LEFT.min && l <= (LEFT.max_share * total).max(LEFT.min));
+            }
+            if let Some(r) = r {
+                assert!(r >= RIGHT.min && r <= (RIGHT.max_share * total).max(RIGHT.min));
+            }
+            let sides = l.unwrap_or(0.) + r.unwrap_or(0.);
+            assert!(sides <= total - CENTER_MIN + 0.01, "step {step}");
+            // Drawn again as it was: nothing here keeps state of its own.
+            let again = fit_sides(
+                total,
+                left_open.then_some(left),
+                right_open.then_some(right),
+            );
+            assert_eq!(again, (l, r));
+        }
+    }
 
     #[test]
     fn saved_sizes_draw_as_saved_with_room() {

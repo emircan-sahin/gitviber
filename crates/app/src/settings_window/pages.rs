@@ -947,7 +947,7 @@ pub fn notifications(w: &SettingsWindow, cx: &App) -> Page {
             "Shows one now, to see how they look."
         },
         "Send Test",
-        move |_, cx| super::send_test_notification(cx),
+        move |_, cx| super::send_test_notification(weak.clone(), cx),
     ));
     // These only post notifications; a long command also marks its tab, so it stays on.
     let off = !s.notify;

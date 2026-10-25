@@ -92,7 +92,7 @@ pub fn stepped(visible: &[usize], active: Option<usize>, dir: isize) -> Option<u
 /// The strip's focus and scroll, kept by the window's view.
 pub struct StripKeys {
     pub(crate) focus: FocusHandle,
-    scroll: ScrollHandle,
+    pub(crate) scroll: ScrollHandle,
     /// The active tab as last drawn: a new one is scrolled into view.
     drawn: Option<SharedString>,
 }

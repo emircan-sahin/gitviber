@@ -26,18 +26,36 @@ use gpui_kit::{
 
 use crate::help::{REPO, open_url, toast};
 
-/// How often a running app looks again, besides at launch and when the Updates page opens.
-const EVERY: Duration = Duration::from_secs(4 * 60 * 60);
+/// How often a running app looks again, besides at launch and when the Updates page opens: by
+/// the wall clock, in seconds.
+const EVERY: i64 = 4 * 60 * 60;
+/// Timers don't run while the Mac sleeps: a short tick finds a check overdue soon after a wake.
+const TICK: Duration = Duration::from_secs(30 * 60);
 /// After a check that got no answer (the network not up yet at launch, a wake from sleep): again
-/// this soon, twice as long after each one that fails, up to EVERY.
+/// this soon, twice as long after each one that fails, up to TICK.
 const RETRY: Duration = Duration::from_secs(10);
 
-/// The wait before the next timed check: EVERY once one answered, else the retry's.
+/// The wait before the next tick: TICK once a check answered, else the retry's.
 fn next_wait(answered: bool, failed_before: u32) -> Duration {
     if answered {
-        return EVERY;
+        return TICK;
     }
-    RETRY.saturating_mul(1 << failed_before.min(16)).min(EVERY)
+    RETRY.saturating_mul(1 << failed_before.min(16)).min(TICK)
+}
+
+/// Whether a timed check is due at `now`: none answered yet, or the last answer is EVERY old. A
+/// clock set back counts as due, or it would wait out the difference.
+fn due(checked_at: Option<i64>, now: i64) -> bool {
+    checked_at.is_none_or(|at| now < at || now - at >= EVERY)
+}
+
+/// Unix seconds, the wall clock's: it goes on while the Mac sleeps.
+fn now() -> i64 {
+    #[cfg(test)]
+    if let Some(now) = tests::NOW.get() {
+        return now;
+    }
+    gitviber_ui::widgets::now_unix()
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -104,10 +122,19 @@ impl Updates {
     fn get(cx: &mut App) -> &mut Updates {
         cx.default_global::<Updates>()
     }
+
+    /// What a check found. A release being downloaded or waiting for its restart stays: it's
+    /// what the restart installs, and the button that restarts goes with it.
+    fn checked(&mut self, found: Option<Release>, at: i64) {
+        self.checked_at = Some(at);
+        if self.download.is_none() || self.release.is_none() {
+            self.release = found;
+        }
+    }
 }
 
 /// Plugs the updater in: Check for Updates applies from then on, the app checks at launch and
-/// every few hours while Settings allows.
+/// every few hours while Settings allows, on ticks that find a check due by the wall clock.
 pub fn set_updater(updater: Rc<dyn Updater>, cx: &mut App) {
     let first = cx.default_global::<Updates>().updater.is_none();
     cx.global_mut::<Updates>().updater = Some(updater);
@@ -117,13 +144,14 @@ pub fn set_updater(updater: Rc<dyn Updater>, cx: &mut App) {
             let mut failed = 0;
             loop {
                 let answer = cx.update(|cx| {
-                    Settings::get(cx).auto_update.then(|| {
+                    let due = due(Updates::get(cx).checked_at, now());
+                    (due && Settings::get(cx).auto_update).then(|| {
                         let (tx, rx) = oneshot::channel();
                         run_check(false, Some(tx), cx);
                         rx
                     })
                 });
-                // Not asked (off, or one already running): taken as answered.
+                // Not asked (not due, off, or one already running): taken as answered.
                 let answered = match answer {
                     Some(answer) => answer.await.unwrap_or(true),
                     None => true,
@@ -163,10 +191,7 @@ pub fn status_line(cx: &App) -> String {
     } else if let Some(r) = &u.release {
         format!("GitViber {} is available.", r.version)
     } else if let Some(at) = u.checked_at {
-        format!(
-            "Up to date, checked {}.",
-            relative_time(at, gitviber_ui::widgets::now_unix())
-        )
+        format!("Up to date, checked {}.", relative_time(at, now()))
     } else {
         "Not checked yet.".into()
     }
@@ -198,10 +223,8 @@ fn run_check(told: bool, answered: Option<oneshot::Sender<bool>>, cx: &mut App) 
             u.checking = false;
             match answer {
                 Ok(release) => {
-                    u.checked_at = Some(gitviber_ui::widgets::now_unix());
-                    let found = release.is_some();
-                    u.release = release;
-                    if found && told {
+                    u.checked(release, now());
+                    if told && u.release.is_some() {
                         show(cx);
                     } else if told {
                         toast(
@@ -446,20 +469,53 @@ pub fn status_button(cx: &App) -> Option<Button> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
     use gpui_kit::TestAppContext;
 
-    struct Fake;
+    thread_local! {
+        /// The wall clock as a test sets it; the real one while None.
+        pub(super) static NOW: Cell<Option<i64>> = const { Cell::new(None) };
+    }
 
-    impl Updater for Fake {
+    /// 2026-10-01, a wall clock to move by hand.
+    const T0: i64 = 1_790_000_000;
+
+    fn named(version: &str) -> Release {
+        Release {
+            version: version.into(),
+            date: Some("2026-10-01T00:00:00Z".into()),
+            notes: "- **New** things".into(),
+        }
+    }
+
+    /// Answers its checks in turn (None: up to date; past the last, up to date), and counts them.
+    #[derive(Default)]
+    struct Answers {
+        answers: RefCell<VecDeque<Result<Option<&'static str>, &'static str>>>,
+        asked: Cell<u32>,
+    }
+
+    impl Answers {
+        fn new(
+            answers: impl IntoIterator<Item = Result<Option<&'static str>, &'static str>>,
+        ) -> Rc<Self> {
+            Rc::new(Answers {
+                answers: RefCell::new(answers.into_iter().collect()),
+                asked: Cell::new(0),
+            })
+        }
+    }
+
+    impl Updater for Answers {
         fn mode(&self) -> Mode {
             Mode::Install
         }
         fn check(&self, _: &mut App) -> Task<Result<Option<Release>, String>> {
-            Task::ready(Ok(Some(Release {
-                version: "9.9.9".into(),
-                date: Some("2026-10-01T00:00:00Z".into()),
-                notes: "- **New** things".into(),
-            })))
+            self.asked.set(self.asked.get() + 1);
+            let answer = self.answers.borrow_mut().pop_front().unwrap_or(Ok(None));
+            Task::ready(answer.map(|v| v.map(named)).map_err(String::from))
         }
         fn download(
             &self,
@@ -473,54 +529,103 @@ mod tests {
         fn restart(&self, _: &mut App) {}
     }
 
-    /// Fails its first check (offline at launch), answers after.
-    struct Flaky(Rc<Cell<u32>>);
+    /// The updater plugged in as packaging does, its timer running, the wall clock at T0.
+    fn plugged(updater: Rc<Answers>, cx: &mut TestAppContext) {
+        NOW.set(Some(T0));
+        cx.update(|cx| {
+            cx.set_global(gitviber_ui::Settings::default());
+            set_updater(updater, cx);
+        });
+        cx.run_until_parked();
+    }
 
-    impl Updater for Flaky {
-        fn mode(&self) -> Mode {
-            Mode::Install
-        }
-        fn check(&self, _: &mut App) -> Task<Result<Option<Release>, String>> {
-            self.0.set(self.0.get() + 1);
-            Task::ready(if self.0.get() == 1 {
-                Err("offline".into())
-            } else {
-                Ok(None)
-            })
-        }
-        fn download(&self, _: &Release, _: Progress, _: &mut App) -> Task<Result<(), String>> {
-            Task::ready(Ok(()))
-        }
-        fn restart(&self, _: &mut App) {}
+    /// Only the given updater, no timer.
+    fn with(updater: Rc<Answers>, cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(gitviber_ui::Settings::default());
+            Updates::get(cx).updater = Some(updater);
+        });
+    }
+
+    fn version(cx: &mut TestAppContext) -> Option<String> {
+        cx.update(|cx| release(cx).map(|r| r.version))
+    }
+
+    fn check_now(cx: &mut TestAppContext) {
+        cx.update(|cx| check(false, cx));
+        cx.run_until_parked();
     }
 
     #[test]
     fn failed_checks_retry_soon_then_less_often() {
         assert_eq!(next_wait(false, 0), RETRY);
         assert_eq!(next_wait(false, 1), RETRY * 2);
-        assert_eq!(next_wait(false, 40), EVERY);
-        assert_eq!(next_wait(true, 3), EVERY);
+        assert_eq!(next_wait(false, 40), TICK);
+        assert_eq!(next_wait(true, 3), TICK);
+    }
+
+    #[test]
+    fn a_check_is_due_when_none_answered_or_the_last_is_old_enough() {
+        assert!(due(None, T0));
+        assert!(!due(Some(T0), T0 + EVERY - 1));
+        assert!(due(Some(T0), T0 + EVERY));
+        assert!(due(Some(T0), T0 - 60), "the clock set back");
     }
 
     #[gpui_kit::test]
     fn a_launch_check_that_failed_is_tried_again_in_seconds(cx: &mut TestAppContext) {
-        let checks = Rc::new(Cell::new(0));
-        cx.update(|cx| {
-            cx.set_global(gitviber_ui::Settings::default());
-            set_updater(Rc::new(Flaky(checks.clone())), cx);
-        });
-        cx.run_until_parked();
-        assert_eq!(checks.get(), 1);
+        let updater = Answers::new([Err("offline")]);
+        plugged(updater.clone(), cx);
+        assert_eq!(updater.asked.get(), 1);
         cx.executor().advance_clock(RETRY);
         cx.run_until_parked();
-        assert_eq!(checks.get(), 2, "not four hours later");
-        // Answered: the next one is the usual few hours away.
-        cx.executor().advance_clock(RETRY * 8);
+        assert_eq!(updater.asked.get(), 2, "not hours later");
+        // Answered: the ticks find nothing due until the usual few hours have passed.
+        cx.executor().advance_clock(TICK * 3);
         cx.run_until_parked();
-        assert_eq!(checks.get(), 2);
-        cx.executor().advance_clock(EVERY);
+        assert_eq!(updater.asked.get(), 2);
+        NOW.set(Some(T0 + EVERY));
+        cx.executor().advance_clock(TICK);
         cx.run_until_parked();
-        assert_eq!(checks.get(), 3);
+        assert_eq!(updater.asked.get(), 3);
+    }
+
+    /// Timers stop while the Mac sleeps, the wall clock doesn't: a night asleep, and the first
+    /// tick after the wake checks.
+    #[gpui_kit::test]
+    fn a_wake_after_hours_asleep_checks_within_a_tick(cx: &mut TestAppContext) {
+        let updater = Answers::new([]);
+        plugged(updater.clone(), cx);
+        assert_eq!(updater.asked.get(), 1);
+        NOW.set(Some(T0 + 8 * 60 * 60));
+        cx.executor().advance_clock(TICK);
+        cx.run_until_parked();
+        assert_eq!(updater.asked.get(), 2, "awake for only a tick");
+        // A check by hand counts too: the timer waits from it.
+        NOW.set(Some(T0 + 10 * 60 * 60));
+        check_now(cx);
+        assert_eq!(updater.asked.get(), 3);
+        cx.executor().advance_clock(TICK);
+        cx.run_until_parked();
+        assert_eq!(updater.asked.get(), 3);
+    }
+
+    #[gpui_kit::test]
+    fn timed_checks_stay_off_while_settings_say_so(cx: &mut TestAppContext) {
+        let updater = Answers::new([]);
+        NOW.set(Some(T0));
+        cx.update(|cx| {
+            cx.set_global(gitviber_ui::Settings {
+                auto_update: false,
+                ..Default::default()
+            });
+            set_updater(updater.clone(), cx);
+        });
+        cx.run_until_parked();
+        NOW.set(Some(T0 + 2 * EVERY));
+        cx.executor().advance_clock(TICK);
+        cx.run_until_parked();
+        assert_eq!(updater.asked.get(), 0);
     }
 
     #[gpui_kit::test]
@@ -534,13 +639,61 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn a_found_release_downloads_then_waits_for_the_restart(cx: &mut TestAppContext) {
+    fn a_check_shows_what_it_found_and_an_empty_answer_clears_it(cx: &mut TestAppContext) {
+        with(
+            Answers::new([Ok(Some("0.2.0")), Ok(Some("0.3.0")), Ok(None)]),
+            cx,
+        );
+        check_now(cx);
+        assert_eq!(version(cx).as_deref(), Some("0.2.0"));
+        cx.update(|cx| assert_eq!(status_line(cx), "GitViber 0.2.0 is available."));
+        check_now(cx);
+        assert_eq!(
+            version(cx).as_deref(),
+            Some("0.3.0"),
+            "a newer one replaces it"
+        );
+        check_now(cx);
+        assert_eq!(version(cx), None);
         cx.update(|cx| {
-            cx.set_global(gitviber_ui::Settings::default());
-            Updates::get(cx).updater = Some(Rc::new(Fake));
-            check(false, cx);
+            assert!(status_button(cx).is_none());
+            assert!(status_line(cx).starts_with("Up to date, checked"));
         });
+    }
+
+    /// A release downloading or waiting for its restart outlives newer checks: the UI shows what
+    /// a restart installs, and an empty answer doesn't take the Restart button away.
+    #[gpui_kit::test]
+    fn a_newer_check_never_replaces_a_downloaded_release(cx: &mut TestAppContext) {
+        let answers = [
+            Ok(Some("0.2.0")),
+            Ok(Some("0.3.0")),
+            Ok(None),
+            Ok(Some("0.4.0")),
+        ];
+        with(Answers::new(answers), cx);
+        check_now(cx);
+        cx.update(download);
         cx.run_until_parked();
+        cx.update(|cx| assert_eq!(Updates::get(cx).download, Some(Download::Ready)));
+        check_now(cx);
+        assert_eq!(version(cx).as_deref(), Some("0.2.0"));
+        check_now(cx);
+        assert_eq!(version(cx).as_deref(), Some("0.2.0"));
+        cx.update(|cx| {
+            assert!(status_button(cx).is_some(), "Restart to Update stays");
+            assert_eq!(status_line(cx), "GitViber 0.2.0 is available.");
+            // Still downloading counts the same.
+            Updates::get(cx).download = Some(Download::Running(Some(10)));
+        });
+        check_now(cx);
+        assert_eq!(version(cx).as_deref(), Some("0.2.0"));
+    }
+
+    #[gpui_kit::test]
+    fn a_found_release_downloads_then_waits_for_the_restart(cx: &mut TestAppContext) {
+        with(Answers::new([Ok(Some("9.9.9"))]), cx);
+        check_now(cx);
         cx.update(|cx| {
             assert_eq!(status_line(cx), "GitViber 9.9.9 is available.");
             download(cx);

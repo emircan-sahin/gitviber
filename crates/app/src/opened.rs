@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gitviber_core::opened::{Taken, Target};
-use gitviber_core::{Core, Event, api};
+use gitviber_core::{Core, Event, api, git};
 use gitviber_files::Reveal;
 use gitviber_ui::workspace::Toast;
 use gitviber_ui::{CoreEvents, UiState};
@@ -35,8 +35,8 @@ struct Opened {
 
 impl Global for Opened {}
 
-/// Opens what the launch named, else the project used last while it's still a repository; from
-/// then on, whatever is handed over.
+/// Opens what the launch named, else the worktree used last while it's still a repository (see
+/// Reopen); from then on, whatever is handed over.
 pub fn install(cx: &mut App) {
     if !gitviber_ui::has_core(cx) {
         return;
@@ -140,18 +140,16 @@ pub fn plan(open: &[Target], missing: &[String]) -> (Option<usize>, Vec<Toast>) 
 fn take(launch: bool, cx: &mut App) {
     let core = gitviber_ui::core(cx);
     let before = cx.default_global::<Opened>().taking.take();
-    let recent = launch
-        .then(|| UiState::get(cx).recent_projects.first().cloned())
-        .flatten();
+    let reopen = launch.then(|| Reopen::from(UiState::get(cx)));
     let found = match before {
         // After the take before it, so that what this one opens lands last.
         Some(before) => cx.spawn(async move |cx| {
             before.await;
-            cx.background_spawn(async move { resolve(&core, recent) })
+            cx.background_spawn(async move { resolve(&core, reopen) })
                 .await
         }),
         // The launch's own starts now, and runs while the window is made.
-        None => cx.background_spawn(async move { resolve(&core, recent) }),
+        None => cx.background_spawn(async move { resolve(&core, reopen) }),
     };
     let task = cx.spawn(async move |cx| {
         let resolved = found.await;
@@ -180,29 +178,63 @@ struct Resolved {
     taken: Taken,
     /// What git says the last target's folder is in.
     asked: Option<Found>,
-    /// The project used last, by its top level, while it's still a repository; looked for only
-    /// when nothing was handed over.
+    /// What a launch reopens, by its top level; looked for only when nothing was handed over.
     recent: Option<PathBuf>,
 }
 
 /// What was handed over and where it is. Reads the disk and asks git: a gone network mount can
 /// take seconds to say so.
-fn resolve(core: &Core, recent: Option<String>) -> Resolved {
+fn resolve(core: &Core, reopen: Option<Reopen>) -> Resolved {
     let taken = api::app::take_opened(core).unwrap_or_default();
     let asked = taken
         .open
         .last()
         .map(|t| open_repo::look(Path::new(&t.folder)));
-    let recent = recent.filter(|_| taken.open.is_empty()).and_then(|p| {
-        match open_repo::look(Path::new(&p)) {
-            Found::Repo(root) => Some(root),
-            _ => None,
-        }
-    });
+    let recent = reopen
+        .filter(|_| taken.open.is_empty())
+        .and_then(Reopen::find);
     Resolved {
         taken,
         asked,
         recent,
+    }
+}
+
+/// What a launch with nothing handed over reopens: the worktree open at quit, a linked one too,
+/// else the projects in the list's order. A project's open saves its worktree's tabs first and
+/// puts the project first in the list, so the two name the same project, unless the saved tabs
+/// came from the old app's import, whose order is the alphabet's.
+#[derive(Debug, PartialEq)]
+struct Reopen {
+    last: Option<PathBuf>,
+    projects: Vec<PathBuf>,
+}
+
+impl From<&UiState> for Reopen {
+    fn from(state: &UiState) -> Self {
+        Reopen {
+            last: state.workspaces.first().map(|w| PathBuf::from(&w.root)),
+            projects: state.recent_projects.iter().map(PathBuf::from).collect(),
+        }
+    }
+}
+
+impl Reopen {
+    /// The first that's still a repository: the last worktree while it's one of the first
+    /// project's, else a project, the first project when it's there. Asks git: off the UI thread.
+    fn find(self) -> Option<PathBuf> {
+        let project = self.projects.first()?;
+        let repo = |p: &Path| match open_repo::look(p) {
+            Found::Repo(top) => Some(top),
+            _ => None,
+        };
+        if let Some(top) = self.last.as_deref().filter(|l| l != project).and_then(repo) {
+            let main = git::main_worktree(&top).map_or_else(|| top.clone(), PathBuf::from);
+            if main == *project {
+                return Some(top);
+            }
+        }
+        self.projects.iter().find_map(|p| repo(p))
     }
 }
 
@@ -272,6 +304,94 @@ mod tests {
         vcx.executor().advance_clock(LAUNCH_WAIT);
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("welcome").is_some());
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(ok, "git {args:?}");
+    }
+
+    fn repo(at: &Path) -> PathBuf {
+        std::fs::create_dir_all(at).unwrap();
+        git(at, &["init", "-q", "-b", "main"]);
+        git(
+            at,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "x",
+            ],
+        );
+        at.canonicalize().unwrap()
+    }
+
+    /// The worktree quit in comes back, a linked one too. Once it's gone, its project; with that
+    /// gone too, the next project in the list, not the welcome screen.
+    #[test]
+    fn a_launch_reopens_the_worktree_quit_in_else_the_next_project_there() {
+        let dir = gitviber_ui::test_support::temp_dir("reopen");
+        let app = repo(&dir.join("app"));
+        let site = repo(&dir.join("site"));
+        let fix = app.join(".claude/worktrees/fix");
+        git(
+            &app,
+            &["worktree", "add", "-q", "-b", "fix", &fix.to_string_lossy()],
+        );
+        let fix = fix.canonicalize().unwrap();
+        let reopen = |last: &Path, projects: &[&Path]| {
+            Reopen {
+                last: Some(last.to_path_buf()),
+                projects: projects.iter().map(|p| p.to_path_buf()).collect(),
+            }
+            .find()
+        };
+        assert_eq!(reopen(&fix, &[&app, &site]), Some(fix.clone()));
+        assert_eq!(reopen(&app, &[&app, &site]), Some(app.clone()));
+        // Tabs saved last under another project's worktree (the old app's import): the project.
+        assert_eq!(reopen(&site, &[&app, &site]), Some(app.clone()));
+        assert_eq!(reopen(&fix, &[&site, &app]), Some(site.clone()));
+        std::fs::remove_dir_all(&fix).unwrap();
+        assert_eq!(reopen(&fix, &[&app, &site]), Some(app.clone()));
+        std::fs::remove_dir_all(&app).unwrap();
+        assert_eq!(reopen(&app, &[&app, &site]), Some(site.clone()));
+        assert_eq!(reopen(&fix, &[&app]), None);
+        assert_eq!(reopen(&fix, &[]), None);
+    }
+
+    #[test]
+    fn the_launch_reads_the_last_worktree_and_the_list_from_the_state() {
+        let state = UiState {
+            recent_projects: vec!["/r/app".into(), "/r/site".into()],
+            workspaces: vec![
+                gitviber_ui::state::SavedWorkspace {
+                    root: "/r/app/.claude/worktrees/fix".into(),
+                    ..Default::default()
+                },
+                gitviber_ui::state::SavedWorkspace {
+                    root: "/r/app".into(),
+                    ..Default::default()
+                },
+            ],
+            ..UiState::default()
+        };
+        assert_eq!(
+            Reopen::from(&state),
+            Reopen {
+                last: Some("/r/app/.claude/worktrees/fix".into()),
+                projects: vec!["/r/app".into(), "/r/site".into()],
+            }
+        );
     }
 
     #[test]

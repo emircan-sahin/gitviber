@@ -79,6 +79,8 @@ pub struct WorkspaceView {
     /// The sidebars' header tabs, which scroll sideways when the panel is narrow: a double click
     /// on the divider widens it to show them.
     header_tabs: [ScrollHandle; 2],
+    /// Their active panel as last drawn: a new one is scrolled into view.
+    header_drawn: [Option<&'static str>; 2],
     /// As the user left them; what a window too small for them draws is `drawn_sides`.
     sizes: PanelSizes,
     /// The sidebars' widths in the last frame (None: not drawn), for the drags and double
@@ -228,7 +230,8 @@ impl WorkspaceView {
             focus,
             strip: StripKeys::new(cx),
             header_tabs: [ScrollHandle::new(), ScrollHandle::new()],
-            sizes: UiState::get(cx).panels.clone(),
+            header_drawn: [None; 2],
+            sizes: layout::saved(UiState::get(cx).panels.clone()),
             drawn_sides: (None, None),
             drawn: false,
             title: String::new(),
@@ -450,9 +453,21 @@ impl WorkspaceView {
         Settings::update(cx, f);
     }
 
-    fn side_header(&self, slot: Slot, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn side_header(
+        &mut self,
+        slot: Slot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let specs = Registry::get(cx).panels(slot);
         let active = self.workspace.read(cx).active_panel(slot, cx);
+        let at = usize::from(slot != Slot::Left);
+        if active != self.header_drawn[at] {
+            if let Some(i) = active.and_then(|a| specs.iter().position(|s| s.id == a)) {
+                self.header_tabs[at].scroll_to_item(i);
+            }
+            self.header_drawn[at] = active;
+        }
         let t = cx.app_theme().clone();
         let tabs = specs.into_iter().map(|spec| {
             let is_active = active == Some(spec.id);
@@ -522,7 +537,7 @@ impl WorkspaceView {
                     .gap_1()
                     .min_w_0()
                     .overflow_x_scroll()
-                    .track_scroll(&self.header_tabs[usize::from(slot != Slot::Left)])
+                    .track_scroll(&self.header_tabs[at])
                     .children(tabs),
             )
             .child(
@@ -601,7 +616,7 @@ impl WorkspaceView {
     }
 
     fn side(
-        &self,
+        &mut self,
         slot: Slot,
         width: f32,
         window: &mut Window,
@@ -1371,6 +1386,40 @@ mod tests {
         );
         assert_eq!(window_title(Some(root), None, head), "demo-app — 0123456");
         assert_eq!(window_title(Some(root), None, None), "demo-app");
+        let slash = Path::new("/Users/ada/code/demo-app/");
+        assert_eq!(
+            window_title(Some(slash), Some("feature/login"), None),
+            "demo-app — feature/login"
+        );
+    }
+
+    #[test]
+    fn a_title_keeps_names_as_they_are_whatever_their_letters_or_length() {
+        assert_eq!(
+            window_title(
+                Some(Path::new("/Users/ada/Projeler/çalışma 😀")),
+                Some("özellik/giriş"),
+                None
+            ),
+            "çalışma 😀 — özellik/giriş"
+        );
+        let long = "x".repeat(300);
+        let root = PathBuf::from(format!("/w/{long}"));
+        assert_eq!(
+            window_title(Some(&root), Some(&long), None),
+            format!("{long} — {long}")
+        );
+        // The branch wins over the commit; an unborn branch has a name and no commit yet.
+        let demo = Path::new("/w/demo");
+        assert_eq!(
+            window_title(Some(demo), Some("main"), Some("abcdef0")),
+            "demo — main"
+        );
+        assert_eq!(
+            window_title(Some(Path::new("/w/new")), Some("main"), None),
+            "new — main"
+        );
+        assert_eq!(window_title(Some(demo), None, Some("abc")), "demo — abc");
     }
 
     /// A tab whose view has a find of its own, or none.
@@ -1496,6 +1545,72 @@ mod tests {
                 .child(tab_strip(&self.ws, &mut self.strip, window, cx))
                 .children(view)
         }
+    }
+
+    /// A wheel turned up or down over a strip that overflows scrolls it sideways.
+    fn wheel(over: &ScrollHandle, dy: f32, cx: &mut gpui_kit::VisualTestContext) -> f32 {
+        let before = f32::from(over.offset().x);
+        cx.simulate_event(gpui_kit::ScrollWheelEvent {
+            position: over.bounds().center(),
+            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(dy))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        f32::from(over.offset().x) - before
+    }
+
+    #[gpui_kit::test]
+    fn a_vertical_wheel_scrolls_the_tab_strip_sideways(cx: &mut TestAppContext) {
+        gitviber_ui::test_support::config_dir("app-strip-wheel");
+        cx.update(gitviber_ui::init);
+        let mut host = None;
+        let window: AnyWindowHandle = cx
+            .add_window(|window, cx| {
+                let ws = cx.new(Workspace::new);
+                Workspace::register_window(&ws, window, cx);
+                let h = cx.new(|cx| StripHost {
+                    ws,
+                    focus: cx.focus_handle(),
+                    strip: StripKeys::new(cx),
+                });
+                host = Some(h.clone());
+                gpui_kit::base::Root::new(h, window, cx)
+            })
+            .into();
+        let host = host.unwrap();
+        let ws = host.read_with(cx, |h, _| h.ws.clone());
+        let _ = window.update(cx, |_, window, cx| {
+            for i in 0..40 {
+                ws.update(cx, |ws, cx| {
+                    ws.open_tab(
+                        format!("tab-{i}"),
+                        false,
+                        |_, cx| {
+                            cx.new(|cx| Tab {
+                                focus: cx.focus_handle(),
+                                finds: false,
+                                found: Rc::default(),
+                            })
+                        },
+                        window,
+                        cx,
+                    )
+                });
+            }
+        });
+        let cx = &mut gpui_kit::VisualTestContext::from_window(window, cx);
+        cx.simulate_resize(gpui_kit::size(px(800.), px(600.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let scroll = host.read_with(cx, |h, _| h.strip.scroll.clone());
+        // The last tab opened is active and scrolled into view: at the end.
+        assert!(f32::from(scroll.offset().x) < 0.);
+        assert!(
+            wheel(&scroll, 60., cx) > 0.,
+            "up scrolls back toward the first tab"
+        );
+        assert!(wheel(&scroll, -60., cx) < 0., "down toward the last");
     }
 
     #[gpui_kit::test]
@@ -1988,6 +2103,79 @@ mod tests {
             assert_eq!(drawn(cx), [Some(410.), Some(310.), first[B]]);
         }
 
+        /// A narrow sidebar's header scrolls the active panel's tab into view, as the tab strip
+        /// does, and a vertical wheel over it scrolls it sideways.
+        #[gpui_kit::test]
+        fn a_narrow_sidebars_header_shows_its_active_tab(cx: &mut TestAppContext) {
+            let project = setup("header", cx);
+            let cx = &mut launch(Some(project), START, cx);
+            drag(cx, L, &[(300., 400.), (LEFT.min, 400.)]);
+            assert_eq!(drawn(cx)[L], Some(LEFT.min));
+            let view = cx.update(|window, cx| {
+                let root = window.root::<gpui_kit::base::Root>().flatten().unwrap();
+                root.read(cx)
+                    .view()
+                    .clone()
+                    .downcast::<WorkspaceView>()
+                    .unwrap()
+            });
+            let tabs = view.read_with(cx, |v, _| v.header_tabs[0].clone());
+            let shown = |i: usize| {
+                let tab = tabs.bounds_for_item(i).unwrap();
+                let (from, to) = (tab.left() + tabs.offset().x, tab.right() + tabs.offset().x);
+                from >= tabs.bounds().left() - px(0.5) && to <= tabs.bounds().right() + px(0.5)
+            };
+            let ids: Vec<&str> = cx.update(|_, cx| {
+                Registry::get(cx)
+                    .panels(Slot::Left)
+                    .iter()
+                    .map(|p| p.id)
+                    .collect()
+            });
+            let last = ids.len() - 1;
+            assert!(shown(0) && !shown(last), "the last tab is cut off");
+            let ws = workspace(cx);
+            for at in [last, 0, last] {
+                cx.update(|_, cx| ws.update(cx, |ws, cx| ws.show_panel(ids[at], cx)));
+                draw(cx);
+                assert!(shown(at), "{} scrolled into view", ids[at]);
+            }
+            assert!(super::wheel(&tabs, 60., cx) > 0.);
+            assert!(shown(0));
+        }
+
+        /// `"left":{"size":-50}` from a corrupt state.json: the base width, not the min.
+        #[gpui_kit::test]
+        fn a_saved_size_that_cant_be_drawn_opens_at_the_base(cx: &mut TestAppContext) {
+            let project = setup("corrupt", cx);
+            cx.update(|cx| {
+                UiState::update(cx, |s| {
+                    s.panels.left.size = Some(-50.);
+                    s.panels.right.size = Some(0.);
+                })
+            });
+            let cx = &mut launch(Some(project), START, cx);
+            assert_eq!(drawn(cx), [Some(LEFT.base), Some(RIGHT.base), None]);
+        }
+
+        /// Shown in a window too narrow for it: squeezed as drawn, its width kept for the room.
+        #[gpui_kit::test]
+        fn a_sidebar_opened_in_a_narrow_window_keeps_its_width(cx: &mut TestAppContext) {
+            let project = setup("narrow", cx);
+            let cx = &mut launch(Some(project), START, cx);
+            drag(cx, L, &[(390., 400.), (410., 400.)]);
+            assert_eq!(drawn(cx)[L], Some(410.));
+            keys(cx, "cmd-b");
+            resize(cx, MIN_SIZE);
+            keys(cx, "cmd-b");
+            let squeezed = drawn(cx)[L].expect("shown");
+            assert!((LEFT.min..410.).contains(&squeezed), "{squeezed}");
+            let saved = cx.update(|_, cx| UiState::get(cx).panels.left.size);
+            assert_eq!(saved, Some(410.));
+            resize(cx, START);
+            assert_eq!(drawn(cx)[L], Some(410.));
+        }
+
         #[gpui_kit::test]
         fn projects_tabs_and_the_welcome_screen_leave_the_panels_alone(cx: &mut TestAppContext) {
             let project = setup("projects", cx);
@@ -2070,6 +2258,104 @@ mod tests {
         }
     }
 
+    /// The shortcut overlay on the real window: held up by ⌘ alone, gone with whatever ends
+    /// the hold.
+    mod overlay {
+        use std::time::Duration;
+
+        use gpui_kit::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
+
+        use super::old_bugs::launch;
+        use crate::overlay::HOLD;
+
+        /// ⌘, or Ctrl off macOS.
+        fn cmd() -> Modifiers {
+            Modifiers::secondary_key()
+        }
+
+        fn shown(cx: &mut VisualTestContext) -> bool {
+            cx.debug_bounds("shortcut-overlay").is_some()
+        }
+
+        fn press(m: Modifiers, then: Duration, cx: &mut VisualTestContext) {
+            cx.simulate_modifiers_change(m);
+            cx.run_until_parked();
+            cx.executor().advance_clock(then);
+            cx.run_until_parked();
+        }
+
+        /// `m` with ⌘.
+        fn with(m: Modifiers) -> Modifiers {
+            let c = cmd();
+            Modifiers {
+                platform: c.platform,
+                control: c.control,
+                ..m
+            }
+        }
+
+        #[gpui_kit::test]
+        fn each_hold_waits_again_after_a_release(cx: &mut TestAppContext) {
+            let cx = &mut launch("overlay-wait", None, cx);
+            let short = HOLD - Duration::from_millis(50);
+            press(cmd(), short, cx);
+            assert!(!shown(cx), "not before the hold");
+            press(Modifiers::none(), Duration::ZERO, cx);
+            press(cmd(), short, cx);
+            assert!(!shown(cx), "a new hold starts over");
+            press(cmd(), Duration::from_millis(50), cx);
+            cx.executor().advance_clock(Duration::from_millis(50));
+            cx.run_until_parked();
+            assert!(shown(cx));
+            press(Modifiers::none(), Duration::ZERO, cx);
+            assert!(!shown(cx), "⌘ up hides it");
+            press(cmd(), Duration::from_millis(100), cx);
+            assert!(!shown(cx), "and the next hold waits");
+            press(cmd(), HOLD, cx);
+            assert!(shown(cx));
+        }
+
+        #[gpui_kit::test]
+        fn a_key_a_click_or_leaving_the_window_hides_it(cx: &mut TestAppContext) {
+            let cx = &mut launch("overlay-ends", None, cx);
+            press(cmd(), HOLD, cx);
+            assert!(shown(cx));
+            cx.simulate_keystrokes("escape");
+            assert!(!shown(cx), "a key");
+            press(Modifiers::none(), Duration::ZERO, cx);
+            press(cmd(), HOLD, cx);
+            assert!(shown(cx));
+            let at = point(px(400.), px(300.));
+            cx.simulate_mouse_down(at, MouseButton::Left, cmd());
+            cx.simulate_mouse_up(at, MouseButton::Left, cmd());
+            cx.run_until_parked();
+            assert!(!shown(cx), "a click");
+            press(Modifiers::none(), Duration::ZERO, cx);
+            cx.update(|window, _| window.activate_window());
+            press(cmd(), HOLD, cx);
+            assert!(shown(cx));
+            cx.deactivate_window();
+            cx.run_until_parked();
+            assert!(!shown(cx), "⌘Tab away: no keyup comes");
+        }
+
+        #[gpui_kit::test]
+        fn shift_or_option_keep_it_up_but_with_cmd_start_no_hold(cx: &mut TestAppContext) {
+            let cx = &mut launch("overlay-chords", None, cx);
+            press(with(Modifiers::shift()), HOLD * 2, cx);
+            assert!(!shown(cx), "⇧⌘ is a chord on its way");
+            press(Modifiers::none(), Duration::ZERO, cx);
+            press(cmd(), HOLD, cx);
+            assert!(shown(cx));
+            press(with(Modifiers::shift()), Duration::ZERO, cx);
+            assert!(shown(cx), "⌘ still held");
+            press(with(Modifiers::alt()), Duration::ZERO, cx);
+            assert!(shown(cx));
+            press(Modifiers::shift(), Duration::ZERO, cx);
+            assert!(!shown(cx), "⌘ let go, ⇧ still down");
+        }
+    }
+
     /// Bugs the old app fixed, checked on the real window.
     mod old_bugs {
         use gpui_kit::{FileDropEvent, Modifiers, TestAppContext, VisualTestContext, point};
@@ -2077,7 +2363,7 @@ mod tests {
         use super::super::*;
 
         /// The main window on `project`, drawn, with a config dir of the test's own.
-        fn launch(
+        pub(super) fn launch(
             tag: &str,
             project: Option<PathBuf>,
             cx: &mut TestAppContext,

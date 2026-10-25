@@ -34,6 +34,25 @@ pub fn install(cx: &mut App) {
     set_updater(Rc::new(native), cx);
 }
 
+/// Whole percent of a download, rounded down and at most 100; None while its size isn't known.
+fn percent(received: u64, total: Option<u64>) -> Option<u8> {
+    let total = total.filter(|t| *t > 0)?;
+    Some((u128::from(received) * 100 / u128::from(total)).min(100) as u8)
+}
+
+/// The error as the UI words it. A broken latest.json or a bad signature is the release's
+/// problem, not the network's: it goes to errors.log too, as nobody sees a timed check's.
+fn logged(err: updater::Error) -> String {
+    let text = err.to_string();
+    if matches!(
+        err,
+        updater::Error::Manifest(_) | updater::Error::Signature(_)
+    ) {
+        gitviber_core::errors::write("updater", &text);
+    }
+    text
+}
+
 struct Native {
     mode: Mode,
     /// What the last check found: what a download fetches.
@@ -50,9 +69,9 @@ impl Updater for Native {
 
     fn check(&self, cx: &mut App) -> Task<Result<Option<Release>, String>> {
         let (found, downloaded) = (self.found.clone(), self.downloaded.clone());
-        let asked = cx.background_spawn(async { updater::check() });
+        let asked = cx.background_spawn(async { updater::check().map_err(logged) });
         cx.spawn(async move |_| {
-            let update = asked.await.map_err(|e| e.to_string())?;
+            let update = asked.await?;
             let release = update.as_ref().map(|u| Release {
                 version: u.version.clone(),
                 date: u.date.clone(),
@@ -80,22 +99,22 @@ impl Updater for Native {
         let (tx, mut rx) = futures::channel::mpsc::unbounded();
         let fetching = cx.background_spawn(async move {
             let mut last = None;
-            update.download(|received, total| {
-                let percent = total
-                    .filter(|t| *t > 0)
-                    .map(|t| (received * 100 / t).min(100) as u8);
-                if percent != last {
-                    last = percent;
-                    let _ = tx.unbounded_send(percent);
-                }
-            })
+            update
+                .download(|received, total| {
+                    let percent = percent(received, total);
+                    if percent != last {
+                        last = percent;
+                        let _ = tx.unbounded_send(percent);
+                    }
+                })
+                .map_err(logged)
         });
         let downloaded = self.downloaded.clone();
         cx.spawn(async move |cx| {
             while let Some(percent) = rx.next().await {
                 cx.update(|cx| progress(percent, cx));
             }
-            let download = fetching.await.map_err(|e| e.to_string())?;
+            let download = fetching.await?;
             *downloaded.borrow_mut() = Some(download);
             Ok(())
         })
@@ -133,5 +152,38 @@ impl Updater for Native {
             });
         });
         *self._restart.borrow_mut() = Some(task);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn percent_rounds_down_caps_at_100_and_needs_a_size() {
+        assert_eq!(percent(99, Some(200)), Some(49));
+        assert_eq!(percent(300, Some(200)), Some(100));
+        assert_eq!(percent(5, None), None);
+        assert_eq!(percent(5, Some(0)), None);
+        assert_eq!(percent(u64::MAX, Some(u64::MAX)), Some(100));
+    }
+
+    #[test]
+    fn manifest_and_signature_failures_go_to_the_error_log_and_the_network_s_dont() {
+        let dir = gitviber_ui::test_support::temp_dir("updater-log");
+        gitviber_core::errors::init(dir.clone());
+        let log = || std::fs::read_to_string(dir.join("errors.log")).unwrap_or_default();
+        let said = logged(updater::Error::Network("offline".into()));
+        assert_eq!(said, "Couldn't reach the update server: offline");
+        assert_eq!(log(), "");
+        logged(updater::Error::Manifest("missing field `version`".into()));
+        logged(updater::Error::Signature("bad".into()));
+        let log = log();
+        assert!(
+            log.contains("updater: The update server's answer is off: missing field `version`"),
+            "{log}"
+        );
+        assert!(log.contains("updater: The update isn't signed by GitViber's key: bad"));
+        assert_eq!(log.lines().count(), 2);
     }
 }
