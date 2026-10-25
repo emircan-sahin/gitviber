@@ -5,8 +5,9 @@
 //! past a bounded number, so a long note costs what's on screen.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use gitviber_core::api;
 use gitviber_files::MediaView;
@@ -16,7 +17,7 @@ use gitviber_markdown::{
     BoundedImageCache, Callouts, FindBar, FindBarEvent, MarkdownBase, MarkdownEvent, MarkdownView,
 };
 use gitviber_ui::ActiveAppTheme as _;
-use gitviber_ui::keymap::editor;
+use gitviber_ui::keymap::{editor, find};
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{Selection, Toast, Workspace};
 use gpui_kit::{
@@ -501,6 +502,20 @@ impl Doc {
     pub fn built_count(&self) -> usize {
         self.built.len()
     }
+
+    /// The embeds built, in the note's order.
+    #[cfg(test)]
+    pub fn embeds(&self) -> Vec<Entity<EmbedView>> {
+        let mut built: Vec<_> = self.built.iter().collect();
+        built.sort_by_key(|(ix, _)| **ix);
+        built
+            .into_iter()
+            .filter_map(|(_, (b, _))| match b {
+                Built::Embed(e) => Some(e.clone()),
+                Built::Text { .. } => None,
+            })
+            .collect()
+    }
 }
 
 fn props_of(parts: &[Part]) -> Vec<(String, properties::Value)> {
@@ -696,6 +711,15 @@ impl NoteView {
         cx.notify();
     }
 
+    /// ⌘G / ⇧⌘G: a step while the find box is open; else the key goes on (⇧⌘G to Git).
+    fn find_key(&mut self, dir: isize, cx: &mut Context<Self>) {
+        if self.open_box().is_some() {
+            self.step(dir, cx);
+        } else {
+            cx.propagate();
+        }
+    }
+
     /// The matches marked in the note; `reveal` scrolls the current one into view.
     fn mark(&mut self, reveal: bool, cx: &mut Context<Self>) {
         let Some(f) = self.open_box() else { return };
@@ -783,6 +807,8 @@ impl Render for NoteView {
             .relative()
             .size_full()
             .on_action(cx.listener(|this, _: &editor::Find, window, cx| this.open_find(window, cx)))
+            .on_action(cx.listener(|this, _: &find::Next, _, cx| this.find_key(1, cx)))
+            .on_action(cx.listener(|this, _: &find::Prev, _, cx| this.find_key(-1, cx)))
             .bg(t.code(t.background))
             .when(empty, |d| {
                 d.flex()
@@ -832,9 +858,18 @@ enum Shown {
     Media {
         file: String,
         kind: MediaKind,
+        /// The file's size and last change as its view was made: an overwrite makes it again.
+        rev: Rev,
         /// The player or PDF viewer (native on macOS), made as it's first drawn.
         view: Option<Entity<MediaView>>,
     },
+}
+
+type Rev = Option<(u64, SystemTime)>;
+
+fn rev_of(path: &Path) -> Rev {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.len(), meta.modified().ok()?))
 }
 
 /// ![[embed]]: a note (or one of its parts) shown in place, an image, a player's card; anything
@@ -864,15 +899,18 @@ impl EmbedView {
             &model,
             move |this: &mut Self, _, e: &VaultsEvent, cx| match e {
                 VaultsEvent::IndexChanged(v) if *v == vault => this.resolve(cx),
-                e => {
-                    let file = match &this.shown {
-                        Shown::Note { file, .. } | Shown::Image { file, .. } => file.clone(),
-                        _ => return,
-                    };
-                    if e.touches(&vault, &file) {
-                        this.resolve(cx);
+                e => match &this.shown {
+                    Shown::Note { file, .. } | Shown::Image { file, .. }
+                        if e.touches(&vault, file) =>
+                    {
+                        this.resolve(cx)
                     }
-                }
+                    Shown::Media { file, kind, .. } if e.touches(&vault, file) => {
+                        let (file, kind) = (file.clone(), *kind);
+                        this.show_media(file, kind, cx);
+                    }
+                    _ => {}
+                },
             },
         );
         let mut this = EmbedView {
@@ -902,6 +940,12 @@ impl EmbedView {
         } else {
             index.resolve(&path, &self.note.path)
         };
+        // The same file found again (another file came or went): a playing video plays on.
+        if matches!((&self.shown, &file), (Shown::Media { file: f, .. }, Some(file)) if f == file) {
+            return;
+        }
+        // A read still on its way is for what was shown before.
+        self._load = Task::ready(());
         let Some(file) = file else {
             self.shown = Shown::Missing(path);
             return cx.notify();
@@ -916,23 +960,45 @@ impl EmbedView {
             self.load(file, anchor, cx);
             return;
         }
-        // The same file found again (another file came or went): a playing video plays on.
-        if matches!(&self.shown, Shown::Media { file: f, .. } if *f == file) {
-            return;
-        }
         self.shown = match media_kind(&file) {
             Some(MediaKind::Image) => Shown::Image {
                 file,
                 size: sized(&self.alias),
             },
-            Some(kind) => Shown::Media {
-                file,
-                kind,
-                view: None,
-            },
+            Some(kind) => return self.show_media(file, kind, cx),
             None => Shown::Link { file, anchor },
         };
         cx.notify();
+    }
+
+    /// A player or a PDF, made again only once its own file was overwritten: a change elsewhere
+    /// in the vault (or none, in a vault read again whole) leaves a playing video playing.
+    fn show_media(&mut self, file: String, kind: MediaKind, cx: &mut Context<Self>) {
+        let abs = self.abs(&file);
+        self._load = cx.spawn(async move |this, cx| {
+            let now = cx.background_spawn(async move { rev_of(&abs) }).await;
+            _ = this.update(cx, |this, cx| {
+                if let Shown::Media {
+                    file: f, rev, view, ..
+                } = &mut this.shown
+                    && *f == file
+                {
+                    if *rev == now {
+                        return;
+                    }
+                    *rev = now;
+                    *view = None;
+                } else {
+                    this.shown = Shown::Media {
+                        file,
+                        kind,
+                        rev: now,
+                        view: None,
+                    };
+                }
+                cx.notify();
+            });
+        });
     }
 
     fn load(&mut self, file: String, anchor: String, cx: &mut Context<Self>) {
@@ -1017,6 +1083,14 @@ impl EmbedView {
     fn abs(&self, file: &str) -> PathBuf {
         PathBuf::from(&self.note.vault).join(file)
     }
+
+    #[cfg(test)]
+    pub(crate) fn media(&self) -> Option<Entity<MediaView>> {
+        match &self.shown {
+            Shown::Media { view, .. } => view.clone(),
+            _ => None,
+        }
+    }
 }
 
 /// An embed's alias as a size: "300" or "300x200".
@@ -1039,6 +1113,7 @@ impl Render for EmbedView {
             file,
             kind,
             view: view @ None,
+            ..
         } = &mut self.shown
         {
             let (abs, kind) = (PathBuf::from(&self.note.vault).join(&*file), *kind);

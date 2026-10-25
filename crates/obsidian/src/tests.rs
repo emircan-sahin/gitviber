@@ -573,3 +573,105 @@ fn media_embedded_in_a_note_plays_in_place_and_goes_with_it(cx: &mut TestAppCont
     show(&host, None, cx);
     assert_eq!(live("MediaView"), 0);
 }
+
+#[gpui_kit::test]
+fn an_embedded_pdf_or_video_is_made_again_only_when_its_file_is_overwritten(
+    cx: &mut TestAppContext,
+) {
+    let vault = setup("media-reload", cx);
+    std::fs::write(Path::new(&vault).join("clip.mp4"), b"not really a video").unwrap();
+    std::fs::write(Path::new(&vault).join("doc.pdf"), b"%PDF-1.1\n").unwrap();
+    std::fs::write(
+        Path::new(&vault).join("Media.md"),
+        "# Media\n\n![[clip.mp4|320x180]]\n\n![[doc.pdf]]\n",
+    )
+    .unwrap();
+    let (host, cx) = cx.add_window_view(|_, _| Host(None));
+    let view = cx.update(|window, cx| tab(&vault, "Media.md", window, cx));
+    show(&host, Some(view.clone().into()), cx);
+    let shown = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            let note = view.read(cx).note().expect("the note");
+            note.read(cx)
+                .doc()
+                .embeds()
+                .iter()
+                .map(|e| e.read(cx).media().map(|m| m.entity_id()))
+                .collect::<Vec<_>>()
+        })
+    };
+    let first = shown(cx);
+    assert!(
+        first.len() == 2 && first.iter().all(Option::is_some),
+        "{first:?}"
+    );
+    // Another file changed, then the vault read again whole with nothing new: both play on.
+    change(&vault, "Home.md", "other", cx);
+    cx.update(|_, cx| {
+        let change = VaultChanged {
+            vault: vault.clone(),
+            files: true,
+            paths: vec![],
+        };
+        CoreEvents::global(cx).update(cx, |_, cx| cx.emit(Event::VaultChanged(change)));
+    });
+    show(&host, Some(view.clone().into()), cx);
+    assert_eq!(shown(cx), first);
+    // The PDF overwritten: its viewer is made again, the video's left playing.
+    change(&vault, "doc.pdf", "%PDF-1.4\n% a longer one\n", cx);
+    show(&host, Some(view.clone().into()), cx);
+    let now = shown(cx);
+    assert_eq!(now[0], first[0]);
+    assert!(now[1].is_some() && now[1] != first[1], "{now:?} {first:?}");
+    assert_eq!(live("MediaView"), 2, "{:?}", memory::live_counts());
+}
+
+#[gpui_kit::test]
+fn cmd_g_steps_through_a_notes_matches_and_goes_on_without_its_box(cx: &mut TestAppContext) {
+    use gitviber_ui::keymap::find;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let vault = setup("find-next", cx);
+    let (host, cx) = cx.add_window_view(|_, _| Host(None));
+    let view = cx.update(|window, cx| tab(&vault, "Home.md", window, cx));
+    show(&host, Some(view.clone().into()), cx);
+    let note = cx.update(|_, cx| view.read(cx).note().expect("the note"));
+    let hits = |cx: &mut VisualTestContext| cx.update(|_, cx| note.read(cx).find_hits());
+    // What a key gone on reaches: the app's own handler.
+    let went_on = Rc::new(Cell::new(0));
+    let (next_seen, prev_seen) = (went_on.clone(), went_on.clone());
+    cx.update(|_, cx| {
+        cx.on_action(move |_: &find::Next, _| next_seen.set(next_seen.get() + 1));
+        cx.on_action(move |_: &find::Prev, _| prev_seen.set(prev_seen.get() + 1));
+    });
+    let shown = cx.update(|_, cx| TabItem::tab_focus(view.read(cx), cx).unwrap());
+    cx.update(|window, cx| window.focus(&shown, cx));
+    cx.simulate_keystrokes("cmd-f");
+    cx.simulate_input("e");
+    let (_, n) = hits(cx).unwrap();
+    assert!(n > 3, "{n}");
+    // From the box, and from the note itself.
+    let (next, prev) = if cfg!(target_os = "macos") {
+        ("cmd-g", "shift-cmd-g")
+    } else {
+        ("f3", "shift-f3")
+    };
+    cx.simulate_keystrokes(next);
+    assert_eq!(hits(cx), Some((1, n)));
+    let own = cx.update(|_, cx| note.read(cx).focus_handle().clone());
+    cx.update(|window, cx| window.focus(&own, cx));
+    cx.simulate_keystrokes(next);
+    assert_eq!(hits(cx), Some((2, n)));
+    cx.simulate_keystrokes(prev);
+    cx.simulate_keystrokes(prev);
+    cx.simulate_keystrokes(prev);
+    assert_eq!(hits(cx), Some((n - 1, n)), "round to the last");
+    assert_eq!(went_on.get(), 0, "the box took them");
+    // Closed, the keys go on (⇧⌘G to the Git panel).
+    cx.update(|window, cx| window.focus(&own, cx));
+    cx.simulate_keystrokes("cmd-f escape");
+    assert_eq!(hits(cx), None);
+    cx.simulate_keystrokes(next);
+    cx.simulate_keystrokes(prev);
+    assert_eq!(went_on.get(), 2);
+}
