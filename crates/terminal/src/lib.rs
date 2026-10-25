@@ -40,6 +40,8 @@ mod pane;
 mod panel;
 mod scan;
 mod session;
+#[cfg(all(test, target_os = "macos"))]
+mod stress;
 
 pub use config::{
     CursorStyle, DEFAULT_FONT_SIZE, FONT_MAX, FONT_MIN, LINE_HEIGHTS, OptionAsMeta,

@@ -496,6 +496,19 @@ impl Session {
         }
     }
 
+    /// What was written for a shell that never started.
+    #[cfg(test)]
+    pub fn written(&self) -> Vec<String> {
+        let rx = self.rx.lock().unwrap_or_else(|e| e.into_inner());
+        rx.iter()
+            .flat_map(|rx| rx.try_iter())
+            .filter_map(|io| match io {
+                Io::Write(text, _) => Some(text),
+                Io::Resize(..) => None,
+            })
+            .collect()
+    }
+
     /// The folder the shell is in now, asked of its process.
     pub fn cwd(&self) -> Option<String> {
         pty::pty_cwd(&self.core, self.pty()?)

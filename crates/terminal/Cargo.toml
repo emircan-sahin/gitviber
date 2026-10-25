@@ -39,3 +39,10 @@ path = "examples/demo.rs"
 gitviber-ui = { path = "../ui", features = ["snapshot"] }
 # Leak tests: gpui's test platform and its handle bookkeeping, which gpui-kit's features leave out.
 gpui-test.workspace = true
+# The stress test (src/stress) draws off screen with the real text system and renderer, and its fake
+# agent sets up its tty itself; all already in the tree.
+gpui-snapshot-platform.workspace = true
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+gpui-pre-apple = { version = "=0.3.9", features = ["font-kit"] }
+libc = "=0.2.189"

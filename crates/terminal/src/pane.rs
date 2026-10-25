@@ -179,6 +179,8 @@ pub struct TerminalPane {
     last_hover_cell: Option<(usize, usize)>,
     pub(crate) focused: bool,
     window_active: bool,
+    /// The focus its program last heard of (or would have, with 1004 off).
+    focus_reported: bool,
     pub(crate) blink_visible: bool,
     blink_task: Option<Task<()>>,
     active_at: Instant,
@@ -267,16 +269,7 @@ impl TerminalPane {
                 this.on_focus_change(false, window, cx)
             }),
             cx.observe_window_activation(window, |this, window, cx| {
-                this.window_active = window.is_window_active();
-                this.report_focus(cx);
-                this.restart_blink(cx);
-                // Back in the window, the pane with the keys is looked at again.
-                if this.looked_at() {
-                    cx.emit(PaneEvent::Focused);
-                }
-                if !this.window_active {
-                    this.links_window_left(cx);
-                }
+                this.window_activated(window.is_window_active(), cx)
             }),
         ];
         let pane = TerminalPane {
@@ -305,6 +298,7 @@ impl TerminalPane {
             last_hover_cell: None,
             focused: false,
             window_active: window.is_window_active(),
+            focus_reported: false,
             blink_visible: true,
             blink_task: None,
             active_at: Instant::now(),
@@ -499,20 +493,34 @@ impl TerminalPane {
         cx.notify();
     }
 
+    fn window_activated(&mut self, active: bool, cx: &mut Context<Self>) {
+        self.window_active = active;
+        self.report_focus(cx);
+        self.restart_blink(cx);
+        // Back in the window, the pane with the keys is looked at again.
+        if self.looked_at() {
+            cx.emit(PaneEvent::Focused);
+        }
+        if !self.window_active {
+            self.links_window_left(cx);
+        }
+    }
+
     /// Focus reports (1004): Claude Code listens for the pane, or the window, losing the keys.
-    fn report_focus(&self, _: &mut Context<Self>) {
-        if self
-            .session
-            .emu
-            .lock()
-            .mode()
-            .contains(TermMode::FOCUS_IN_OUT)
-        {
-            self.session.write(if self.focused && self.window_active {
-                "\x1b[I"
-            } else {
-                "\x1b[O"
-            });
+    /// One per real change: the window going to the back reached the pane twice (the window,
+    /// then GPUI's blur), and every pane without the keys got a focus out too.
+    fn report_focus(&mut self, _: &mut Context<Self>) {
+        let focused = self.looked_at();
+        if focused == self.focus_reported {
+            return;
+        }
+        self.focus_reported = focused;
+        // Written under the lock: a report sent while 1004 was on reaches the program ahead of
+        // the answer to anything it asked after turning it off.
+        let emu = self.session.emu.lock();
+        if emu.mode().contains(TermMode::FOCUS_IN_OUT) {
+            self.session
+                .write(if focused { "\x1b[I" } else { "\x1b[O" });
         }
     }
 
@@ -1953,4 +1961,83 @@ pub(crate) fn new_pane(
     cx: &mut App,
 ) -> Entity<TerminalPane> {
     cx.new(|cx| TerminalPane::new(id, core, cwd, folder, run, config, theme, window, cx))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{TestAppContext, VisualTestContext};
+
+    struct Host;
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    /// Focus reports go out on real changes only. GPUI tells a pane of its window going to the
+    /// back, then blurs it (and the reverse on the way forward): the pane with the keys reports
+    /// once each way, the others not at all. A pane never drawn starts no shell, so what it
+    /// writes stays to be read.
+    #[gpui::test]
+    fn focus_reports_follow_real_changes_only(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::init(cx);
+        });
+        let core = Arc::new(Core::new(Arc::new(|_| {})));
+        let (_, cx) = cx.add_window_view(|_, _| Host);
+        let new = |id, cx: &mut VisualTestContext| {
+            let core = core.clone();
+            cx.update(|window, cx| {
+                let pane = new_pane(
+                    id,
+                    core,
+                    std::env::temp_dir(),
+                    None,
+                    None,
+                    TerminalConfig::default(),
+                    TerminalTheme::dark(),
+                    window,
+                    cx,
+                );
+                pane.update(cx, |p, _| p.session.emu.lock().feed(b"\x1b[?1004h"));
+                pane
+            })
+        };
+        let (keys, other) = (new(1, cx), new(2, cx));
+        let step = |pane: &Entity<TerminalPane>,
+                    f: &dyn Fn(&mut TerminalPane, &mut Window, &mut Context<TerminalPane>),
+                    cx: &mut VisualTestContext| {
+            pane.update_in(cx, |p, window, cx| f(p, window, cx));
+        };
+        let written = |pane: &Entity<TerminalPane>, cx: &mut VisualTestContext| {
+            pane.read_with(cx, |p, _| p.session.written())
+        };
+        for p in [&keys, &other] {
+            step(p, &|p, _, cx| p.window_activated(true, cx), cx);
+        }
+        step(&keys, &|p, w, cx| p.on_focus_change(true, w, cx), cx);
+        for active in [false, true, false, true] {
+            for p in [&keys, &other] {
+                step(p, &|p, _, cx| p.window_activated(active, cx), cx);
+            }
+            step(&keys, &|p, w, cx| p.on_focus_change(active, w, cx), cx);
+        }
+        assert_eq!(
+            written(&keys, cx),
+            ["\x1b[I", "\x1b[O", "\x1b[I", "\x1b[O", "\x1b[I"]
+        );
+        assert!(written(&other, cx).is_empty());
+
+        // Off, the changes go unheard; on again, the next one is.
+        keys.update(cx, |p, _| p.session.emu.lock().feed(b"\x1b[?1004l"));
+        step(&keys, &|p, w, cx| p.on_focus_change(false, w, cx), cx);
+        keys.update(cx, |p, _| p.session.emu.lock().feed(b"\x1b[?1004h"));
+        step(&keys, &|p, w, cx| p.on_focus_change(false, w, cx), cx);
+        step(&keys, &|p, w, cx| p.on_focus_change(true, w, cx), cx);
+        assert_eq!(written(&keys, cx), ["\x1b[I"]);
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+    }
 }
