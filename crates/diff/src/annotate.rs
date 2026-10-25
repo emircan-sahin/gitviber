@@ -60,7 +60,7 @@ pub fn lines_to_open(rows: &[Row], notes: &[Annotation]) -> Vec<u32> {
 }
 
 /// Which item each annotation goes under: item index → annotation indexes, in their order.
-/// One on a folded or missing line goes nowhere.
+/// One on a folded or missing line goes nowhere (a missing one is `unplaced`).
 pub fn place(rows: &[Row], items: &[Item], notes: &[Annotation]) -> HashMap<usize, Vec<usize>> {
     let mut item_of_row = vec![usize::MAX; rows.len()];
     for (ix, item) in items.iter().enumerate() {
@@ -84,6 +84,13 @@ pub fn place(rows: &[Row], items: &[Item], notes: &[Annotation]) -> HashMap<usiz
         }
     }
     out
+}
+
+/// The annotations on lines the diff doesn't have, by index: shown apart, with their line.
+pub fn unplaced(rows: &[Row], notes: &[Annotation]) -> Vec<usize> {
+    (0..notes.len())
+        .filter(|&i| row_of(rows, notes[i].pos).is_none())
+        .collect()
 }
 
 /// The key an item's annotations are measured under: their ids, so a new or removed one is
@@ -148,6 +155,7 @@ mod tests {
         assert_eq!(placed.get(&1), Some(&vec![1]));
         assert_eq!(placed.get(&3), Some(&vec![2]));
         assert_eq!(placed.len(), 3);
+        assert_eq!(unplaced(&rows, &notes), vec![3], "line 9 isn't in the diff");
         // Split: a removed line and its added pair share an item.
         let split = display::split(&rows, &display::all_rows(&rows));
         assert_eq!(place(&rows, &split, &notes[..2]).get(&1), Some(&vec![0, 1]));

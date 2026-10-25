@@ -50,6 +50,8 @@ const LOADING_AT_ONCE: usize = 4;
 const HEADER: f32 = 32.;
 const MESSAGE: f32 = 40.;
 const NOTE: f32 = 22.;
+/// The "Line 12" over a block whose line isn't drawn.
+const LOOSE_LABEL: f32 = 20.;
 /// And never more text than this, both sides counted: a few lockfiles are already a lot.
 const MAX_LOADED_BYTES: usize = 48 * 1024 * 1024;
 
@@ -171,6 +173,9 @@ enum Row {
     Note(usize),
     /// A file not read yet, or given back: its height.
     Room(usize),
+    /// Blocks on lines it doesn't draw, above them with their line: on a file shown without
+    /// lines (an image, a binary, a large diff held back), or on a line its diff doesn't have.
+    Loose(usize),
     Message(usize),
     Line(usize, Item),
 }
@@ -178,7 +183,12 @@ enum Row {
 impl Row {
     fn file(&self) -> usize {
         match *self {
-            Row::Header(f) | Row::Note(f) | Row::Room(f) | Row::Message(f) | Row::Line(f, _) => f,
+            Row::Header(f)
+            | Row::Note(f)
+            | Row::Room(f)
+            | Row::Loose(f)
+            | Row::Message(f)
+            | Row::Line(f, _) => f,
         }
     }
 }
@@ -204,6 +214,7 @@ pub struct StackedDiff {
     placed: HashMap<usize, (usize, Vec<usize>)>,
     /// The overview's marks over every file read so far.
     overview: Rc<Marks>,
+    reads: u64,
 }
 
 impl EventEmitter<StackedEvent> for StackedDiff {}
@@ -233,6 +244,7 @@ impl StackedDiff {
             ids: 0,
             placed: HashMap::new(),
             overview: Rc::default(),
+            reads: 0,
         };
         view.set_files(files, cx);
         crate::status::track(&view.focus, cx.weak_entity().into(), cx);
@@ -324,7 +336,12 @@ impl StackedDiff {
             return;
         };
         let key = annotate::measure_key(&slot.annotations, &placed);
-        let extra = (height - self.line).max(Pixels::ZERO);
+        // A line under its blocks, or a label over each loose one.
+        let base = match self.rows.get(ix) {
+            Some(Row::Loose(_)) => px(LOOSE_LABEL) * placed.len() as f32,
+            _ => self.line,
+        };
+        let extra = (height - base).max(Pixels::ZERO);
         if slot
             .measured
             .get(&key)
@@ -336,7 +353,7 @@ impl StackedDiff {
         slot.measured.insert(key, extra);
         if self.heights.top(ix) < self.scroll.top() {
             self.scroll
-                .set_top(self.scroll.top() + (self.line + extra - before));
+                .set_top(self.scroll.top() + (base + extra - before));
         }
         self.dirty = true;
         cx.notify();
@@ -411,6 +428,30 @@ impl StackedDiff {
     #[doc(hidden)]
     pub fn overview_spans(&self) -> [Vec<(Pixels, Pixels)>; 4] {
         self.overview.all_spans()
+    }
+
+    /// The diff `key`'s file holds now; None while it isn't read, or was given back.
+    pub fn data(&self, key: &str) -> Option<&DiffData> {
+        match &self.slots.iter().find(|s| s.file.source.key() == key)?.body {
+            Body::Ready(l) => Some(&l.data),
+            _ => None,
+        }
+    }
+
+    /// Reads landed so far: an owner placing blocks by a file's lines places them again when
+    /// this moves.
+    pub fn reads(&self) -> u64 {
+        self.reads
+    }
+
+    /// The ids of the blocks given to `key`'s file (tests).
+    #[doc(hidden)]
+    pub fn annotation_ids(&self, key: &str) -> Vec<SharedString> {
+        self.slots
+            .iter()
+            .find(|s| s.file.source.key() == key)
+            .map(|s| s.annotations.iter().map(|a| a.id.clone()).collect())
+            .unwrap_or_default()
     }
 
     /// Files whose text is held now (the rest keep only their height).
@@ -684,6 +725,7 @@ impl StackedDiff {
                     })
                     .ok();
                 });
+                self.reads += 1;
                 Body::Ready(Box::new(Loaded {
                     data,
                     items,
@@ -809,6 +851,20 @@ impl StackedDiff {
                 continue;
             }
             let (body_start, body_y) = (heights.len(), y);
+            let drawn = draws_lines(slot);
+            let loose = match &slot.body {
+                Body::Idle | Body::Loading { .. } => vec![],
+                Body::Ready(l) if drawn => annotate::unplaced(&l.data.rows, &slot.annotations),
+                _ => (0..slot.annotations.len()).collect(),
+            };
+            if !loose.is_empty() {
+                let h = px(LOOSE_LABEL) * loose.len() as f32
+                    + annotate::extra(&slot.annotations, &loose, &slot.measured);
+                self.placed.insert(rows.len(), (f, loose));
+                rows.push(Row::Loose(f));
+                heights.push(h);
+                y += h;
+            }
             match &mut slot.body {
                 Body::Idle | Body::Loading { .. } => {
                     rows.push(Row::Room(f));
@@ -834,11 +890,7 @@ impl StackedDiff {
                     slot.marks = Marks::default();
                 }
                 Body::Ready(l) => {
-                    if l.items.is_empty()
-                        || l.data.placeholder.is_some()
-                        || is_media(&slot.file.source.path)
-                        || (l.items.len() > LARGE && !slot.large)
-                    {
+                    if !drawn {
                         rows.push(Row::Message(f));
                         heights.push(px(MESSAGE));
                         slot.marks = Marks::default();
@@ -952,6 +1004,9 @@ impl StackedDiff {
         let m = Metrics::new(window, cx, &style, lines, self.line, self.scroll.left());
         range
             .map(|ix| {
+                if let Row::Loose(f) = self.rows[ix] {
+                    return self.loose(ix, f, &style, window, cx);
+                }
                 let row = self.render_row(ix, &m, &style, cx);
                 match self.placed.get(&ix) {
                     Some((f, placed)) => {
@@ -1004,6 +1059,8 @@ impl StackedDiff {
                 .bg(c.background)
                 .into_any_element(),
             Row::Message(f) => self.message(f, style, cx),
+            // Drawn with its blocks (`loose`).
+            Row::Loose(_) => div().into_any_element(),
             Row::Line(f, Item::Gap { start, count }) => {
                 let more = count.min(display::FOLD_REVEAL);
                 h_flex()
@@ -1103,6 +1160,45 @@ impl StackedDiff {
                     .into_any_element()
             }
         }
+    }
+
+    /// Blocks whose line isn't drawn, each under its line's number.
+    fn loose(
+        &self,
+        ix: usize,
+        f: usize,
+        style: &DiffStyle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some((_, placed)) = self.placed.get(&ix) else {
+            return div().into_any_element();
+        };
+        let notes = &self.slots[f].annotations;
+        v_flex()
+            .w_full()
+            .children(placed.iter().map(|&i| {
+                let a = &notes[i];
+                let old = if a.pos.side == Side::Old {
+                    " (old)"
+                } else {
+                    ""
+                };
+                v_flex()
+                    .w_full()
+                    .child(
+                        div()
+                            .h(px(LOOSE_LABEL))
+                            .px_4()
+                            .flex()
+                            .items_end()
+                            .text_size(style.ui_font_size - px(1.))
+                            .text_color(style.colors.subtle)
+                            .child(format!("Line {}{old}", a.pos.line)),
+                    )
+                    .child(div().w_full().child((a.render)(window, cx)))
+            }))
+            .into_any_element()
     }
 
     fn header(&self, f: usize, style: &DiffStyle, cx: &mut Context<Self>) -> AnyElement {
@@ -1231,6 +1327,20 @@ impl StackedDiff {
                 )
             })
             .into_any_element()
+    }
+}
+
+/// Whether `slot` shows its lines, not a message in their place (an image, a binary, a large
+/// diff held back).
+fn draws_lines(slot: &Slot) -> bool {
+    match &slot.body {
+        Body::Ready(l) => {
+            !(l.items.is_empty()
+                || l.data.placeholder.is_some()
+                || is_media(&slot.file.source.path)
+                || (l.items.len() > LARGE && !slot.large))
+        }
+        _ => false,
     }
 }
 

@@ -1,5 +1,6 @@
 //! A changed image: each side held no bigger than it's shown, both zoomed and moved as one,
-//! drawn crisp from the right part past 100%, and given back once closed.
+//! drawn crisp from the right part past 100%, given back once closed, and copied from a
+//! right-click.
 
 use crate::review_fixes::{git, setup, window_with};
 use gitviber_diff::{Compare, DiffOptions, DiffSource, ImageCompare, Layout};
@@ -176,4 +177,47 @@ fn closing_an_image_compare_frees_it(cx: &mut TestAppContext) {
         settle(cx);
     }
     cx.update(|_, cx| cx.assert_no_new_leaks(&snapshot));
+}
+
+#[gpui::test]
+fn a_right_click_copies_either_version(cx: &mut TestAppContext) {
+    let (before, after) = (png(40, 20, RED, GREEN), png(40, 20, RED, BLUE));
+    let dir = repo("copy", &before, &after);
+    std::fs::write(dir.join("new.png"), &after).unwrap();
+    setup(cx, &dir);
+    let open = |path: &str, cx: &mut TestAppContext| {
+        let source = DiffSource::new(Compare::Unstaged, path);
+        let (view, cx) = window_with(cx, |_, cx| cx.new(|cx| ImageCompare::new(source, cx)));
+        settle(cx);
+        view
+    };
+    let view = open("a.png", cx);
+    let copies = |i| view.read_with(cx, |v, _| v.copies(i));
+    assert_eq!(copies(Some(0)), [("Copy Image", true)]);
+    assert_eq!(copies(Some(1)), [("Copy Image", false)]);
+    assert_eq!(
+        copies(None),
+        [("Copy Before Image", true), ("Copy After Image", false)],
+        "laid over each other"
+    );
+    // Before is the stored version, saved under its name; After is the file itself. The
+    // pasteboard write itself isn't run: it's the user's.
+    let file = |before: bool, cx: &mut TestAppContext| {
+        let task = view.read_with(cx, |v, _| v.copy_file(before));
+        futures::executor::block_on(task).unwrap()
+    };
+    let saved = file(true, cx);
+    assert!(saved.ends_with("/a.png") && !saved.starts_with(&*dir.to_string_lossy()));
+    assert_eq!(std::fs::read(&saved).unwrap(), before);
+    let _ = std::fs::remove_dir_all(std::path::Path::new(&saved).parent().unwrap());
+    assert_eq!(
+        PathBuf::from(file(false, cx)).canonicalize().unwrap(),
+        dir.join("a.png").canonicalize().unwrap()
+    );
+    // An added image has no Before to copy.
+    let added = open("new.png", cx);
+    let copies = |i| added.read_with(cx, |v, _| v.copies(i));
+    assert_eq!(copies(Some(0)), []);
+    assert_eq!(copies(Some(1)), [("Copy Image", false)]);
+    let _ = std::fs::remove_dir_all(&dir);
 }

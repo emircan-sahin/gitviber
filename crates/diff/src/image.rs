@@ -11,11 +11,13 @@ use crate::model::zoom::Zoom;
 use crate::source::DiffSource;
 use crate::style::{DiffOptions, DiffStyle, ImageMode};
 use gitviber_core::Core;
+use gitviber_ui::workspace::Toast;
 use gpui_kit::component::h_flex;
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::{
     App, AppContext as _, Bounds, Context, DevicePixels, FocusHandle, ImageFormat, IntoElement,
     ParentElement as _, Pixels, Point, RenderImage, Styled as _, Subscription, SvgRenderer,
-    SvgSize, Task, Window, div, px, size,
+    SvgSize, Task, WeakEntity, Window, div, px, size,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -144,6 +146,7 @@ pub struct ImageCompare {
     fade: Rc<Cell<Bounds<Pixels>>>,
     focus: FocusHandle,
     _load: Task<()>,
+    _copy: Task<()>,
     _sized: [Task<()>; 2],
     _crop: Task<()>,
     _tick: Task<()>,
@@ -186,6 +189,7 @@ impl ImageCompare {
             fade: Rc::default(),
             focus: cx.focus_handle(),
             _load: Task::ready(()),
+            _copy: Task::ready(()),
             _sized: [Task::ready(()), Task::ready(())],
             _crop: Task::ready(()),
             _tick: Task::ready(()),
@@ -335,6 +339,73 @@ impl ImageCompare {
                 .await;
             this.update(cx, |this, cx| this.take_sides(sides, cx)).ok();
         });
+    }
+
+    /// What a right-click on side `i` offers (None: the stage both are laid over): Copy Image
+    /// for a side, each version's on the stage. Labels, and Before's (true) or After's. Only on
+    /// macOS, where a file goes onto the pasteboard.
+    #[doc(hidden)]
+    pub fn copies(&self, i: Option<usize>) -> Vec<(&'static str, bool)> {
+        if !cfg!(target_os = "macos") {
+            return vec![];
+        }
+        let there = |i: usize| !matches!(self.sides[i], Side::Missing);
+        match i {
+            Some(i) if there(i) => vec![("Copy Image", i == 0)],
+            Some(_) => vec![],
+            None => [("Copy Before Image", 0), ("Copy After Image", 1)]
+                .into_iter()
+                .filter(|&(_, i)| there(i))
+                .map(|(label, i)| (label, i == 0))
+                .collect(),
+        }
+    }
+
+    /// The file of one version to copy: the working tree's own, or a stored one saved first.
+    #[doc(hidden)]
+    pub fn copy_file(&self, before: bool) -> impl Future<Output = Result<String, String>> + use<> {
+        let (core, source) = (self.core.clone(), self.source.clone());
+        async move {
+            let c = &source.compare;
+            gitviber_core::api::files::media_file(
+                &core,
+                c.kind().to_string(),
+                source.path.clone(),
+                source.old_path.clone(),
+                c.sha().map(str::to_string),
+                c.base().map(str::to_string),
+                before,
+            )
+        }
+    }
+
+    /// One version onto the pasteboard as Finder copies a file: it pastes into Finder, Slack or
+    /// a terminal, and an app that only takes a picture gets its picture.
+    fn copy_image(&mut self, before: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let (file, core) = (self.copy_file(before), self.core.clone());
+        self._copy = cx.spawn_in(window, async move |_, cx| {
+            let copied = cx
+                .background_spawn(async move {
+                    gitviber_core::api::app::copy_files(&core, vec![file.await?])
+                })
+                .await;
+            if let Err(e) = copied {
+                _ = cx
+                    .update(|window, cx| Toast::error(e).title("Could not copy").show(window, cx));
+            }
+        });
+    }
+
+    /// The right-click menu of side `i` (None: the stage).
+    fn copy_menu(&self, i: Option<usize>, menu: PopupMenu, view: WeakEntity<Self>) -> PopupMenu {
+        self.copies(i)
+            .into_iter()
+            .fold(menu, |menu, (label, before)| {
+                let view = view.clone();
+                menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                    _ = view.update(cx, |this, cx| this.copy_image(before, window, cx));
+                }))
+            })
     }
 
     fn drag(&mut self, x: Pixels, cx: &mut Context<Self>) {

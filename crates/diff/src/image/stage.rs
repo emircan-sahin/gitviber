@@ -10,6 +10,7 @@ use super::*;
 use crate::model::zoom::{FIT, Frame};
 use crate::style::Layout;
 use gitviber_ui::keymap::media;
+use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::v_flex;
 use gpui_kit::{
     AnyElement, Corners, CursorStyle, Hsla, InteractiveElement as _, KeyDownEvent, MouseButton,
@@ -671,6 +672,20 @@ impl ImageCompare {
             )
     }
 
+    /// Both versions laid over each other: a right-click copies either.
+    fn stage_menu(
+        &self,
+        el: gpui_kit::Stateful<gpui_kit::Div>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let view = cx.weak_entity();
+        el.context_menu(move |menu, _, cx| match view.upgrade() {
+            Some(v) => v.read(cx).copy_menu(None, menu, view.clone()),
+            None => menu,
+        })
+        .into_any_element()
+    }
+
     /// Each side's sharp part: its pixels' size, and the BGRA of the middle one (tests).
     #[doc(hidden)]
     pub fn crops(&self) -> [Option<CropShown>; 2] {
@@ -737,10 +752,18 @@ impl ImageCompare {
                                 .text_color(c.subtle)
                                 .child("Not on this side")
                                 .into_any_element(),
-                            _ => self
-                                .room(cell, i, false, cx)
-                                .children(self.layer(i, false, None, Some(checker)))
-                                .into_any_element(),
+                            _ => {
+                                let view = cx.weak_entity();
+                                self.room(cell, i, false, cx)
+                                    .children(self.layer(i, false, None, Some(checker)))
+                                    .context_menu(move |menu, _, cx| match view.upgrade() {
+                                        Some(v) => {
+                                            v.read(cx).copy_menu(Some(i), menu, view.clone())
+                                        }
+                                        None => menu,
+                                    })
+                                    .into_any_element()
+                            }
                         }
                     }))
                     .into_any_element()
@@ -780,7 +803,7 @@ impl ImageCompare {
                                 }),
                             ),
                     )
-                    .into_any_element()
+                    .map(|el| self.stage_menu(el, cx))
             }
             ImageMode::Onion => {
                 let el = div().id("image-stage").relative().flex_1().min_h_0().m_4();
@@ -793,7 +816,7 @@ impl ImageCompare {
                             .opacity(self.opacity)
                             .children(self.layer(1, true, None, None)),
                     )
-                    .into_any_element()
+                    .map(|el| self.stage_menu(el, cx))
             }
         };
         v_flex()
