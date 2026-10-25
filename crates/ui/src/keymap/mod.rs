@@ -6,9 +6,13 @@ pub mod chord;
 mod commands;
 pub mod edit;
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-use gpui_kit::{Action, App, KeyBinding, KeyBindingContextPredicate, KeyBindingMetaIndex};
+use gpui_kit::{
+    Action, App, KeyBinding, KeyBindingContextPredicate, KeyBindingMetaIndex, Keystroke,
+    KeystrokeEvent, Modifiers,
+};
 
 pub use chord::{IS_MAC, canonical, chord_keys, format_chord};
 pub use commands::*;
@@ -20,6 +24,83 @@ pub mod requests {
     // AskGitIdentity: git refused a commit for want of a name or email; the app asks for them,
     // even after the user closed that ask once.
     gpui_kit::actions!(requests, [AskGitIdentity]);
+}
+
+/// Find Next / Previous in an open find box: the code view's, a diff's or a rendered document's.
+/// Not commands (the old app left them to Monaco): no palette entry, and with no box open the
+/// key goes on, so ⇧⌘G still focuses the Git panel.
+pub mod find {
+    gpui_kit::actions!(find, [Next, Prev]);
+}
+
+/// Where a find box can be open; its handlers step through the matches or let the key go on.
+const FIND_PLACES: &str = "CodeView || MarkdownView || MarkdownFind || DiffView || DiffViewEditing || DiffFind || StackedDiff";
+
+/// macOS's ⌘G and ⇧⌘G; F3 and ⇧F3 elsewhere, where Ctrl+G is Go to Line.
+fn find_bindings(mac: bool) -> [KeyBinding; 2] {
+    let (next, prev) = if mac {
+        ("cmd-g", "shift-cmd-g")
+    } else {
+        ("f3", "shift-f3")
+    };
+    [
+        KeyBinding::new(next, find::Next, Some(FIND_PLACES)),
+        KeyBinding::new(prev, find::Prev, Some(FIND_PLACES)),
+    ]
+}
+
+thread_local! {
+    /// The keystroke being dispatched, set before its bindings run and cleared after.
+    static PRESSED: RefCell<Option<Keystroke>> = const { RefCell::new(None) };
+}
+
+/// The keystroke running the action being handled; None when a click, the menu bar or the
+/// palette ran it. For a handler that tells its command's chords apart (⌘↵ in a file being
+/// edited is the editor's, F12 still goes to the definition).
+pub fn pressed() -> Option<Keystroke> {
+    PRESSED.with_borrow(|k| k.clone())
+}
+
+/// Latin script, as the old app's \p{Script=Latin}: the letters a European layout types.
+fn is_latin_letter(c: char) -> bool {
+    c.is_alphabetic()
+        && matches!(c as u32,
+            0x41..=0x5A | 0x61..=0x7A | 0xAA | 0xBA | 0xC0..=0x2AF | 0x1E00..=0x1EFF
+            | 0x2C60..=0x2C7F | 0xA720..=0xA7FF | 0xAB30..=0xAB6F | 0xFB00..=0xFB06)
+}
+
+/// The letter to type instead when an in-editor command's chord, pressed in a code editor, types
+/// a letter of the user's alphabet there (Polish ⌥Z is ż); a symbol (US ⌥Z is Ω) runs the command.
+fn typed_letter(e: &KeystrokeEvent, cx: &App) -> Option<Keystroke> {
+    let ks = &e.keystroke;
+    // Typing without ⌥, ⌃ or ⌘ never reaches a command.
+    let m = &ks.modifiers;
+    if !(m.alt || m.control || m.platform) {
+        return None;
+    }
+    let mut chars = ks.key_char.as_deref()?.chars();
+    let letter = chars
+        .next()
+        .filter(|c| chars.next().is_none() && is_latin_letter(*c))?;
+    let editing = e
+        .context_stack
+        .last()
+        .and_then(|c| c.get("mode"))
+        .is_some_and(|m| m == "editor");
+    if !editing {
+        return None;
+    }
+    let chord = edit::chord_of(ks, IS_MAC)?;
+    let overrides = &Settings::get(cx).keybindings;
+    all_commands()
+        .any(|c| {
+            chord::runs_in_editor(&chord, c) && bindings_for(c, overrides, IS_MAC).contains(&chord)
+        })
+        .then(|| Keystroke {
+            modifiers: Modifiers::none(),
+            key: letter.to_string(),
+            key_char: Some(letter.to_string()),
+        })
 }
 
 /// The key context every GitViber window root sets; global commands are bound under it.
@@ -249,6 +330,10 @@ pub fn context_for(chord: &str, command: &Command, mac: bool) -> String {
             context.push_str(" && !");
             context.push_str(TERMINAL_CONTEXT);
         }
+        // A code editor's own key context (gpui-component's "Input mode=editor").
+        if !typing && chord::runs_in_editor(chord, command) {
+            context = format!("({context}) || ({place} > {INPUT_CONTEXT} && mode == editor)");
+        }
     }
     // Matched at the field's depth, the chord outranks the field's own binding of it (GPUI lets
     // the deepest context win); ours are added after gpui-component's, so a tie goes to us too.
@@ -318,6 +403,20 @@ pub fn install(cx: &mut App) {
 
 pub(crate) fn init(cx: &mut App) {
     install(cx);
+    // Not ours to replace on a rebinding (no META): install keeps them.
+    cx.bind_keys(find_bindings(IS_MAC));
+    // For the app's life, holding nothing.
+    cx.intercept_keystrokes(|e, window, cx| {
+        PRESSED.set(Some(e.keystroke.clone()));
+        if let Some(letter) = typed_letter(e, cx) {
+            cx.stop_propagation();
+            window.defer(cx, move |window, cx| {
+                window.dispatch_keystroke(letter, cx);
+            });
+        }
+    })
+    .detach();
+    cx.observe_keystrokes(|_, _, _| PRESSED.set(None)).detach();
     let mut last = Settings::get(cx).keybindings.clone();
     cx.observe_global::<Settings>(move |cx| {
         let now = &Settings::get(cx).keybindings;
@@ -420,6 +519,12 @@ mod tests {
             ("terminal.prevPane", "alt+cmd+left"),
             ("terminal.nextPane", "alt+cmd+right"),
         ];
+        // The window's zoom keys added to the image view's (there they zoomed the window).
+        const ADDED: &[(&str, &[&str])] = &[
+            ("media.zoomIn", &["cmd+=", "shift+cmd+="]),
+            ("media.zoomOut", &["cmd+-"]),
+            ("media.fit", &["cmd+0"]),
+        ];
         let mut seen = 0;
         for line in body
             .lines()
@@ -432,7 +537,10 @@ mod tests {
                 continue;
             }
             let c = command(id).unwrap_or_else(|| panic!("{id} missing"));
-            let keys = ts_list(line, "keys").unwrap();
+            let mut keys = ts_list(line, "keys").unwrap();
+            if let Some((_, added)) = ADDED.iter().find(|(a, _)| *a == id) {
+                keys.extend(added.iter().map(|k| k.to_string()));
+            }
             assert_eq!(
                 c.keys,
                 keys.iter()
@@ -519,6 +627,37 @@ mod tests {
             context_for("cmd+z", undo, true),
             "GitViber && !Input && !Terminal"
         );
+        // ⌥Z types a symbol in a code editor, so Toggle Word Wrap takes it there too.
+        let wrap = command("editor.toggleWrap").unwrap();
+        let context = context_for("alt+z", wrap, true);
+        assert_eq!(
+            context,
+            "(GitViber && !Input && !Terminal) || (GitViber > Input && mode == editor)"
+        );
+        assert!(KeyBindingContextPredicate::parse(&context).is_ok());
+        // Not a plain text field's ⌥Z, nor an in-editor command's letter alone.
+        assert!(!chord::runs_in_editor("z", wrap));
+        assert!(!chord::runs_in_editor("alt+z", undo));
+    }
+
+    #[test]
+    fn a_latin_letter_types_where_a_symbol_runs_the_command() {
+        for c in ['z', 'ż', 'Ż', 'å', 'ß', 'ő', 'ẞ'] {
+            assert!(is_latin_letter(c), "{c}");
+        }
+        for c in ['Ω', '≈', '÷', '×', 'я', '1', ' '] {
+            assert!(!is_latin_letter(c), "{c}");
+        }
+    }
+
+    #[test]
+    fn find_keys_bind_where_a_find_box_can_be() {
+        assert!(KeyBindingContextPredicate::parse(FIND_PLACES).is_ok());
+        for mac in [true, false] {
+            let [next, prev] = find_bindings(mac);
+            assert!(next.action().partial_eq(&find::Next));
+            assert!(prev.action().partial_eq(&find::Prev));
+        }
     }
 
     #[test]

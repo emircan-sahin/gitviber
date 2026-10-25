@@ -479,6 +479,43 @@ mod tests {
         std::fs::remove_file(path).ok();
     }
 
+    /// ⌘= / ⌘− / ⌘0 zoom the picture where focus is on it, not the window.
+    #[gpui_kit::test]
+    fn the_window_zoom_keys_zoom_the_picture(cx: &mut TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("gitviber-files-test-{}", std::process::id()));
+        // SAFETY: the tests that read the config dir all point it at a temporary folder.
+        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        cx.update(gitviber_ui::init);
+        let path = halves("keys", 1600, 1200);
+        let (host, cx) = cx.add_window_view(|_, _| Host(None));
+        let view = cx.update(|_, cx| cx.new(|cx| ImagePreview::new(path.clone(), cx)));
+        host.update(cx, |h, cx| {
+            h.0 = Some(view.clone());
+            cx.notify();
+        });
+        settle(cx);
+        cx.update(|window, cx| {
+            let focus = view.read(cx).focus_handle().clone();
+            focus.focus(window, cx);
+        });
+        let scale = |cx: &mut VisualTestContext| view.read_with(cx, |v, _| v.z.zoom.scale);
+        let cmd = if cfg!(target_os = "macos") {
+            "cmd"
+        } else {
+            "ctrl"
+        };
+        cx.simulate_keystrokes(&format!("{cmd}-="));
+        let once = scale(cx).expect("zoomed in");
+        cx.simulate_keystrokes(&format!("{cmd}-="));
+        let twice = scale(cx).unwrap();
+        assert!(twice > once, "{once} {twice}");
+        cx.simulate_keystrokes(&format!("{cmd}--"));
+        assert!(scale(cx).unwrap() < twice);
+        cx.simulate_keystrokes(&format!("{cmd}-0"));
+        assert_eq!(view.read_with(cx, |v, _| v.z.zoom), FIT);
+        std::fs::remove_file(path).ok();
+    }
+
     #[gpui_kit::test]
     fn held_at_the_size_shown_and_drawn_crisp_zoomed_in(cx: &mut TestAppContext) {
         let dir = std::env::temp_dir().join(format!("gitviber-files-test-{}", std::process::id()));

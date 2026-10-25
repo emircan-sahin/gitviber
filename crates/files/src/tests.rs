@@ -12,6 +12,8 @@ use crate::code::{CodeSource, CodeView};
 use crate::media::{MediaKind, MediaView};
 use crate::text::{Bar, BarKind};
 
+mod oldbugs;
+
 struct Host(Option<AnyView>);
 
 impl Render for Host {
@@ -699,6 +701,32 @@ fn find_in_the_rendered_markdown_preview(cx: &mut TestAppContext) {
         file.read_with(cx, |f, cx| f.preview_find(cx)),
         Some((Some(0), 4))
     );
+    // ⌘G / ⇧⌘G step too, from the box and from the page under it.
+    let (next, prev) = if cfg!(target_os = "macos") {
+        ("cmd-g", "shift-cmd-g")
+    } else {
+        ("f3", "shift-f3")
+    };
+    for keys in [(next, 1), (prev, 0)] {
+        cx.simulate_keystrokes(keys.0);
+        assert_eq!(
+            file.read_with(cx, |f, cx| f.preview_find(cx)),
+            Some((Some(keys.1), 4))
+        );
+    }
+    cx.update(|window, cx| {
+        use gitviber_ui::workspace::TabItem as _;
+        let page = file.read(cx).tab_focus(cx).unwrap();
+        page.focus(window, cx);
+    });
+    for keys in [(prev, 3), (next, 0)] {
+        cx.simulate_keystrokes(keys.0);
+        assert_eq!(
+            file.read_with(cx, |f, cx| f.preview_find(cx)),
+            Some((Some(keys.1), 4))
+        );
+    }
+    cx.update(|window, cx| file.update(cx, |f, cx| f.open_find(window, cx)));
     // ⌥⌘C: Match Case, found again from the first ("Foo" in the heading drops out).
     let flip = if cfg!(target_os = "macos") {
         "alt-cmd-c"

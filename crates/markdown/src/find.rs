@@ -5,6 +5,7 @@
 use std::ops::Range;
 
 use gitviber_ui::ActiveAppTheme as _;
+use gitviber_ui::keymap::find;
 use gitviber_ui::widgets::Toggle as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -108,7 +109,7 @@ pub fn find_matches(
 pub enum FindBarEvent {
     /// The text or a toggle changed: find [`FindBar::query`] again, from the first match.
     Changed,
-    /// ↵ / ⇧↵ or an arrow: the next match (1) or the one before (-1).
+    /// ↵ / ⇧↵, ⌘G / ⇧⌘G or an arrow: the next match (1) or the one before (-1).
     Step(isize),
     /// Esc or ×: drop the box (and the marks) and focus the page.
     Close,
@@ -237,6 +238,8 @@ impl Render for FindBar {
             .on_action(cx.listener(|_, e: &Enter, _, cx| {
                 cx.emit(FindBarEvent::Step(if e.shift { -1 } else { 1 }))
             }))
+            .on_action(cx.listener(|_, _: &find::Next, _, cx| cx.emit(FindBarEvent::Step(1))))
+            .on_action(cx.listener(|_, _: &find::Prev, _, cx| cx.emit(FindBarEvent::Step(-1))))
             .flex()
             .items_center()
             .gap_0p5()
@@ -420,6 +423,55 @@ mod tests {
             assert_eq!(v.matches(), (None, 0));
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// The box under a window root, as the app has it, so ⇧⌘G could reach Focus Git Panel.
+    struct BarHost(Entity<FindBar>, std::rc::Rc<std::cell::Cell<bool>>);
+
+    impl Render for BarHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let git = self.1.clone();
+            div()
+                .key_context(gitviber_ui::keymap::ROOT_CONTEXT)
+                .on_action(move |_: &gitviber_ui::keymap::view::FocusGitPanel, _, _| git.set(true))
+                .size_full()
+                .child(self.0.clone())
+        }
+    }
+
+    #[gpui_kit::test]
+    fn find_next_and_previous_keys_step_from_the_box(cx: &mut gpui_kit::TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let dir =
+            std::env::temp_dir().join(format!("gitviber-markdown-test-{}", std::process::id()));
+        // SAFETY: the tests that read the config dir all point it at a temporary folder.
+        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        cx.update(gitviber_ui::init);
+        let git = Rc::new(std::cell::Cell::new(false));
+        let (host, cx) = cx.add_window_view(|window, cx| {
+            BarHost(cx.new(|cx| FindBar::new(window, cx)), git.clone())
+        });
+        let bar = host.read_with(cx, |h, _| h.0.clone());
+        let steps = Rc::new(RefCell::new(vec![]));
+        let seen = steps.clone();
+        let _sub = cx.update(|_, cx| {
+            cx.subscribe(&bar, move |_, e: &FindBarEvent, _| {
+                if let FindBarEvent::Step(dir) = e {
+                    seen.borrow_mut().push(*dir)
+                }
+            })
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| bar.update(cx, |b, cx| b.focus(window, cx)));
+        let (next, prev) = if cfg!(target_os = "macos") {
+            ("cmd-g", "shift-cmd-g")
+        } else {
+            ("f3", "shift-f3")
+        };
+        cx.simulate_keystrokes(&format!("{next} {prev} {next}"));
+        assert_eq!(*steps.borrow(), [1, -1, 1]);
+        assert!(!git.get(), "⇧⌘G stays in the find box");
     }
 
     #[test]

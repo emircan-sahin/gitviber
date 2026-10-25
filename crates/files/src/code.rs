@@ -1,10 +1,14 @@
 //! A file's text in gpui-component's code editor: tree-sitter colors, line numbers, find (⌘F),
 //! go to line (⌃G), Go to Definition / References through core, the change bars against HEAD in
 //! the gutter and the whole file's on the scrollbar (with find's matches), blocks of the host's
-//! between lines (review notes), and ⌘S writing it back with its own line endings. Read-only for what can't be written back as it was (outside the
-//! repo, lossy text, mixed line endings).
+//! between lines (review notes), and ⌘S writing it back with its own line endings, asking first
+//! when the file changed on disk since the typing began. Read-only for what can't be written back
+//! as it was (outside the repo, lossy text, mixed line endings). The editing commands (edit.rs)
+//! and the bracket at the caret are the editable view's.
 
 use std::cell::RefCell;
+use std::hash::{DefaultHasher, Hash as _, Hasher as _};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -13,10 +17,12 @@ use std::time::Duration;
 use gitviber_core::definitions::{self, Location};
 use gitviber_core::{Core, api};
 use gitviber_ui::ActiveAppTheme as _;
-use gitviber_ui::keymap::{editor, file, review, search};
+use gitviber_ui::keymap::{self, editor, file, find, review, search};
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{Toast, Workspace};
-use gpui_kit::base::input::LineBlock;
+use gpui_kit::base::input::{
+    LineBlock, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, SyntaxContext,
+};
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::input::{
     DefinitionProvider, Editor, EditorState, Input, InputEvent, InputState, Position, Rope,
@@ -25,16 +31,37 @@ use gpui_kit::component::input::{
 use gpui_kit::component::{input as edit, native_menu::NativeMenu};
 use gpui_kit::{
     App, AppContext as _, Bounds, ClickEvent, Context, Entity, FocusHandle, Focusable as _,
-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, actions,
-    canvas, div, fill, point, prelude::FluentBuilder as _, px, relative, size,
+    InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Pixels, PromptLevel,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+    WeakEntity, Window, actions, canvas, div, fill, point, prelude::FluentBuilder as _, px,
+    relative, size,
 };
 
 use crate::backend;
+use crate::edit::{self as lines, LineEdit};
 use crate::text::{self, Bar, BarKind};
 use crate::{OpenOptions, Reveal, open_file};
 
-actions!(code_view, [GoToLine, CloseOverlay]);
+actions!(
+    code_view,
+    [
+        GoToLine,
+        CloseOverlay,
+        ToggleComment,
+        JumpToBracket,
+        SelectNextOccurrence,
+        SelectLine,
+        DeleteLine,
+        MoveLineUp,
+        MoveLineDown,
+        CopyLineUp,
+        CopyLineDown,
+        InsertLineBelow,
+        InsertLineAbove,
+        ScrollPageDown,
+        ScrollPageUp,
+    ]
+);
 
 /// Past this the text isn't parsed for colors or folds: a minified bundle costs more than they help.
 pub const MAX_HIGHLIGHT_BYTES: usize = 2_000_000;
@@ -43,10 +70,57 @@ const MAX_LIVE_BARS_BYTES: usize = 1_500_000;
 const SETTLE: Duration = Duration::from_millis(150);
 
 pub(crate) fn bind_keys(cx: &mut App) {
+    // The code's own field, not the find or go-to box over it.
+    let code = Some("CodeView > Input && mode == editor");
+    let k = |mac: &'static str, other: &'static str| {
+        if cfg!(target_os = "macos") {
+            mac
+        } else {
+            other
+        }
+    };
     cx.bind_keys([
-        gpui_kit::KeyBinding::new("ctrl-g", GoToLine, Some("CodeView")),
-        gpui_kit::KeyBinding::new("escape", CloseOverlay, Some("CodeOverlay")),
+        KeyBinding::new("ctrl-g", GoToLine, Some("CodeView")),
+        KeyBinding::new("escape", CloseOverlay, Some("CodeOverlay")),
+        // The old editor's keys (Monaco's). ⌘/ goes on to the shortcut overlay where the file
+        // can't be commented; ⇧⌘\ comes from macOS as ⌘|.
+        KeyBinding::new(k("cmd-/", "ctrl-/"), ToggleComment, code),
+        KeyBinding::new(k("cmd-|", "ctrl-shift-\\"), JumpToBracket, code),
+        KeyBinding::new(k("cmd-d", "ctrl-d"), SelectNextOccurrence, code),
+        KeyBinding::new(k("cmd-l", "ctrl-l"), SelectLine, code),
+        KeyBinding::new(k("shift-cmd-k", "ctrl-shift-k"), DeleteLine, code),
+        KeyBinding::new("alt-up", MoveLineUp, code),
+        KeyBinding::new("alt-down", MoveLineDown, code),
+        KeyBinding::new("shift-alt-up", CopyLineUp, code),
+        KeyBinding::new("shift-alt-down", CopyLineDown, code),
+        KeyBinding::new(k("cmd-enter", "ctrl-enter"), InsertLineBelow, code),
+        KeyBinding::new(
+            k("shift-cmd-enter", "ctrl-shift-enter"),
+            InsertLineAbove,
+            code,
+        ),
+        // Read-only code pages as the shortcut overlay says; typed code takes the space.
+        KeyBinding::new("space", ScrollPageDown, code),
+        KeyBinding::new("shift-space", ScrollPageUp, code),
     ]);
+}
+
+/// The text a save compares the disk with, as read or written (line endings and all).
+fn text_hash(text: &str) -> u64 {
+    let mut h = DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
+
+/// Puts the selections back, the active one first.
+fn select(s: &mut EditorState, selections: &[Range<usize>], cx: &mut Context<EditorState>) {
+    let mut each = selections.iter().cloned();
+    if let Some(first) = each.next() {
+        s.set_selected_range(first, cx);
+    }
+    for r in each {
+        s.add_selection(r, cx);
+    }
 }
 
 /// Where the text comes from, for saving and for definitions.
@@ -122,6 +196,16 @@ pub struct CodeView {
     dirty: bool,
     /// Bumped by each edit, so a save that raced typing leaves the file dirty.
     edits: u64,
+    /// The file on disk the typing began from (`text_hash`): a save finding another asks first.
+    base: u64,
+    /// What a save is writing now, so its own change on disk isn't someone else's.
+    saving: Option<u64>,
+    /// The file changed on disk under unsaved typing (the header says so).
+    disk_changed: bool,
+    /// The bracket at the caret and its match, in the editable view.
+    brackets: Option<RangeDecorationCollection>,
+    /// The caret and edit count they were found for.
+    brackets_at: (usize, u64),
     goto: Option<(Entity<InputState>, Subscription)>,
     places: Option<Places>,
     /// Who last changed each line, while Settings asks for it (View → Blame).
@@ -134,7 +218,9 @@ pub struct CodeView {
     focus: FocusHandle,
     _change: Subscription,
     _settings: Subscription,
+    _caret: Subscription,
     _blame: Task<()>,
+    _brackets: Task<()>,
     _bars: Task<()>,
     _save: Task<()>,
     _lookup: Task<()>,
@@ -318,6 +404,7 @@ impl CodeView {
         let unit = text::indent_unit(&text);
         let wrap = gitviber_ui::Settings::get(cx).word_wrap;
         let big = text.len() > MAX_HIGHLIGHT_BYTES;
+        let base = text_hash(&text);
         // The editor joins lines with \n; the file's \r\n goes back on at save.
         let text = if crlf {
             text.replace("\r\n", "\n")
@@ -393,6 +480,8 @@ impl CodeView {
                 cx.notify();
             }
         });
+        // The caret moved or the text changed: the bracket there is found again.
+        let caret = cx.observe(&state, |this: &mut Self, _, cx| this.brackets_soon(cx));
         // Word wrap and blame follow the settings as they change.
         let settings = cx.observe_global_in::<gitviber_ui::Settings>(window, |this, window, cx| {
             let s = gitviber_ui::Settings::get(cx);
@@ -419,6 +508,11 @@ impl CodeView {
             map: Rc::default(),
             dirty: false,
             edits: 0,
+            base,
+            saving: None,
+            disk_changed: false,
+            brackets: None,
+            brackets_at: (usize::MAX, 0),
             goto: None,
             places: None,
             blame: None,
@@ -428,7 +522,9 @@ impl CodeView {
             focus: cx.focus_handle(),
             _change: change,
             _settings: settings,
+            _caret: caret,
             _blame: Task::ready(()),
+            _brackets: Task::ready(()),
             _bars: Task::ready(()),
             _save: Task::ready(()),
             _lookup: Task::ready(()),
@@ -640,6 +736,15 @@ impl CodeView {
         self.map.borrow().marks().to_vec()
     }
 
+    /// The brackets framed at the caret.
+    #[cfg(test)]
+    pub(crate) fn bracket_frames(&self, cx: &App) -> Vec<Range<usize>> {
+        self.brackets
+            .as_ref()
+            .map(|b| b.get_ranges(cx))
+            .unwrap_or_default()
+    }
+
     #[cfg(test)]
     pub(crate) fn state(&self) -> &Entity<EditorState> {
         &self.state
@@ -662,7 +767,8 @@ impl CodeView {
         self.state.read(cx).text()
     }
 
-    /// The file changed on disk: shown as it is now, unless there's typing to keep.
+    /// The file changed on disk: shown as it is now, unless there's typing to keep. Kept typing
+    /// is never dropped: the header says the file changed, and ⌘S asks before writing over it.
     pub fn file_changed(
         &mut self,
         text: String,
@@ -674,11 +780,7 @@ impl CodeView {
         self.head = head
             .filter(|_| text.len() <= MAX_LIVE_BARS_BYTES)
             .map(Arc::new);
-        if self.dirty {
-            self.bars_soon(cx);
-            return;
-        }
-        self.bars = Arc::new(bars);
+        let hash = text_hash(&text);
         let text = if self.crlf {
             text.replace("\r\n", "\n")
         } else {
@@ -688,6 +790,23 @@ impl CodeView {
             let shown = self.state.read(cx).text();
             shown.len() == text.len() && *shown == text.as_str()
         };
+        if self.dirty && !same {
+            let changed = hash != self.base && self.saving != Some(hash);
+            if changed != self.disk_changed {
+                self.disk_changed = changed;
+                cx.emit(CodeEvent::DirtyChanged);
+            }
+            self.bars_soon(cx);
+            return;
+        }
+        self.base = hash;
+        self.bars = Arc::new(bars);
+        if self.dirty || self.disk_changed {
+            // What's typed is what's on disk now.
+            self.dirty = false;
+            self.disk_changed = false;
+            cx.emit(CodeEvent::DirtyChanged);
+        }
         if !same {
             self.state.update(cx, |s, cx| s.set_value(text, window, cx));
             // set_value's own change event isn't typing.
@@ -696,6 +815,20 @@ impl CodeView {
             cx.emit(CodeEvent::Reloaded);
         }
         cx.notify();
+    }
+
+    /// The file changed on disk under unsaved typing.
+    pub fn changed_on_disk(&self) -> bool {
+        self.disk_changed
+    }
+
+    /// Drops the typing, so the file as read next shows (the header's Reload).
+    pub(crate) fn discard_typing(&mut self, cx: &mut Context<Self>) {
+        if self.dirty || self.disk_changed {
+            self.dirty = false;
+            self.disk_changed = false;
+            cx.emit(CodeEvent::DirtyChanged);
+        }
     }
 
     /// The bars against HEAD for the text now, worked out off the main thread once typing pauses.
@@ -731,7 +864,9 @@ impl CodeView {
         self.save_task(window, cx);
     }
 
-    /// `save`, answered once it's on disk (true) or failed; None where nothing can be saved.
+    /// `save`, answered once it's on disk (true) or failed or declined; None where nothing can be
+    /// saved. A file changed on disk since the typing began is overwritten only once the user
+    /// says so.
     pub fn save_task(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<Task<bool>> {
         if self.readonly || self.source.root.is_none() {
             return None;
@@ -742,26 +877,69 @@ impl CodeView {
         if self.crlf {
             content = content.replace('\n', "\r\n");
         }
+        let written = text_hash(&content);
         let (core, path) = (self.core.clone(), self.source.path.clone());
+        let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+        // A save still under way goes first: it moves `base` to what it wrote.
+        let before = std::mem::replace(&mut self._save, Task::ready(()));
         self._save = cx.spawn_in(window, async move |this, cx| {
-            let written = cx
+            before.await;
+            let Ok(base) = this.read_with(cx, |this, _| this.base) else {
+                return;
+            };
+            let disk = {
+                let (core, path) = (core.clone(), path.clone());
+                cx.background_spawn(async move {
+                    let f = api::files::read_file(&core, path).ok()?;
+                    // Text this view can't have been editing (now UTF-16, binary) changed too.
+                    let other = f.lossy || f.binary || f.too_large;
+                    let h = text_hash(&f.text);
+                    (f.exists && (other || (h != base && h != written))).then_some(())
+                })
+                .await
+            };
+            if disk.is_some() {
+                let asked = this.update_in(cx, |_, window, cx| {
+                    window.prompt(
+                        PromptLevel::Warning,
+                        &format!(
+                            "{name} changed on disk since you began editing it. Overwrite it with your version?"
+                        ),
+                        None,
+                        &["Overwrite", "Cancel"],
+                        cx,
+                    )
+                });
+                let Ok(asked) = asked else { return };
+                if asked.await != Ok(0) {
+                    done.done(false);
+                    return;
+                }
+            }
+            _ = this.update(cx, |this, _| this.saving = Some(written));
+            let result = cx
                 .background_spawn(async move { api::files::write_file(&core, path, content) })
                 .await;
-            _ = this.update(cx, |this, cx| match written {
-                Ok(()) => {
-                    if this.edits == at {
-                        this.dirty = false;
+            _ = this.update(cx, |this, cx| {
+                this.saving = None;
+                match result {
+                    Ok(()) => {
+                        this.base = written;
+                        this.disk_changed = false;
+                        if this.edits == at {
+                            this.dirty = false;
+                        }
+                        cx.emit(CodeEvent::Saved);
+                        cx.emit(CodeEvent::DirtyChanged);
+                        cx.notify();
+                        done.done(true);
                     }
-                    cx.emit(CodeEvent::Saved);
-                    cx.emit(CodeEvent::DirtyChanged);
-                    cx.notify();
-                    done.done(true);
-                }
-                Err(e) => {
-                    _ = this.workspace.update(cx, |ws, cx| {
-                        ws.toast(Toast::error(e).title("Could not save"), cx)
-                    });
-                    done.done(false);
+                    Err(e) => {
+                        _ = this.workspace.update(cx, |ws, cx| {
+                            ws.toast(Toast::error(e).title("Could not save"), cx)
+                        });
+                        done.done(false);
+                    }
                 }
             });
         });
@@ -933,6 +1111,149 @@ impl CodeView {
         let s = self.state.read(cx);
         let range = s.selected_range();
         s.text().slice(range).to_string()
+    }
+
+    /// A line command's edit, made as one step to undo. Read-only code lets the key go on.
+    fn edit_lines(
+        &mut self,
+        make: impl FnOnce(&Rope, &[Range<usize>]) -> Option<LineEdit>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.readonly {
+            return cx.propagate();
+        }
+        let s = self.state.read(cx);
+        let Some(e) = make(s.text(), &s.selected_ranges()) else {
+            return;
+        };
+        self.state.update(cx, |s, cx| {
+            s.set_selected_range(e.span, cx);
+            s.replace(e.text, window, cx);
+            select(s, &e.selections, cx);
+        });
+    }
+
+    /// ⌘/ where the language has comments; elsewhere the key goes on (the shortcut overlay).
+    fn toggle_comment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match lines::comment_for(self.lang).filter(|_| !self.readonly) {
+            Some(c) => self.edit_lines(|t, s| lines::toggle_comment(t, s, c), window, cx),
+            None => cx.propagate(),
+        }
+    }
+
+    /// ⌘D: the word at the caret, then each next place it is, as one more selection.
+    fn select_next(&mut self, cx: &mut Context<Self>) {
+        let s = self.state.read(cx);
+        let Some(next) = lines::next_occurrence(s.text(), &s.selected_ranges()) else {
+            return;
+        };
+        self.state.update(cx, |s, cx| match next {
+            lines::Next::Word(r) => s.set_selected_range(r, cx),
+            lines::Next::Add(r) => s.add_selection(r, cx),
+        });
+    }
+
+    /// ⌘L: whole lines, a line more each time.
+    fn select_line(&mut self, cx: &mut Context<Self>) {
+        let s = self.state.read(cx);
+        let whole = lines::select_lines(s.text(), &s.selected_ranges());
+        self.state.update(cx, |s, cx| select(s, &whole, cx));
+    }
+
+    /// Whether `offset` is code, not in a string or comment, for matching brackets. Each lookup
+    /// compares the whole text with the one parsed, so past a few milliseconds the rest of a
+    /// scan counts as code: a huge file's frame may be off, the caret never slow.
+    fn code_at(state: &EditorState) -> impl Fn(usize) -> bool + '_ {
+        let until = std::time::Instant::now() + Duration::from_millis(4);
+        move |at| {
+            std::time::Instant::now() > until || state.syntax_context_at(at) == SyntaxContext::Code
+        }
+    }
+
+    /// ⇧⌘\: to the bracket matching the one at the caret, or the end of the pair around it.
+    fn jump_to_bracket(&mut self, cx: &mut Context<Self>) {
+        if self.readonly {
+            return cx.propagate();
+        }
+        let s = self.state.read(cx);
+        let Some(to) = lines::jump_to_bracket(s.text(), s.cursor(), &Self::code_at(s)) else {
+            return;
+        };
+        self.state
+            .update(cx, |s, cx| s.set_selected_range(to..to, cx));
+    }
+
+    /// The bracket at the caret and its match, framed. Found again when the caret moves, and
+    /// once typing pauses when the text changes (strings and comments need the text parsed).
+    fn brackets_soon(&mut self, cx: &mut Context<Self>) {
+        if self.readonly {
+            return;
+        }
+        let at = (self.state.read(cx).cursor(), self.edits);
+        if at == self.brackets_at {
+            return;
+        }
+        let typed = at.1 != self.brackets_at.1;
+        self.brackets_at = at;
+        self._brackets = cx.spawn(async move |this, cx| {
+            if typed {
+                cx.background_executor().timer(SETTLE).await;
+            }
+            _ = this.update(cx, |this, cx| this.show_brackets(cx));
+        });
+    }
+
+    fn show_brackets(&mut self, cx: &mut Context<Self>) {
+        let s = self.state.read(cx);
+        let found = s.selected_range().is_empty().then(|| {
+            lines::bracket_pair(s.text(), s.cursor(), &Self::code_at(s)).map(|(a, b)| {
+                [a, b].map(|at| {
+                    RangeDecoration::new(at..at + 1).with_style(RangeDecorationStyle::Frame)
+                })
+            })
+        });
+        let frames = found.flatten().map(Vec::from).unwrap_or_default();
+        match &self.brackets {
+            Some(b) => b.set(frames, cx),
+            None if frames.is_empty() => {}
+            None => {
+                let b = self.state.update(cx, |s, cx| {
+                    s.create_range_decorations_collection(frames, cx)
+                });
+                self.brackets = Some(b);
+            }
+        }
+    }
+
+    /// Space / ⇧Space in read-only code: a page down or up, the caret left where it is.
+    fn page(&mut self, down: bool, cx: &mut Context<Self>) {
+        if !self.readonly {
+            return cx.propagate();
+        }
+        let s = self.state.read(cx);
+        let Some(line) = s.line_height() else {
+            return;
+        };
+        let page = (s.input_bounds().size.height - line).max(line);
+        let mut offset = s.scroll_offset();
+        offset.y += if down { -page } else { page };
+        self.state
+            .update(cx, |s, cx| s.set_scroll_offset(offset, cx));
+    }
+
+    /// ⌘G / ⇧⌘G while the find box is open; otherwise the key goes on (⇧⌘G: the Git panel).
+    fn find_step(&mut self, next: bool, cx: &mut Context<Self>) {
+        if !self.state.read(cx).search_session().open {
+            return cx.propagate();
+        }
+        self.state.update(cx, |s, cx| {
+            if next {
+                s.next_search_match(cx);
+            } else {
+                s.previous_search_match(cx);
+            }
+        });
     }
 
     /// The visible lines' blame labels, each on the first line of its run of lines.
@@ -1206,6 +1527,13 @@ impl Render for CodeView {
                 this.state.update(cx, |s, cx| s.open_search(false, cx))
             }))
             .on_action(cx.listener(|this, _: &editor::GoToDefinition, window, cx| {
+                // A file being edited keeps ⌘↵ (Insert Line Below); F12 still goes.
+                let typed = keymap::pressed().is_some_and(|k| {
+                    k.key == "enter" && (k.modifiers.platform || k.modifiers.control)
+                });
+                if typed && !this.readonly {
+                    return cx.propagate();
+                }
                 this.look_up(false, window, cx)
             }))
             .on_action(cx.listener(|this, _: &editor::PeekDefinition, window, cx| {
@@ -1224,6 +1552,37 @@ impl Render for CodeView {
             .on_action(cx.listener(|_, _: &editor::ToggleWrap, _, cx| {
                 gitviber_ui::Settings::update(cx, |s| s.word_wrap = !s.word_wrap);
             }))
+            .on_action(
+                cx.listener(|this, _: &ToggleComment, window, cx| this.toggle_comment(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &JumpToBracket, _, cx| this.jump_to_bracket(cx)))
+            .on_action(cx.listener(|this, _: &SelectNextOccurrence, _, cx| this.select_next(cx)))
+            .on_action(cx.listener(|this, _: &SelectLine, _, cx| this.select_line(cx)))
+            .on_action(cx.listener(|this, _: &DeleteLine, window, cx| {
+                this.edit_lines(lines::delete_lines, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MoveLineUp, window, cx| {
+                this.edit_lines(|t, s| lines::move_lines(t, s, true), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MoveLineDown, window, cx| {
+                this.edit_lines(|t, s| lines::move_lines(t, s, false), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CopyLineUp, window, cx| {
+                this.edit_lines(|t, s| lines::copy_lines(t, s, true), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CopyLineDown, window, cx| {
+                this.edit_lines(|t, s| lines::copy_lines(t, s, false), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &InsertLineBelow, window, cx| {
+                this.edit_lines(|t, s| lines::insert_line(t, s, true), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &InsertLineAbove, window, cx| {
+                this.edit_lines(|t, s| lines::insert_line(t, s, false), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ScrollPageDown, _, cx| this.page(true, cx)))
+            .on_action(cx.listener(|this, _: &ScrollPageUp, _, cx| this.page(false, cx)))
+            .on_action(cx.listener(|this, _: &find::Next, _, cx| this.find_step(true, cx)))
+            .on_action(cx.listener(|this, _: &find::Prev, _, cx| this.find_step(false, cx)))
             .on_action(cx.listener(|this, _: &review::AddNote, _, cx| {
                 if !this.notes {
                     return cx.propagate();

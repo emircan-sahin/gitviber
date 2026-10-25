@@ -1,10 +1,12 @@
 # gpui-base 0.8.0, patched
 
-The crates.io release of gpui-base 0.8.0, byte for byte, except two changes and this file:
+The crates.io release of gpui-base 0.8.0, byte for byte, except three changes and this file:
 1. `src/text/inline.rs`: closed markdown documents' shaped text is swept (below). Drop it once
    an upstream release sweeps the table itself.
 2. Line blocks in the code editor (the second half of this file). Drop it once upstream has
    blocks between lines.
+3. Two read-only accessors the code view's editing commands need (the end of this file). Drop
+   them once upstream exposes the selections and the syntax context.
 
 Wired in through `[patch.crates-io]` in the workspace Cargo.toml (and excluded from the
 workspace). The whole patch: `diff -ru ~/.cargo/registry/src/index.crates.io-*/gpui-base-0.8.0
@@ -94,3 +96,14 @@ keeps working and only the places that walk a line's rows learn about the gap.
 
 Tested from crates/files (`tests::blocks_between_lines_take_rows_the_caret_steps_over`: rows,
 placement, caret, clicks, edits, reload, leaks) and seen in a snapshot of the files demo.
+
+## 3. Selections and syntax context: why and the change
+
+The file view's ⌘/, ⇧⌘K, ⌥↑/⌥↓, ⌘D and ⌘L act on every selection, and its bracket matching
+skips brackets in strings and comments; the editor kept both to itself.
+
+- `src/input/base/state.rs`: `InputBaseState::selected_ranges()`, every selection as a byte
+  range, the active one first (after `selected_range`).
+- `src/input/editor/mod.rs`: `EditorState::syntax_context_at` is `pub` (was `pub(crate)`).
+
+Tested from crates/files (`edit::tests`, `tests::oldbugs::the_old_editors_keys_edit_the_code`).

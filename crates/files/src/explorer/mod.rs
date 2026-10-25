@@ -324,6 +324,24 @@ impl ExplorerPanel {
     }
 
     #[cfg(test)]
+    pub(crate) fn picked_paths(&self) -> Vec<String> {
+        let mut paths: Vec<String> = self.picked.iter().map(|p| p.to_string()).collect();
+        paths.sort();
+        paths
+    }
+
+    #[cfg(test)]
+    pub(crate) fn select_for_test(&mut self, path: &str) {
+        self.selected = Some(path.to_string().into());
+        self.anchor = self.selected.clone();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_open_for_test(&mut self, path: &str, open: bool, cx: &mut Context<Self>) {
+        self.set_open(path, open, cx);
+    }
+
+    #[cfg(test)]
     pub(crate) fn is_listing(&self) -> bool {
         !self.listings.is_empty()
     }
@@ -601,14 +619,7 @@ impl ExplorerPanel {
             }
             self.anchor = Some(node.path.clone());
         } else if m.shift {
-            let anchor = self
-                .anchor
-                .clone()
-                .filter(|a| self.row_index(a).is_some())
-                .or(self.selected.clone())
-                .unwrap_or(node.path.clone());
-            self.picked = self.range(&anchor, &node.path);
-            self.anchor = Some(anchor);
+            self.pick_to(&node.path);
         } else {
             self.picked.clear();
             self.anchor = Some(node.path.clone());
@@ -616,6 +627,19 @@ impl ExplorerPanel {
         }
         self.selected = Some(node.path);
         cx.notify();
+    }
+
+    /// ⇧-click or ⇧↑/⇧↓: the rows from the anchor to `to`. An anchor hidden since (its folder
+    /// closed, the filter) starts the range over from the selected row.
+    fn pick_to(&mut self, to: &SharedString) {
+        let anchor = self
+            .anchor
+            .clone()
+            .filter(|a| self.row_index(a).is_some())
+            .or(self.selected.clone())
+            .unwrap_or(to.clone());
+        self.picked = self.range(&anchor, to);
+        self.anchor = Some(anchor);
     }
 
     /// The paths from `from` to `to` in the order they show.
@@ -680,13 +704,7 @@ impl ExplorerPanel {
                 let to = to.clamp(0, self.rows.len() as isize - 1) as usize;
                 let path = self.rows[to].node.path.clone();
                 if ks.modifiers.shift {
-                    let anchor = self
-                        .anchor
-                        .clone()
-                        .or(self.selected.clone())
-                        .unwrap_or(path.clone());
-                    self.picked = self.range(&anchor, &path);
-                    self.anchor = Some(anchor);
+                    self.pick_to(&path);
                 } else {
                     self.picked.clear();
                 }

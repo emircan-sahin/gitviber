@@ -213,7 +213,7 @@ impl EditorState {
     }
 
     /// Syntax context at `offset`, or `Code` when the language has no provider.
-    pub(crate) fn syntax_context_at(&self, offset: usize) -> super::SyntaxContext {
+    pub fn syntax_context_at(&self, offset: usize) -> super::SyntaxContext {
         self.mode.syntax_context_at(&self.text, offset)
     }
 

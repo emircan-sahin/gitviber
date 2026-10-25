@@ -14,7 +14,7 @@ use gitviber_markdown::{
     is_markdown,
 };
 use gitviber_ui::ActiveAppTheme as _;
-use gitviber_ui::keymap::{editor, file};
+use gitviber_ui::keymap::{editor, file, find};
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{Toggle as _, segmented};
 use gitviber_ui::workspace::{
@@ -25,8 +25,8 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::{
     AnyEntity, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
+    InteractiveElement as _, IntoElement, ParentElement as _, PromptLevel, Render, SharedString,
+    Styled as _, Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::code::{CodeEvent, CodeSource, CodeView};
@@ -395,6 +395,49 @@ impl FileView {
                 this.show(loaded, window, cx);
             });
         });
+    }
+
+    /// The header's Reload, after the file changed on disk under unsaved typing: the typing
+    /// goes, once the user says so, and the file shows as it is on disk.
+    pub(crate) fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let FileSource::Repo(path) = self.source.clone() else {
+            return;
+        };
+        let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!("Discard your changes to {name}?"),
+            Some("It changed on disk. It shows as it is there now."),
+            &["Discard Changes", "Cancel"],
+            cx,
+        );
+        let core = self.core.clone();
+        self._load = cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            let (loaded, mtime) = cx
+                .background_spawn(async move { Self::read(core, FileSource::Repo(path)) })
+                .await;
+            _ = this.update_in(cx, |this, window, cx| {
+                if let Content::Text { code, .. } = &this.content {
+                    code.update(cx, |c, cx| c.discard_typing(cx));
+                }
+                this.mtime = mtime;
+                this.show(loaded, window, cx);
+            });
+        });
+    }
+
+    /// ⌘G / ⇧⌘G with the find box open over the rendered preview; otherwise the key goes on.
+    fn preview_step(&mut self, dir: isize, cx: &mut Context<Self>) {
+        match self.shown_preview().filter(|_| self.find_open) {
+            Some(preview) => {
+                preview.update(cx, |p, cx| p.step_match(dir, cx));
+                self.show_found(cx);
+            }
+            None => cx.propagate(),
+        }
     }
 
     /// This file's uncommitted diff: the unstaged one, else the staged one.
@@ -776,12 +819,16 @@ impl FileView {
             .rsplit_once('/')
             .map(|(d, n)| (d.to_string(), n.to_string()))
             .unwrap_or((String::new(), path.clone()));
-        let readonly = match &self.content {
-            Content::Text { code, .. } => code.read(cx).is_readonly(),
-            _ => false,
+        let (readonly, on_disk) = match &self.content {
+            Content::Text { code, .. } => {
+                let code = code.read(cx);
+                (code.is_readonly(), code.changed_on_disk())
+            }
+            _ => (false, false),
         };
         let svg = path.to_ascii_lowercase().ends_with(".svg");
         div()
+            .debug_selector(|| "file-header".into())
             .flex_none()
             .flex()
             .items_center()
@@ -791,11 +838,30 @@ impl FileView {
             .border_b_1()
             .border_color(t.border)
             .text_size(px(12.))
-            .child(div().text_color(t.foreground).child(name))
-            .child(div().min_w_0().truncate().text_color(t.subtle).child(dir))
+            // A long name gives way before the buttons, its folder first.
+            .child(
+                div()
+                    .debug_selector(|| "file-name".into())
+                    .min_w_0()
+                    .truncate()
+                    .text_color(t.foreground)
+                    .child(name),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(t.subtle)
+                    .map(|mut d| {
+                        d.style().flex_shrink = Some(1000.);
+                        d
+                    })
+                    .child(dir),
+            )
             .when(readonly, |d| {
                 d.child(
                     div()
+                        .flex_none()
                         .px_1()
                         .rounded(px(3.))
                         .bg(t.elevated)
@@ -805,6 +871,23 @@ impl FileView {
                 )
             })
             .child(div().flex_1())
+            .when(on_disk, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(11.5))
+                        .text_color(t.modified)
+                        .child("Changed on disk"),
+                )
+                .child(
+                    Button::new("reload")
+                        .ghost()
+                        .xsmall()
+                        .label("Reload")
+                        .tooltip("Discard your changes and show the file as it is on disk")
+                        .on_click(cx.listener(|this, _, window, cx| this.reload(window, cx))),
+                )
+            })
             .when(self.changed, |d| {
                 d.child(
                     Button::new("changes")
@@ -1007,6 +1090,8 @@ impl Render for FileView {
             .on_action(
                 cx.listener(|this, _: &editor::OpenOnGitHub, _, cx| this.github_link(true, cx)),
             )
+            .on_action(cx.listener(|this, _: &find::Next, _, cx| this.preview_step(1, cx)))
+            .on_action(cx.listener(|this, _: &find::Prev, _, cx| this.preview_step(-1, cx)))
             .on_action(cx.listener(|this, _: &editor::Find, window, cx| {
                 if this.shown_preview().is_some() {
                     this.open_find(window, cx);

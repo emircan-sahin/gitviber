@@ -11,6 +11,7 @@ mod backend;
 pub mod code;
 mod code_map;
 mod compare;
+mod edit;
 pub mod explorer;
 pub mod file_view;
 pub mod language;

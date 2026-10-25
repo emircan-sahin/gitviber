@@ -120,6 +120,16 @@ pub fn runs_while_typing(chord: &str, command: &Command, mac: bool) -> bool {
     is_fkey(key) && !mods.contains(&"alt")
 }
 
+/// Whether an `in_editor` command's chord runs in a code editor too, where its key would type a
+/// symbol: one with ⌥, ⌃ or ⌘. A letter of the user's alphabet still types (keymap::typed_letter).
+pub fn runs_in_editor(chord: &str, command: &Command) -> bool {
+    command.in_editor
+        && split(chord)
+            .0
+            .iter()
+            .any(|m| matches!(*m, "alt" | "ctrl" | "cmd"))
+}
+
 /// Whether the terminal hands a chord to its command instead of the shell: the physical Ctrl with
 /// anything but a letter (⌃Tab, ⌃1). Ctrl+letter is always the shell's; Ctrl+Shift+letter is the
 /// app's, as in Linux terminals.

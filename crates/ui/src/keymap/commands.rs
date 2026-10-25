@@ -365,10 +365,17 @@ pub static COMMANDS: &[Command] = &[
         &["shift+f12"],
     )
     .local("CodeView || DiffView"),
-    cmd::<media::ZoomIn>("media.zoomIn", "Zoom In Image", Editor, &["=", "shift+="])
+    // The window's zoom keys zoom the picture in the image view, as the browser's zoom its page.
+    cmd::<media::ZoomIn>(
+        "media.zoomIn",
+        "Zoom In Image",
+        Editor,
+        &["=", "shift+=", "cmd+=", "shift+cmd+="],
+    )
+    .local("ImageView"),
+    cmd::<media::ZoomOut>("media.zoomOut", "Zoom Out Image", Editor, &["-", "cmd+-"])
         .local("ImageView"),
-    cmd::<media::ZoomOut>("media.zoomOut", "Zoom Out Image", Editor, &["-"]).local("ImageView"),
-    cmd::<media::Fit>("media.fit", "Fit Image", Editor, &["0"]).local("ImageView"),
+    cmd::<media::Fit>("media.fit", "Fit Image", Editor, &["0", "cmd+0"]).local("ImageView"),
     // ⌃` and ⌘J. Elsewhere Ctrl+` and Ctrl+J.
     cmd::<terminal::Toggle>(
         "terminal.toggle",
