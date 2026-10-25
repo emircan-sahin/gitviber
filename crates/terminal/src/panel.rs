@@ -1132,10 +1132,14 @@ impl TerminalPanel {
         let Some(slot) = self.panes.remove(&id) else {
             return;
         };
+        let had_focus = window.focused(cx).is_some();
+        // What goes with the pane: keys in any of it move on once the close is done.
+        let mut going = vec![slot.view.read(cx).focus_handle(cx)];
         slot.view.update(cx, |p, _| p.session.close());
         drop(slot);
         Self::release_memory_soon(cx);
-        if self.find.as_ref().is_some_and(|f| f.pane == Some(id)) {
+        if let Some(f) = self.find.as_ref().filter(|f| f.pane == Some(id)) {
+            going.push(f.input.focus_handle(cx));
             self.close_find_bar(cx);
         }
         let mut emptied = Vec::new();
@@ -1171,20 +1175,50 @@ impl TerminalPanel {
             }
         }
         self.sets.retain(|_, s| !s.groups.is_empty());
+        // A name being typed for the pane, or for its tab that went with it.
+        let renamed_gone = self.rename.as_ref().is_some_and(|r| match r.target {
+            RenameTarget::Pane(p) => p == id,
+            RenameTarget::Tab(gid) => !self
+                .sets
+                .values()
+                .any(|s| s.groups.iter().any(|g| g.id == gid)),
+        });
+        if renamed_gone && let Some(r) = self.rename.take() {
+            going.push(r.input.focus_handle(cx));
+        }
         self.apply_dims(cx);
         attention::agents_changed(cx);
         self.save_soon(cx);
-        if emptied.contains(&self.root) {
+        let last = emptied.contains(&self.root);
+        if last {
             self.set_maximized(false, cx);
             if let Some(ws) = self.workspace() {
                 ws.update(cx, |ws, cx| ws.set_open(Slot::Bottom, false, cx));
-                ws.update(cx, |ws, cx| ws.focus_center(window, cx));
             }
             cx.emit(PanelEvent::Empty);
-        } else if !self.strip_focus.is_focused(window) {
-            // ⌫ on the tabs stays on them.
-            self.focus_active(window, cx);
         }
+        // Only keys the close took away move on, once a menu that killed it has put its focus
+        // back: a shell exiting in the background leaves the commit box alone, ⌫ on the tabs
+        // stays on them.
+        cx.defer_in(window, move |this, window, cx| {
+            let lost = match window.focused(cx) {
+                None => had_focus,
+                Some(_) => {
+                    going.iter().any(|f| f.contains_focused(window, cx))
+                        || (last && this.focus.contains_focused(window, cx))
+                }
+            };
+            if !lost {
+                return;
+            }
+            if last {
+                if let Some(ws) = this.workspace() {
+                    ws.update(cx, |ws, cx| ws.focus_center(window, cx));
+                }
+            } else {
+                this.focus_active(window, cx);
+            }
+        });
         cx.notify();
     }
 
@@ -1616,12 +1650,19 @@ impl TerminalPanel {
         let events = cx.subscribe_in(
             &input,
             window,
-            move |this, input, event: &InputEvent, window, cx| match event {
-                InputEvent::PressEnter { .. } | InputEvent::Blur => {
-                    let name = input.read(cx).value().trim().to_string();
-                    this.finish_rename(Some(name), window, cx);
+            move |this, input, event: &InputEvent, window, cx| {
+                let enter = match event {
+                    InputEvent::PressEnter { .. } => true,
+                    // A click elsewhere keeps its focus. The window going to the back blurs it
+                    // too: the field is still there to come back to.
+                    InputEvent::Blur if window.is_window_active() => false,
+                    _ => return,
+                };
+                let name = input.read(cx).value().trim().to_string();
+                this.finish_rename(Some(name), cx);
+                if enter {
+                    this.focus_active(window, cx);
                 }
-                _ => {}
             },
         );
         input.update(cx, |i, cx| {
@@ -1637,7 +1678,7 @@ impl TerminalPanel {
     }
 
     /// Names the pane or tab; an empty name gives back the program's title or folder's.
-    fn finish_rename(&mut self, name: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+    fn finish_rename(&mut self, name: Option<String>, cx: &mut Context<Self>) {
         let Some(rename) = self.rename.take() else {
             return;
         };
@@ -1663,7 +1704,6 @@ impl TerminalPanel {
                 }
             }
         }
-        self.focus_active(window, cx);
         cx.notify();
     }
 
@@ -2272,10 +2312,7 @@ impl TerminalPanel {
                     .text_color(hue.unwrap_or(if here { t.primary } else { t.subtle })),
             )
             .child(match renaming {
-                Some(input) => div()
-                    .w(px(140.))
-                    .child(Input::new(&input).xsmall())
-                    .into_any_element(),
+                Some(input) => Self::rename_field(&input, 140.),
                 None => div().truncate().child(title).into_any_element(),
             })
             .when_some(branch, |d, b| {
@@ -2482,6 +2519,18 @@ impl TerminalPanel {
         }
     }
 
+    /// The name being typed, in a tab or a pane's header: clicks in it (a double-click selects a
+    /// word) aren't the tab's or the header's.
+    fn rename_field(input: &Entity<InputState>, width: f32) -> AnyElement {
+        div()
+            .id("rename")
+            .debug_selector(|| "terminal-rename".into())
+            .w(px(width))
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(Input::new(input).xsmall())
+            .into_any_element()
+    }
+
     /// A split pane's title bar: its number, its name or what runs there, and its own split and
     /// kill.
     fn render_header(&self, gid: u64, id: PaneId, cx: &mut Context<Self>) -> AnyElement {
@@ -2498,13 +2547,29 @@ impl TerminalPanel {
             .filter(|r| r.target == RenameTarget::Pane(id))
             .map(|r| r.input.clone());
         let title = self.pane_title(id, cx);
-        let action = |name: &'static str, icon: IconName, tip: &'static str| {
-            Button::new(gpui::ElementId::Name(format!("{name}-{id}").into()))
-                .ghost()
-                .xsmall()
-                .icon(Icon::new(icon))
-                .tooltip(tip)
-        };
+        let weak = cx.entity().downgrade();
+        // Not the header's click or double-click (a focus jump, a rename), and a double-click's
+        // second click doesn't act again on what moved under it.
+        let action =
+            |name: &'static str,
+             icon: IconName,
+             tip: &'static str,
+             run: fn(&mut Self, PaneId, &mut Window, &mut Context<Self>)| {
+                let key = format!("{name}-{id}");
+                let weak = weak.clone();
+                Button::new(gpui::ElementId::Name(key.clone().into()))
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::new(icon))
+                    .tooltip(tip)
+                    .debug_selector(move || key)
+                    .on_click(move |e, window, cx| {
+                        cx.stop_propagation();
+                        if e.click_count() < 2 {
+                            let _ = weak.update(cx, |this, cx| run(this, id, window, cx));
+                        }
+                    })
+            };
         h_flex()
             .id(("pane-header", id))
             .group("pane-header")
@@ -2553,10 +2618,7 @@ impl TerminalPanel {
                     .child(n.to_string()),
             )
             .child(match renaming {
-                Some(input) => div()
-                    .w(px(180.))
-                    .child(Input::new(&input).xsmall())
-                    .into_any_element(),
+                Some(input) => Self::rename_field(&input, 180.),
                 None => div()
                     .min_w_0()
                     .truncate()
@@ -2577,25 +2639,24 @@ impl TerminalPanel {
                     .when(!focused, |d| {
                         d.invisible().group_hover("pane-header", |s| s.visible())
                     })
-                    .child(
-                        action("split-right", IconName::Columns2, "Split right").on_click(
-                            cx.listener(move |this, _, w, cx| {
-                                this.split(Dir::Row, Some(id), w, cx)
-                            }),
-                        ),
-                    )
-                    .child(
-                        action("split-down", IconName::Rows2, "Split down").on_click(
-                            cx.listener(move |this, _, w, cx| {
-                                this.split(Dir::Col, Some(id), w, cx)
-                            }),
-                        ),
-                    )
-                    .child(
-                        action("kill-pane", IconName::X, "Kill pane").on_click(cx.listener(
-                            move |this, _, w, cx| this.kill(vec![id], "this terminal", w, cx),
-                        )),
-                    ),
+                    .child(action(
+                        "split-right",
+                        IconName::Columns2,
+                        "Split right",
+                        |this, id, w, cx| this.split(Dir::Row, Some(id), w, cx),
+                    ))
+                    .child(action(
+                        "split-down",
+                        IconName::Rows2,
+                        "Split down",
+                        |this, id, w, cx| this.split(Dir::Col, Some(id), w, cx),
+                    ))
+                    .child(action(
+                        "kill-pane",
+                        IconName::X,
+                        "Kill pane",
+                        |this, id, w, cx| this.kill(vec![id], "this terminal", w, cx),
+                    )),
             )
             .into_any_element()
     }
@@ -2925,6 +2986,13 @@ mod tests {
 
     use gpui::{TestAppContext, VisualTestContext};
 
+    /// Drawn panes start shells, whose reader threads wake them as in the app: the test scheduler
+    /// would fail the test on such a wake (one came on a loaded machine).
+    fn real_shells(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        cx.executor().forbid_parking();
+    }
+
     /// The terminal button's dot: a pane with news calls whatever folder it runs in.
     #[gpui::test]
     fn a_pane_anywhere_with_news_calls(cx: &mut TestAppContext) {
@@ -2968,6 +3036,7 @@ mod tests {
     /// a screen reader gets the pane's screen without trailing blanks.
     #[gpui::test]
     fn the_focused_tab_strip_takes_the_arrows(cx: &mut TestAppContext) {
+        real_shells(cx);
         cx.update(|cx| {
             gpui_kit::init(cx);
             crate::init(cx);
@@ -3190,10 +3259,248 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// The panel under a focusable stand-in for the commit box.
+    struct Beside {
+        panel: Entity<TerminalPanel>,
+        elsewhere: FocusHandle,
+    }
+
+    impl Render for Beside {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let elsewhere = self.elsewhere.clone();
+            v_flex()
+                .size_full()
+                .child(
+                    div()
+                        .id("elsewhere")
+                        .track_focus(&self.elsewhere)
+                        .h(px(40.))
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            window.focus(&elsewhere, cx)
+                        }),
+                )
+                .child(div().flex_1().min_h_0().child(self.panel.clone()))
+        }
+    }
+
+    fn beside(
+        cx: &mut TestAppContext,
+    ) -> (Entity<TerminalPanel>, FocusHandle, &mut VisualTestContext) {
+        real_shells(cx);
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::init(cx);
+        });
+        let core = Arc::new(Core::new(Arc::new(|_| {})));
+        let (host, cx) = cx.add_window_view(|window, cx| Beside {
+            panel: cx.new(|cx| {
+                TerminalPanel::new(
+                    core,
+                    std::env::temp_dir(),
+                    TerminalConfig::default(),
+                    TerminalTheme::dark(),
+                    window,
+                    cx,
+                )
+            }),
+            elsewhere: cx.focus_handle(),
+        });
+        let (panel, elsewhere) = host.read_with(cx, |h, _| (h.panel.clone(), h.elsewhere.clone()));
+        cx.update(|window, _| window.activate_window());
+        (panel, elsewhere, cx)
+    }
+
+    fn draw(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+
+    fn has_keys(handle: &FocusHandle, cx: &mut VisualTestContext) -> bool {
+        cx.update(|window, _| handle.is_focused(window))
+    }
+
+    /// Only a close that takes the keys moves them: a shell exiting (or its worktree removed)
+    /// while the user types elsewhere leaves them there; the focused pane's exit gives them to the
+    /// open tab's pane, as does a menu's Kill that put its focus back on the pane it killed. The
+    /// last one going leaves the panel empty and the keys where they were.
+    #[gpui::test]
+    fn a_close_moves_the_keys_only_when_it_took_them(cx: &mut TestAppContext) {
+        let (panel, elsewhere, cx) = beside(cx);
+        let dir = std::env::temp_dir();
+        for _ in 0..4 {
+            panel.update_in(cx, |p, window, cx| {
+                p.open_terminal(dir.clone(), None, window, cx)
+            });
+        }
+        let active = |cx: &mut VisualTestContext| {
+            panel.read_with(cx, |p, _| p.active_pane()).expect("a pane")
+        };
+        let exit = |pane: &Entity<TerminalPane>, cx: &mut VisualTestContext| {
+            pane.update(cx, |_, cx| cx.emit(PaneEvent::Exited { quick: false }));
+            cx.run_until_parked();
+            draw(cx);
+        };
+        let keys_of = |pane: &Entity<TerminalPane>, cx: &mut VisualTestContext| {
+            let handle = pane.read_with(cx, |p, cx| p.focus_handle(cx));
+            has_keys(&handle, cx)
+        };
+        let count = |cx: &mut VisualTestContext| panel.read_with(cx, |p, _| p.panes.len());
+
+        cx.update(|window, cx| window.focus(&elsewhere, cx));
+        draw(cx);
+        let open = active(cx);
+        exit(&open, cx);
+        let background = panel.read_with(cx, |p, _| {
+            let open = p.active_pane();
+            p.panes().find(|v| Some(*v) != open.as_ref()).cloned()
+        });
+        exit(&background.expect("a tab in the back"), cx);
+        assert_eq!(count(cx), 2);
+        assert!(has_keys(&elsewhere, cx));
+
+        let open = active(cx);
+        open.update_in(cx, |p, window, cx| p.focus(window, cx));
+        draw(cx);
+        exit(&open, cx);
+        assert_eq!(count(cx), 1);
+        assert!(keys_of(&active(cx), cx));
+
+        // Kill Terminal in a tab's menu: the menu has the keys, its dismiss gives them back to the
+        // pane it killed, after the kill.
+        let menu = cx.update(|_, cx| cx.focus_handle());
+        panel.update_in(cx, |p, window, cx| {
+            p.open_terminal(dir.clone(), None, window, cx)
+        });
+        draw(cx);
+        let (victim, survivor) = panel.read_with(cx, |p, _| {
+            let open = p.active_pane().expect("a pane");
+            let other = p.panes().find(|v| **v != open).cloned().expect("another");
+            (open, other)
+        });
+        panel.update_in(cx, |p, window, cx| {
+            let handle = victim.read(cx).focus_handle(cx);
+            window.focus(&menu, cx);
+            p.close_pane(victim.read(cx).id(), window, cx);
+            window.focus(&handle, cx);
+        });
+        cx.run_until_parked();
+        draw(cx);
+        assert!(keys_of(&survivor, cx));
+
+        cx.update(|window, cx| window.focus(&elsewhere, cx));
+        draw(cx);
+        exit(&survivor, cx);
+        assert_eq!(count(cx), 0);
+        assert!(has_keys(&elsewhere, cx));
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+    }
+
+    /// A pane header's buttons are theirs alone: Split right splits once and leaves the keys in
+    /// the new pane, and a double-click's second click on the button under it splits nothing
+    /// more and names nothing. Clicks in a name being typed stay in it; a click elsewhere ends it
+    /// and keeps the keys where it went, ↵ gives them back to the terminal.
+    #[gpui::test]
+    fn header_buttons_and_names_keep_their_clicks(cx: &mut TestAppContext) {
+        let (panel, elsewhere, cx) = beside(cx);
+        let dir = std::env::temp_dir();
+        panel.update_in(cx, |p, window, cx| {
+            p.open_terminal(dir.clone(), None, window, cx);
+            p.split(Dir::Row, None, window, cx);
+        });
+        let order = |cx: &mut VisualTestContext| {
+            panel.read_with(cx, |p, _| {
+                layout::pane_order(&p.active_group().expect("a tab").layout)
+            })
+        };
+        let first = order(cx)[0];
+        let keys_in = |id: PaneId, cx: &mut VisualTestContext| {
+            let handle = panel.read_with(cx, |p, cx| p.panes[&id].view.read(cx).focus_handle(cx));
+            has_keys(&handle, cx)
+        };
+        let renaming = |cx: &mut VisualTestContext| panel.read_with(cx, |p, _| p.rename.is_some());
+        let bounds = |selector: String, cx: &mut VisualTestContext| {
+            cx.debug_bounds(Box::leak(selector.into_boxed_str()))
+                .expect("on screen")
+        };
+        let click = |at: Point<Pixels>, count: usize, cx: &mut VisualTestContext| {
+            let modifiers = gpui::Modifiers::none();
+            cx.simulate_event(gpui::MouseDownEvent {
+                position: at,
+                modifiers,
+                button: MouseButton::Left,
+                click_count: count,
+                first_mouse: false,
+            });
+            cx.simulate_event(gpui::MouseUpEvent {
+                position: at,
+                modifiers,
+                button: MouseButton::Left,
+                click_count: count,
+            });
+            draw(cx);
+        };
+        panel.update_in(cx, |p, window, cx| {
+            p.focus_pane(first, cx);
+            p.focus_active(window, cx);
+        });
+        draw(cx);
+
+        let split = bounds(format!("split-right-{first}"), cx).center();
+        click(split, 1, cx);
+        let after = order(cx);
+        assert_eq!(after.len(), 3);
+        assert!(keys_in(after[1], cx), "the new pane has the keys");
+        click(split, 2, cx);
+        assert_eq!(order(cx).len(), 3);
+        assert!(!renaming(cx));
+
+        // A double-click on the header itself names its pane.
+        let button = bounds(format!("split-right-{}", after[1]), cx);
+        let title = gpui::point(button.left() - px(60.), button.center().y);
+        click(title, 1, cx);
+        click(title, 2, cx);
+        assert!(renaming(cx));
+        let field = bounds("terminal-rename".into(), cx).center();
+        let input = |cx: &mut VisualTestContext| {
+            panel.read_with(cx, |p, _| p.rename.as_ref().map(|r| r.input.clone()))
+        };
+        let naming = input(cx).expect("naming");
+        for count in [1, 2] {
+            click(field, count, cx);
+            assert_eq!(input(cx).as_ref(), Some(&naming), "the same name field");
+            assert!(has_keys(
+                &naming.read_with(cx, |i, cx| i.focus_handle(cx)),
+                cx
+            ));
+        }
+
+        click(gpui::point(px(10.), px(20.)), 1, cx);
+        assert!(!renaming(cx));
+        assert!(has_keys(&elsewhere, cx), "the click's focus stays");
+
+        panel.update_in(cx, |p, window, cx| {
+            p.start_rename(RenameTarget::Pane(first), window, cx)
+        });
+        draw(cx);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(!renaming(cx));
+        assert!(keys_in(
+            panel.read_with(cx, |p, _| p.active_group().expect("a tab").focused),
+            cx
+        ));
+
+        panel.update(cx, |p, cx| p.close_all(cx));
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+    }
+
     /// Terminals opened and closed leave no entity behind: no task, subscription or callback
     /// holds a pane, so its terminal and scrollback go with it.
     #[gpui::test]
     fn closing_terminals_gives_back_their_entities(cx: &mut TestAppContext) {
+        real_shells(cx);
         cx.update(|cx| {
             gpui_kit::init(cx);
             crate::init(cx);

@@ -211,6 +211,20 @@ pub fn mouse_left_on(kind: MarkKind, mode: TermMode) -> bool {
         && mode.intersects(TermMode::MOUSE_MODE)
 }
 
+/// What a program that reads keys its own way turns off on its way out: the kitty keyboard
+/// protocol, every level of it pushed (zsh and bash take ⌃C as CSI 99;5u, and it does nothing),
+/// and focus reports.
+pub const KEYS_OFF: &[u8] = b"\x1b[<65535u\x1b[?1004l";
+
+/// At a prompt in the history's buffer after a command, they're still on: it died without turning
+/// them off. Only after a command: a shell that turns them on itself (fish) draws its prompt
+/// again with them on, at every resize.
+pub fn keys_left_on(mode: TermMode, command_ran: bool) -> bool {
+    command_ran
+        && !mode.contains(TermMode::ALT_SCREEN)
+        && mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL | TermMode::FOCUS_IN_OUT)
+}
+
 /// Commands kept marked.
 const MAX_COMMANDS: usize = 300;
 

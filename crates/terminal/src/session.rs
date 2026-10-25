@@ -21,7 +21,7 @@ use alacritty_terminal::vte::ansi::{Processor, Rgb, StdSyncHandler};
 use gitviber_core::{Core, api::app as pty, pty::Exit};
 
 use crate::input::{MAX_OSC52_TEXT, osc52_accepts};
-use crate::marks::{self, Effect, Marks};
+use crate::marks::{self, Effect, MarkKind, Marks};
 use crate::scan::{Found, Scanner, cwd_from_url};
 
 /// Wakes the pane's task on the UI thread; wakes before it ran fold into one.
@@ -273,6 +273,8 @@ pub(crate) struct Emu {
     kitty_notes: crate::agent::KittyNotes,
     /// Rows scrolled into the history since the start: what a point found earlier moved up by.
     pub scrolled: u64,
+    /// A command started since the last prompt.
+    command_ran: bool,
     outbox: Arc<Outbox>,
     /// The terminal's grid and scrollback, counted in the debug memory readout.
     _live: gitviber_ui::memory::Live,
@@ -291,6 +293,7 @@ impl Emu {
             counter: marks::ScrollCounter::default(),
             kitty_notes: Default::default(),
             scrolled: 0,
+            command_ran: false,
             outbox,
             _live: gitviber_ui::memory::Live::new("Terminal"),
         }
@@ -374,6 +377,16 @@ impl Emu {
                 // As if the program had turned them off itself.
                 if marks::mouse_left_on(mark.kind, *self.term.mode()) {
                     self.parser.advance(&mut self.term, marks::MODES_OFF);
+                }
+                match mark.kind {
+                    MarkKind::C => self.command_ran = true,
+                    MarkKind::A => {
+                        let ran = std::mem::take(&mut self.command_ran);
+                        if marks::keys_left_on(*self.term.mode(), ran) {
+                            self.parser.advance(&mut self.term, marks::KEYS_OFF);
+                        }
+                    }
+                    _ => {}
                 }
                 match self.marks.on(&mark, &mut self.term) {
                     Some(Effect::Prompt) => self.outbox.note(Note::Prompt),
@@ -744,6 +757,32 @@ mod tests {
             !emu.mode()
                 .intersects(TermMode::MOUSE_MODE | TermMode::SGR_MOUSE)
         );
+    }
+
+    /// A program that died with the kitty keys and focus reports on (kill -9, a crash) leaves a
+    /// shell that can't read ⌃C and types [I and [O; its prompt turns them off. A shell's own,
+    /// on while it draws its prompt again, stay.
+    #[test]
+    fn a_prompt_after_a_command_turns_off_the_keys_it_left_on() {
+        let keys = TermMode::KITTY_KEYBOARD_PROTOCOL | TermMode::FOCUS_IN_OUT;
+        let outbox = Arc::new(Outbox::default());
+        let mut emu = Emu::new(20, 5, test_config(), outbox);
+        emu.feed(b"\x1b]133;A\x07$ \x1b]133;C\x07");
+        emu.feed(b"\x1b[>1u\x1b[>11u\x1b[?1004h");
+        assert!(emu.mode().contains(TermMode::REPORT_EVENT_TYPES));
+        emu.feed(b"\x1b]133;D;137\x07\x1b]133;A\x07$ ");
+        assert!(!emu.mode().intersects(keys), "{:?}", emu.mode());
+        // Nothing left pushed to come back.
+        emu.feed(b"\x1b[<u");
+        assert!(!emu.mode().intersects(keys));
+        emu.feed(b"\x1b[=5u\x1b[?1004h\x1b]133;A\x07$ ");
+        assert!(
+            emu.mode()
+                .contains(TermMode::DISAMBIGUATE_ESC_CODES | TermMode::FOCUS_IN_OUT)
+        );
+        // Inside a full-screen program, its own.
+        emu.feed(b"\x1b]133;C\x07\x1b[?1049h\x1b[>1u\x1b]133;A\x07");
+        assert!(emu.mode().contains(TermMode::DISAMBIGUATE_ESC_CODES));
     }
 
     #[test]

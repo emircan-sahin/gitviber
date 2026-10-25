@@ -316,6 +316,14 @@ pub(crate) fn import_legacy(cx: &mut App) {
     write_in_background(cx, path(), text);
 }
 
+/// Each pane's shell's folder as its process has it, whatever runs in front of it.
+fn shell_dirs(core: &Core, shells: Vec<(PaneId, u32)>) -> Vec<(PaneId, u32, PathBuf)> {
+    shells
+        .into_iter()
+        .filter_map(|(id, pty)| Some((id, pty, core.ptys.cwd(pty)?)))
+        .collect()
+}
+
 /// The offer's wording: "Restore 3 terminals from last session and resume 1 agent?", and the
 /// folders they were in.
 fn offer_text(saved: &SavedSet, mode: ResumeMode) -> (String, String) {
@@ -387,6 +395,10 @@ impl TerminalPanel {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(SAVE_MS))
                 .await;
+            let Ok(asked) = this.update(cx, |this, cx| this.ask_shell_dirs(false, cx)) else {
+                return;
+            };
+            asked.await;
             let _ = this.update(cx, |this, cx| {
                 this.round = None;
                 // Agents in every pane: one still printing isn't due for a while, and a short
@@ -395,6 +407,41 @@ impl TerminalPanel {
                 this.save(false, cx);
             });
         }));
+    }
+
+    /// Where the shells with output since the last save (or `all` of them) are now, asked of their
+    /// processes off the UI thread: a `cd` is saved without the integration's prompt marks too, and
+    /// a program's OSC 7 (a file manager browsing) isn't taken for where its shell is.
+    pub(super) fn ask_shell_dirs(&self, all: bool, cx: &mut Context<Self>) -> Task<()> {
+        let shells = self.shells(all, cx);
+        if shells.is_empty() {
+            return Task::ready(());
+        }
+        let core = self.core.clone();
+        cx.spawn(async move |this, cx| {
+            let dirs = cx
+                .background_spawn(async move { shell_dirs(&core, shells) })
+                .await;
+            let _ = this.update(cx, |this, cx| this.shells_are_in(dirs, cx));
+        })
+    }
+
+    fn shells(&self, all: bool, cx: &App) -> Vec<(PaneId, u32)> {
+        self.panes
+            .iter()
+            .filter(|(_, s)| all || s.view.read(cx).is_dirty())
+            .filter_map(|(id, s)| Some((*id, s.view.read(cx).pty_id()?)))
+            .collect()
+    }
+
+    fn shells_are_in(&mut self, dirs: Vec<(PaneId, u32, PathBuf)>, cx: &mut Context<Self>) {
+        for (id, pty, dir) in dirs {
+            if let Some(slot) = self.panes.get(&id) {
+                slot.view.update(cx, |p, _| p.shell_is_in(pty, dir));
+            }
+        }
+        // A header without a title names the folder.
+        cx.notify();
     }
 
     /// Serializes the panes due (`all`: every changed one) and writes what changed.
@@ -605,6 +652,8 @@ impl TerminalPanel {
                 slot.agent = agent::at_quit(slot.agent.as_ref(), alive, read);
             }
         }
+        let dirs = shell_dirs(&self.core, self.shells(true, cx));
+        self.shells_are_in(dirs, cx);
         self.save(true, cx);
     }
 
@@ -727,6 +776,79 @@ impl TerminalPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{TestAppContext, VisualTestContext};
+
+    /// A `cd` in a shell without the integration, which no prompt mark tells of, is saved: the
+    /// shell's process is asked where it is, off the UI thread.
+    #[gpui::test]
+    fn a_cd_without_the_integration_is_saved(cx: &mut TestAppContext) {
+        let base = std::env::temp_dir().join(format!("gitviber-term-cd-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("sub")).unwrap();
+        let base = base.canonicalize().unwrap();
+        let sub = base.join("sub");
+        // SAFETY: nextest gives each test its own process; nothing else reads it meanwhile.
+        unsafe { std::env::set_var("SHELL", "/bin/sh") };
+        // The shell's reads wake the pane from another thread: no backtrace for each.
+        cx.executor().allow_parking();
+        cx.executor().forbid_parking();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::init(cx);
+        });
+        let core = Arc::new(Core::new(Arc::new(|_| {})));
+        let config = TerminalConfig {
+            shell_integration: false,
+            ..TerminalConfig::default()
+        };
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            TerminalPanel::new(
+                core.clone(),
+                base.clone(),
+                config,
+                TerminalTheme::dark(),
+                window,
+                cx,
+            )
+        });
+        panel.update_in(cx, |p, window, cx| {
+            p.open_terminal(base.clone(), None, window, cx)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let pane = panel.read_with(cx, |p, _| p.active_pane()).expect("a pane");
+        let wait_in = |dir: &Path, cx: &mut VisualTestContext| {
+            let deadline = Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                cx.run_until_parked();
+                let now = pane
+                    .read_with(cx, |p, _| p.pty_id())
+                    .and_then(|id| core.ptys.cwd(id));
+                if now.as_deref() == Some(dir) {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "the shell is in {now:?}");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+        wait_in(&base, cx);
+        pane.read_with(cx, |p, _| p.session.write("cd sub\r"));
+        wait_in(&sub, cx);
+        assert_eq!(pane.read_with(cx, |p, _| p.dir().to_path_buf()), base);
+
+        panel
+            .update(cx, |p, cx| p.ask_shell_dirs(true, cx))
+            .detach();
+        cx.run_until_parked();
+        let saved = panel.read_with(cx, |p, cx| p.saved_set(p.set().expect("a set"), cx));
+        assert_eq!(
+            saved.groups[0].panes[0].dir.as_deref(),
+            sub.to_str(),
+            "{saved:?}"
+        );
+        panel.update(cx, |p, cx| p.close_all(cx));
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn the_old_apps_tabs_go_to_their_folders_with_their_histories_in_files() {

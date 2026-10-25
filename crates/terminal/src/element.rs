@@ -942,7 +942,13 @@ impl Element for TerminalElement {
                 if phase != DispatchPhase::Bubble {
                     return;
                 }
-                if e.pressed_button.is_some() || hitbox.is_hovered(window) {
+                // A button held for a drag that began elsewhere (another pane, a divider) isn't
+                // this pane's: no motion reports, no hover.
+                let moves = match e.pressed_button {
+                    Some(_) => pane.read(cx).dragging(),
+                    None => hitbox.is_hovered(window),
+                };
+                if moves {
                     pane.update(cx, |p, cx| p.mouse_move(e, window, cx));
                 } else if pane.read(cx).hover.is_some() {
                     pane.update(cx, |p, cx| p.hover_links(None, false, cx));

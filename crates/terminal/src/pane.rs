@@ -344,6 +344,14 @@ impl TerminalPane {
         &self.dir
     }
 
+    /// Where the shell `pty` is now, asked of its process; another shell in the pane since was
+    /// somewhere else.
+    pub(crate) fn shell_is_in(&mut self, pty: u32, dir: PathBuf) {
+        if self.pty_id() == Some(pty) {
+            self.dir = dir;
+        }
+    }
+
     /// What the shell or program set as the window title (OSC 0/2).
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
@@ -485,7 +493,13 @@ impl TerminalPane {
         if focused {
             cx.emit(PaneEvent::Focused);
         } else {
-            self.ime = None;
+            // A word being composed stays in the pane it was typed in: committed as it stands,
+            // and the input method told to drop it, or it would go on composing into whatever
+            // has the keys now.
+            if let Some(text) = self.ime.take() {
+                self.commit_text(&text, cx);
+                discard_marked_text();
+            }
             self.end_hints(cx);
         }
         self.report_focus(cx);
@@ -1217,6 +1231,11 @@ impl TerminalPane {
         cx.notify();
     }
 
+    /// A press in it is being dragged: the rest of the drag is its own, wherever it goes.
+    pub(crate) fn dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
     pub(crate) fn mouse_move(
         &mut self,
         e: &MouseMoveEvent,
@@ -1600,25 +1619,63 @@ impl TerminalPane {
         }
     }
 
-    /// The ports the programs under its shell listen on, as the browser crate reads them.
-    fn served_ports(this: &gpui::WeakEntity<Self>, cx: &App) -> Vec<u16> {
-        let Some(read) = cx.try_global::<crate::Ports>().map(|p| p.0.clone()) else {
-            return vec![];
-        };
-        let shell = this.upgrade().and_then(|p| {
-            let p = p.read(cx);
-            p.session.core().ptys.shell(p.pty_id()?)
-        });
-        shell.map(|s| read(&[s])).unwrap_or_default()
+    /// The ports the programs under its shell listen on, as the browser crate reads them: a walk
+    /// of the process tree and its sockets, on a background thread.
+    fn served_ports(this: &gpui::WeakEntity<Self>, cx: &App) -> Option<Task<Vec<u16>>> {
+        let read = cx.try_global::<crate::Ports>()?.0.clone();
+        let p = this.upgrade()?;
+        let p = p.read(cx);
+        let shell = p.session.core().ptys.shell(p.pty_id()?)?;
+        Some(cx.background_spawn(async move { read(&[shell]) }))
     }
 
-    fn context_menu_state(this: &gpui::WeakEntity<Self>, cx: &App) -> (bool, bool, bool) {
-        this.upgrade()
+    /// The right-click menu's items; `ports` last, as they come in after it opened.
+    fn menu_items(
+        menu: gpui_kit::component::menu::PopupMenu,
+        this: &gpui::WeakEntity<Self>,
+        ports: &[u16],
+        cx: &App,
+    ) -> gpui_kit::component::menu::PopupMenu {
+        let (selection, paste, output) = this
+            .upgrade()
             .map(|p| {
                 let p = p.read(cx);
                 (p.has_selection(), !p.exited, p.has_last_output())
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let mut menu = menu
+            .menu_with_disabled("Copy", Box::new(Copy), !selection)
+            .menu_with_disabled("Paste", Box::new(PasteAction), !paste)
+            .separator()
+            .menu_with_disabled(
+                "Copy Last Command Output",
+                Box::new(CopyLastOutput),
+                !output,
+            )
+            .menu_with_disabled(
+                "Select Last Command Output",
+                Box::new(SelectLastOutput),
+                !output,
+            );
+        if !ports.is_empty() {
+            menu = menu.separator();
+        }
+        for &port in ports {
+            let weak = this.clone();
+            menu = menu.item(
+                gpui_kit::component::menu::PopupMenuItem::new(format!("Open localhost:{port}"))
+                    .icon(gpui_kit::component::Icon::new(
+                        gpui_kit::assets::IconName::Globe,
+                    ))
+                    .on_click(move |_, _, cx| {
+                        let url = format!("http://localhost:{port}");
+                        let _ = weak.update(cx, |_, cx| {
+                            cx.emit(PaneEvent::OpenLink(crate::links::Target::Url(url)))
+                        });
+                    }),
+            );
+        }
+        menu
     }
 }
 
@@ -1711,46 +1768,25 @@ impl Render for TerminalPane {
                 )
             })
             .children(overlays)
-            .context_menu(move |menu, _, cx| {
-                let (selection, paste, output) = Self::context_menu_state(&weak, cx);
-                let ports = Self::served_ports(&weak, cx);
-                let mut menu = menu
-                    .action_context(focus.clone())
-                    .menu_with_disabled("Copy", Box::new(Copy), !selection)
-                    .menu_with_disabled("Paste", Box::new(PasteAction), !paste)
-                    .separator()
-                    .menu_with_disabled(
-                        "Copy Last Command Output",
-                        Box::new(CopyLastOutput),
-                        !output,
-                    )
-                    .menu_with_disabled(
-                        "Select Last Command Output",
-                        Box::new(SelectLastOutput),
-                        !output,
-                    );
-                // What its programs serve (a dev server), read as the menu opens.
-                if !ports.is_empty() {
-                    menu = menu.separator();
-                }
-                for port in ports {
+            .context_menu(move |menu, window, cx| {
+                // What its programs serve (a dev server), read as the menu opens and added once
+                // known.
+                if let Some(ports) = Self::served_ports(&weak, cx) {
                     let weak = weak.clone();
-                    menu = menu.item(
-                        gpui_kit::component::menu::PopupMenuItem::new(format!(
-                            "Open localhost:{port}"
-                        ))
-                        .icon(gpui_kit::component::Icon::new(
-                            gpui_kit::assets::IconName::Globe,
-                        ))
-                        .on_click(move |_, _, cx| {
-                            let url = format!("http://localhost:{port}");
-                            let _ = weak.update(cx, |_, cx| {
-                                cx.emit(PaneEvent::OpenLink(crate::links::Target::Url(url)))
-                            });
-                        }),
-                    );
+                    cx.spawn_in(window, async move |menu, cx| {
+                        let ports = ports.await;
+                        if ports.is_empty() {
+                            return;
+                        }
+                        let _ = menu.update_in(cx, |menu, window, cx| {
+                            menu.rebuild(window, cx, |menu, _, cx| {
+                                Self::menu_items(menu, &weak, &ports, cx)
+                            })
+                        });
+                    })
+                    .detach();
                 }
-                menu
+                Self::menu_items(menu.action_context(focus.clone()), &weak, &[], cx)
             })
     }
 }
@@ -1836,7 +1872,39 @@ impl TerminalPane {
         }
         out
     }
+
+    /// What an IME commits, or plain typing, to the program.
+    fn commit_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        cx.notify();
+        if self.exited || text.is_empty() {
+            return;
+        }
+        // Return and Tab arrive as text when an IME passes them on.
+        self.session.write(text.replace('\n', "\r"));
+        self.typed(cx);
+    }
 }
+
+/// The input method's word in progress, dropped: the next key starts a new one wherever the keys
+/// are. All panes share the window's one text input client, so macOS never does this itself.
+#[cfg(target_os = "macos")]
+fn discard_marked_text() {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+    // SAFETY: plain AppKit messages on the main thread, where the UI runs; nil answers nil.
+    unsafe {
+        let Some(class) = AnyClass::get(c"NSTextInputContext") else {
+            return;
+        };
+        let context: *mut AnyObject = msg_send![class, currentInputContext];
+        if !context.is_null() {
+            let _: () = msg_send![context, discardMarkedText];
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn discard_marked_text() {}
 
 /// Text input: what an IME composes shows at the cursor, what it commits (and plain typing) goes to
 /// the program.
@@ -1889,15 +1957,7 @@ impl EntityInputHandler for TerminalPane {
         cx: &mut Context<Self>,
     ) {
         self.ime = None;
-        if self.exited || text.is_empty() {
-            cx.notify();
-            return;
-        }
-        // Return and Tab arrive as text when an IME passes them on.
-        let text = text.replace('\n', "\r");
-        self.session.write(text);
-        self.typed(cx);
-        cx.notify();
+        self.commit_text(text, cx);
     }
 
     fn replace_and_mark_text_in_range(
@@ -2037,6 +2097,184 @@ mod tests {
         step(&keys, &|p, w, cx| p.on_focus_change(false, w, cx), cx);
         step(&keys, &|p, w, cx| p.on_focus_change(true, w, cx), cx);
         assert_eq!(written(&keys, cx), ["\x1b[I"]);
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+    }
+
+    /// A word being composed when the pane loses the keys is committed to it, not left for the
+    /// input method to finish in whatever has them next.
+    #[gpui::test]
+    fn a_composed_word_stays_in_its_pane(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::init(cx);
+        });
+        let core = Arc::new(Core::new(Arc::new(|_| {})));
+        let (_, cx) = cx.add_window_view(|_, _| Host);
+        let pane = cx.update(|window, cx| {
+            new_pane(
+                1,
+                core,
+                std::env::temp_dir(),
+                None,
+                None,
+                TerminalConfig::default(),
+                TerminalTheme::dark(),
+                window,
+                cx,
+            )
+        });
+        pane.update_in(cx, |p, window, cx| {
+            p.on_focus_change(true, window, cx);
+            p.replace_and_mark_text_in_range(None, "にほ", None, window, cx);
+        });
+        assert!(pane.read_with(cx, |p, _| p.session.written()).is_empty());
+        pane.update_in(cx, |p, window, cx| p.on_focus_change(false, window, cx));
+        assert_eq!(pane.read_with(cx, |p, _| p.session.written()), ["にほ"]);
+        assert_eq!(pane.read_with(cx, |p, _| p.ime.clone()), None);
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+    }
+
+    struct One(Entity<TerminalPane>);
+    impl Render for One {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.0.clone())
+        }
+    }
+
+    /// What a pane's programs serve, for its right-click menu, is a walk of the process tree and
+    /// its sockets: never read while the menu opens on the UI thread, only by a background task.
+    #[gpui::test]
+    fn a_panes_ports_are_read_in_the_background(cx: &mut TestAppContext) {
+        // Its shell's reads wake it from another thread, as in the app.
+        cx.executor().allow_parking();
+        cx.executor().forbid_parking();
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::init(cx);
+            let reads = reads.clone();
+            crate::set_ports_reader(
+                cx,
+                std::rc::Rc::new(move |_: &[u32]| {
+                    reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    vec![3000]
+                }),
+            );
+        });
+        let core = Arc::new(Core::new(Arc::new(|_| {})));
+        let (one, cx) = cx.add_window_view(|window, cx| {
+            One(new_pane(
+                1,
+                core,
+                std::env::temp_dir(),
+                None,
+                None,
+                TerminalConfig::default(),
+                TerminalTheme::dark(),
+                window,
+                cx,
+            ))
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let pane = one.read_with(cx, |o, _| o.0.clone());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while pane.read_with(cx, |p, _| p.pty_id()).is_none() {
+            assert!(Instant::now() < deadline, "no shell");
+            std::thread::sleep(Duration::from_millis(20));
+            cx.run_until_parked();
+        }
+        let weak = pane.downgrade();
+        let ports = cx.update(|_, cx| TerminalPane::served_ports(&weak, cx));
+        let ports = ports.expect("a shell to ask");
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let got = Rc::new(RefCell::new(None));
+        let into = got.clone();
+        cx.update(|_, cx| cx.spawn(async move |_| *into.borrow_mut() = Some(ports.await)))
+            .detach();
+        cx.run_until_parked();
+        assert_eq!(got.borrow().as_deref(), Some(&[3000][..]));
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        pane.update(cx, |p, _| p.session.close());
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+    }
+
+    struct Two(Entity<TerminalPane>, Entity<TerminalPane>);
+    impl Render for Two {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .child(div().w_1_2().h_full().child(self.0.clone()))
+                .child(div().w_1_2().h_full().child(self.1.clone()))
+        }
+    }
+
+    /// A drag that began in another pane passes over one whose program reads every motion
+    /// (1003): no button of its own is down, so it hears nothing of it. The pane where the press
+    /// was gets the drag, wherever it goes.
+    #[gpui::test]
+    fn a_drag_belongs_to_the_pane_it_began_in(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::init(cx);
+        });
+        let core = Arc::new(Core::new(Arc::new(|_| {})));
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let mut pane = |id| {
+                let pane = new_pane(
+                    id,
+                    core.clone(),
+                    std::env::temp_dir(),
+                    None,
+                    None,
+                    TerminalConfig::default(),
+                    TerminalTheme::dark(),
+                    window,
+                    cx,
+                );
+                pane.update(cx, |p, _| {
+                    // Drawn without a shell: what it writes stays to be read.
+                    p.started = true;
+                    p.session.emu.lock().feed(b"\x1b[?1003h\x1b[?1006h");
+                });
+                pane
+            };
+            Two(pane(1), pane(2))
+        });
+        let (a, b) = cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let two = window.root::<Two>().flatten().expect("the root");
+            let two = two.read(cx);
+            (two.0.clone(), two.1.clone())
+        });
+        let middle = |pane: &Entity<TerminalPane>, cx: &mut VisualTestContext| {
+            pane.read_with(cx, |p, _| p.metrics.expect("laid out").bounds.center())
+        };
+        let written = |pane: &Entity<TerminalPane>, cx: &mut VisualTestContext| {
+            pane.read_with(cx, |p, _| p.session.written())
+        };
+        let (in_a, in_b) = (middle(&a, cx), middle(&b, cx));
+        let none = gpui::Modifiers::none();
+
+        cx.simulate_mouse_move(in_b, None, none);
+        assert_eq!(written(&b, cx).len(), 1, "a move over it with no button");
+        cx.simulate_mouse_move(in_a, None, none);
+        let _ = written(&a, cx);
+        cx.simulate_mouse_down(in_a, MouseButton::Left, none);
+        for x in [0., 40., 80.] {
+            cx.simulate_mouse_move(in_b + gpui::point(px(x), px(0.)), MouseButton::Left, none);
+        }
+        cx.simulate_mouse_up(in_b, MouseButton::Left, none);
+        assert_eq!(written(&b, cx), Vec::<String>::new());
+        // Its press, the drag to its edge (where the rest of it stays), the release.
+        let to_a = written(&a, cx);
+        assert_eq!(to_a.len(), 3, "{to_a:?}");
+        assert!(to_a[0].starts_with("\x1b[<0;") && to_a[0].ends_with('M'));
+        assert!(to_a[1].starts_with("\x1b[<32;"));
+        assert!(to_a[2].ends_with('m'));
         cx.update(|window, _| window.remove_window());
         cx.run_until_parked();
     }
