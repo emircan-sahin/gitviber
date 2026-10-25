@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use gitviber_core::git::{FileChange, GitInfo};
 use gitviber_core::{Core, api};
+use gitviber_files::quick_open::{self, QuickOpenFiles, QuickOpenStatus};
 use gitviber_ui::fuzzy::{Match, fuzzy_match, match_path, prepare_query};
 use gitviber_ui::keymap::{self, Category, IS_MAC, ROOT_CONTEXT, bindings_for, format_chord};
 use gitviber_ui::memory::Live;
@@ -25,7 +26,7 @@ use gpui_kit::component::dialog::DialogEntrance;
 use gpui_kit::{
     Action, App, AppContext as _, Context, Entity, FocusHandle, FontWeight, Global, HighlightStyle,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString,
-    Styled as _, StyledText, Task, WeakEntity, Window, div, prelude::*, px,
+    Styled as _, StyledText, Subscription, Task, WeakEntity, Window, div, prelude::*, px,
 };
 use serde_json::Value;
 
@@ -148,6 +149,8 @@ pub struct Palette {
     /// The commands that applied where focus was.
     commands: Vec<Listed>,
     quick: Option<Vec<QuickItem>>,
+    /// Where quick open's list stood when `quick` was asked for.
+    listing: Option<QuickOpenStatus>,
     recent: Vec<String>,
     changes: Option<Vec<(Selection, Arc<FileChange>, &'static str)>>,
     projects: Vec<String>,
@@ -155,6 +158,8 @@ pub struct Palette {
     rows: Vec<Row>,
     focus_return: Option<FocusHandle>,
     _load: Option<Task<()>>,
+    /// Quick open's lists, observed once files were asked for: a listing landing shows up.
+    _listed: Option<Subscription>,
     _live: Live,
 }
 
@@ -283,17 +288,6 @@ impl Palette {
             .collect();
         let project = ws.project().cloned();
         let root = project.as_ref().map(|p| p.read(cx).root().to_path_buf());
-        let ctx = PanelContext {
-            workspace: workspace.downgrade(),
-            project: project.clone(),
-        };
-        let quick = (mode == Mode::Files)
-            .then(|| {
-                Registry::get(cx)
-                    .quick_open()
-                    .map(|source| source(&ctx, cx))
-            })
-            .flatten();
         let main = project.as_ref().and_then(|p| {
             p.read(cx)
                 .main_worktree()
@@ -327,7 +321,8 @@ impl Palette {
                 workspace: weak_ws,
                 root,
                 commands,
-                quick,
+                quick: None,
+                listing: None,
                 recent,
                 changes: None,
                 projects,
@@ -335,8 +330,12 @@ impl Palette {
                 rows: Vec::new(),
                 focus_return,
                 _load: None,
+                _listed: None,
                 _live: Live::new("Palette"),
             };
+            if mode == Mode::Files {
+                palette.list_files(cx);
+            }
             if let Some(core) = core {
                 palette.load(core, cx);
             }
@@ -360,23 +359,43 @@ impl Palette {
         Some(palette)
     }
 
-    /// What a mode reads off the UI thread: the status, read each time it's asked for; for
-    /// files, why quick open found none (its source keeps a failed listing to itself).
-    fn load(&mut self, core: Arc<Core>, cx: &mut Context<Self>) {
-        if self.mode == Mode::Files {
-            if self.root.is_none() || self.quick.as_ref().is_none_or(|q| !q.is_empty()) {
-                return;
-            }
-            let read = cx.background_spawn(async move { api::files::list_files(&core).err() });
-            self._load = Some(cx.spawn(async move |this, cx| {
-                let Some(err) = read.await else { return };
-                let _ = this.update(cx, |p, cx| {
-                    p.error = Some(unlisted(&err, crate::dialogs::needs_git::old(cx)).into());
-                    cx.notify();
-                });
-            }));
+    fn panel_context(&self, cx: &App) -> PanelContext {
+        PanelContext {
+            workspace: self.workspace.clone(),
+            project: self
+                .workspace
+                .upgrade()
+                .and_then(|w| w.read(cx).project().cloned()),
+        }
+    }
+
+    /// Quick open's files as it has them now, never waiting on git; a listing that lands while
+    /// the palette is open comes in through `listed`.
+    fn list_files(&mut self, cx: &mut Context<Self>) {
+        let ctx = self.panel_context(cx);
+        self.quick = Registry::get(cx)
+            .quick_open()
+            .map(|source| source(&ctx, cx));
+        self.listing = Some(quick_open::status(&ctx, cx));
+        if self._listed.is_none() {
+            self._listed = Some(cx.observe_global::<QuickOpenFiles>(|p, cx| p.listed(cx)));
+        }
+    }
+
+    /// Quick open's lists changed. Asking its source writes that global again, so it's asked
+    /// only when this project's status moved (a listing landed or failed), or this would loop.
+    fn listed(&mut self, cx: &mut Context<Self>) {
+        let ctx = self.panel_context(cx);
+        if self.listing.as_ref() == Some(&quick_open::status(&ctx, cx)) {
             return;
         }
+        self.list_files(cx);
+        self.rank(cx);
+        cx.notify();
+    }
+
+    /// Open Changed File's list, read off the UI thread each time it's asked for.
+    fn load(&mut self, core: Arc<Core>, cx: &mut Context<Self>) {
         if self.mode != Mode::Changes {
             return;
         }
@@ -592,16 +611,7 @@ impl Palette {
             "".into()
         };
         if mode == Mode::Files && self.quick.is_none() {
-            let ctx = PanelContext {
-                workspace: self.workspace.clone(),
-                project: self
-                    .workspace
-                    .upgrade()
-                    .and_then(|w| w.read(cx).project().cloned()),
-            };
-            self.quick = Registry::get(cx)
-                .quick_open()
-                .map(|source| source(&ctx, cx));
+            self.list_files(cx);
         }
         if mode != Mode::Commands && mode != self.mode {
             self.mode = mode;
@@ -617,7 +627,7 @@ impl Palette {
         cx.notify();
     }
 
-    fn empty_text(&self) -> SharedString {
+    fn empty_text(&self, cx: &App) -> SharedString {
         if self.query.starts_with('>') {
             return "No matching commands".into();
         }
@@ -634,8 +644,13 @@ impl Palette {
             _ if self.root.is_none() => {
                 "Open a repository to find its files · type > for commands".into()
             }
-            _ if self.quick.is_none() => "Listing files…".into(),
-            _ => "No matching files".into(),
+            _ => match &self.listing {
+                None | Some(QuickOpenStatus::Listing) => "Listing files…".into(),
+                Some(QuickOpenStatus::Failed(err)) => {
+                    unlisted(err, crate::dialogs::needs_git::old(cx)).into()
+                }
+                Some(QuickOpenStatus::Listed) => "No matching files".into(),
+            },
         }
     }
 
@@ -740,7 +755,7 @@ impl Render for Palette {
             .collect();
         let this = cx.entity().downgrade();
         let this_confirm = this.clone();
-        let empty = self.empty_text();
+        let empty = self.empty_text(cx);
         div()
             // The palette's own keys switch it over, and the app's other keys stay out.
             .key_context(ROOT_CONTEXT)
@@ -1002,15 +1017,17 @@ mod tests {
         assert!(tab_focused(&host, cx), "the change's tab has the keyboard");
     }
 
-    /// Quick open finding no files in an open repository says why, in git's words (an index
-    /// git can't read here; an old git, the launch check's).
-    #[gpui_kit::test]
-    fn no_files_listed_shows_the_reason(cx: &mut TestAppContext) {
-        let repo =
-            std::env::temp_dir().join(format!("gitviber-palette-repo-{}", std::process::id()));
+    /// A committed repository holding `a.rs` and `b.md`, opened in `host`'s workspace with the
+    /// files crate's quick open; nothing has listed its files yet.
+    fn open_repo(name: &str, host: &Entity<Host>, cx: &mut VisualTestContext) -> PathBuf {
+        let repo = std::env::temp_dir().join(format!(
+            "gitviber-palette-repo-{name}-{}",
+            std::process::id()
+        ));
         _ = std::fs::remove_dir_all(&repo);
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::write(repo.join("a.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(repo.join("b.md"), "# b\n").unwrap();
         let git = |args: &[&str]| {
             std::process::Command::new("git")
                 .args(args)
@@ -1029,21 +1046,58 @@ mod tests {
             "-qm",
             "init",
         ]);
-        let (host, cx) = window("unlisted", cx);
         cx.update(|_, cx| {
             gitviber_ui::install_core(cx);
-            // The files crate's source, failing: it hands back no files and keeps the error.
-            register_quick_open(cx, Rc::new(|_: &PanelContext, _: &mut App| Vec::new()));
+            gitviber_files::init(cx);
         });
         let ws = cx.update(|_, cx| host.read(cx).ws.clone());
         cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(repo.clone(), window, cx)));
         cx.run_until_parked();
+        repo
+    }
+
+    /// ⌘P before quick open's first listing: open at once and quiet, then the files show up,
+    /// ranked by what was typed meanwhile.
+    #[gpui_kit::test]
+    fn files_listed_after_the_palette_opened_show_up(cx: &mut TestAppContext) {
+        let (host, cx) = window("listing", cx);
+        let repo = open_repo("listing", &host, cx);
+        let ws = cx.update(|_, cx| host.read(cx).ws.clone());
+        let palette = cx
+            .update(|window, cx| Palette::show(Mode::Files, &ws, window, cx))
+            .unwrap();
+        let rows = |cx: &mut VisualTestContext| {
+            cx.update(|_, cx| {
+                let p = palette.read(cx);
+                let rows: Vec<String> = p.rows.iter().map(|r| r.label.to_string()).collect();
+                (rows, p.empty_text(cx))
+            })
+        };
+        assert_eq!(rows(cx), (vec![], "Listing files…".into()));
+        cx.update(|_, cx| {
+            palette.update(cx, |p, cx| {
+                p.query = "a".into();
+                p.rank(cx);
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(rows(cx).0, ["a.rs"]);
+        _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// Quick open finding no files in an open repository says why, in git's words (an index
+    /// git can't read here; an old git, the launch check's).
+    #[gpui_kit::test]
+    fn no_files_listed_shows_the_reason(cx: &mut TestAppContext) {
+        let (host, cx) = window("unlisted", cx);
+        let repo = open_repo("unlisted", &host, cx);
         std::fs::write(repo.join(".git/index"), "not an index").unwrap();
+        let ws = cx.update(|_, cx| host.read(cx).ws.clone());
         let palette = cx
             .update(|window, cx| Palette::show(Mode::Files, &ws, window, cx))
             .unwrap();
         cx.run_until_parked();
-        let shown = cx.update(|_, cx| palette.read(cx).empty_text());
+        let shown = cx.update(|_, cx| palette.read(cx).empty_text(cx));
         assert!(shown.starts_with("Could not list files: "), "{shown}");
         assert!(shown.contains("index"), "{shown}");
         _ = std::fs::remove_dir_all(&repo);
