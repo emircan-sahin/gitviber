@@ -1,16 +1,16 @@
 {
   "meta": {
     "title": "GitViber: git client for coding agents in parallel worktrees",
-    "description": "A ~14 MB git client for vibe coding. Run Claude Code or Codex in parallel worktrees, watch the diffs land live, test in a terminal and commit. macOS and Linux.",
+    "description": "A native git client for vibe coding. Run Claude Code or Codex in parallel worktrees, watch the diffs land live, test in a terminal and commit. macOS and Linux.",
     "keywords": "git client, coding agents, Claude Code, Codex, git worktrees, parallel agents, vibe coding, code review, diff viewer, GitHub Desktop alternative, macOS, Linux, open source",
     "ogTitle": "GitViber: vibe code from one app",
-    "ogDescription": "Run your agents side by side in their own worktrees, read what they wrote in a UI made for reviewing, fix it, test it and commit. A ~14 MB app for macOS and Linux.",
+    "ogDescription": "Run your agents side by side in their own worktrees, read what they wrote in a UI made for reviewing, fix it, test it and commit. A native app for macOS and Linux.",
     "ogImageAlt": "GitViber: vibe code from one app. The app window with a live diff, the changed files and a terminal."
   },
   "og": {
     "tagline": "Agents in parallel worktrees, live diffs, a terminal and commit, in one window.",
     "facts": [
-      "~14 MB",
+      "~20 MB download",
       "macOS and Linux",
       "Free and open source"
     ]
@@ -32,7 +32,9 @@
     "downloadLinux": "Download for Linux",
     "get": "Get GitViber",
     "copy": "Copy command",
-    "copied": "Copied"
+    "copied": "Copied",
+    "otherMac": "{chip} Mac? {link}",
+    "otherMacLink": "Download the {chip} version"
   },
   "hero": {
     "release": "GitViber {version} for macOS and Linux",
@@ -96,17 +98,27 @@
   },
   "numbers": {
     "title": "Not another editor eating your RAM.",
-    "subtitle": "Editors like Cursor easily take gigabytes just to let you read.",
+    "subtitle": "Since 0.1.18 it's native Rust, drawn on the GPU.",
     "items": [
       {
-        "big": "~14 MB",
-        "title": "The whole app.",
-        "text": "GitHub Desktop is 681 MB. GitViber has no bundled Chromium: a Rust core and the system webview."
+        "big": "~20 MB",
+        "title": "The whole download.",
+        "text": "19.5 MB for Apple Silicon, 22.6 MB for Intel. No browser engine is packed inside: the app draws its own window."
       },
       {
-        "big": "0%",
-        "title": "CPU at idle.",
-        "text": "It wakes up when files change, not on a timer. Diffs are computed in Rust and highlighted off the main thread."
+        "big": "~100 MB",
+        "title": "With a repo open.",
+        "text": "Every process counted, on an M2 Pro. The web-based 0.1.17 took 317 MB. Minimized, it drops to 62 MB or less, and paging through a 100,000-line file peaks at 186 MB, where 0.1.17 reached 2.6 GB."
+      },
+      {
+        "big": "0.76 s",
+        "title": "From launch to your repo.",
+        "text": "A cold start on the same Mac, down from 5.4 s. A git call returns in 4 ms instead of 13, and the command palette opens in about 45 ms."
+      },
+      {
+        "big": "2.1 s",
+        "title": "Two million lines in the terminal.",
+        "text": "`seq 1 2000000` finishes in 2.1 s, where 0.1.17 took 9.9 s. The terminal draws only the rows on screen and reuses the ones that didn't change."
       }
     ]
   },
@@ -136,7 +148,7 @@
       },
       {
         "title": "Shortcuts",
-        "text": "Every action has one, every one can be rebound. Hold ⌘ to see them."
+        "text": "Most actions have one, and every one can be rebound. Hold ⌘ to see the ones that work where you are."
       }
     ]
   },
@@ -147,7 +159,7 @@
     "items": [
       {
         "q": "What is GitViber?",
-        "a": "A free, open-source git client for macOS and Linux, made for coding with agents. Run Claude Code, Codex or any other agent in parallel worktrees, watch their diffs land live, browse the code, test it in a built-in terminal and commit, all in one ~14 MB app."
+        "a": "A free, open-source git client for macOS and Linux, made for coding with agents. Run Claude Code, Codex or any other agent in parallel worktrees, watch their diffs land live, browse the code, test it in a built-in terminal and commit, all in one native app."
       },
       {
         "q": "Is it free?",
@@ -163,7 +175,7 @@
       },
       {
         "q": "How is it different from GitHub Desktop?",
-        "a": "GitViber is built around worktrees and agents: diffs that refresh the moment an agent saves, a terminal and a file explorer in the same window, and review progress kept per worktree. It's also ~14 MB; GitHub Desktop is 681 MB."
+        "a": "GitViber is built around worktrees and agents: diffs that refresh the moment an agent saves, a terminal and a file explorer in the same window, and review progress kept per worktree. It's also a native app, about a 20 MB download, that takes about 100 MB of memory with a repo open."
       },
       {
         "q": "Do I still need an editor like Cursor or VS Code?",
@@ -171,11 +183,11 @@
       },
       {
         "q": "Does it use a lot of RAM or CPU?",
-        "a": "No. It's a ~14 MB app with no bundled Chromium: a Rust core and the system webview. It idles at 0% CPU and wakes up only when files change. Activity Monitor can show memory climbing while you click around; that's memory WebKit hasn't collected yet, and it drops after a few idle minutes."
+        "a": "No. It's native Rust, with its interface drawn on the GPU instead of in a web view. With a repo open it takes about 100 MB of memory, every process counted, and closing a tab or a terminal gives its memory back. File changes come from the system's file events, not from scanning the disk."
       },
       {
         "q": "Which platforms does it run on?",
-        "a": "macOS 13 or later, as one universal app for Apple Silicon and Intel, and Linux x86_64 as a .deb, .rpm or AppImage. macOS is used daily; the Linux builds are tested in CI. Windows is untested and has no build yet."
+        "a": "macOS 13 or later, with a download for Apple Silicon and one for Intel, and Linux x86_64 as a .deb, .rpm or AppImage. macOS is used daily; the Linux builds are tested in CI. Windows is untested and has no build yet."
       },
       {
         "q": "How do I sign in to GitHub?",
@@ -190,7 +202,7 @@
   "install": {
     "title": "Close the other windows.",
     "lead": "Free and open source. No account, no telemetry.",
-    "mac": "macOS 13 or later, one universal app, signed and notarized.",
+    "mac": "macOS 13 or later, Apple Silicon or Intel, signed and notarized.",
     "linux": "Linux x86_64: {files}. Needs git 2.36 or newer.",
     "source": "Or {link}.",
     "sourceLink": "build it from source"

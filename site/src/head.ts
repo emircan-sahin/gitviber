@@ -86,7 +86,7 @@ export function renderHead(locale: Locale, t: Messages) {
         "@id": id.source,
         name: "GitViber",
         codeRepository: REPO_URL,
-        programmingLanguage: ["Rust", "TypeScript"],
+        programmingLanguage: ["Rust"],
         license: "https://www.gnu.org/licenses/gpl-3.0.html",
         author: { "@id": id.author },
         targetProduct: { "@id": id.app },

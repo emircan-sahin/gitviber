@@ -1,16 +1,16 @@
 {
   "meta": {
     "title": "GitViber : client git pour agents IA en worktrees parallèles",
-    "description": "Client git de ~14 Mo pour le vibe coding. Lancez Claude Code ou Codex en worktrees parallèles, suivez les diffs en direct, testez et committez. macOS et Linux.",
+    "description": "Un client git natif pour le vibe coding. Lancez Claude Code ou Codex en worktrees parallèles, suivez les diffs en direct, testez dans un terminal et committez. macOS et Linux.",
     "keywords": "client git, interface graphique git, agents IA, agents de code, Claude Code, Codex, git worktree, agents en parallèle, vibe coding, revue de code, visualiseur de diff, alternative à GitHub Desktop, macOS, Linux, open source",
     "ogTitle": "GitViber : tout le vibe coding dans une app",
-    "ogDescription": "Faites tourner vos agents dans leurs propres worktrees, relisez leur code dans une interface pensée pour la revue, corrigez, testez et committez. ~14 Mo, macOS et Linux.",
+    "ogDescription": "Faites tourner vos agents côte à côte dans leurs propres worktrees, relisez leur code dans une interface pensée pour la revue, corrigez, testez et committez. Une app native pour macOS et Linux.",
     "ogImageAlt": "GitViber : tout le vibe coding dans une app. La fenêtre de l'app avec un diff en direct, les fichiers modifiés et un terminal."
   },
   "og": {
     "tagline": "Des agents en worktrees parallèles, des diffs en direct, un terminal et le commit, dans une seule fenêtre.",
     "facts": [
-      "~14 Mo",
+      "~20 Mo à télécharger",
       "macOS et Linux",
       "Gratuit et open source"
     ]
@@ -32,7 +32,9 @@
     "downloadLinux": "Télécharger pour Linux",
     "get": "Obtenir GitViber",
     "copy": "Copier la commande",
-    "copied": "Copié"
+    "copied": "Copié",
+    "otherMac": "Un Mac {chip} ? {link}",
+    "otherMacLink": "Télécharger la version {chip}"
   },
   "hero": {
     "release": "GitViber {version} pour macOS et Linux",
@@ -96,17 +98,27 @@
   },
   "numbers": {
     "title": "Pas un éditeur de plus qui dévore votre RAM.",
-    "subtitle": "Les éditeurs comme Cursor prennent facilement des gigaoctets rien que pour vous laisser lire.",
+    "subtitle": "Depuis la 0.1.18, c'est du Rust natif, rendu par le GPU.",
     "items": [
       {
-        "big": "~14 Mo",
-        "title": "L'app entière.",
-        "text": "GitHub Desktop pèse 681 Mo. GitViber n'embarque pas Chromium : un cœur en Rust et la webview du système."
+        "big": "~20 Mo",
+        "title": "Le téléchargement complet.",
+        "text": "19,5 Mo pour Apple Silicon, 22,6 Mo pour Intel. Aucun moteur de navigateur embarqué : l'app dessine elle-même sa fenêtre."
       },
       {
-        "big": "0 %",
-        "title": "De CPU au repos.",
-        "text": "GitViber se réveille quand des fichiers changent, pas à intervalles fixes. Les diffs sont calculés en Rust et colorés hors du thread principal."
+        "big": "~100 Mo",
+        "title": "Avec un dépôt ouvert.",
+        "text": "Tous les processus comptés, sur un M2 Pro. La 0.1.17, basée sur le web, prenait 317 Mo. Fenêtre réduite, GitViber descend à 62 Mo ou moins, et en parcourant un fichier de 100 000 lignes, le pic est de 186 Mo, contre 2,6 Go pour la 0.1.17."
+      },
+      {
+        "big": "0,76 s",
+        "title": "Du lancement à votre dépôt.",
+        "text": "Un démarrage à froid sur le même Mac, contre 5,4 s avant. Un appel git répond en 4 ms au lieu de 13, et la palette de commandes s'ouvre en 45 ms environ."
+      },
+      {
+        "big": "2,1 s",
+        "title": "Deux millions de lignes dans le terminal.",
+        "text": "`seq 1 2000000` se termine en 2,1 s, contre 9,9 s avec la 0.1.17. Le terminal ne dessine que les lignes à l'écran et réutilise celles qui n'ont pas changé."
       }
     ]
   },
@@ -136,7 +148,7 @@
       },
       {
         "title": "Raccourcis",
-        "text": "Chaque action a le sien, et tous se reconfigurent. Maintenez ⌘ pour les voir."
+        "text": "La plupart des actions ont le leur, et tous se reconfigurent. Maintenez ⌘ pour voir ceux qui marchent là où vous êtes."
       }
     ]
   },
@@ -147,7 +159,7 @@
     "items": [
       {
         "q": "Qu'est-ce que GitViber ?",
-        "a": "Un client git gratuit et open source pour macOS et Linux, conçu pour coder avec des agents. Faites tourner Claude Code, Codex ou n'importe quel autre agent dans des worktrees parallèles, suivez leurs diffs en direct, parcourez le code, testez-le dans le terminal intégré et committez, le tout dans une app de ~14 Mo."
+        "a": "Un client git gratuit et open source pour macOS et Linux, conçu pour coder avec des agents. Faites tourner Claude Code, Codex ou n'importe quel autre agent dans des worktrees parallèles, suivez leurs diffs en direct, parcourez le code, testez-le dans le terminal intégré et committez, le tout dans une seule app native."
       },
       {
         "q": "GitViber est-il gratuit ?",
@@ -163,7 +175,7 @@
       },
       {
         "q": "Quelle différence avec GitHub Desktop ?",
-        "a": "GitViber est pensé autour des worktrees et des agents : des diffs qui se mettent à jour dès qu'un agent enregistre, un terminal et un explorateur de fichiers dans la même fenêtre, et une progression de revue conservée par worktree. Il pèse aussi ~14 Mo, contre 681 Mo pour GitHub Desktop."
+        "a": "GitViber est pensé autour des worktrees et des agents : des diffs qui se mettent à jour dès qu'un agent enregistre, un terminal et un explorateur de fichiers dans la même fenêtre, et une progression de revue conservée par worktree. C'est aussi une app native : une vingtaine de Mo à télécharger et environ 100 Mo de mémoire avec un dépôt ouvert."
       },
       {
         "q": "Ai-je encore besoin d'un éditeur comme Cursor ou VS Code ?",
@@ -171,11 +183,11 @@
       },
       {
         "q": "Est-ce qu'il consomme beaucoup de RAM ou de CPU ?",
-        "a": "Non. C'est une app de ~14 Mo sans Chromium embarqué : un cœur en Rust et la webview du système. Au repos, il tourne à 0 % de CPU et ne se réveille que quand des fichiers changent. Le Moniteur d'activité peut montrer la mémoire qui grimpe pendant que vous cliquez un peu partout ; c'est de la mémoire que WebKit n'a pas encore libérée, et elle redescend après quelques minutes d'inactivité."
+        "a": "Non. C'est du Rust natif, avec une interface rendue par le GPU plutôt que dans une webview. Avec un dépôt ouvert, il occupe environ 100 Mo de mémoire, tous processus compris, et fermer un onglet ou un terminal libère la mémoire qu'il utilisait. Il suit les modifications de fichiers grâce aux événements du système, sans scanner le disque."
       },
       {
         "q": "Sur quelles plateformes tourne-t-il ?",
-        "a": "macOS 13 ou plus récent, en une seule app universelle pour Apple Silicon et Intel, et Linux x86_64 en .deb, .rpm ou AppImage. macOS est utilisé au quotidien ; les builds Linux sont testés en CI. Windows n'est pas testé et n'a pas encore de build."
+        "a": "macOS 13 ou plus récent, avec un téléchargement pour Apple Silicon et un autre pour Intel, et Linux x86_64 en .deb, .rpm ou AppImage. macOS est utilisé au quotidien ; les builds Linux sont testés en CI. Windows n'est pas testé et n'a pas encore de build."
       },
       {
         "q": "Comment me connecter à GitHub ?",
@@ -190,7 +202,7 @@
   "install": {
     "title": "Fermez les autres fenêtres.",
     "lead": "Gratuit et open source. Sans compte, sans télémétrie.",
-    "mac": "macOS 13 ou plus récent, une app universelle, signée et notarisée.",
+    "mac": "macOS 13 ou plus récent, Apple Silicon ou Intel, signée et notarisée.",
     "linux": "Linux x86_64 : {files}. Nécessite git 2.36 ou plus récent.",
     "source": "Ou {link}.",
     "sourceLink": "compilez-le depuis les sources"

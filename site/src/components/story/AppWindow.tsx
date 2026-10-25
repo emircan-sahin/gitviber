@@ -53,7 +53,7 @@ export const WORKTREES: WorktreeRow[] = [
   })),
 ];
 
-/** The app's empty Changes list (src/features/changes/ChangeRows.tsx AllCaughtUp). */
+/** The app's empty Changes list (crates/changes/src/panel.rs). */
 export function AllCaughtUp({ className = "pt-20" }: { className?: string }) {
   return (
     <div className={cx("flex flex-col items-center gap-1.5 px-6 text-center", className)}>
@@ -181,8 +181,6 @@ export function AppWindow({ chapter, t }: { chapter: number; t: number }) {
           branch={scene.branch}
           worktree={scene.folder}
           worktrees={WORKTREES.length}
-          added={add}
-          removed={del}
           menuOpen={chapter === 0}
           pull={scene.pull}
           ahead={ahead}

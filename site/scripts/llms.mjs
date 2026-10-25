@@ -52,7 +52,7 @@ export function llms({ t, readme, docs, locales, pageUrl, siteUrl, version, repo
     .map(([, q, a]) => `### ${q}\n\n${a}`);
   const links = [
     `- [Source and README](${repo}): features, install, shortcuts, FAQ`,
-    `- [Latest release](${repo}/releases/latest): version ${version}. macOS universal .dmg (signed and notarized), Linux .deb, .rpm and AppImage`,
+    `- [Latest release](${repo}/releases/latest): version ${version}. macOS .dmg for Apple Silicon and for Intel (signed and notarized), Linux .deb, .rpm and AppImage`,
     `- [Changelog](${repo}/blob/main/CHANGELOG.md)`,
     `- [License](${repo}/blob/main/LICENSE): GPL-3.0`,
   ];

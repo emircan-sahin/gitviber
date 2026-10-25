@@ -1,7 +1,7 @@
 import { rich, useI18n } from "../i18n/index.tsx";
 import { BREW, release, REPO_URL } from "../release.ts";
 import { Logo } from "./icons.tsx";
-import { CopyCommand, DownloadButton } from "./ui.tsx";
+import { CopyCommand, DownloadButton, OtherMac } from "./ui.tsx";
 
 const LINUX = [
   { key: "deb", label: ".deb" },
@@ -37,6 +37,7 @@ export function Install() {
           <DownloadButton />
           <CopyCommand command={BREW} className="w-full sm:w-auto" />
         </div>
+        <OtherMac className="reveal mt-4 [--delay:230ms]" />
         <p className="reveal mt-8 text-[15px] leading-relaxed text-pretty text-muted [--delay:260ms]">
           {t.install.mac}
           <br />

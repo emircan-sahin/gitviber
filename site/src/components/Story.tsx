@@ -27,7 +27,7 @@ import { AgentRun, CommitRows, KeyHud, ReviewRows, TerminalPanel } from "./story
 import { clipLength, commitAt, explorerAt, HOLD_MS, landedAt, reviewAt, terminalAt, worktreesAt } from "./story/timeline.ts";
 import { useElapsed } from "./story/useElapsed.ts";
 import { usePlayhead } from "./story/usePlayhead.ts";
-import { CopyCommand, cx, DownloadButton, Keys } from "./ui.tsx";
+import { CopyCommand, cx, DownloadButton, Keys, OtherMac } from "./ui.tsx";
 
 const ICONS: LucideIcon[] = [FolderGit2, Zap, ArrowLeftRight, GitBranchPlus, ListChecks, SquareTerminal, FolderTree, GitCommitHorizontal];
 
@@ -282,6 +282,7 @@ function Hero() {
         <DownloadButton />
         <CopyCommand command={BREW} className="w-full sm:w-auto" />
       </div>
+      <OtherMac className="mt-4" />
     </div>
   );
 }

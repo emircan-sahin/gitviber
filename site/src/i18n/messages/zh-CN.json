@@ -1,16 +1,16 @@
 {
   "meta": {
     "title": "GitViber：多 Agent 并行开发的 git 客户端",
-    "description": "约 14 MB 的 vibe coding git 客户端。在多个 worktree 中并行运行 Claude Code 或 Codex，实时查看 diff，在终端里测试，然后直接提交。支持 macOS 和 Linux。",
+    "description": "一款面向 vibe coding 的原生 git 客户端。在多个 worktree 中并行运行 Claude Code 或 Codex，实时查看 diff，在终端里测试，然后直接提交。支持 macOS 和 Linux。",
     "keywords": "git 客户端, Git GUI, AI 编程, 编程 Agent, Claude Code, Codex, git worktree, 并行开发, 多 Agent, vibe coding, 氛围编程, 代码审查, diff 查看器, GitHub Desktop 替代品, macOS, Linux, 开源",
     "ogTitle": "GitViber：一个应用搞定 vibe coding",
-    "ogDescription": "让每个 Agent 在各自的 worktree 里并行工作，在专为审查设计的界面里读它们写的代码，修改、测试后提交。约 14 MB，支持 macOS 和 Linux。",
+    "ogDescription": "让每个 Agent 在各自的 worktree 里并行工作，在专为审查设计的界面里读它们写的代码，修改、测试后提交。原生应用，支持 macOS 和 Linux。",
     "ogImageAlt": "GitViber：一个应用搞定 vibe coding。应用窗口，显示实时 diff、改动的文件和终端。"
   },
   "og": {
     "tagline": "并行 worktree 里的 Agent、实时 diff、终端和提交，全在一个窗口里。",
     "facts": [
-      "~14 MB",
+      "下载约 20 MB",
       "macOS 和 Linux",
       "免费开源"
     ]
@@ -32,7 +32,9 @@
     "downloadLinux": "下载 Linux 版",
     "get": "获取 GitViber",
     "copy": "复制命令",
-    "copied": "已复制"
+    "copied": "已复制",
+    "otherMac": "用的是 {chip} Mac？{link}",
+    "otherMacLink": "下载 {chip} 版"
   },
   "hero": {
     "release": "GitViber {version}，支持 macOS 和 Linux",
@@ -96,17 +98,27 @@
   },
   "numbers": {
     "title": "别再让编辑器吃光你的内存。",
-    "subtitle": "像 Cursor 这样的编辑器，光是用来看代码就能轻松占掉好几 GB。",
+    "subtitle": "从 0.1.18 起改为原生 Rust，界面由 GPU 绘制。",
     "items": [
       {
-        "big": "~14 MB",
-        "title": "整个应用就这么大。",
-        "text": "GitHub Desktop 有 681 MB。GitViber 不内置 Chromium，用的是 Rust 内核加系统 WebView。"
+        "big": "~20 MB",
+        "title": "下载包就这么大。",
+        "text": "Apple Silicon 版 19.5 MB，Intel 版 22.6 MB。没有内置浏览器引擎，窗口由应用自己绘制。"
       },
       {
-        "big": "0%",
-        "title": "空闲时的 CPU 占用。",
-        "text": "只在文件变化时才唤醒，不靠定时轮询。diff 在 Rust 中计算，高亮在主线程之外完成。"
+        "big": "~100 MB",
+        "title": "打开仓库时。",
+        "text": "M2 Pro 实测，所有进程都算在内。基于 Web 技术的 0.1.17 要占 317 MB。窗口最小化后会降到 62 MB 或更低，翻阅一个 10 万行的文件时峰值是 186 MB，而 0.1.17 在这里会涨到 2.6 GB。"
+      },
+      {
+        "big": "0.76 秒",
+        "title": "从启动到打开仓库。",
+        "text": "同一台 Mac 上冷启动，之前要 5.4 秒。一次 git 调用只需 4 毫秒，原来要 13 毫秒，命令面板约 45 毫秒就能打开。"
+      },
+      {
+        "big": "2.1 秒",
+        "title": "终端里跑两百万行。",
+        "text": "运行 `seq 1 2000000` 用时 2.1 秒，0.1.17 要 9.9 秒。终端只绘制屏幕上可见的行，没变化的行直接复用。"
       }
     ]
   },
@@ -136,7 +148,7 @@
       },
       {
         "title": "快捷键",
-        "text": "每个操作都有快捷键，全部可以重新绑定。按住 ⌘ 即可查看。"
+        "text": "大部分操作都有快捷键，而且都能重新绑定。按住 ⌘，就能看到当前位置可用的快捷键。"
       }
     ]
   },
@@ -147,7 +159,7 @@
     "items": [
       {
         "q": "GitViber 是什么？",
-        "a": "一款免费、开源的 git 客户端，支持 macOS 和 Linux，专为和 Agent 一起写代码而设计。在并行的 worktree 中运行 Claude Code、Codex 或其他任何 Agent，实时查看它们的 diff，浏览代码，在内置终端里测试并提交，全部在一个约 14 MB 的应用里完成。"
+        "a": "一款免费、开源的 git 客户端，支持 macOS 和 Linux，专为和 Agent 一起写代码而设计。在并行的 worktree 中运行 Claude Code、Codex 或其他任何 Agent，实时查看它们的 diff，浏览代码，在内置终端里测试并提交，全部在一个原生应用里完成。"
       },
       {
         "q": "免费吗？",
@@ -163,7 +175,7 @@
       },
       {
         "q": "和 GitHub Desktop 有什么不同？",
-        "a": "GitViber 围绕 worktree 和 Agent 设计：Agent 一保存 diff 就刷新，终端和文件浏览器在同一个窗口里，审查进度按 worktree 分别保存。而且它只有约 14 MB，GitHub Desktop 则有 681 MB。"
+        "a": "GitViber 围绕 worktree 和 Agent 设计：Agent 一保存 diff 就刷新，终端和文件浏览器在同一个窗口里，审查进度按 worktree 分别保存。而且它是原生应用，下载约 20 MB，打开仓库时内存占用约 100 MB。"
       },
       {
         "q": "还需要 Cursor 或 VS Code 这类编辑器吗？",
@@ -171,11 +183,11 @@
       },
       {
         "q": "会占用很多内存或 CPU 吗？",
-        "a": "不会。它是一个约 14 MB 的应用，不内置 Chromium，用的是 Rust 内核和系统 WebView。空闲时 CPU 占用为 0%，只在文件变化时唤醒。你在界面里点来点去时，活动监视器里的内存可能会上涨；那是 WebKit 还没回收的内存，闲置几分钟后就会降下来。"
+        "a": "不会。它用原生 Rust 编写，界面由 GPU 绘制，而不是跑在 WebView 里。打开仓库时，算上所有进程，内存占用约 100 MB；关掉一个标签页或终端，它占用的内存也会释放出来。它通过系统的文件事件得知文件变化，不靠扫描磁盘。"
       },
       {
         "q": "支持哪些平台？",
-        "a": "macOS 13 及以上版本，提供同时支持 Apple Silicon 和 Intel 的通用应用；Linux x86_64 提供 .deb、.rpm 和 AppImage。macOS 版每天都在用，Linux 版在 CI 中测试。Windows 尚未测试，也还没有构建版本。"
+        "a": "macOS 13 及以上版本，Apple Silicon 和 Intel 各有一个下载包；Linux x86_64 提供 .deb、.rpm 和 AppImage。macOS 版每天都在用，Linux 版在 CI 中测试。Windows 尚未测试，也还没有构建版本。"
       },
       {
         "q": "怎么登录 GitHub？",
@@ -190,7 +202,7 @@
   "install": {
     "title": "其他窗口，可以关了。",
     "lead": "免费开源。无需账号，没有遥测。",
-    "mac": "macOS 13 及以上，通用应用，已签名并通过公证。",
+    "mac": "macOS 13 及以上，支持 Apple Silicon 和 Intel，已签名并通过公证。",
     "linux": "Linux x86_64：{files}。需要 git 2.36 或更高版本。",
     "source": "也可以{link}。",
     "sourceLink": "从源码构建"
