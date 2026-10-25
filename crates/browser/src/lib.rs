@@ -36,7 +36,6 @@ pub mod ui;
 mod user_downloads;
 
 pub use handle::{install, installed, Event, Handle, Sink};
-pub use keys::set_app_keys;
 #[cfg(target_os = "macos")]
 pub use macos::{
     agent_appearance, agent_chosen, agent_clear_store, agent_close_tab, agent_cookies,
@@ -46,8 +45,8 @@ pub use macos::{
     agent_shown, agent_stitch, agent_tab, agent_tabs, agent_text, agent_upload, agent_upload_done,
     agent_users, appearance, attach_window, cancel_download, clear_data, close, close_all,
     close_root, configure, console_clear, console_entries, create, find, focus, go, hide, inspect,
-    keep_data_in_memory, navigate, network_log, pick, place, set_agent, snapshot, snapshot_then,
-    zoom,
+    keep_data_in_memory, key_to_page, navigate, network_log, pick, place, set_agent, snapshot,
+    snapshot_then, zoom,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
@@ -58,8 +57,8 @@ pub use other::{
     agent_shown, agent_stitch, agent_tab, agent_tabs, agent_text, agent_upload, agent_upload_done,
     agent_users, appearance, attach_window, cancel_download, clear_data, close, close_all,
     close_root, configure, console_clear, console_entries, create, find, focus, go, hide, inspect,
-    keep_data_in_memory, navigate, network_log, pick, place, set_agent, snapshot, snapshot_then,
-    zoom,
+    keep_data_in_memory, key_to_page, navigate, network_log, pick, place, set_agent, snapshot,
+    snapshot_then, zoom,
 };
 pub use sessions::Shelf;
 pub use ui::init;
@@ -455,6 +454,7 @@ mod other {
         Err(UNSUPPORTED.into())
     }
     pub fn focus(_: &str, _: bool) {}
+    pub fn key_to_page(_: &str) {}
     pub fn inspect(_: &str) -> Res<bool> {
         Ok(false)
     }

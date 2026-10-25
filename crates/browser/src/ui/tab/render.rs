@@ -6,6 +6,7 @@ use gitviber_ui::Settings;
 use gpui::{MouseButton, ObjectFit, StyledImage as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::Textarea;
+use gpui_kit::component::menu::PopupMenu;
 
 /// Which edge of the page area an Ask box is placed from, and how far.
 #[derive(Debug, PartialEq)]
@@ -54,6 +55,104 @@ fn option_key(k: &gpui::Keystroke) -> Option<char> {
         .next()
         .filter(|_| k.key.chars().count() == 1)?;
     (held && matches!(c, 'c' | 'w' | 'r')).then_some(c)
+}
+
+/// The ports menu: what this worktree's terminals serve, or that it's being read (None).
+fn port_items(
+    mut menu: PopupMenu,
+    tab: &WeakEntity<BrowserTab>,
+    ports: Option<&[Port]>,
+) -> PopupMenu {
+    menu = menu.label(match ports {
+        None => "Looking for ports…",
+        Some([]) => "No terminal here serves a port",
+        Some(_) => "Served by this worktree's terminals",
+    });
+    for p in ports.unwrap_or_default() {
+        let tab = tab.clone();
+        let url = url::port_url(p.port);
+        menu = menu.item(
+            PopupMenuItem::new(format!("localhost:{}  {}", p.port, p.process)).on_click(
+                move |_, window, cx| {
+                    let _ = tab.update(cx, |this, cx| this.open_url(&url, window, cx));
+                },
+            ),
+        );
+    }
+    menu
+}
+
+/// A phone's status bar, upright: the time on the left, signal, Wi-Fi and battery on the right,
+/// the camera between them, each a little below the middle as phones draw them.
+fn status_bar(f: &Fitted) -> AnyElement {
+    let (top, w) = (f.bars.0 as f32, f.screen.w as f32);
+    let glyph = (top * 0.32).min(17. * f.scale as f32);
+    let third = || {
+        h_flex()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .w(px(w / 3.))
+            .pt(px(top * 0.15))
+            .justify_center()
+    };
+    let signal = h_flex()
+        .items_end()
+        .gap(px(glyph * 0.12))
+        .children([0.3, 0.5, 0.7, 0.9].map(|h| {
+            div()
+                .w(px(glyph * 0.18))
+                .h(px(glyph * h * 0.8))
+                .rounded(px(glyph * 0.05))
+                .bg(gpui::black())
+        }));
+    let battery = h_flex()
+        .items_center()
+        .child(
+            div()
+                .w(px(glyph * 1.5))
+                .h(px(glyph * 0.72))
+                .p(px(glyph * 0.1))
+                .rounded(px(glyph * 0.2))
+                .border_1()
+                .border_color(gpui::black().opacity(0.4))
+                .child(
+                    div()
+                        .size_full()
+                        .rounded(px(glyph * 0.08))
+                        .bg(gpui::black()),
+                ),
+        )
+        .child(
+            div()
+                .w(px(glyph * 0.1))
+                .h(px(glyph * 0.25))
+                .rounded_r(px(glyph * 0.05))
+                .bg(gpui::black().opacity(0.4)),
+        );
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .w_full()
+        .h(px(top))
+        .text_color(gpui::black())
+        .child(
+            third()
+                .left_0()
+                .text_size(px(glyph))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child("9:41"),
+        )
+        .child(
+            third()
+                .right_0()
+                .gap(px(glyph * 0.3))
+                .child(signal)
+                .child(Icon::new(IconName::Wifi).size(px(glyph * 0.85)))
+                .child(battery),
+        )
+        .into_any_element()
 }
 
 fn icon_button(id: &'static str, icon: IconName, tip: impl Into<SharedString>) -> Button {
@@ -188,34 +287,24 @@ impl BrowserTab {
             }))
         };
         let weak = cx.weak_entity();
-        let ports = self.ports.clone();
         let ports_menu = icon_button("ports", IconName::Network, "Ports the terminals serve")
-            .dropdown_menu(move |mut menu, _, _| {
-                let list = ports.borrow().clone();
-                menu = menu.label(if list.is_empty() {
-                    "No terminal here serves a port"
-                } else {
-                    "Served by this worktree's terminals"
-                });
-                for p in list {
-                    let weak = weak.clone();
-                    let url = url::port_url(p.port);
-                    menu = menu.item(
-                        PopupMenuItem::new(format!("localhost:{}  {}", p.port, p.process))
-                            .on_click(move |_, window, cx| {
-                                let _ = weak.update(cx, |this, cx| this.open_url(&url, window, cx));
-                            }),
-                    );
-                }
-                menu
-            })
-            .on_open_change({
-                let weak = cx.weak_entity();
-                move |open, window, cx| {
-                    if *open {
-                        let _ = weak.update(cx, |this, cx| this.read_ports(window, cx));
-                    }
-                }
+            .dropdown_menu(move |menu, window, cx| {
+                // Read as it opens, filled in once known: a dev server just started is found.
+                let tab = weak.clone();
+                cx.spawn_in(window, async move |menu, cx| {
+                    let Ok(read) = tab.update_in(cx, |tab, window, cx| tab.read_ports(window, cx))
+                    else {
+                        return;
+                    };
+                    let ports = read.await;
+                    let _ = menu.update_in(cx, |menu, window, cx| {
+                        menu.rebuild(window, cx, |menu, _, _| {
+                            port_items(menu, &tab, Some(&ports))
+                        })
+                    });
+                })
+                .detach();
+                port_items(menu, &weak, None)
             });
         let console = capture.then(|| {
             let count = if errors > 0 { errors } else { warnings };
@@ -860,12 +949,19 @@ impl BrowserTab {
         )
     }
 
+    /// What shows of the page, which a pick's mark stays inside: its screen in device mode, else
+    /// the whole area (a mark ran off the device's screen).
+    pub(super) fn mark_room(&self) -> (f32, f32) {
+        self.fitted()
+            .map_or(self.area.get(), |(_, _, f)| (f.page.w as f32, f.page.h as f32))
+    }
+
     fn marks(&self, t: &AppTheme) -> Vec<AnyElement> {
         let Some(picks) = &self.picks else {
             return Vec::new();
         };
         let factor = self.factor() as f32;
-        let area = self.area.get();
+        let area = self.mark_room();
         picks
             .iter()
             .map(|p| {
@@ -1067,6 +1163,9 @@ impl BrowserTab {
 
     fn page_area(&mut self, t: &AppTheme, cx: &mut Context<Self>) -> AnyElement {
         let failed = self.state(cx).and_then(|s| s.failed.clone());
+        let mut keys = gpui::KeyContext::default();
+        keys.add(PAGE_CONTEXT);
+        keys.set("page", self.saved.id.clone());
         let area = div()
             .id("browser-page")
             .relative()
@@ -1074,6 +1173,7 @@ impl BrowserTab {
             .min_h_0()
             .overflow_hidden()
             .bg(t.background)
+            .key_context(keys)
             .track_focus(&self.page_focus)
             .on_mouse_down(
                 MouseButton::Left,
@@ -1256,6 +1356,9 @@ impl BrowserTab {
                     .bg(gpui::rgb(0xf2f2f7)),
             );
         }
+        if top > 0.0 {
+            screen = screen.child(status_bar(f));
+        }
         if bottom > 0.0 {
             screen = screen.child(
                 div()
@@ -1393,10 +1496,7 @@ mod tests {
     /// work (a field no longer drawn kept it, and ⇧⌘C did nothing).
     #[gpui::test]
     fn leaving_responsive_mid_typing_gives_the_tab_its_keys(cx: &mut TestAppContext) {
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-browser-size-{}", std::process::id()));
-        // SAFETY: nextest gives each test its own process; nothing else reads it meanwhile.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        let dir = gitviber_ui::test_support::config_dir("browser-size");
         cx.update(|cx| {
             gitviber_ui::init(cx);
             crate::ui::hub::install(cx, |_, _| {});

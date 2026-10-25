@@ -9,6 +9,7 @@ use futures::StreamExt as _;
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Global, Task};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 /// A tab's page as its view told it.
 #[derive(Default)]
@@ -49,6 +50,9 @@ pub struct Download {
 
 /// The most downloads a tab lists; the oldest ended one makes room.
 const DOWNLOADS: usize = 4;
+
+/// How long an ended download stays listed, unless dismissed first.
+const ENDED_SHOWN: Duration = Duration::from_secs(60);
 
 /// `list` with this report of a download: a new entry, or its entry changed. Not one dismissed
 /// already, nor a new one when the list is full of downloads going.
@@ -181,12 +185,19 @@ impl Hub {
             }
             "browser-download" => {
                 let d: Download = serde_json::from_value(event.payload).ok()?;
-                let id = d.tab.clone();
+                let (id, key, ended) = (d.tab.clone(), d.key, d.state != "going");
                 let page = self.page_mut(&id);
                 let dismissed = std::mem::take(&mut page.dismissed);
                 reported(&mut page.downloads, d, &dismissed);
                 page.dismissed = dismissed;
-                cx.emit(HubEvent::Changed(id));
+                cx.emit(HubEvent::Changed(id.clone()));
+                if ended {
+                    cx.spawn(async move |hub, cx| {
+                        cx.background_executor().timer(ENDED_SHOWN).await;
+                        let _ = hub.update(cx, |hub, cx| hub.dismiss_download(&id, key, cx));
+                    })
+                    .detach();
+                }
             }
             "browser-focus" => {
                 let id = id_of(&event)?;
@@ -279,6 +290,44 @@ mod tests {
             path: None,
             why: None,
         }
+    }
+
+    /// An ended download leaves the list a minute later, and isn't listed again if reported.
+    #[gpui::test]
+    fn an_ended_download_drops_from_the_list_after_a_minute(cx: &mut gpui::TestAppContext) {
+        let sink = cx.update(|cx| install(cx, |_, _| {}));
+        let hub = cx.update(|cx| Hub::global(cx).unwrap());
+        let report = |key: u64, state: &str| {
+            sink(Event {
+                name: "browser-download",
+                payload: serde_json::json!({
+                    "tab": "t", "key": key, "name": format!("f{key}"), "state": state,
+                    "received": 1, "total": 1,
+                }),
+            })
+        };
+        let listed = |cx: &mut gpui::TestAppContext| {
+            hub.read_with(cx, |h, _| {
+                h.page("t")
+                    .map(|p| p.downloads.iter().map(|d| d.key).collect::<Vec<_>>())
+                    .unwrap_or_default()
+            })
+        };
+        report(1, "going");
+        report(2, "going");
+        cx.run_until_parked();
+        report(1, "done");
+        cx.run_until_parked();
+        cx.executor()
+            .advance_clock(ENDED_SHOWN - Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(listed(cx), [1, 2], "shown a while once ended");
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+        assert_eq!(listed(cx), [2], "the one going stays");
+        report(1, "done");
+        cx.run_until_parked();
+        assert_eq!(listed(cx), [2], "gone for good");
     }
 
     #[test]

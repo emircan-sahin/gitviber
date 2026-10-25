@@ -20,9 +20,7 @@ impl Render for Host {
 }
 
 fn setup(cx: &mut TestAppContext) {
-    let dir = std::env::temp_dir().join(format!("gitviber-browser-test-{}", std::process::id()));
-    // SAFETY: the tests that read the config dir all point it at a temporary folder.
-    unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+    gitviber_ui::test_support::config_dir("browser-test");
     cx.update(|cx| {
         gitviber_ui::init(cx);
         super::hub::install(cx, |_, _| {});

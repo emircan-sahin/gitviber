@@ -28,11 +28,17 @@ enum Placed {
     Covered,
 }
 
+/// A page as the last check left it, and its tab.
+struct Shown {
+    placed: Placed,
+    tab: WeakEntity<BrowserTab>,
+}
+
 #[derive(Default)]
 struct Frame {
     painted: Vec<Painted>,
     scheduled: bool,
-    placed: HashMap<String, Placed>,
+    placed: HashMap<String, Shown>,
 }
 
 #[derive(Default)]
@@ -52,10 +58,30 @@ pub fn painted(p: Painted, window: &mut Window, cx: &mut App) {
     let key = window.window_handle().window_id();
     let frame = cx.default_global::<Placer>().0.entry(key).or_default();
     frame.painted.push(p);
+    schedule(frame, window);
+}
+
+fn schedule(frame: &mut Frame, window: &mut Window) {
     if !frame.scheduled {
         frame.scheduled = true;
         window.on_next_frame(check);
     }
+}
+
+/// The window shows something else where a page was (another tab, a maximized terminal), which
+/// no browser tab paints to say: a check once that frame is drawn hides the page. Each workspace
+/// change comes with a redraw.
+pub fn check_after_draw(window: &mut Window, cx: &mut App) {
+    let key = window.window_handle().window_id();
+    if frame_mut(cx, key).is_none_or(|f| f.placed.is_empty()) {
+        return;
+    }
+    // A next frame's callbacks run before that frame draws: the check waits one more.
+    window.on_next_frame(move |window, cx| {
+        if let Some(frame) = frame_mut(cx, key) {
+            schedule(frame, window);
+        }
+    });
 }
 
 /// The page is gone from this window (its tab closed): nothing to place or hide any more.
@@ -65,6 +91,18 @@ pub fn forget(id: &str, cx: &mut App) {
             frame.placed.remove(id);
         }
     }
+}
+
+/// Whether the page shows now, placed on its tab: one aside or covered is hidden.
+pub fn is_shown(id: &str, cx: &App) -> bool {
+    placed(id, cx).is_some_and(|p| matches!(p, Placed::At(..)))
+}
+
+fn placed(id: &str, cx: &App) -> Option<Placed> {
+    cx.try_global::<Placer>()?
+        .0
+        .values()
+        .find_map(|f| f.placed.get(id).map(|s| s.placed))
 }
 
 /// Points to the half, as AppKit lays views out on a 2x screen.
@@ -101,12 +139,15 @@ fn check(window: &mut Window, cx: &mut App) {
     frame.scheduled = false;
     let painted = std::mem::take(&mut frame.painted);
     let mut was = std::mem::take(&mut frame.placed);
-    let Some(view) = super::native_view(window) else {
-        return;
-    };
     let mut now = HashMap::new();
-    for p in painted {
-        let before = was.remove(&p.id);
+    let mut changed = Vec::new();
+    // Drawn more than once since the last check (a key's dispatch draws first): the latest
+    // counts. An earlier one's hitbox is gone, so it read as covered.
+    for p in painted.into_iter().rev() {
+        if now.contains_key(&p.id) {
+            continue;
+        }
+        let before = was.remove(&p.id).map(|s| s.placed);
         let b = p.bounds;
         let small = b.size.width < px(2.) || b.size.height < px(2.);
         let next = if !p.live || small {
@@ -122,32 +163,39 @@ fn check(window: &mut Window, cx: &mut App) {
             };
             Placed::At(rect, p.screen)
         };
+        now.insert(
+            p.id.clone(),
+            Shown {
+                placed: next,
+                tab: p.tab.clone(),
+            },
+        );
         if before != Some(next) {
-            apply(&p, before, next, view, cx);
+            changed.push((p, before, next));
         }
-        now.insert(p.id, next);
     }
-    // Not drawn this frame: its tab is out of sight.
-    for (id, _) in was {
-        crate::hide(&id, false);
-    }
+    // Kept before the tabs hear of it: one shown asks whether it is.
     if let Some(frame) = frame_mut(cx, key) {
         frame.placed = now;
     }
+    for (p, before, next) in changed {
+        apply(&p, before, next, window, cx);
+    }
+    // Not drawn this frame: its tab is out of sight.
+    for (id, shown) in was {
+        crate::hide(&id, false);
+        let _ = shown.tab.update(cx, |tab, cx| tab.out_of_sight(cx));
+    }
 }
 
-fn apply(
-    p: &Painted,
-    before: Option<Placed>,
-    next: Placed,
-    view: std::ptr::NonNull<std::ffi::c_void>,
-    cx: &mut App,
-) {
+fn apply(p: &Painted, before: Option<Placed>, next: Placed, window: &mut Window, cx: &mut App) {
     match next {
         Placed::At(rect, screen) => {
-            let placed = crate::place(&p.id, rect, screen, view).is_ok();
-            if placed && before == Some(Placed::Covered) {
-                let _ = p.tab.update(cx, |tab, cx| tab.uncovered(cx));
+            // A test's window has no view to lay it beside, and nothing else differs.
+            let placed = super::native_view(window)
+                .is_none_or(|view| crate::place(&p.id, rect, screen, view).is_ok());
+            if placed && !matches!(before, Some(Placed::At(..))) {
+                let _ = p.tab.update(cx, |tab, cx| tab.shown(window, cx));
             }
         }
         Placed::Aside => crate::hide(&p.id, true),
@@ -169,10 +217,7 @@ fn apply(
     }
 }
 
-/// Whether the page is still covered once its picture came.
-fn covered_now(id: &str, cx: &App) -> bool {
-    cx.try_global::<Placer>().is_some_and(|p| {
-        p.0.values()
-            .any(|f| f.placed.get(id) == Some(&Placed::Covered))
-    })
+/// Whether the page is still covered: once its picture came, and once that's decoded.
+pub fn covered_now(id: &str, cx: &App) -> bool {
+    placed(id, cx) == Some(Placed::Covered)
 }

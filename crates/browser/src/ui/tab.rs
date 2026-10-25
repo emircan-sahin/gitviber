@@ -8,11 +8,14 @@ use super::hub::{Hub, HubEvent};
 use super::placer::{self, Painted};
 use super::url::{self, BLANK};
 use crate::console::Entry;
+use crate::keys::Chord;
 use crate::ports::Port;
 use crate::{Go, Look, Screen};
 use gitviber_ui::actions::browser as act;
 use gitviber_ui::memory::Live;
-use gitviber_ui::workspace::{page_label, Selection, TabIcon, TabItem, Toast, Workspace};
+use gitviber_ui::workspace::{
+    page_label, Selection, TabIcon, TabItem, Toast, Workspace, WorkspaceEvent,
+};
 use gitviber_ui::{ActiveAppTheme as _, AppTheme};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -34,6 +37,44 @@ use std::time::Duration;
 
 /// The tab's key context: the browser's own commands (⌘L, ⌘R, ⌘F…) listen in it.
 pub const CONTEXT: &str = "Browser";
+
+/// The page area's key context, with its tab's id as `page`: while the area has GPUI's focus,
+/// the page has the keys, or takes them once it shows.
+pub const PAGE_CONTEXT: &str = "BrowserPage";
+
+/// A key GPUI hears while a page's area has its focus: AppKit offers the app's view every ⌘ key
+/// before the page's, and every key while the page is hidden (covered, not placed yet). Only a
+/// chord one of the app's commands is bound to there is the app's, never one that edits (⌘Z
+/// isn't Undo Git Action in a page) nor a single key (J typed into a page isn't Next Changed
+/// File). The rest is the page's, or no one's while it's hidden. The keymap as it is now
+/// decides, rebound chords and all, and as GPUI reads a layout (Cyrillic ⌘W is ⌘W).
+pub(super) fn page_key(e: &gpui::KeystrokeEvent, _: &mut Window, cx: &mut App) {
+    let Some(page) = e.context_stack.last().filter(|c| c.contains(PAGE_CONTEXT)) else {
+        return;
+    };
+    let k = &e.keystroke;
+    let m = &k.modifiers;
+    match crate::keys::chord(m.platform, m.control, m.alt, m.shift, |t| k.key == t) {
+        Chord::System => return,
+        Chord::Other if (m.platform || m.control) && app_binds(e, cx) => return,
+        _ => {}
+    }
+    cx.stop_propagation();
+    if let Some(id) = page.get("page") {
+        crate::key_to_page(id);
+    }
+}
+
+/// Whether one of the app's commands is bound to the keystroke where it was pressed.
+fn app_binds(e: &gpui::KeystrokeEvent, cx: &App) -> bool {
+    let keymap = cx.key_bindings();
+    let keymap = keymap.borrow();
+    let (bindings, _) =
+        keymap.bindings_for_input(std::slice::from_ref(&e.keystroke), &e.context_stack);
+    bindings
+        .iter()
+        .any(|b| gitviber_ui::keymap::command_for_action(b.action()).is_some())
+}
 
 /// Light or dark whatever the app is; None: as the app.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -189,9 +230,8 @@ pub struct BrowserTab {
     restoring: Option<Arc<RenderImage>>,
     /// The page's picture while something covers it.
     cover: Option<Arc<RenderImage>>,
-    /// The page had the keys as it stepped aside: they go back to it after.
-    refocus: bool,
-    /// The page has the keys (its view is the window's first responder), as last heard.
+    /// The page, not one of the tab's fields, had the keys last: they go back to it as the tab
+    /// is shown again.
     page_had_keys: bool,
     find: Option<Find>,
     console_open: bool,
@@ -203,12 +243,10 @@ pub struct BrowserTab {
     ask: Option<Ask>,
     drag: Option<Drag>,
     size_fields: Option<SizeFields>,
-    ports: Rc<std::cell::RefCell<Vec<Port>>>,
     /// The page area's size as last laid out, for device mode's fit.
     area: Rc<Cell<(f32, f32)>>,
     persist: Task<()>,
     picture_task: Task<()>,
-    ports_task: Task<()>,
     _subscriptions: Vec<Subscription>,
     _live: Live,
 }
@@ -294,6 +332,16 @@ impl BrowserTab {
         if let Some(hub) = &hub {
             subscriptions.push(cx.subscribe_in(hub, window, Self::on_hub));
         }
+        // A tab opened on a page (a popup, one restored) gives it the keys, as a browser does.
+        let page_had_keys = saved.url != BLANK;
+        // Another tab or a maximized terminal where the page was: no browser tab paints to say so.
+        if let Some(ws) = workspace.upgrade() {
+            subscriptions.push(cx.subscribe_in(
+                &ws,
+                window,
+                |_, _, _: &WorkspaceEvent, window, cx| placer::check_after_draw(window, cx),
+            ));
+        }
         Self {
             saved,
             root: crate::root_key(&root),
@@ -309,8 +357,7 @@ impl BrowserTab {
             dpr: true,
             restoring: None,
             cover: None,
-            refocus: false,
-            page_had_keys: false,
+            page_had_keys,
             find: None,
             console_open: false,
             console: Vec::new(),
@@ -321,11 +368,9 @@ impl BrowserTab {
             ask: None,
             drag: None,
             size_fields: None,
-            ports: Rc::default(),
             area: Rc::default(),
             persist: Task::ready(()),
             picture_task: Task::ready(()),
-            ports_task: Task::ready(()),
             _subscriptions: subscriptions,
             _live: Live::new("BrowserTab"),
         }
@@ -474,32 +519,50 @@ impl BrowserTab {
         }
     }
 
-    /// Something covers the page: its picture stands in (placer.rs).
+    /// Something covers the page: its picture stands in (placer.rs), unless it shows again or
+    /// its tab goes out of sight before the picture is decoded.
     pub fn covered(&mut self, shot: Option<String>, cx: &mut Context<Self>) {
-        self.refocus = self.refocus || self.page_keys();
         let svg = cx.svg_renderer();
         self.picture_task = cx.spawn(async move |this, cx| {
             let image = cx
                 .background_spawn(async move { shot.and_then(|s| decode_picture(&s, svg)) })
                 .await;
-            let _ = this.update(cx, |this, cx| {
-                this.set_cover(image, cx);
-                cx.notify();
-            });
+            let _ = this.update(cx, |this, cx| this.cover_came(image, cx));
         });
     }
 
-    /// Back on show: the picture goes, and the keys go back to the page if it had them.
-    pub fn uncovered(&mut self, cx: &mut Context<Self>) {
+    fn cover_came(&mut self, image: Option<Arc<RenderImage>>, cx: &mut Context<Self>) {
+        if placer::covered_now(&self.saved.id, cx) {
+            self.set_cover(image, cx);
+            cx.notify();
+        }
+    }
+
+    /// Shown on its tab again: the picture that stood in goes, and the page takes the keys back
+    /// if its area has GPUI's focus (a menu closed over it, the user came back to the tab).
+    pub fn shown(&mut self, window: &Window, cx: &mut Context<Self>) {
         self.set_cover(None, cx);
-        if std::mem::take(&mut self.refocus) {
-            crate::focus(&self.saved.id, true);
+        if self.page_focus.is_focused(window) {
+            self.page_takes_keys(cx);
         }
         cx.notify();
     }
 
-    fn page_keys(&self) -> bool {
-        self.page_had_keys
+    /// Its tab no longer shows (another tab, a maximized terminal): what stood in for a covered
+    /// page goes, and so does the element picker.
+    pub fn out_of_sight(&mut self, cx: &mut Context<Self>) {
+        self.set_cover(None, cx);
+        if self.picking {
+            let _ = crate::pick(&self.saved.id, false);
+            self.picker_ended();
+        }
+        cx.notify();
+    }
+
+    fn picker_ended(&mut self) {
+        self.picking = false;
+        self.gathered.clear();
+        self.last_pick = None;
     }
 
     fn device(&self) -> Option<(devices::Device, DeviceChoice)> {
@@ -682,7 +745,11 @@ impl BrowserTab {
                 self.page_focus.focus(window, cx);
                 cx.notify();
             }
-            HubEvent::Parked(id) if *id == self.saved.id => cx.notify(),
+            // Its picker went with its view.
+            HubEvent::Parked(id) if *id == self.saved.id => {
+                self.picker_ended();
+                cx.notify();
+            }
             _ => {}
         }
     }
@@ -802,13 +869,16 @@ impl BrowserTab {
         self.page_takes_keys(cx);
     }
 
-    /// The page area focused: its view first responder, as the keys go there.
+    /// The page area focused: its view first responder, as the keys go there. Not while it's
+    /// hidden: it takes them once shown (`shown`), and till then the area keeps them (`page_key`).
     fn page_takes_keys(&mut self, cx: &mut Context<Self>) {
         if self.state(cx).is_some_and(|s| s.failed.is_some()) {
             return;
         }
         self.page_had_keys = true;
-        crate::focus(&self.saved.id, true);
+        if placer::is_shown(&self.saved.id, cx) {
+            crate::focus(&self.saved.id, true);
+        }
     }
 
     fn focus_address(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1241,24 +1311,20 @@ impl BrowserTab {
         cx.notify();
     }
 
-    fn read_ports(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// What this worktree's terminals serve, read off the UI thread.
+    fn read_ports(&self, window: &mut Window, cx: &mut Context<Self>) -> Task<Vec<Port>> {
         let ptys = super::ask::ptys_in(&self.root, window, cx);
-        let core = gitviber_ui::has_core(cx).then(|| gitviber_ui::core(cx));
-        let Some(core) = core else {
-            return;
+        let shells: Vec<u32> = match gitviber_ui::has_core(cx).then(|| gitviber_ui::core(cx)) {
+            Some(core) => ptys.iter().filter_map(|&id| core.ptys.shell(id)).collect(),
+            None => Vec::new(),
         };
-        let shells: Vec<u32> = ptys.iter().filter_map(|&id| core.ptys.shell(id)).collect();
-        let ports = self.ports.clone();
-        self.ports_task = cx.spawn(async move |_, cx| {
-            let found = if shells.is_empty() {
-                Vec::new()
-            } else {
-                cx.background_spawn(async move { crate::ports::listening(&shells) })
-                    .await
-            };
-            *ports.borrow_mut() = found;
-        });
+        if shells.is_empty() {
+            return Task::ready(Vec::new());
+        }
+        cx.background_spawn(async move { crate::ports::listening(&shells) })
     }
 }
 
 mod render;
+#[cfg(test)]
+mod tests;

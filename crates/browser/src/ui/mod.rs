@@ -14,7 +14,7 @@ pub mod tab;
 mod tests;
 pub mod url;
 
-pub use agents::open_new_tab;
+pub use agents::{open_new_tab, SkillStatus};
 pub use tab::{BrowserTab, Saved};
 
 use gitviber_ui::actions::browser as act;
@@ -110,6 +110,7 @@ pub fn init(cx: &mut App) {
     );
     cx.on_action(|_: &act::Open, cx| in_front(cx, open_new_tab));
     cx.on_action(|_: &act::ClearData, cx| in_front(cx, agents::clear_data));
+    cx.intercept_keystrokes(tab::page_key).detach();
     agents::watch(cx);
     // Picks' pictures from earlier sessions, past the day an agent might read them in.
     if let Some(cache) = gitviber_core::paths::cache_dir() {

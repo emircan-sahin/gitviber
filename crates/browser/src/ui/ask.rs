@@ -230,8 +230,7 @@ mod tests {
     /// its constructor reading the workspace panicked, which aborts the app in a key handler.
     #[gpui::test]
     fn ask_builds_the_terminal_panel_when_none_is_yet(cx: &mut TestAppContext) {
-        let base =
-            std::env::temp_dir().join(format!("gitviber-browser-ask-{}", std::process::id()));
+        let base = gitviber_ui::test_support::temp_dir("browser-ask");
         std::fs::create_dir_all(base.join("home")).unwrap();
         // SAFETY: nextest gives each test its own process; nothing else reads these meanwhile.
         unsafe {

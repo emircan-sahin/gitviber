@@ -31,7 +31,7 @@ pub use page_tools::{
 pub use page_view::{appearance, find, zoom};
 
 use super::console::Log;
-use super::keys::{self, Key, Route};
+use super::keys::{self, Edit, Key};
 use super::network;
 use super::Corners;
 use super::{
@@ -49,10 +49,10 @@ use objc2::{
     MainThreadOnly, Message,
 };
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSApplicationDidResignActiveNotification,
+    NSAlert, NSAlertFirstButtonReturn, NSApplication, NSApplicationDidResignActiveNotification,
     NSAutoresizingMaskOptions, NSBitmapImageFileType, NSBitmapImageRep, NSColor, NSEvent,
-    NSEventModifierFlags, NSImage, NSImageCompressionFactor, NSModalResponse, NSModalResponseOK,
-    NSOpenPanel, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
+    NSEventModifierFlags, NSEventType, NSImage, NSImageCompressionFactor, NSModalResponse,
+    NSModalResponseOK, NSOpenPanel, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
     NSWindowDidChangeOcclusionStateNotification, NSWindowDidMiniaturizeNotification,
     NSWindowDidResignKeyNotification, NSWindowOrderingMode, NSWindowWillCloseNotification,
     NSWorkspace,
@@ -248,10 +248,14 @@ define_class!(
             self.over(false);
         }
 
-        /// A move here says the pointer is, whatever enter was missed.
+        /// A move here says the pointer is, whatever enter was missed, and turns the app's
+        /// cursor rects off again if something turned them back on meanwhile.
         #[unsafe(method(mouseMoved:))]
         fn mouse_moved(&self, _event: &NSEvent) {
             self.over(true);
+            if let Some(page) = self.ivars().page.borrow().load() {
+                refresh(&page);
+            }
         }
 
         /// A view hidden, or taken to another window, with the pointer in it gets no exit.
@@ -294,10 +298,9 @@ impl Host {
         this
     }
 
-    /// Whether the pointer is over the page. WebKit's tracking areas aren't clipped by the views
-    /// above them, so the app page under this one hears the same mouse moves, and its own cursor
-    /// (the arrow of what it shows below) races the page's. While a host holds the pointer, the
-    /// app page hears none (`refresh`).
+    /// Whether the pointer is over the page. The app's view under this one hears the same mouse
+    /// moves (tracking areas aren't clipped by the views above), and its cursor, the arrow of
+    /// what it shows below, raced the page's: a link's hand, a text's I-beam (`refresh`).
     fn over(&self, on: bool) {
         let state = self.ivars();
         if state.over.replace(on) == on {
@@ -340,8 +343,10 @@ fn holding(hidden: bool, at: (f64, f64), size: (f64, f64)) -> bool {
         && (-SLACK..=size.1 + SLACK).contains(&at.1)
 }
 
-/// The app page hears no mouse moves exactly while a host beside it holds the pointer, worked
-/// out from the hosts as they are now, so no count or missed event can leave it deaf.
+/// The app's view sets its cursor with cursor rects: its window applies none exactly while a
+/// host beside it holds the pointer, so the page's cursor stands, and the app's comes back where
+/// the pointer is as it leaves (a link's hand stayed over the tab strip). Worked out from the
+/// hosts as they are now, so no count or missed event can leave the app without its cursor.
 fn refresh(page: &NSView) {
     let held = unsafe { page.superview() }.is_some_and(|parent| {
         let views = parent.subviews();
@@ -350,8 +355,15 @@ fn refresh(page: &NSView) {
             .any(|v| v.downcast::<Host>().is_ok_and(|h| h.holds()));
         held
     });
-    if page.respondsToSelector(sel!(_setIgnoresMouseMoveEvents:)) {
-        let _: () = unsafe { msg_send![page, _setIgnoresMouseMoveEvents: Bool::new(held)] };
+    let Some(window) = page.window() else {
+        return;
+    };
+    let enabled = window.areCursorRectsEnabled();
+    if held && enabled {
+        window.disableCursorRects();
+    } else if !held && !enabled {
+        window.enableCursorRects();
+        window.invalidateCursorRectsForView(page);
     }
 }
 
@@ -462,21 +474,15 @@ define_class!(
     struct WebView;
 
     impl WebView {
-        /// AppKit offers every ⌘ key to each view in the window; only the focused page answers.
+        /// AppKit offers every ⌘ key to each view in the window, the app's own view first (the
+        /// tab's `page_key` sorts out what's the app's there): only the focused page answers,
+        /// and never for macOS's own keys, which go on to the menu bar.
         #[unsafe(method(performKeyEquivalent:))]
         fn perform_key_equivalent(&self, event: &NSEvent) -> Bool {
-            if !self.focused() {
+            if !self.focused() || keys::is_system(&key_of(event)) {
                 return Bool::NO;
             }
-            let key = key_of(&self.ivars().id, event);
-            match keys::route_now(&key) {
-                Route::Page => unsafe { msg_send![super(self), performKeyEquivalent: event] },
-                Route::System => Bool::NO,
-                Route::App => {
-                    emit(&self.ivars().app, "browser-key", key);
-                    Bool::YES
-                }
-            }
+            unsafe { msg_send![super(self), performKeyEquivalent: event] }
         }
 
         /// An agent's right click fires the page's contextmenu, but no menu: one with no items
@@ -587,21 +593,19 @@ impl WebView {
     }
 }
 
-fn key_of(id: &str, event: &NSEvent) -> Key {
+fn key_of(event: &NSEvent) -> Key {
     let flags = event.modifierFlags();
     let typed = event
         .charactersIgnoringModifiers()
         .map(|s| s.to_string())
         .unwrap_or_default();
     Key {
-        id: id.into(),
         key: keys::name(&typed),
         code: keys::code(event.keyCode()),
         meta_key: flags.contains(NSEventModifierFlags::Command),
         ctrl_key: flags.contains(NSEventModifierFlags::Control),
         alt_key: flags.contains(NSEventModifierFlags::Option),
         shift_key: flags.contains(NSEventModifierFlags::Shift),
-        repeat: event.isARepeat(),
     }
 }
 
@@ -1812,6 +1816,42 @@ pub fn clear_data(app: &Handle) -> Res<()> {
         .map_err(|_| "Clearing the browser's data took too long.".to_string())
 }
 
+/// A key GPUI heard while the page's area had its focus (the tab's `page_key`), to the page's
+/// view if it has the keys: the event AppKit is dispatching now. One WebKit sends round again
+/// unhandled, an editing chord, does what the Edit menu does to the page (its own Undo, Copy…),
+/// never what a menu item of the app's with that key would (Undo Git Action).
+pub fn key_to_page(id: &str) {
+    let (Ok(mtm), Some(v)) = (main_thread(), view(id)) else {
+        return;
+    };
+    if !v.web.focused() {
+        return;
+    }
+    let app = NSApplication::sharedApplication(mtm);
+    let Some(event) = app.currentEvent() else {
+        return;
+    };
+    if event.r#type() != NSEventType::KeyDown {
+        return;
+    }
+    let taken: Bool = unsafe { msg_send![&*v.web, performKeyEquivalent: &*event] };
+    if taken.as_bool() {
+        return;
+    }
+    let action = match keys::edit(&key_of(&event)) {
+        Some(Edit::Undo) => sel!(undo:),
+        Some(Edit::Redo) => sel!(redo:),
+        Some(Edit::Cut) => sel!(cut:),
+        Some(Edit::Copy) => sel!(copy:),
+        Some(Edit::Paste) => sel!(paste:),
+        Some(Edit::SelectAll) => sel!(selectAll:),
+        None => return,
+    };
+    let _: Bool = unsafe {
+        msg_send![&*app, sendAction: action, to: std::ptr::null::<AnyObject>(), from: &*v.web]
+    };
+}
+
 /// Focus to the page (`page`) or back to the app page, as ⌘L does for the address bar.
 pub fn focus(id: &str, page: bool) {
     let (Ok(_), Some(v)) = (main_thread(), view(id)) else {
@@ -1921,12 +1961,6 @@ mod tests {
             if class.instance_method(sel).is_some() {
                 class.verify_sel::<(Bool,), ()>(sel).unwrap();
             }
-        }
-        let ignores = sel!(_setIgnoresMouseMoveEvents:);
-        if WKWebView::class().instance_method(ignores).is_some() {
-            WKWebView::class()
-                .verify_sel::<(Bool,), ()>(ignores)
-                .unwrap();
         }
         let last = sel!(_findLastViewInKeyViewLoop);
         if WKWebView::class().instance_method(last).is_some() {

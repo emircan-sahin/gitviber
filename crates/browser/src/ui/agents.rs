@@ -1,8 +1,8 @@
 //! What the views say about the workspace: tabs an agent opened with `gitviber browser` (taken
 //! into the workspace of the worktree its pane opened in, never made the active tab unless opened
-//! to show the user), tabs their agents closed, the devices and schemes they chose, popups of the
-//! user's tabs, and the app's keys typed in a page. Plus what the app tells the browser: its
-//! settings, a pane that closed, an agent done in a worktree, worktrees removed.
+//! to show the user), tabs their agents closed, the devices and schemes they chose, and popups of
+//! the user's tabs. Plus what the app tells the browser: its settings, a pane that closed, an
+//! agent done in a worktree, worktrees removed.
 
 use super::devices::DeviceChoice;
 use super::hub::Hub;
@@ -11,9 +11,7 @@ use crate::Event;
 use gitviber_core::Event as CoreEvent;
 use gitviber_ui::workspace::{selection_key, Selection, Toast, Workspace};
 use gitviber_ui::{CoreEvents, Settings};
-use gpui::{
-    AnyWindowHandle, App, AppContext as _, Entity, Global, Keystroke, Subscription, Task, Window,
-};
+use gpui::{AnyWindowHandle, App, AppContext as _, Entity, Global, Subscription, Task, Window};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -99,54 +97,6 @@ fn toast_in_front(toast: Toast, cx: &mut App) {
     });
 }
 
-/// A key the page handed back (keys.rs), as GPUI names it.
-fn keystroke(k: &PageKey) -> Option<Keystroke> {
-    let key = match k.key.as_str() {
-        "ArrowUp" => "up".to_string(),
-        "ArrowDown" => "down".into(),
-        "ArrowLeft" => "left".into(),
-        "ArrowRight" => "right".into(),
-        "Enter" => "enter".into(),
-        "Escape" => "escape".into(),
-        "Tab" => "tab".into(),
-        " " => "space".into(),
-        "Backspace" => "backspace".into(),
-        "Delete" => "delete".into(),
-        "Home" => "home".into(),
-        "End" => "end".into(),
-        "PageUp" => "pageup".into(),
-        "PageDown" => "pagedown".into(),
-        "+" => "=".into(),
-        "{" => "[".into(),
-        "}" => "]".into(),
-        k => k.to_lowercase(),
-    };
-    let mut text = String::new();
-    for (held, m) in [
-        (k.ctrl_key, "ctrl-"),
-        (k.alt_key, "alt-"),
-        (k.shift_key, "shift-"),
-        (k.meta_key, "cmd-"),
-    ] {
-        if held {
-            text.push_str(m);
-        }
-    }
-    text.push_str(&key);
-    Keystroke::parse(&text).ok()
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PageKey {
-    id: String,
-    key: String,
-    meta_key: bool,
-    ctrl_key: bool,
-    alt_key: bool,
-    shift_key: bool,
-}
-
 /// An event of the views' that the workspace acts on (hub.rs passes them on).
 pub(super) fn workspace_event(event: Event, cx: &mut App) {
     match event.name {
@@ -223,32 +173,19 @@ pub(super) fn workspace_event(event: Event, cx: &mut App) {
             };
             open_popup(id, p.opener, p.url, cx);
         }
-        "browser-popup-blocked" => {
-            if once_in_a_while(|t| &mut t.popups, cx) {
-                toast_in_front(
-                    Toast::info("This page tried to open several windows at once.")
-                        .title("Popup blocked"),
-                    cx,
-                );
-            }
+        "browser-popup-blocked" if once_in_a_while(|t| &mut t.popups, cx) => {
+            toast_in_front(
+                Toast::info("This page tried to open several windows at once.")
+                    .title("Popup blocked"),
+                cx,
+            );
         }
-        "browser-download-blocked" => {
-            if once_in_a_while(|t| &mut t.downloads, cx) {
-                toast_in_front(
-                    Toast::info("A page started several downloads at once, or one out of sight.")
-                        .title("Download blocked"),
-                    cx,
-                );
-            }
-        }
-        "browser-key" => {
-            let Ok(k) = serde_json::from_value::<PageKey>(event.payload) else {
-                return;
-            };
-            let (Some((w, _, _)), Some(stroke)) = (tab_of(&k.id, cx), keystroke(&k)) else {
-                return;
-            };
-            let _ = w.update(cx, |_, window, cx| window.dispatch_keystroke(stroke, cx));
+        "browser-download-blocked" if once_in_a_while(|t| &mut t.downloads, cx) => {
+            toast_in_front(
+                Toast::info("A page started several downloads at once, or one out of sight.")
+                    .title("Download blocked"),
+                cx,
+            );
         }
         _ => {}
     }
@@ -319,7 +256,24 @@ pub(super) struct Watch {
 
 impl Global for Watch {}
 
-/// Settings → Browser, as the views and the socket take it; the skill on its own thread.
+/// Each agent's skill as the latest sync left it, None before the first is done. Only this side
+/// writes the skill: Settings shows this and hears it change, so what it shows is never read
+/// before a write it asked for has finished.
+pub struct SkillStatus {
+    pub skill: Option<crate::skill::Skill>,
+    /// The sync going: a newer one replaces it.
+    sync: Task<()>,
+}
+
+impl Global for SkillStatus {}
+
+impl SkillStatus {
+    pub fn get(cx: &App) -> Option<&crate::skill::Skill> {
+        cx.try_global::<Self>()?.skill.as_ref()
+    }
+}
+
+/// Settings → Browser, as the views and the socket take it; the skill off the UI thread.
 fn send_settings(was: &mut Option<(u32, u32, u32, bool, bool, bool, bool)>, cx: &mut App) {
     let s = Settings::get(cx);
     let now = (
@@ -343,20 +297,18 @@ fn send_settings(was: &mut Option<(u32, u32, u32, bool, bool, bool, bool)>, cx: 
     }
     // Written at launch too: a new version's HELP replaces the one an older one wrote.
     if skill_was != Some(skill) {
-        std::thread::spawn(move || drop(crate::skill::sync(Some(skill))));
+        let sync = cx.spawn(async move |cx| {
+            let done = cx
+                .background_spawn(async move { crate::skill::sync(Some(skill)) })
+                .await;
+            cx.update(|cx| cx.global_mut::<SkillStatus>().skill = Some(done));
+        });
+        if cx.has_global::<SkillStatus>() {
+            cx.global_mut::<SkillStatus>().sync = sync;
+        } else {
+            cx.set_global(SkillStatus { skill: None, sync });
+        }
     }
-    send_app_keys(cx);
-}
-
-/// Only the chords bound to the app's commands, and the tab's own (⌘L, ⌘R), leave a page.
-fn send_app_keys(cx: &App) {
-    use gitviber_ui::keymap::{all_commands, bindings_for, IS_MAC};
-    let overrides = &Settings::get(cx).keybindings;
-    let chords: Vec<String> = all_commands()
-        .filter(|c| c.local.is_none_or(|l| l == super::tab::CONTEXT))
-        .flat_map(|c| bindings_for(c, overrides, IS_MAC))
-        .collect();
-    crate::set_app_keys(chords);
 }
 
 pub(super) fn watch(cx: &mut App) {
@@ -460,34 +412,34 @@ pub fn open_new_tab(window: &mut Window, cx: &mut App) {
 mod tests {
     use super::*;
 
-    fn key(key: &str, cmd: bool, shift: bool) -> PageKey {
-        PageKey {
-            id: "t".into(),
-            key: key.into(),
-            meta_key: cmd,
-            ctrl_key: false,
-            alt_key: false,
-            shift_key: shift,
-        }
-    }
-
-    #[test]
-    fn a_page_key_reads_as_gpui_names_it() {
-        assert_eq!(
-            keystroke(&key("l", true, false)).unwrap().unparse(),
-            "cmd-l"
-        );
-        assert_eq!(
-            keystroke(&key("{", true, true)).unwrap().unparse(),
-            "cmd-shift-["
-        );
-        assert_eq!(
-            keystroke(&key("ArrowLeft", true, false)).unwrap().unparse(),
-            "cmd-left"
-        );
-        assert_eq!(
-            keystroke(&key("B", true, true)).unwrap().unparse(),
-            "cmd-shift-b"
-        );
+    /// Settings reads the skill's status from here, written once each sync has: it showed one
+    /// read before the main window's write was done, and none changed as the switch flipped.
+    #[gpui::test]
+    fn the_skill_status_is_the_latest_syncs(cx: &mut gpui::TestAppContext) {
+        let home = gitviber_ui::test_support::temp_dir("browser-skill-home");
+        gitviber_ui::test_support::config_dir("browser-skill");
+        // SAFETY: nextest gives each test its own process; nothing reads HOME meanwhile.
+        unsafe { std::env::set_var("HOME", &home) };
+        cx.update(gitviber_ui::init);
+        let mut sent = None;
+        cx.update(|cx| send_settings(&mut sent, cx));
+        assert!(cx.update(|cx| SkillStatus::get(cx).is_none()), "not before it's done");
+        cx.run_until_parked();
+        let first = cx.update(|cx| SkillStatus::get(cx).cloned()).unwrap();
+        assert!(!first.targets.is_empty());
+        let heard = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = heard.clone();
+        let _watch = cx.update(|cx| {
+            cx.observe_global::<SkillStatus>(move |_| count.set(count.get() + 1))
+        });
+        cx.update(|cx| {
+            Settings::update(cx, |s| {
+                s.browser_agent_control = !s.browser_agent_control;
+            });
+            send_settings(&mut sent, cx);
+        });
+        cx.run_until_parked();
+        assert!(heard.get() > 0, "Settings hears the new sync");
+        assert!(cx.update(|cx| SkillStatus::get(cx).is_some()));
     }
 }

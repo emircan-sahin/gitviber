@@ -556,7 +556,7 @@ mod tests {
         });
         let _ = shell.kill();
         let _ = std::process::Command::new("pkill")
-            .args(["-f", &format!("nc -l 127.0.0.1 {port}")])
+            .args(["-fx", &format!("nc -l 127.0.0.1 {port}")])
             .status();
         let _ = shell.wait();
         let Some(found) = found else {
