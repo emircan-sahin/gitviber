@@ -53,6 +53,7 @@ mod follow;
 mod keys;
 mod menu;
 
+use follow::Leaving;
 use keys::{Move, RowKey};
 
 const ROW: f32 = 26.;
@@ -326,6 +327,9 @@ pub struct ChangesPanel {
     rows: Vec<Row>,
     keys: Vec<String>,
     scroll: UniformListScrollHandle,
+    /// The rows the list last drew.
+    #[cfg(test)]
+    drawn: std::ops::Range<usize>,
     commit: Entity<CommitBox>,
     /// The worktree's review notes, between the lists and the commit box.
     notes: Entity<gitviber_review::NotesSection>,
@@ -340,10 +344,12 @@ pub struct ChangesPanel {
     tools: Option<ExternalTools>,
     /// The files open in one of them now, until it's closed.
     in_tool: HashMap<String, Task<()>>,
-    /// Rows a git action is taking out of their list, until the next read.
-    leaving: HashSet<String>,
-    /// The row left and the one opened in its place, to go back to if the action fails.
-    back: Option<(Selection, String)>,
+    /// Rows git actions are taking out of their lists (follow.rs).
+    leaving: Vec<Leaving>,
+    /// Numbers those actions.
+    leaves: u64,
+    /// Counts the reads started: an action's rows come back only with a read begun after it.
+    reads: u64,
     /// Counts the projects opened and worktrees switched to: a read from before doesn't move
     /// the tabs, which are the other worktree's.
     epoch: u64,
@@ -449,6 +455,8 @@ impl ChangesPanel {
             rows: vec![],
             keys: vec![],
             scroll: UniformListScrollHandle::new(),
+            #[cfg(test)]
+            drawn: 0..0,
             commit,
             notes,
             review: None,
@@ -459,8 +467,9 @@ impl ChangesPanel {
             updating_submodules: false,
             tools: None,
             in_tool: HashMap::new(),
-            leaving: HashSet::new(),
-            back: None,
+            leaving: vec![],
+            leaves: 0,
+            reads: 0,
             epoch: 0,
             facts: None,
             reading: false,
@@ -560,6 +569,8 @@ impl ChangesPanel {
             return;
         }
         self.reading = true;
+        self.reads += 1;
+        let seq = self.reads;
         let core = crate::core(cx);
         let recent = self.view.recent;
         // A git call of its own, and the config rarely changes: once a project.
@@ -667,7 +678,7 @@ impl ChangesPanel {
                             .collect();
                         this.rebuild(cx);
                         this.commit_facts(cx);
-                        this.leaving.clear();
+                        this.read_landed(seq);
                         if epoch == this.epoch {
                             this.follow_git(cx);
                         }
@@ -1136,6 +1147,18 @@ impl ChangesPanel {
         work: impl FnOnce(&gitviber_core::Core) -> Result<(), String> + Send + 'static,
         cx: &mut Context<Self>,
     ) {
+        self.run_leaving(None, failed, done, work, cx);
+    }
+
+    /// `run`, for the action `leave` numbered `leaving`.
+    fn run_leaving(
+        &mut self,
+        leaving: Option<u64>,
+        failed: &'static str,
+        done: Option<Toast>,
+        work: impl FnOnce(&gitviber_core::Core) -> Result<(), String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
         let core = crate::core(cx);
         let repo = core.repo().ok();
         self.busy = true;
@@ -1147,7 +1170,7 @@ impl ChangesPanel {
                 .await;
             this.update(cx, |this, cx| {
                 this.busy = false;
-                this.settle_leave(result.is_err(), cx);
+                this.settle_leave(leaving, result.is_err(), cx);
                 match result {
                     Ok(entry) => {
                         if let Some(done) = done {
@@ -1171,8 +1194,9 @@ impl ChangesPanel {
             self.toast(Toast::info(NESTED_EXPLAINED).title(left_out(nested)), cx);
         }
         if !paths.is_empty() {
-            self.leave(Kind::Unstaged, &files, cx);
-            self.run(
+            let leaving = self.leave(Kind::Unstaged, &files, cx);
+            self.run_leaving(
+                leaving,
                 "Stage failed",
                 None,
                 move |core| api::changes::stage(core, paths, false),
@@ -1184,8 +1208,9 @@ impl ChangesPanel {
     fn unstage_files(&mut self, files: Vec<Arc<FileChange>>, cx: &mut Context<Self>) {
         let paths = unstage_paths(files.iter().map(Arc::as_ref));
         if !paths.is_empty() {
-            self.leave(Kind::Staged, &files, cx);
-            self.run(
+            let leaving = self.leave(Kind::Staged, &files, cx);
+            self.run_leaving(
+                leaving,
                 "Unstage failed",
                 None,
                 move |core| api::changes::unstage(core, paths),
@@ -1272,8 +1297,8 @@ impl ChangesPanel {
         ));
         dialogs::confirm(window, cx, title, question, ok, move |_, cx| {
             weak.update(cx, |this, cx| {
-                this.leave(Kind::Unstaged, &list, cx);
-                this.discard_now(restorable, untracked, done, cx)
+                let leaving = this.leave(Kind::Unstaged, &list, cx);
+                this.discard_now(restorable, untracked, done, leaving, cx)
             })
             .ok();
         });
@@ -1286,9 +1311,11 @@ impl ChangesPanel {
         restorable: Vec<String>,
         untracked: Vec<String>,
         done: Option<Toast>,
+        leaving: Option<u64>,
         cx: &mut Context<Self>,
     ) {
-        self.run(
+        self.run_leaving(
+            leaving,
             "Discard failed",
             done,
             move |core| {
@@ -2126,6 +2153,10 @@ impl ChangesPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
+        #[cfg(test)]
+        {
+            self.drawn = range.clone();
+        }
         let t = cx.app_theme().clone();
         let ws = self.workspace();
         // Where the keys are, while they're the list's.
@@ -3910,7 +3941,7 @@ mod tests {
         // Discard what's left of the tracked changes: none; the untracked file goes to the Trash
         // (one file, of this throwaway repo).
         p.update(cx, |p, cx| {
-            p.discard_now(vec![], vec!["c.txt".into()], None, cx)
+            p.discard_now(vec![], vec!["c.txt".into()], None, None, cx)
         });
         cx.run_until_parked();
         p.update(cx, |p, cx| p.read(cx));
@@ -4160,18 +4191,29 @@ mod tests {
     /// A throwaway repo mid-merge, a.txt conflicted in git's default style: `ours` and `theirs`
     /// are each side's file.
     fn conflicted(name: &str, ours: &str, theirs: &str) -> PathBuf {
+        conflicted_at(
+            name,
+            "a.txt",
+            "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n",
+            ours,
+            theirs,
+        )
+    }
+
+    /// `path` conflicted, from `base`.
+    fn conflicted_at(name: &str, path: &str, base: &str, ours: &str, theirs: &str) -> PathBuf {
         let dir = gitviber_ui::test_support::temp_dir(&format!("changes-{name}"));
         git(&dir, &["init", "-q", "-b", "main"]);
         git(&dir, &["config", "user.name", "Test"]);
         git(&dir, &["config", "user.email", "test@example.com"]);
-        std::fs::write(dir.join("a.txt"), "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n").unwrap();
+        std::fs::write(dir.join(path), base).unwrap();
         git(&dir, &["add", "."]);
         git(&dir, &["commit", "-q", "-m", "base"]);
         git(&dir, &["checkout", "-q", "-b", "other"]);
-        std::fs::write(dir.join("a.txt"), theirs).unwrap();
+        std::fs::write(dir.join(path), theirs).unwrap();
         git(&dir, &["commit", "-q", "-am", "theirs"]);
         git(&dir, &["checkout", "-q", "main"]);
-        std::fs::write(dir.join("a.txt"), ours).unwrap();
+        std::fs::write(dir.join(path), ours).unwrap();
         git(&dir, &["commit", "-q", "-am", "ours"]);
         // It conflicts: git says so with a failure.
         let _ = Command::new("git")
@@ -4186,10 +4228,18 @@ mod tests {
         code: &str,
         cx: &mut VisualTestContext,
     ) -> Entity<crate::conflict::ConflictView> {
+        conflict_view_at(host, "a.txt", code, cx)
+    }
+
+    fn conflict_view_at(
+        host: &Entity<Host>,
+        path: &str,
+        code: &str,
+        cx: &mut VisualTestContext,
+    ) -> Entity<crate::conflict::ConflictView> {
         let view = cx.update(|window, cx| {
-            let view = cx.new(|cx| {
-                crate::conflict::ConflictView::new("a.txt".into(), code.into(), window, cx)
-            });
+            let view = cx
+                .new(|cx| crate::conflict::ConflictView::new(path.into(), code.into(), window, cx));
             host.update(cx, |h, cx| {
                 h.center = Some(view.clone().into());
                 cx.notify();
@@ -4484,6 +4534,95 @@ mod tests {
         reread(cx);
         assert_eq!(keys(cx), (vec![b.clone()], Some(b)));
         assert!(cx.update(|_, cx| diff.read(cx).has_unsaved_edits(cx)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// windowing.test.ts: of a long list only the rows on screen are drawn, wherever it's
+    /// scrolled to.
+    #[gpui_kit::test]
+    fn a_long_list_draws_only_the_rows_on_screen(cx: &mut TestAppContext) {
+        let dir = repo("long-list");
+        for i in 0..3000 {
+            std::fs::write(dir.join(format!("f{i:04}.txt")), "x\n").unwrap();
+        }
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        let rows = p.read_with(cx, |p, _| p.rows.len());
+        assert!(rows > 3000, "{rows} rows");
+        let drawn = p.read_with(cx, |p, _| p.drawn.clone());
+        assert!(
+            drawn.start == 0 && (1..100).contains(&drawn.len()),
+            "{drawn:?}"
+        );
+        p.update(cx, |p, cx| {
+            p.scroll.scroll_to_item(2000, gpui_kit::ScrollStrategy::Top);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let drawn = p.read_with(cx, |p, _| p.drawn.clone());
+        assert!(drawn.contains(&2000) && drawn.len() < 100, "{drawn:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// leaving.test.ts: the row now in the place of the open one that left passes over rows
+    /// still on their way out; an action's rows stay out until a read begun after it's done,
+    /// so a status read while it runs doesn't bring the open row back.
+    #[gpui_kit::test]
+    fn rows_on_their_way_out_stay_out_until_a_read_after_their_action(cx: &mut TestAppContext) {
+        let dir = repo("leaving");
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        let row = |p: &ChangesPanel, path: &str| {
+            p.lists
+                .unstaged
+                .iter()
+                .find(|f| f.path == path)
+                .cloned()
+                .unwrap()
+        };
+        let leave = |path: &'static str, cx: &mut VisualTestContext| {
+            let id = p.update(cx, |p, cx| p.leave(Kind::Unstaged, &[row(p, path)], cx));
+            cx.run_until_parked();
+            id
+        };
+        let open_key = |cx: &mut VisualTestContext| p.read_with(cx, |p, _| p.open_key.clone());
+        let out = |key: &str, cx: &mut VisualTestContext| p.read_with(cx, |p, _| p.is_leaving(key));
+        let reread = |cx: &mut VisualTestContext| {
+            p.update(cx, |p, cx| p.read(cx));
+            cx.run_until_parked();
+        };
+        // b.txt open, then on its way out (git still at it): c.txt opens in its place.
+        cx.update(|window, cx| {
+            p.update(cx, |p, cx| {
+                let b = row(p, "b.txt");
+                p.open(selection_of(Kind::Unstaged, b), true, window, cx)
+            })
+        });
+        let b = leave("b.txt", cx);
+        assert_eq!(open_key(cx).as_deref(), Some("unstaged::c.txt"));
+        // A status lands while it runs: b.txt is still listed, and still on its way out.
+        reread(cx);
+        assert!(out("unstaged::b.txt", cx));
+        // c.txt goes too: nothing after it, and b.txt is passed over for a.txt.
+        let c = leave("c.txt", cx);
+        assert_eq!(open_key(cx).as_deref(), Some("unstaged::a.txt"));
+        // b's action done while a read was on its way: that read doesn't let it back, the next does.
+        p.update(cx, |p, cx| {
+            p.read(cx);
+            p.settle_leave(b, false, cx);
+        });
+        cx.run_until_parked();
+        assert!(out("unstaged::b.txt", cx));
+        reread(cx);
+        assert!(!out("unstaged::b.txt", cx));
+        assert!(out("unstaged::c.txt", cx), "its action still runs");
+        // c's fails: c.txt stays, and the tab goes back to it from the row opened in its place.
+        p.update(cx, |p, cx| p.settle_leave(c, true, cx));
+        cx.run_until_parked();
+        assert!(!out("unstaged::c.txt", cx));
+        assert_eq!(open_key(cx).as_deref(), Some("unstaged::c.txt"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5166,7 +5305,7 @@ mod tests {
         // One file of this throwaway repo goes to the Trash.
         p.update(cx, |p, cx| {
             let done = discarded(Some("a.txt"), 1, 1, 0);
-            p.discard_now(vec!["a.txt".into()], vec![], Some(done), cx)
+            p.discard_now(vec!["a.txt".into()], vec![], Some(done), None, cx)
         });
         cx.run_until_parked();
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one\n");
@@ -5305,6 +5444,39 @@ mod tests {
             gitviber_diff::model::indent::Shown::new("  B1", 2).text,
             "    B1"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Code in a conflict is in its syntax colors, as in the diffs: of the language its name
+    /// tells, or its first line without one, and each block read with the code around it, so a
+    /// side inside a string is string.
+    #[gpui_kit::test]
+    fn the_conflict_view_colors_code_with_the_code_around_it(cx: &mut TestAppContext) {
+        use crate::model::versions::Version;
+        let file = |line: &str| format!("#!/usr/bin/env node\nconst a = `\n{line}\n`;\n");
+        let dir = conflicted_at(
+            "conflict-colors",
+            "run",
+            &file("zero"),
+            &file("one"),
+            &file("two"),
+        );
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let view = conflict_view_at(&host, "run", "UU", cx);
+        let color = |at: (usize, Version, usize), byte: usize, cx: &mut VisualTestContext| {
+            view.read_with(cx, |v, cx| v.styles_for_test(at, cx))
+                .expect("colored")
+                .iter()
+                .find(|(r, _)| r.contains(&byte))
+                .and_then(|(_, s)| s.color)
+        };
+        // The backtick opening the string, then each side's line inside it.
+        let string = color((0, Version::Ours, 1), 10, cx);
+        assert!(string.is_some());
+        assert_eq!(color((1, Version::Ours, 0), 0, cx), string);
+        assert_eq!(color((1, Version::Theirs, 0), 0, cx), string);
+        assert_eq!(color((1, Version::Base, 0), 0, cx), string);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

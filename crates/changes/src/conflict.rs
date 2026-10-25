@@ -10,28 +10,33 @@ use crate::model::conflicts::{
     resolve_prompt, result_lines, side_names, tool_can_open, tool_name, whole_file,
 };
 use crate::model::text::{Block, Parsed, Segment, parse_conflicts};
+use crate::model::versions::{Lines, Version, choice_source, result_sources, versions};
 use crate::toasts::git_error;
 use gitviber_core::api;
 use gitviber_core::git::Side as GitSide;
-use gitviber_diff::DiffStyle;
-use gitviber_diff::model::indent::{Shown, indent_unit};
+use gitviber_diff::highlight::{self, Highlighted, LineStyles};
+use gitviber_diff::language::language_for;
+use gitviber_diff::model::indent::indent_unit;
+use gitviber_diff::{DiffStyle, code_line};
 use gitviber_terminal::agent::{Handoff, handoff_to};
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{FileIcon, PathLabel, Toggle as _};
 use gitviber_ui::workspace::{Toast, Workspace};
 use gitviber_ui::{ActiveAppTheme as _, AppTheme};
 use gpui_kit::assets::IconName as Lucide;
+use gpui_kit::base::input::Rope;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Textarea, TextareaState};
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable,
-    FontFeatures, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Task, Window, div,
-    prelude::FluentBuilder as _, px,
+    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable, Font,
+    Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Task, Window, div, prelude::FluentBuilder as _,
+    px,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 
 /// Unchanged lines a fold between conflicts leaves on each side.
 const CONTEXT: usize = 3;
@@ -47,6 +52,70 @@ struct Loaded {
     crlf: bool,
     /// Spaces an indentation level, widened when drawn (model::indent).
     unit: usize,
+    /// Where each segment is in ours, theirs and the base, and their syntax colors once parsed
+    /// (boxed: a parse is large, and a State is mostly Loading).
+    lines: Lines,
+    colors: Box<[Option<Highlighted>; 3]>,
+}
+
+/// What a read gives, off the main thread.
+struct Read {
+    text: String,
+    lossy: bool,
+    parsed: Option<Parsed>,
+    sides: Option<(bool, bool)>,
+    unit: usize,
+    bases: Vec<Option<Vec<String>>>,
+    /// The versions to parse for colors, and their language.
+    texts: [String; 3],
+    lines: Lines,
+    language: &'static str,
+}
+
+impl Read {
+    fn of(core: &gitviber_core::Core, path: String) -> Result<Read, String> {
+        let f = api::files::read_file(core, path.clone())?;
+        let text = if f.exists && !f.binary && !f.too_large {
+            f.text
+        } else {
+            String::new()
+        };
+        // The file merged again in diff3 style, for the bases git's default style doesn't
+        // write, and how each side ends.
+        let sides = api::changes::conflict_base(core, path.clone())
+            .ok()
+            .flatten();
+        let parsed = if f.lossy {
+            None
+        } else {
+            parse_conflicts(&text)
+        };
+        let rebuilt = sides
+            .as_ref()
+            .and_then(|s| s.merged.as_deref())
+            .and_then(parse_conflicts);
+        let bases = bases_for(
+            &parsed.as_ref().map(conflict_blocks).unwrap_or_default(),
+            &rebuilt.as_ref().map(conflict_blocks).unwrap_or_default(),
+        );
+        let (texts, lines) = parsed
+            .as_ref()
+            .map(|p| versions(p, &bases))
+            .unwrap_or_default();
+        // Told from ours without the markers, which would make JSON look like YAML.
+        let language = language_for(&path, Some(&texts[0]));
+        Ok(Read {
+            unit: indent_unit([text.as_str()]),
+            lossy: f.lossy,
+            sides: sides.map(|s| (s.ours_newline, s.theirs_newline)),
+            parsed,
+            text,
+            bases,
+            texts,
+            lines,
+            language,
+        })
+    }
 }
 
 enum State {
@@ -135,65 +204,75 @@ impl ConflictView {
         }
     }
 
-    /// Reads the file again, with its base, the merge tool and what operation is going on.
+    /// Reads the file again, with its base, the merge tool and what operation is going on;
+    /// then its syntax colors, which it's drawn without until they're in.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let (core, path) = (crate::core(cx), self.path.clone());
+        let theme = DiffStyle::get(cx).syntax.clone();
         self._load = cx.spawn(async move |this, cx| {
-            let (file, sides, tools, rebase, unit) = cx
+            let (read, tools, rebase) = cx
                 .background_spawn(async move {
-                    let file = api::files::read_file(&core, path.clone());
-                    let unit = file.as_ref().map_or(0, |f| indent_unit([f.text.as_str()]));
-                    // The file merged again in diff3 style, for the bases git's default style
-                    // doesn't write, and how each side ends.
-                    let sides = api::changes::conflict_base(&core, path).ok().flatten();
                     let tools = api::changes::external_tools(&core).ok();
                     let rebase = api::changes::status(&core)
                         .ok()
                         .and_then(|s| s.operation)
                         .is_some_and(|o| o.kind == "rebase");
-                    (file, sides, tools, rebase, unit)
+                    (Read::of(&core, path), tools, rebase)
+                })
+                .await;
+            let to_color = this
+                .update(cx, |this, cx| {
+                    this.merge_tool = tools.and_then(|t| t.merge);
+                    this.rebase = rebase;
+                    cx.notify();
+                    let r = match read {
+                        Err(e) => {
+                            this.state = State::Failed(e);
+                            return None;
+                        }
+                        Ok(r) => r,
+                    };
+                    let blocks = r.parsed.as_ref().map(conflict_blocks).unwrap_or_default();
+                    this.open_bases = (0..blocks.len())
+                        .filter(|&i| blocks[i].base.is_some())
+                        .collect();
+                    let n = blocks.len();
+                    this.choices.retain(|i, _| *i < n);
+                    this.editing.retain(|i, _| *i < n);
+                    this.bases = r.bases;
+                    this.state = State::Loaded(Loaded {
+                        unit: r.unit,
+                        crlf: is_crlf(&r.text),
+                        lossy: r.lossy,
+                        sides: r.sides,
+                        parsed: r.parsed,
+                        text: r.text,
+                        lines: r.lines,
+                        colors: Box::default(),
+                    });
+                    Some((r.texts, r.language))
+                })
+                .ok()
+                .flatten();
+            let Some((texts, language)) = to_color else {
+                return;
+            };
+            let parsed = cx
+                .background_spawn(async move {
+                    texts.map(|t| {
+                        let rope = Rope::from(t.as_str());
+                        let h = (!t.is_empty()).then(|| highlight::parse(language, &rope))?;
+                        Some((h?, rope))
+                    })
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.merge_tool = tools.and_then(|t| t.merge);
-                this.rebase = rebase;
-                this.state = match file {
-                    Err(e) => State::Failed(e),
-                    Ok(f) => {
-                        let text = if f.exists && !f.binary && !f.too_large {
-                            f.text
-                        } else {
-                            String::new()
-                        };
-                        let parsed = if f.lossy {
-                            None
-                        } else {
-                            parse_conflicts(&text)
-                        };
-                        let rebuilt = sides
-                            .as_ref()
-                            .and_then(|s| s.merged.as_deref())
-                            .and_then(parse_conflicts);
-                        let blocks = parsed.as_ref().map(conflict_blocks).unwrap_or_default();
-                        let rebuilt = rebuilt.as_ref().map(conflict_blocks).unwrap_or_default();
-                        this.bases = bases_for(&blocks, &rebuilt);
-                        this.open_bases = (0..blocks.len())
-                            .filter(|&i| blocks[i].base.is_some())
-                            .collect();
-                        let n = blocks.len();
-                        this.choices.retain(|i, _| *i < n);
-                        this.editing.retain(|i, _| *i < n);
-                        State::Loaded(Loaded {
-                            unit,
-                            crlf: is_crlf(&text),
-                            lossy: f.lossy,
-                            sides: sides.map(|s| (s.ours_newline, s.theirs_newline)),
-                            parsed,
-                            text,
-                        })
+                if let State::Loaded(l) = &mut this.state {
+                    for (side, p) in l.colors.iter_mut().zip(parsed) {
+                        *side = p.map(|(h, rope)| Highlighted::new(h, rope, theme.clone()));
                     }
-                };
-                cx.notify();
+                    cx.notify();
+                }
             })
             .ok();
         });
@@ -500,6 +579,24 @@ impl ConflictView {
         }
     }
 
+    pub(crate) fn styles_for_test(
+        &self,
+        at: (usize, Version, usize),
+        cx: &App,
+    ) -> Option<LineStyles> {
+        let State::Loaded(l) = &self.state else {
+            return None;
+        };
+        let style = DiffStyle::get(cx);
+        let look = Look {
+            style,
+            font: style.code_font(cx),
+            unit: l.unit,
+            colors: Some((&l.lines, &*l.colors)),
+        };
+        look.styles(at)
+    }
+
     pub(crate) fn indent_unit_for_test(&self) -> Option<usize> {
         match &self.state {
             State::Loaded(l) => Some(l.unit),
@@ -535,31 +632,52 @@ impl Focusable for ConflictView {
     }
 }
 
-/// How code is drawn here, as in the diffs: ligatures as Settings has them, and indentation
-/// widened to 4 columns a level (`unit`: the file's own step), tabs to the next stop.
+/// How code is drawn here, as in the diffs: in its syntax colors, ligatures as Settings has
+/// them, and indentation widened to 4 columns a level (`unit`: the file's own step), tabs to
+/// the next stop.
 struct Look<'a> {
     style: &'a DiffStyle,
-    features: FontFeatures,
+    font: Font,
     unit: usize,
+    /// Where each segment is in the versions, and their colors (None before they're parsed).
+    colors: Option<(&'a Lines, &'a [Option<Highlighted>; 3])>,
 }
 
-fn code_lines(lines: &[String], color: Option<Hsla>, look: &Look) -> gpui_kit::Div {
+impl Look<'_> {
+    /// The colors of line `ix` of segment `seg`'s part in `v`.
+    fn styles(&self, (seg, v, ix): (usize, Version, usize)) -> Option<LineStyles> {
+        let (lines, sides) = self.colors?;
+        sides[v as usize]
+            .as_ref()?
+            .line(lines.at(seg, v, ix)?, &self.style.syntax)
+    }
+}
+
+/// `lines` in `color` (the theme's foreground for None), each in its syntax colors: `from`
+/// says where line `i` is in the versions.
+fn code_lines(
+    lines: &[String],
+    color: Option<Hsla>,
+    look: &Look,
+    from: impl Fn(usize) -> Option<(usize, Version, usize)>,
+) -> gpui_kit::Div {
     let style = look.style;
+    let fg = color.unwrap_or(style.colors.foreground);
     v_flex()
         .w_full()
         .py_0p5()
         .font_family(style.font_family.clone())
-        .font_features(look.features.clone())
+        .font_features(look.font.features.clone())
         .text_size(style.font_size)
         .line_height(style.line_px())
-        .when_some(color, |el, c| el.text_color(c))
-        .children(lines.iter().map(|l| {
+        .children(lines.iter().enumerate().map(|(i, l)| {
             let l = l.strip_suffix('\r').unwrap_or(l);
+            let styles = from(i).and_then(|at| look.styles(at));
             div()
                 .px_4()
                 .min_h(style.line_px())
                 .whitespace_nowrap()
-                .child(SharedString::from(Shown::new(l, look.unit).text))
+                .child(code_line(l, styles.as_ref(), look.unit, &look.font, fg))
         }))
 }
 
@@ -574,11 +692,13 @@ impl ConflictView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let dim = Some(t.foreground.opacity(0.7));
+        let from = |skip: usize| move |i: usize| Some((seg, Version::Ours, skip + i));
         if self.open_runs.contains(&seg) || lines.len() <= CONTEXT * 2 + 1 {
-            return code_lines(lines, dim, look).into_any_element();
+            return code_lines(lines, dim, look, from(0)).into_any_element();
         }
+        let last = lines.len() - CONTEXT;
         v_flex()
-            .child(code_lines(&lines[..CONTEXT], dim, look))
+            .child(code_lines(&lines[..CONTEXT], dim, look, from(0)))
             .child(
                 h_flex()
                     .id(("fold", seg))
@@ -599,15 +719,16 @@ impl ConflictView {
                         cx.notify();
                     })),
             )
-            .child(code_lines(&lines[lines.len() - CONTEXT..], dim, look))
+            .child(code_lines(&lines[last..], dim, look, from(last)))
             .into_any_element()
     }
 
+    /// One side of block segment `seg`, its version `v`.
     fn side(
         title: &str,
         label: &str,
         tone: Hsla,
-        lines: &[String],
+        (seg, v, lines): (usize, Version, &[String]),
         t: &AppTheme,
         look: &Look,
     ) -> gpui_kit::Div {
@@ -645,15 +766,15 @@ impl ConflictView {
                     .text_color(t.subtle)
                     .child("(empty)")
             } else {
-                code_lines(lines, None, look).pb_1()
+                code_lines(lines, None, look, |i| Some((seg, v, i))).pb_1()
             })
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Block `i` of `n`, segment `seg`.
     fn card(
         &self,
-        i: usize,
-        n: usize,
+        (i, n, seg): (usize, usize, usize),
         b: &Block,
         names: (&str, &str),
         t: &AppTheme,
@@ -716,14 +837,16 @@ impl ConflictView {
             t.conflict
         };
         let body = if let Some(c) = choice {
-            code_lines(&c.lines, None, look)
-                .bg(t.add_bg)
-                .into_any_element()
+            code_lines(&c.lines, None, look, |ix| {
+                choice_source(c, b, ix).map(|(v, ix)| (seg, v, ix))
+            })
+            .bg(t.add_bg)
+            .into_any_element()
         } else if let Some(state) = editing {
             div()
                 .p_1()
                 .font_family(look.style.font_family.clone())
-                .font_features(look.features.clone())
+                .font_features(look.font.features.clone())
                 .text_size(look.style.font_size)
                 .child(Textarea::new(&state))
                 .into_any_element()
@@ -733,18 +856,18 @@ impl ConflictView {
                     names.0,
                     &b.ours_label,
                     t.primary,
-                    &b.ours,
+                    (seg, Version::Ours, &b.ours),
                     t,
                     look,
                 ))
                 .when_some(self.bases.get(i).cloned().flatten(), |el, base| {
-                    el.child(self.base_strip(i, &base, t, look, cx))
+                    el.child(self.base_strip((i, seg), &base, t, look, cx))
                 })
                 .child(Self::side(
                     names.1,
                     &b.theirs_label,
                     t.renamed,
-                    &b.theirs,
+                    (seg, Version::Theirs, &b.theirs),
                     t,
                     look,
                 ))
@@ -785,7 +908,7 @@ impl ConflictView {
     /// The merge base between the two sides, folded to a strip: open to see what each changed.
     fn base_strip(
         &self,
-        i: usize,
+        (i, seg): (usize, usize),
         base: &[String],
         t: &AppTheme,
         look: &Look,
@@ -827,7 +950,7 @@ impl ConflictView {
                     .on_click(cx.listener(move |this, _, _, cx| this.toggle_base(i, cx))),
             )
             .when(open && !base.is_empty(), |el| {
-                el.child(code_lines(base, None, look).pb_1())
+                el.child(code_lines(base, None, look, |ix| Some((seg, Version::Base, ix))).pb_1())
             })
             .into_any_element()
     }
@@ -933,13 +1056,22 @@ impl ConflictView {
 impl Render for ConflictView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let style = DiffStyle::get(cx).clone();
+        if let State::Loaded(l) = &mut self.state {
+            for h in l.colors.iter_mut().flatten() {
+                if !Arc::ptr_eq(h.theme(), &style.syntax) {
+                    h.set_theme(style.syntax.clone());
+                }
+            }
+        }
+        let loaded = match &self.state {
+            State::Loaded(l) => Some(l),
+            _ => None,
+        };
         let look = Look {
             style: &style,
-            features: style.code_font(cx).features,
-            unit: match &self.state {
-                State::Loaded(l) => l.unit,
-                _ => 0,
-            },
+            font: style.code_font(cx),
+            unit: loaded.map_or(0, |l| l.unit),
+            colors: loaded.map(|l| (&l.lines, &*l.colors)),
         };
         let t = cx.app_theme().clone();
         let names = side_names(self.rebase);
@@ -956,9 +1088,15 @@ impl Render for ConflictView {
             State::Loaded(l) => {
                 let parsed = l.parsed.as_ref().expect("blocks come from a parse");
                 let parts: Vec<AnyElement> = if self.preview {
+                    let from = result_sources(parsed, &self.choices);
                     vec![
-                        code_lines(&result_lines(parsed, &self.choices, false), None, &look)
-                            .into_any_element(),
+                        code_lines(
+                            &result_lines(parsed, &self.choices, false),
+                            None,
+                            &look,
+                            |i| from.get(i).copied().flatten(),
+                        )
+                        .into_any_element(),
                     ]
                 } else {
                     let mut block = 0;
@@ -969,7 +1107,7 @@ impl Render for ConflictView {
                                 parts.push(self.text_run(seg, lines, &t, &look, cx))
                             }
                             Segment::Conflict(b) => {
-                                parts.push(self.card(block, n, b, names, &t, &look, cx));
+                                parts.push(self.card((block, n, seg), b, names, &t, &look, cx));
                                 block += 1;
                             }
                         }

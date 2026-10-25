@@ -5,5 +5,6 @@ pub mod conflicts;
 pub mod list;
 pub mod text;
 pub mod tree;
+pub mod versions;
 
 pub use list::{Change, ChangesView, Item, Kind, Lists};

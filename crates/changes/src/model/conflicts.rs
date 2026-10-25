@@ -549,6 +549,23 @@ mod tests {
         assert_eq!(bases(del, del_rebuilt), [lines(&["b2"])]);
     }
 
+    /// conflicts.test.ts: the closing marker as the file's last line, with no newline after it.
+    #[test]
+    fn a_conflict_at_the_end_without_a_newline_still_parses_and_gets_its_base() {
+        let file = "a\n<<<<<<< HEAD\nlast-ours\n=======\nlast-theirs\n>>>>>>> feat";
+        let parsed = parse_conflicts(file).unwrap();
+        assert!(!parsed.trailing_newline);
+        let Some(Segment::Conflict(b)) = parsed.segments.last() else {
+            panic!("ends in a conflict")
+        };
+        assert_eq!(
+            (b.theirs.as_slice(), b.theirs_label.as_str()),
+            (&["last-theirs".to_string()][..], "feat")
+        );
+        let rebuilt = "a\n<<<<<<< current\nlast-ours\n||||||| base\nlast\n=======\nlast-theirs\n>>>>>>> incoming\n";
+        assert_eq!(bases(file, rebuilt), [Some(vec!["last".to_string()])]);
+    }
+
     #[test]
     fn a_conflict_at_the_end_keeps_the_files_own_last_newline_or_its_lack() {
         let parsed =

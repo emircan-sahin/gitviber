@@ -535,6 +535,22 @@ mod tests {
         assert_eq!(items_of(Kind::Staged, &list, tree, None, &closed).len(), 5);
     }
 
+    // As worktrees.test.ts.
+    #[test]
+    fn stage_all_leaves_nested_repositories_out() {
+        let nested = Arc::new(FileChange {
+            nested: Some(gitviber_core::git::Nested {
+                path: "/r/vendor/lib/".into(),
+            }),
+            ..(*file("vendor/lib/")).clone()
+        });
+        assert_eq!(
+            stageable(&[file("a.txt"), nested, file("b.txt")]),
+            (vec!["a.txt".to_string(), "b.txt".to_string()], 1)
+        );
+        assert_eq!(stageable(&[]), (vec![], 0));
+    }
+
     // As leaving.test.ts.
     #[test]
     fn the_row_in_place_of_one_that_left() {
