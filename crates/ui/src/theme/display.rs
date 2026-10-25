@@ -14,6 +14,8 @@ fn workspace() -> Option<*mut AnyObject> {
     (!workspace.is_null()).then_some(workspace)
 }
 
+// Tests take the setting as off (Os::now), so only the app reads it.
+#[cfg_attr(test, allow(dead_code))]
 pub(super) fn reduce_transparency() -> bool {
     workspace().is_some_and(|workspace| {
         let on: Bool =
