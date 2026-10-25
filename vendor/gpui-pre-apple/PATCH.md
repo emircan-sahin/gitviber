@@ -54,6 +54,24 @@ The change: the first polychrome page (none live yet) is 512²; later pages and 
 than 512 size as before. The test `test_remove_deallocates_tile_space_for_reuse` uses a 400 px
 tile instead of 700, so it still shares the first page. Saves 3 MB.
 
+## 4. Apple's named faces at their CSS weight (`src/text_system.rs`)
+
+Why: `font_id` matches with font-kit, which turns Core Text weights into CSS ones through the
+table usWeightClass fills (500 is 0.2). Apple's named faces sit elsewhere: Medium 0.23 read as
+530, so a 500 (CSS: try 500, then lighter) got Regular in SF, SF Mono and Helvetica Neue. Light
+read 237, Heavy 780 and Black 810, so an 800 got Black.
+
+The change: `css_properties` gives the six off-table Apple weights (UltraLight -0.8, Thin -0.6,
+Light -0.4, Medium 0.23, Heavy 0.56, Black 0.62) their CSS weight before `find_best_match`; every
+other face keeps font-kit's. Not rounding to 100s: of the 611 faces on this Mac, all off-table
+weights are those six, except Cascadia Mono SemiLight (350) and Fira Code Retina (450), which
+rounding would fold into Regular and Medium.
+
+Checked: `apple_named_faces_match_their_css_weight` (400/500/600 apart in SF, SF Mono and
+Helvetica Neue; SF's 800 and 900 apart). Off-screen, Settings → Editor's preview in SF Mono at
+400/500/600 gives three faces (500 drew as 400 before); Geist Mono, JetBrains Mono and Menlo
+are byte-identical to before.
+
 ## Not changed
 
 `maximumDrawableCount` stays 3. With 2 (one drawable less: 21 MB at 1480x920, 75 MB at

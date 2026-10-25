@@ -17,8 +17,8 @@ use core_text::{
     font::CTFont,
     font_collection::CTFontCollectionRef,
     font_descriptor::{
-        CTFontDescriptor, kCTFontSlantTrait, kCTFontSymbolicTrait, kCTFontWeightTrait,
-        kCTFontWidthTrait,
+        CTFontDescriptor, TraitAccessors as _, kCTFontSlantTrait, kCTFontSymbolicTrait,
+        kCTFontWeightTrait, kCTFontWidthTrait,
     },
     line::CTLine,
     string_attributes::kCTFontAttributeName,
@@ -161,7 +161,7 @@ impl PlatformTextSystem for AppleTextSystem {
 
             let candidate_properties = candidates
                 .iter()
-                .map(|font_id| lock.fonts[font_id.0].properties())
+                .map(|font_id| css_properties(&lock.fonts[font_id.0]))
                 .collect::<SmallVec<[_; 4]>>();
 
             let ix = font_kit::matching::find_best_match(
@@ -723,6 +723,32 @@ fn fontkit_weight(value: FontWeight) -> FontkitWeight {
     FontkitWeight(value.0)
 }
 
+/// Core Text weights of Apple's named faces (`NSFontWeightUltraLight`…`Black`) and the CSS
+/// weight each one stands for.
+const APPLE_WEIGHTS: [(f64, f32); 6] = [
+    (-0.8, 100.),
+    (-0.6, 200.),
+    (-0.4, 300.),
+    (0.23, 500.),
+    (0.56, 800.),
+    (0.62, 900.),
+];
+
+/// font-kit's properties with Apple's named faces at their CSS weight. font-kit reads Core Text
+/// weights on the usWeightClass scale (500 is 0.2), so SF's Medium (0.23) was 530 and a 500 got
+/// Regular. Rounding to 100s instead would fold in-between faces (Cascadia's SemiLight 350).
+fn css_properties(font: &FontKitFont) -> font_kit::properties::Properties {
+    let mut properties = font.properties();
+    let weight = font.native_font().all_traits().normalized_weight();
+    if let Some((_, css)) = APPLE_WEIGHTS
+        .iter()
+        .find(|(w, _)| (w - weight).abs() < 0.005)
+    {
+        properties.weight = FontkitWeight(*css);
+    }
+    properties
+}
+
 fn fontkit_style(style: FontStyle) -> FontkitStyle {
     match style {
         FontStyle::Normal => FontkitStyle::Normal,
@@ -799,6 +825,25 @@ mod tests {
         );
         assert_eq!(layout.len, 6);
         assert!(!layout.runs.is_empty());
+    }
+
+    #[test]
+    fn apple_named_faces_match_their_css_weight() {
+        let fonts = AppleTextSystem::new();
+        for family in [".SystemUIFont", "SF Mono", "Helvetica Neue"] {
+            let id = |weight: f32| {
+                let font = gpui::Font {
+                    weight: gpui::FontWeight(weight),
+                    ..font(family)
+                };
+                fonts.font_id(&font).unwrap()
+            };
+            assert_ne!(id(400.), id(500.), "{family}: 500 is its Medium face");
+            assert_ne!(id(500.), id(600.), "{family}");
+            if family == ".SystemUIFont" {
+                assert_ne!(id(800.), id(900.), "Heavy and Black");
+            }
+        }
     }
 
     #[test]

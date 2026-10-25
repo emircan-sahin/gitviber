@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use gpui_kit::component::{Theme, ThemeConfig, ThemeConfigColors, ThemeMode};
 use gpui_kit::{
-    Anchor, App, Font, FontWeight, Global, Hsla, Pixels, Refineable as _, Rgba, SharedString,
+    Anchor, App, FontWeight, Global, Hsla, Pixels, Refineable as _, Rgba, SharedString,
     StyleRefinement, Styled as _, Subscription, Window, WindowAppearance,
     WindowBackgroundAppearance, font, px,
 };
@@ -219,8 +219,6 @@ pub struct Fonts {
     /// What the Interface font weight setting adds to the normal, medium and semibold weights:
     /// 0 at Regular, 100 at Medium.
     pub ui_step: f32,
-    /// The weight that draws `ui`'s Medium face (`medium_request`).
-    pub ui_medium: FontWeight,
     pub code: SharedString,
     pub code_weight: FontWeight,
     pub code_size: Pixels,
@@ -350,9 +348,9 @@ impl AppTheme {
     /// A weight for text in the UI font: 400 body, 500 medium, 600 semibold, 700 bold. Body,
     /// medium and semibold move up with the Interface font weight setting, so at its default a
     /// medium label draws at 600 and still stands out from 500 body text; bold stays. Every UI
-    /// weight goes through here: a bare `FontWeight::MEDIUM` draws SF's Regular face.
+    /// weight goes through here: a bare `FontWeight::MEDIUM` is body text at the default setting.
     pub fn weight(&self, weight: FontWeight) -> FontWeight {
-        label_weight(weight, self.fonts.ui_step, self.fonts.ui_medium)
+        label_weight(weight, self.fonts.ui_step)
     }
 
     /// A label a step above body text: `weight(FontWeight::MEDIUM)`.
@@ -366,13 +364,12 @@ impl AppTheme {
     }
 }
 
-fn label_weight(weight: FontWeight, step: f32, medium: FontWeight) -> FontWeight {
-    let w = if (400.0..=600.0).contains(&weight.0) {
-        weight.0 + step
+fn label_weight(weight: FontWeight, step: f32) -> FontWeight {
+    if (400.0..=600.0).contains(&weight.0) {
+        FontWeight(weight.0 + step)
     } else {
-        weight.0
-    };
-    if w == 500.0 { medium } else { FontWeight(w) }
+        weight
+    }
 }
 
 /// #RRGGBB or #RRGGBBAA as a color; black for anything else.
@@ -457,30 +454,6 @@ fn installed(name: &str, cx: &mut App) -> bool {
     found
 }
 
-/// What to ask the text system for to draw `family`'s Medium face. gpui matches weights as CSS
-/// does, so a 500 with no face at exactly 500 gets Regular, and Apple's Medium faces (SF,
-/// Helvetica Neue, Avenir Next, SF Mono) report 530: they were never drawn. Just above 500 gets
-/// the lightest heavier face, which is that Medium when one sits below the 600 face.
-fn medium_request(family: &SharedString, cx: &App) -> FontWeight {
-    let text = cx.text_system();
-    let id = |weight: f32| {
-        text.resolve_font(&Font {
-            weight: FontWeight(weight),
-            ..font(family.clone())
-        })
-    };
-    let regular = id(400.0);
-    if id(500.0) != regular {
-        return FontWeight::MEDIUM;
-    }
-    let above = id(501.0);
-    if above != regular && above != id(600.0) {
-        FontWeight(501.0)
-    } else {
-        FontWeight::MEDIUM
-    }
-}
-
 fn first_installed(names: &[&str], cx: &mut App) -> SharedString {
     for name in names {
         if installed(name, cx) {
@@ -540,13 +513,11 @@ fn resolve_fonts(s: &Settings, cx: &mut App) -> Fonts {
         TerminalFont::Custom => code.clone(),
         preset => mono(preset.as_str(), cx),
     };
-    let ui_medium = medium_request(&ui, cx);
     let ui_step = f32::from(s.ui_font_weight) - 400.0;
     Fonts {
-        ui_weight: label_weight(FontWeight::NORMAL, ui_step, ui_medium),
+        ui_weight: label_weight(FontWeight::NORMAL, ui_step),
         ui,
         ui_step,
-        ui_medium,
         code,
         code_weight: FontWeight(s.code_font_weight as f32),
         code_size: px(s.code_font_size),
@@ -818,9 +789,8 @@ mod tests {
     fn fonts() -> Fonts {
         Fonts {
             ui: ".SystemUIFont".into(),
-            ui_weight: FontWeight(501.0),
+            ui_weight: FontWeight::MEDIUM,
             ui_step: 100.0,
-            ui_medium: FontWeight(501.0),
             code: "Menlo".into(),
             code_weight: FontWeight::MEDIUM,
             code_size: px(13.5),
@@ -831,22 +801,19 @@ mod tests {
     }
 
     #[test]
-    fn label_weights_step_with_the_setting_and_reach_the_medium_face() {
+    fn label_weights_step_with_the_setting() {
         let mut t = build(&Settings::default(), true, fonts());
         let w = |t: &AppTheme, weight: FontWeight| t.weight(weight).0;
-        // Interface font weight Medium: body at the Medium face, labels 600, semibold 700.
-        assert_eq!(w(&t, FontWeight::NORMAL), 501.0);
+        // Interface font weight Medium: body 500, labels 600, semibold 700.
+        assert_eq!(w(&t, FontWeight::NORMAL), 500.0);
         assert_eq!(w(&t, FontWeight::MEDIUM), 600.0);
         assert_eq!(w(&t, FontWeight::SEMIBOLD), 700.0);
         assert_eq!(w(&t, FontWeight::BOLD), 700.0);
-        // Regular: no step; a medium label still asks for what draws the Medium face.
+        // Regular: no step.
         t.fonts.ui_step = 0.0;
         assert_eq!(w(&t, FontWeight::NORMAL), 400.0);
-        assert_eq!(w(&t, FontWeight::MEDIUM), 501.0);
-        assert_eq!(t.semibold().0, 600.0);
-        // A family whose Medium face is at 500 is asked for 500.
-        t.fonts.ui_medium = FontWeight::MEDIUM;
         assert_eq!(t.medium().0, 500.0);
+        assert_eq!(t.semibold().0, 600.0);
     }
 
     #[test]
