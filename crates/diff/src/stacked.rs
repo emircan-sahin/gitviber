@@ -1461,6 +1461,7 @@ impl Render for StackedDiff {
                         .top_0()
                         .left_0()
                         .w_full()
+                        .bg(style.colors.pinned())
                         .child(self.header(f, &style, cx)),
                 )
             })

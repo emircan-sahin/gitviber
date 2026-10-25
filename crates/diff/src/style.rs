@@ -98,6 +98,16 @@ impl DiffColors {
             destructive: hex("#cf222e"),
         }
     }
+
+    /// What a file header pinned over its scrolling lines is filled with: the code's color, made
+    /// opaque. GPUI blurs no element's backdrop, so see-through the lines would show through
+    /// its text.
+    pub fn pinned(&self) -> Hsla {
+        Hsla {
+            a: 1.,
+            ..self.background
+        }
+    }
 }
 
 /// Find's colors, the same in every theme: its mark on the overview, a match's wash, the current
@@ -288,6 +298,19 @@ impl DiffOptions {
 mod tests {
     use super::*;
     use gitviber_ui::ActiveAppTheme as _;
+
+    #[test]
+    fn a_pinned_header_covers_the_lines_under_it_see_through_too() {
+        let mut c = DiffColors::dark();
+        assert_eq!(c.pinned(), c.background, "a solid window: as it was");
+        c.background = c.background.opacity(0.7);
+        let pinned = c.pinned();
+        assert_eq!(pinned.a, 1.);
+        assert_eq!(
+            (pinned.h, pinned.s, pinned.l),
+            (c.background.h, c.background.s, c.background.l)
+        );
+    }
 
     #[gpui_kit::test]
     fn the_code_font_draws_at_the_editors_weight(cx: &mut gpui_kit::TestAppContext) {

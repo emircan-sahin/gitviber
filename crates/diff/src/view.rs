@@ -721,9 +721,12 @@ impl DiffView {
         let data = match result {
             Ok(data) => data,
             Err(e) => {
-                // A refresh that failed keeps what was shown.
+                // A refresh that failed keeps what was shown, and parses again what this read
+                // dropped a parse for (its seq made it old).
                 if self.data.is_none() {
                     self.state = State::Failed(e);
+                } else {
+                    self.highlight(cx);
                 }
                 cx.notify();
                 return;
@@ -2533,6 +2536,67 @@ mod tests {
             // Next Change's cursor takes the whole change.
             v.step_change(true, cx);
             assert_eq!(v.picked(false).map(|p| p.added.len()), Some(30));
+        });
+    }
+
+    fn rust(new: &str) -> (DiffSource, DiffData) {
+        let source = DiffSource::new(Compare::Unstaged, "a.rs");
+        let data = DiffData::from_texts("fn a() {}\n", new, &source);
+        (source, data)
+    }
+
+    /// Each side's styles of line 1, as read now.
+    fn first_lines(v: &DiffView, cx: &App) -> [Option<highlight::LineStyles>; 2] {
+        let theme = &DiffStyle::get(cx).syntax;
+        v.hl.each_ref()
+            .map(|h| h.as_ref().and_then(|h| h.line(1, theme)))
+    }
+
+    /// A read of the same text keeps both parses; a side whose text changed is parsed again.
+    #[gpui_kit::test]
+    fn the_same_text_keeps_its_parse(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_core(Arc::new(Core::new(Arc::new(|_| {}))), cx));
+        let (source, data) = rust("fn b() {}\n");
+        let view = cx.update(|cx| cx.new(|cx| DiffView::with_data(source, data, cx)));
+        cx.run_until_parked();
+        let before = view.read_with(cx, first_lines);
+        assert!(before.iter().all(Option::is_some), "both sides parsed");
+        let read = |new: &str, cx: &mut TestAppContext| {
+            view.update(cx, |v, cx| {
+                v.seq += 1;
+                let seq = v.seq;
+                v.loaded(seq, Ok(rust(new).1), cx);
+            })
+        };
+        read("fn b() {}\n", cx);
+        let same = view.read_with(cx, first_lines);
+        for (a, b) in before.iter().zip(&same) {
+            assert!(Rc::ptr_eq(a.as_ref().unwrap(), b.as_ref().unwrap()));
+        }
+        read("fn c() {}\n", cx);
+        let changed = view.read_with(cx, first_lines);
+        assert!(Rc::ptr_eq(
+            before[0].as_ref().unwrap(),
+            changed[0].as_ref().unwrap()
+        ));
+        assert!(changed[1].is_none(), "the new side waits for its parse");
+        cx.run_until_parked();
+        assert!(view.read_with(cx, first_lines)[1].is_some());
+    }
+
+    /// A refresh drops the parse running for the text before it (its seq is old); when the
+    /// refresh fails, the text shown is parsed again rather than left without colors.
+    #[gpui_kit::test]
+    fn a_parse_dropped_for_a_failed_refresh_is_made_again(cx: &mut TestAppContext) {
+        // No repo open: any read fails.
+        cx.update(|cx| crate::set_core(Arc::new(Core::new(Arc::new(|_| {}))), cx));
+        let (source, data) = rust("fn b() {}\n");
+        let view = cx.update(|cx| cx.new(|cx| DiffView::with_data(source, data, cx)));
+        view.update(cx, |v, cx| v.refresh(cx));
+        cx.run_until_parked();
+        view.read_with(cx, |v, cx| {
+            assert!(v.data.is_some(), "the failed read kept the text");
+            assert!(first_lines(v, cx).iter().all(Option::is_some));
         });
     }
 

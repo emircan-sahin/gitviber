@@ -106,3 +106,44 @@ impl Highlighted {
         &self.theme
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_text_and_a_side_past_the_limit_arent_parsed() {
+        let rope = Rope::from("fn a() {}\n");
+        assert!(parse("rust", &rope).is_some());
+        assert!(parse("text", &rope).is_none());
+        let big = Rope::from("x".repeat(MAX_BYTES + 1).as_str());
+        assert!(parse("rust", &big).is_none());
+    }
+
+    /// Styles are kept for at most 256 chunks of lines; past that they start over and read the
+    /// same again. Another theme's aren't these.
+    #[test]
+    fn styles_are_kept_for_at_most_256_chunks() {
+        let theme = HighlightTheme::default_dark();
+        let text: String = (0..(KEEP_CHUNKS + 2) * CHUNK)
+            .map(|i| format!("let a{i} = {i};\n"))
+            .collect();
+        let rope = Rope::from(text.as_str());
+        let h = Highlighted::new(parse("rust", &rope).unwrap(), rope, theme.clone());
+        let first = h.line(1, &theme).unwrap();
+        assert!(!first.is_empty(), "`let` is a keyword");
+        assert!(Rc::ptr_eq(&first, &h.line(1, &theme).unwrap()), "read once");
+        for chunk in 0..KEEP_CHUNKS + 2 {
+            h.line((chunk * CHUNK + 1) as u32, &theme);
+            assert!(h.chunks.borrow().len() <= KEEP_CHUNKS);
+        }
+        let again = h.line(1, &theme).unwrap();
+        assert!(
+            !Rc::ptr_eq(&first, &again),
+            "read again after the start over"
+        );
+        assert_eq!(first, again);
+        assert!(h.line(1, &HighlightTheme::default_light()).is_none());
+        assert!(h.line(0, &theme).is_none());
+    }
+}

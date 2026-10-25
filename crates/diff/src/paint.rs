@@ -118,8 +118,53 @@ pub fn code(
         vec![]
     };
     let tone = tone(row.k, style);
+    let mut runs = syntax_runs(
+        &text,
+        &shown,
+        tokens,
+        &emph,
+        tone.emph,
+        base,
+        style.colors.foreground,
+    );
+    if !marks.is_empty() {
+        let marks: Vec<(Range<usize>, Hsla)> = marks
+            .iter()
+            .map(|(r, c)| (shown.offset(r.start)..shown.offset(r.end), *c))
+            .collect();
+        runs = mark(runs, &marks);
+    }
+    StyledText::new(SharedString::from(shown.text)).with_runs(runs)
+}
+
+/// A line of code in its syntax colors (`styles`, from `Highlighted::line`), drawn as a diff's
+/// line is but without word changes: for code shown outside a diff, a conflict's blocks.
+pub fn code_line(
+    text: &str,
+    styles: Option<&LineStyles>,
+    unit: usize,
+    base: &Font,
+    foreground: Hsla,
+) -> StyledText {
+    let shown = Shown::new(text, unit);
+    let tokens = styles.map_or(&[][..], |s| &s[..]);
+    let runs = syntax_runs(text, &shown, tokens, &[], None, base, foreground);
+    StyledText::new(SharedString::from(shown.text)).with_runs(runs)
+}
+
+/// The runs of `text` as `shown`: each token in its color and weight, the bytes in `emph` on
+/// `emph_bg`.
+fn syntax_runs(
+    text: &str,
+    shown: &Shown,
+    tokens: &[(Range<usize>, HighlightStyle)],
+    emph: &[Range<usize>],
+    emph_bg: Option<Hsla>,
+    base: &Font,
+    foreground: Hsla,
+) -> Vec<TextRun> {
     let mut runs = Vec::new();
-    for (range, token, emphasized) in emphasis::cut(text.len(), tokens, &emph) {
+    for (range, token, emphasized) in emphasis::cut(text.len(), tokens, emph) {
         let len = shown.offset(range.end) - shown.offset(range.start);
         if len == 0 {
             continue;
@@ -136,22 +181,13 @@ pub fn code(
         runs.push(TextRun {
             len,
             font: f,
-            color: token
-                .and_then(|t| t.color)
-                .unwrap_or(style.colors.foreground),
-            background_color: if emphasized { tone.emph } else { None },
+            color: token.and_then(|t| t.color).unwrap_or(foreground),
+            background_color: if emphasized { emph_bg } else { None },
             underline: None,
             strikethrough: None,
         });
     }
-    if !marks.is_empty() {
-        let marks: Vec<(Range<usize>, Hsla)> = marks
-            .iter()
-            .map(|(r, c)| (shown.offset(r.start)..shown.offset(r.end), *c))
-            .collect();
-        runs = mark(runs, &marks);
-    }
-    StyledText::new(SharedString::from(shown.text)).with_runs(runs)
+    runs
 }
 
 /// `runs` cut at the edges of `marks` (offsets in their text), each piece inside one on its color.

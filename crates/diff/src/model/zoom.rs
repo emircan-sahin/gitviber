@@ -227,6 +227,35 @@ mod tests {
         assert_eq!(icon.limits(), (0.5, 64.));
     }
 
+    /// svg.test.ts: 16× past fit or 1:1, but a drawing never past 16384 px a side, even one
+    /// that grew under its zoom.
+    #[test]
+    fn a_drawing_zooms_16x_but_never_past_16384_px() {
+        let tiny = Frame {
+            room: (24. * 30. + 2. * PAD, 24. * 30. + 2. * PAD),
+            natural: (24., 24.),
+            grow: true,
+        };
+        assert_eq!(tiny.fit(), 30.);
+        assert_eq!(tiny.limits(), (0.5, 480.));
+        let big = Frame {
+            room: (800. + 2. * PAD, 400. + 2. * PAD),
+            natural: (2000., 1000.),
+            grow: true,
+        };
+        assert_eq!(big.limits(), (0.2, 8.192));
+        let z = big.zoomed(FIT, 1000., (100., 100.));
+        assert_eq!(big.drawn(z)[2], 16384.);
+        let grown = Frame {
+            natural: (4000., 1000.),
+            ..big
+        };
+        assert_eq!(grown.drawn(z)[2], 16384.);
+        // An image's pixels aren't drawn past the screen: it zooms the full 16×.
+        let photo = Frame { grow: false, ..big };
+        assert_eq!(photo.limits(), (0.2, 16.));
+    }
+
     #[test]
     fn a_double_click_goes_between_fit_and_one_to_one() {
         let at = (116., 66.);
