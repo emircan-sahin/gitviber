@@ -103,6 +103,65 @@ fn typed_letter(e: &KeystrokeEvent, cx: &App) -> Option<Keystroke> {
         })
 }
 
+/// Whether a binding where focus is takes `keystroke`.
+fn bound(keystroke: &Keystroke, e: &KeystrokeEvent, cx: &App) -> bool {
+    let keymap = cx.key_bindings();
+    let keymap = keymap.borrow();
+    let (bindings, _) =
+        keymap.bindings_for_input(std::slice::from_ref(keystroke), &e.context_stack);
+    !bindings.is_empty()
+}
+
+/// A ⌥ key that types plain ASCII (German ⌥L is @, ⌥5 is [) is that character, not the chord on
+/// its letter: a binding on ⌥L must not eat the @, in a text field or out of one. Only when
+/// such a binding is there: otherwise the key goes on as it was, dead keys and all.
+fn typed_ascii(e: &KeystrokeEvent, cx: &App) -> Option<Keystroke> {
+    let ks = &e.keystroke;
+    let m = &ks.modifiers;
+    if !m.alt || m.control || m.platform || m.function {
+        return None;
+    }
+    let typed = ks
+        .key_char
+        .as_deref()
+        .filter(|c| c.len() == 1 && c.as_bytes()[0].is_ascii_graphic())?;
+    if typed.eq_ignore_ascii_case(&ks.key) || !bound(ks, e, cx) {
+        return None;
+    }
+    Some(Keystroke {
+        modifiers: *m,
+        key: typed.to_ascii_lowercase(),
+        key_char: Some(typed.to_string()),
+    })
+}
+
+/// A ⌘ or ⌃ chord on a punctuation key also counts as the key's US name, which the keyboard puts
+/// in `key_char` (Turkish Q's ⌃" is ⌃`). Where both are bound the chord as typed wins: Turkish ⌘-
+/// (the US = key) zooms out, though Zoom In is listed first.
+fn typed_over_us_name(e: &KeystrokeEvent, cx: &App) -> Option<Keystroke> {
+    let ks = &e.keystroke;
+    let m = &ks.modifiers;
+    if !(m.control || m.platform) || m.alt {
+        return None;
+    }
+    let us = ks.key_char.as_deref().filter(|us| *us != ks.key)?;
+    let typed = Keystroke {
+        key_char: None,
+        ..ks.clone()
+    };
+    // As the keymap matches a key_char: under ⌘ and ⌃ alone.
+    let as_us = Keystroke {
+        modifiers: Modifiers {
+            control: m.control,
+            platform: m.platform,
+            ..Modifiers::default()
+        },
+        key: us.to_string(),
+        key_char: None,
+    };
+    (bound(&typed, e, cx) && bound(&as_us, e, cx)).then_some(typed)
+}
+
 /// The key context every GitViber window root sets; global commands are bound under it.
 pub const ROOT_CONTEXT: &str = "GitViber";
 /// Contexts that type keys themselves. Feature crates put one of these on an element that takes
@@ -408,10 +467,13 @@ pub(crate) fn init(cx: &mut App) {
     // For the app's life, holding nothing.
     cx.intercept_keystrokes(|e, window, cx| {
         PRESSED.set(Some(e.keystroke.clone()));
-        if let Some(letter) = typed_letter(e, cx) {
+        let instead = typed_letter(e, cx)
+            .or_else(|| typed_ascii(e, cx))
+            .or_else(|| typed_over_us_name(e, cx));
+        if let Some(keystroke) = instead {
             cx.stop_propagation();
             window.defer(cx, move |window, cx| {
-                window.dispatch_keystroke(letter, cx);
+                window.dispatch_keystroke(keystroke, cx);
             });
         }
     })
@@ -481,37 +543,31 @@ mod tests {
         }
     }
 
-    /// The quoted strings of the list after `field: [` on `line`, brackets in them included.
-    fn ts_list(line: &str, field: &str) -> Option<Vec<String>> {
-        let start = line.find(&format!("{field}: ["))? + field.len() + 3;
-        let mut out = Vec::new();
-        let mut chars = line[start..].chars();
-        loop {
-            match chars.next()? {
-                ']' => return Some(out),
-                '"' => out.push(chars.by_ref().take_while(|c| *c != '"').collect()),
-                _ => {}
-            }
-        }
-    }
-
-    fn ts_field<'a>(line: &'a str, field: &str) -> Option<&'a str> {
-        let start = line.find(&format!("{field}: \""))? + field.len() + 3;
-        Some(&line[start..start + line[start..].find('"')?])
+    /// The old app's commands as v0.1.17 shipped them (`git show v0.1.17:src/lib/commands/commands.ts`,
+    /// its COMMANDS list): each one's default chords and the flags that place them.
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct OldCommand {
+        id: String,
+        keys: Vec<String>,
+        keys_other: Option<Vec<String>>,
+        #[serde(default)]
+        local: bool,
+        #[serde(default)]
+        outside_text: bool,
+        #[serde(default)]
+        in_editor: bool,
+        #[serde(default)]
+        no_repeat: bool,
     }
 
     #[test]
     fn every_default_is_the_old_apps() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../src/lib/commands/commands.ts"
-        );
-        // The old app goes once the port is done; until then each default must match it.
-        let Ok(ts) = std::fs::read_to_string(path) else {
-            return;
-        };
-        let body = &ts[ts.find("export const COMMANDS = [").unwrap()
-            ..ts.find("] as const satisfies").unwrap()];
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/keymap/old_defaults.json");
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("{path}: {e}; the old app's defaults are the guard"));
+        let old: Vec<OldCommand> = serde_json::from_str(&text).unwrap();
+        assert_eq!(old.len(), 153, "the fixture is v0.1.17's whole list");
         // The page's reload: there's no page to reload in the native app.
         const DROPPED: &[&str] = &["window.reload"];
         // The old app's terminal tabs were a Tab stop of the page; here a pane's Tab is the shell's.
@@ -528,63 +584,75 @@ mod tests {
             ("media.fit", &["cmd+0"]),
         ];
         let mut seen = 0;
-        for line in body
-            .lines()
-            .map(str::trim)
-            .filter(|l| l.starts_with("{ id: \""))
-        {
-            let id = ts_field(line, "id").unwrap();
+        for o in &old {
+            let id = o.id.as_str();
             if DROPPED.contains(&id) {
                 assert!(command(id).is_none(), "{id} is dropped");
                 continue;
             }
             let c = command(id).unwrap_or_else(|| panic!("{id} missing"));
-            let mut keys = ts_list(line, "keys").unwrap();
+            let mut keys = o.keys.clone();
             if let Some((_, added)) = ADDED.iter().find(|(a, _)| *a == id) {
                 keys.extend(added.iter().map(|k| k.to_string()));
             }
-            assert_eq!(
-                c.keys,
-                keys.iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-                    .as_slice(),
-                "{id} keys"
-            );
+            assert_eq!(c.keys, keys.as_slice(), "{id} keys");
             let other = match MOVED_OFF_SUPER.iter().find(|(m, _)| *m == id) {
                 Some((_, key)) => Some(vec![key.to_string()]),
-                None => ts_list(line, "keysOther"),
+                None => o.keys_other.clone(),
             };
             let ours = c
                 .keys_other
                 .map(|k| k.iter().map(|k| k.to_string()).collect::<Vec<_>>());
             assert_eq!(ours, other, "{id} keysOther");
-            assert_eq!(
-                c.local.is_some(),
-                ts_field(line, "local").is_some(),
-                "{id} local"
-            );
-            assert_eq!(
-                c.outside_text,
-                line.contains("outsideText: true"),
-                "{id} outsideText"
-            );
-            assert_eq!(
-                c.in_editor,
-                line.contains("inEditor: true"),
-                "{id} inEditor"
-            );
-            assert_eq!(
-                c.no_repeat,
-                line.contains("noRepeat: true"),
-                "{id} noRepeat"
-            );
+            assert_eq!(c.local.is_some(), o.local, "{id} local");
+            assert_eq!(c.outside_text, o.outside_text, "{id} outsideText");
+            assert_eq!(c.in_editor, o.in_editor, "{id} inEditor");
+            assert_eq!(c.no_repeat, o.no_repeat, "{id} noRepeat");
             seen += 1;
         }
         for id in NEW {
             assert!(command(id).is_some(), "{id} missing");
         }
         assert_eq!(seen + NEW.len(), COMMANDS.len());
+    }
+
+    /// GPUI lets the later of two bindings win a keystroke, so the commands go in reverse: the one
+    /// listed first runs a chord two share, and a local command never runs out of its place.
+    #[test]
+    fn the_first_listed_command_wins_a_shared_chord() {
+        let winner = |chord: &str, overrides: &Overrides, context: &str| {
+            let keymap = gpui_kit::Keymap::new(key_bindings(overrides, true));
+            let stack = [gpui_kit::KeyContext::parse(context).unwrap()];
+            let typed = gpui_kit::Keystroke::parse(&chord::to_keystroke(chord, true)).unwrap();
+            let (bindings, _) = keymap.bindings_for_input(&[typed], &stack);
+            bindings
+                .first()
+                .and_then(|b| command_for_action(b.action()))
+                .map(|c| c.id)
+        };
+        let mut overrides = Overrides::new();
+        overrides.insert("view.toggleGitPanel".into(), vec!["cmd+1".into()]);
+        assert_eq!(
+            winner("cmd+1", &overrides, ROOT_CONTEXT),
+            Some("view.toggleGitPanel")
+        );
+        assert_eq!(
+            edit::winner("cmd+1", &overrides, true).map(|c| c.id),
+            Some("view.toggleGitPanel")
+        );
+        let mut overrides = Overrides::new();
+        overrides.insert("tab.goto1".into(), vec!["cmd+b".into()]);
+        assert_eq!(
+            winner("cmd+b", &overrides, ROOT_CONTEXT),
+            Some("view.toggleGitPanel")
+        );
+        assert_eq!(
+            winner("cmd+1", &Overrides::new(), ROOT_CONTEXT),
+            Some("tab.goto1")
+        );
+        // ⌘↵ is the commit box's, never the window's.
+        assert_eq!(winner("cmd+enter", &Overrides::new(), ROOT_CONTEXT), None);
+        assert!(edit::winner("cmd+enter", &Overrides::new(), true).is_none());
     }
 
     #[test]
@@ -717,6 +785,163 @@ mod tests {
             .map(|c| c.id)
             .collect();
         assert_eq!(system, ["app.quit"]);
+    }
+
+    /// A window whose focus sits in `context`, under the root, keeping what our commands ran.
+    struct Keys {
+        focus: gpui_kit::FocusHandle,
+        context: &'static str,
+        ran: std::rc::Rc<RefCell<Vec<&'static str>>>,
+    }
+
+    fn log<A: Action>(
+        ran: &std::rc::Rc<RefCell<Vec<&'static str>>>,
+        name: &'static str,
+    ) -> impl Fn(&A, &mut gpui_kit::Window, &mut App) + 'static {
+        let ran = ran.clone();
+        move |_, _, _| ran.borrow_mut().push(name)
+    }
+
+    impl gpui_kit::Render for Keys {
+        fn render(
+            &mut self,
+            _: &mut gpui_kit::Window,
+            _: &mut gpui_kit::Context<Self>,
+        ) -> impl gpui_kit::IntoElement {
+            use gpui_kit::{InteractiveElement as _, ParentElement as _, Styled as _};
+            gpui_kit::div()
+                .key_context(ROOT_CONTEXT)
+                .size_full()
+                .on_action(log::<view::ZoomIn>(&self.ran, "zoom in"))
+                .on_action(log::<view::ZoomOut>(&self.ran, "zoom out"))
+                .on_action(log::<terminal::Toggle>(&self.ran, "terminal"))
+                .on_action(log::<editor::ToggleWrap>(&self.ran, "wrap"))
+                .child(
+                    gpui_kit::div()
+                        .key_context(self.context)
+                        .track_focus(&self.focus)
+                        .size_full(),
+                )
+        }
+    }
+
+    /// What `keystroke`, as the keyboard reports it, runs with focus in `context`, and the
+    /// keystrokes the window took, a key handed on as another one included.
+    fn press(
+        cx: &mut gpui_kit::TestAppContext,
+        context: &'static str,
+        keystroke: Keystroke,
+    ) -> (Vec<&'static str>, Vec<String>) {
+        let ran = std::rc::Rc::new(RefCell::new(Vec::new()));
+        let keys = ran.clone();
+        let (view, vcx) = cx.add_window_view(|_, cx| Keys {
+            focus: cx.focus_handle(),
+            context,
+            ran: keys,
+        });
+        vcx.update(|window, cx| {
+            let focus = view.read(cx).focus.clone();
+            window.focus(&focus, cx);
+        });
+        vcx.run_until_parked();
+        let seen = std::rc::Rc::new(RefCell::new(Vec::new()));
+        let log = seen.clone();
+        let _watch = vcx.update(|_, cx| {
+            cx.observe_keystrokes(move |e, _, _| {
+                let k = &e.keystroke;
+                let m = &k.modifiers;
+                let mut shown: String =
+                    [(m.control, "ctrl-"), (m.alt, "alt-"), (m.platform, "cmd-")]
+                        .iter()
+                        .filter(|(on, _)| *on)
+                        .map(|(_, name)| *name)
+                        .collect();
+                shown.push_str(&format!(
+                    "{}->{}",
+                    k.key,
+                    k.key_char.as_deref().unwrap_or("")
+                ));
+                log.borrow_mut().push(shown);
+            })
+        });
+        let window = vcx.update(|window, _| window.window_handle());
+        vcx.dispatch_keystroke(window, keystroke);
+        vcx.run_until_parked();
+        let ran = ran.borrow().clone();
+        (ran, seen.borrow().clone())
+    }
+
+    fn keystroke(key: &str, key_char: Option<&str>, f: impl FnOnce(&mut Modifiers)) -> Keystroke {
+        let mut modifiers = Modifiers::default();
+        f(&mut modifiers);
+        Keystroke {
+            modifiers,
+            key: key.into(),
+            key_char: key_char.map(Into::into),
+        }
+    }
+
+    fn layouts_setup(cx: &mut gpui_kit::TestAppContext, name: &str) {
+        crate::test_support::config_dir(name);
+        cx.update(|cx| {
+            crate::settings::init(cx);
+            init(cx);
+        });
+        // Its observer starts with the next update.
+        cx.update(|cx| {
+            Settings::update(cx, |s| {
+                s.keybindings
+                    .insert("editor.toggleWrap".into(), vec!["alt+l".into()]);
+            })
+        });
+    }
+
+    /// On Turkish Q the key left of 1 types ", so ⌃` arrives as ⌃" with the key's US name: it still
+    /// toggles the terminal. The ⌘ key the layout calls - is the US = key: Zoom Out, as typed,
+    /// though Zoom In comes first and takes ⌘=.
+    #[gpui_kit::test]
+    fn a_punctuation_key_counts_as_its_us_name_and_as_typed_first(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        layouts_setup(cx, "keymap-us-names");
+        let ctrl = |m: &mut Modifiers| m.control = true;
+        let cmd = |m: &mut Modifiers| m.platform = true;
+        let (ran, _) = press(cx, "Pane", keystroke("\"", Some("`"), ctrl));
+        assert_eq!(ran, ["terminal"]);
+        // In the terminal too: ⌃` is the app's there.
+        let (ran, _) = press(cx, TERMINAL_CONTEXT, keystroke("\"", Some("`"), ctrl));
+        assert_eq!(ran, ["terminal"]);
+        let (ran, _) = press(cx, "Pane", keystroke("-", Some("="), cmd));
+        assert_eq!(ran, ["zoom out"]);
+        // The US * key on Turkish Q is the US - key: Zoom Out, by its US name.
+        let (ran, _) = press(cx, "Pane", keystroke("*", Some("-"), cmd));
+        assert_eq!(ran, ["zoom out"]);
+        let (ran, _) = press(cx, "Pane", keystroke("=", None, cmd));
+        assert_eq!(ran, ["zoom in"]);
+    }
+
+    /// German ⌥L types @: with Toggle Word Wrap bound to ⌥L, the @ is typed, in a code editor and
+    /// out of a field alike, while a US ⌥L (¬, a symbol) still wraps.
+    #[gpui_kit::test]
+    fn a_layouts_ascii_on_option_is_typed_not_a_binding(cx: &mut gpui_kit::TestAppContext) {
+        layouts_setup(cx, "keymap-option-ascii");
+        let alt = |m: &mut Modifiers| m.alt = true;
+        for context in ["Input mode=editor", "Pane"] {
+            let (ran, seen) = press(cx, context, keystroke("l", Some("@"), alt));
+            assert!(ran.is_empty(), "{context}: {ran:?}");
+            assert_eq!(
+                seen.last().map(String::as_str),
+                Some("alt-@->@"),
+                "{context}"
+            );
+        }
+        let (ran, _) = press(cx, "Input mode=editor", keystroke("l", Some("¬"), alt));
+        assert_eq!(ran, ["wrap"]);
+        let (ran, _) = press(cx, "Pane", keystroke("l", Some("¬"), alt));
+        assert_eq!(ran, ["wrap"]);
+        // With nothing bound to the letter's chord the key goes on as it was.
+        let (_, seen) = press(cx, "Pane", keystroke("q", Some("@"), alt));
+        assert_eq!(seen, ["alt-q->@"]);
     }
 
     #[test]

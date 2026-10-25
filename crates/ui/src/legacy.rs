@@ -272,9 +272,45 @@ fn settings(mut old: Map<String, Value>) -> String {
     settings.to_json(&unknown)
 }
 
+/// Up to 0.1.10 the panels' layouts were kept as percentages of the window, under these.
+const SHARES_OF_WIDTH: &[&str] = &["react-resizable-panels:gitviber-main-v4"];
+const SHARES_OF_HEIGHT: &[&str] = &[
+    "react-resizable-panels:gitviber-viewer-v1:editor:terminal",
+    "react-resizable-panels:gitviber-viewer-v1:editor",
+];
+/// The window those shares are taken of: the size the window opens at, as both apps have it, since
+/// its place isn't carried over.
+const WINDOW: (f64, f64) = (1480.0, 920.0);
+
+/// `ids`' sizes in pixels from the first of `keys` that has a share for each of them: 0% was
+/// closed, at the size it reopens at.
+fn from_shares(
+    json: &dyn Fn(&str) -> Option<Value>,
+    keys: &[&str],
+    ids: &[&str],
+    total: f64,
+) -> Option<Value> {
+    let layout = keys.iter().filter_map(|k| json(k)).find(|l| {
+        ids.iter()
+            .all(|id| l.get(*id).is_some_and(Value::is_number))
+    })?;
+    let sizes = ids.iter().map(|id| {
+        let share = layout[*id].as_f64().unwrap_or_default();
+        let size = if share > 0.0 {
+            serde_json::json!({ "size": (share / 100.0 * total).round() })
+        } else {
+            serde_json::json!({ "collapsed": true })
+        };
+        (id.to_string(), size)
+    });
+    Some(Value::Object(sizes.collect()))
+}
+
 fn ui_state(json: &dyn Fn(&str) -> Option<Value>, last: Option<&String>) -> UiState {
-    let sides = json("gitviber-sides-v1");
-    let bottom = json("gitviber-bottom-v1");
+    let sides = json("gitviber-sides-v1")
+        .or_else(|| from_shares(json, SHARES_OF_WIDTH, &["list", "files"], WINDOW.0));
+    let bottom = json("gitviber-bottom-v1")
+        .or_else(|| from_shares(json, SHARES_OF_HEIGHT, &["terminal"], WINDOW.1));
     let panel = |group: &Option<Value>, id: &str| {
         let saved = group.as_ref().and_then(|g| g.get(id));
         PanelSize {
@@ -575,6 +611,105 @@ mod tests {
             assert_eq!(selection_key(&back), key);
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn translucency_from_before_the_sliders_becomes_an_opacity_and_a_blur() {
+        let read = |old: Value| {
+            let Value::Object(old) = old else {
+                unreachable!()
+            };
+            let text = settings(old);
+            let raw: Value = serde_json::from_str(&text).unwrap();
+            assert!(raw.get("translucency").is_none());
+            let s = Settings::from_json(&text);
+            (s.window_opacity, s.background_blur)
+        };
+        for (level, want) in [
+            ("off", (100.0, 0.0)),
+            ("subtle", (85.0, 20.0)),
+            ("strong", (70.0, 30.0)),
+        ] {
+            assert_eq!(
+                read(serde_json::json!({ "translucency": level })),
+                want,
+                "{level}"
+            );
+        }
+        // The sliders, once set, win over a leftover level.
+        assert_eq!(
+            read(
+                serde_json::json!({"translucency": "strong", "windowOpacity": 90, "backgroundBlur": 4})
+            ),
+            (90.0, 4.0)
+        );
+        assert_eq!(read(serde_json::json!({"translucency": 7})), (100.0, 0.0));
+    }
+
+    /// Up to 0.1.10 the sizes were percentages of the window: in pixels at the window the app opens
+    /// at, 0% closed; the pixel keys of later builds win.
+    #[test]
+    fn shares_of_the_window_from_before_0_1_11_come_as_pixels() {
+        let entries: HashMap<&str, &str> = [
+            (
+                "react-resizable-panels:gitviber-main-v4",
+                r#"{"list": 20, "viewer": 80, "files": 0}"#,
+            ),
+            (
+                "react-resizable-panels:gitviber-viewer-v1:editor",
+                "not json",
+            ),
+            (
+                "react-resizable-panels:gitviber-viewer-v1:editor:terminal",
+                r#"{"editor": 70, "terminal": 30}"#,
+            ),
+        ]
+        .into();
+        let state = |entries: &HashMap<&str, &str>| {
+            ui_state(
+                &|k| entries.get(k).and_then(|t| serde_json::from_str(t).ok()),
+                None,
+            )
+        };
+        let panels = state(&entries).panels;
+        assert_eq!(
+            panels.left,
+            PanelSize {
+                size: Some(296.0),
+                collapsed: false
+            }
+        );
+        assert_eq!(
+            panels.right,
+            PanelSize {
+                size: None,
+                collapsed: true
+            }
+        );
+        assert_eq!(
+            panels.bottom,
+            PanelSize {
+                size: Some(276.0),
+                collapsed: false
+            }
+        );
+        // A layout missing one of its panels isn't one.
+        let mut partial = entries.clone();
+        partial.insert("react-resizable-panels:gitviber-main-v4", r#"{"list": 20}"#);
+        assert_eq!(state(&partial).panels.left, PanelSize::default());
+        let mut newer = entries.clone();
+        newer.insert("gitviber-sides-v1", r#"{"list": {"size": 380}}"#);
+        newer.insert("gitviber-bottom-v1", r#"{"terminal": {"collapsed": true}}"#);
+        let panels = state(&newer).panels;
+        assert_eq!(panels.left.size, Some(380.0));
+        assert_eq!(panels.right, PanelSize::default());
+        assert_eq!(
+            panels.bottom,
+            PanelSize {
+                size: None,
+                collapsed: true
+            }
+        );
     }
 
     #[test]

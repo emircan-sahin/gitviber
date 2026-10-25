@@ -933,6 +933,48 @@ mod tests {
         assert_eq!(two.detail().as_deref(), Some("dev..b"));
     }
 
+    /// Branch names as git allows them: spaces aren't, but a slash, unicode and a leading dash
+    /// on a tag are; shown and stored as they are.
+    #[test]
+    fn compare_names_show_and_store_as_they_are() {
+        let side = |reference: &str, label: &str| ComparePoint {
+            reference: reference.into(),
+            label: label.into(),
+        };
+        let s = Selection::Compare {
+            base: side("refs/tags/-rc 1", "-rc 1"),
+            head: side("refs/heads/özellik/ğ", "özellik/ğ"),
+            merge_base: true,
+        };
+        assert_eq!(s.detail().as_deref(), Some("-rc 1...özellik/ğ"));
+        let stored = serde_json::to_value(&s).unwrap();
+        assert_eq!(stored["base"]["ref"], "refs/tags/-rc 1");
+        let back: Selection = serde_json::from_value(stored).unwrap();
+        assert_eq!(back.detail(), s.detail());
+        assert_eq!(selection_key(&back), "compare::Compare");
+    }
+
+    /// A side stored by a build that wrote it otherwise, or edited by hand, doesn't read: that tab
+    /// is left out, the others come back (Workspace::restore).
+    #[test]
+    fn a_misshapen_compare_side_doesnt_read() {
+        let good = serde_json::json!({ "ref": "refs/heads/main", "label": "main" });
+        let read = |base: serde_json::Value| {
+            serde_json::from_value::<Selection>(serde_json::json!({
+                "kind": "compare", "base": base, "head": good, "mergeBase": true
+            }))
+        };
+        assert!(read(good.clone()).is_ok());
+        for bad in [
+            serde_json::json!("refs/heads/main"),
+            serde_json::json!({ "ref": 5, "label": "main" }),
+            serde_json::json!({ "label": "main" }),
+            serde_json::Value::Null,
+        ] {
+            assert!(read(bad.clone()).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn a_tab_not_built_yet_keeps_its_detail() {
         let file = || de_file(serde_json::json!({ "path": "src/main.rs", "status": "M" })).unwrap();
@@ -1038,6 +1080,43 @@ mod tests {
         let untitled = at("tab-1", "http://localhost:5173/a");
         assert_eq!(untitled.title(), "localhost:5173/a");
         assert_eq!(untitled.detail(), None);
+    }
+
+    /// How a page shows (device, zoom, scheme) and its title change as it's used: none of them
+    /// makes it another tab, and no other kind's key can be a page's.
+    #[test]
+    fn a_browser_tab_is_its_id_alone() {
+        let page =
+            |device: Option<serde_json::Value>, zoom, scheme: Option<&str>| Selection::Browser {
+                id: "tab-1".into(),
+                url: "http://localhost:5173/".into(),
+                title: Some("Docs".into()),
+                device,
+                zoom,
+                scheme: scheme.map(Into::into),
+            };
+        let plain = selection_key(&page(None, None, None));
+        assert_eq!(plain, "browser::tab-1");
+        let iphone = serde_json::json!({ "name": "iPhone 15", "width": 393, "height": 852 });
+        assert_eq!(
+            selection_key(&page(Some(iphone), Some(1.5), Some("dark"))),
+            plain
+        );
+        let others = [
+            Selection::File {
+                path: "browser::tab-1".into(),
+            },
+            Selection::External {
+                path: "browser::tab-1".into(),
+            },
+            Selection::Vault {
+                vault: "browser".into(),
+                path: ":tab-1".into(),
+            },
+        ];
+        for other in &others {
+            assert_ne!(selection_key(other), plain, "{other:?}");
+        }
     }
 
     #[test]

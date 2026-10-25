@@ -23,3 +23,19 @@ covered, back to the full size on the first frame after it shows.
 Why: cargo caps a registry crate's lints but shows a path crate's, and its cocoa calls printed
 about 1200 deprecation warnings into every build. The change: `[lints.rust] deprecated =
 "allow"`.
+
+## 3. Punctuation keys also count as their US names (`src/events.rs`)
+
+Why: GPUI names a key by what the layout types, so a ⌘ or ⌃ chord bound on a US punctuation key
+matched nothing where the layout types something else there: on Turkish Q the key left of 1
+types `"`, and ⌃` (Toggle Terminal) arrived as ctrl-" (the old app matched both names).
+
+The change, in `parse_keystroke`: for a ⌘ or ⌃ chord without ⌥ on a punctuation key whose US
+name (`us_name`, by key code, shifted as the keymap names it) differs from the key, `key_char` is
+that name. GPUI's keymap already matches `key_char` under ⌘ and ⌃ alone (`should_match`), so the
+chord as typed and the US one both match; gitviber-ui's keymap picks the typed one when both are
+bound (Turkish ⌘- on the US = key zooms out). Not with ⌥, which that match drops: Turkish ⌥⌘ on the
+US = key would have run ⌘=. On an ISO keyboard (`KBGetLayoutType`) macOS reports the key left of
+1 as kVK_ISO_Section, so that one is the US ` key there. Letters and digits stay as typed (German
+⌘Y, the US Z key, isn't ⌘Z). These chords had no `key_char` before. Test:
+`events::gitviber_tests` (`cargo nextest run -p gpui-pre-macos gitviber`).

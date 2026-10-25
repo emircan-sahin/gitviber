@@ -46,6 +46,46 @@ pub(super) fn watch(changed: impl Fn() + 'static) {
     });
 }
 
+/// Calls `changed(window, on)` as an NSWindow of the app starts entering full screen (true) or
+/// leaving it, or closes (false), on the main thread. Observers for the app's lifetime.
+pub(super) fn watch_full_screen(changed: impl Fn(usize, bool) + 'static) {
+    let changed = std::rc::Rc::new(changed);
+    let steps = [
+        (c"NSWindowWillEnterFullScreenNotification", true),
+        (c"NSWindowWillExitFullScreenNotification", false),
+        (c"NSWindowWillCloseNotification", false),
+    ];
+    let Some(class) = AnyClass::get(c"NSNotificationCenter") else {
+        return;
+    };
+    objc2::rc::autoreleasepool(|_| unsafe {
+        let center: *mut AnyObject = msg_send![class, defaultCenter];
+        if center.is_null() {
+            return;
+        }
+        for (name, on) in steps {
+            let Some(name) = ns_string(name) else {
+                continue;
+            };
+            let changed = changed.clone();
+            let block = RcBlock::new(move |note: NonNull<AnyObject>| {
+                let window: *mut AnyObject = msg_send![note.as_ptr(), object];
+                if !window.is_null() {
+                    changed(window as usize, on);
+                }
+            });
+            let none = std::ptr::null_mut::<AnyObject>();
+            let _: *mut AnyObject = msg_send![
+                center,
+                addObserverForName: name,
+                object: none,
+                queue: none,
+                usingBlock: &*block
+            ];
+        }
+    });
+}
+
 unsafe fn ns_string(s: &CStr) -> Option<*mut AnyObject> {
     let class = AnyClass::get(c"NSString")?;
     let string: *mut AnyObject = unsafe { msg_send![class, stringWithUTF8String: s.as_ptr()] };

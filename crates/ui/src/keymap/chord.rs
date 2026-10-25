@@ -313,6 +313,39 @@ mod tests {
         assert!(!runs_while_typing("cmd+z", &command(true), true));
     }
 
+    /// Off macOS "cmd" is the physical Ctrl: Ctrl chords run from a field but Ctrl+arrows, which
+    /// move by word, and Alt chords, which type characters on some layouts.
+    #[test]
+    fn typing_rules_off_macos() {
+        let c = command(false);
+        assert!(runs_while_typing("cmd+tab", &c, false));
+        assert!(runs_while_typing("cmd+1", &c, false));
+        assert!(runs_while_typing("cmd+b", &c, false));
+        assert!(!runs_while_typing("cmd+right", &c, false));
+        assert!(!runs_while_typing("alt+1", &c, false));
+        // The Super key ("ctrl" there) with a letter is free: no line editing on it.
+        assert!(runs_while_typing("ctrl+a", &c, false));
+        assert!(!runs_while_typing("cmd+z", &command(true), false));
+    }
+
+    #[test]
+    fn only_macos_reserves_chords() {
+        for chord in [
+            "cmd+q",
+            "cmd+h",
+            "alt+cmd+h",
+            "cmd+m",
+            "cmd+`",
+            "shift+cmd+4",
+        ] {
+            assert!(is_reserved(chord, true), "{chord}");
+            // Off macOS "cmd" is Ctrl, which nothing takes from the app.
+            assert!(!is_reserved(chord, false), "{chord}");
+        }
+        assert!(!is_reserved("cmd+b", true));
+        assert!(!is_reserved("shift+cmd+6", true));
+    }
+
     #[test]
     fn terminal_keeps_its_keys() {
         let c = command(false);

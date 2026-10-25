@@ -214,6 +214,24 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn a_failed_open_doesnt_block_the_next(cx: &mut TestAppContext) {
+        let Some(repo) = git_repo("after-fail") else {
+            return;
+        };
+        let not_a_repo = crate::test_support::temp_dir("session-not-a-repo");
+        let core = cx.update(install_core);
+        let mut failed = cx.update(|cx| open_repo(cx, not_a_repo.clone()));
+        cx.run_until_parked();
+        assert!(matches!(failed.try_recv().unwrap(), Some(Some(Err(_)))));
+        let mut next = cx.update(|cx| open_repo(cx, repo.clone()));
+        cx.run_until_parked();
+        let opened = next.try_recv().unwrap().unwrap().unwrap().unwrap();
+        assert_eq!(PathBuf::from(&opened.root), repo);
+        assert_eq!(core.repo().unwrap(), repo);
+        assert!(!cx.update(|cx| cx.global::<RepoSession>().running));
+    }
+
+    #[gpui_kit::test]
     fn a_close_after_an_open_wins(cx: &mut TestAppContext) {
         let Some(a) = git_repo("close") else { return };
         let core = cx.update(install_core);

@@ -18,8 +18,9 @@ mod registry;
 mod selection;
 pub mod tabs;
 mod toast;
+mod viewed;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -41,6 +42,7 @@ pub use selection::{
 };
 pub use tabs::{ClosedTab, Opened, TabEntry, TabGroup, Tabs};
 pub use toast::{Toast, ToastAction, ToastKind, ToastRun};
+pub use viewed::ViewedMarks;
 
 use crate::memory::Live;
 use crate::state::{TabSnapshot, UiState, WorkspaceSnapshot};
@@ -126,8 +128,9 @@ pub struct Workspace {
     shown: Vec<SharedString>,
     /// What closed tabs showed, for Reopen Closed Tab; never their views.
     closed: Vec<(SharedString, Selection)>,
-    /// Viewed marks of this worktree: `kind:path` → the file's content signature when marked.
-    viewed: BTreeMap<String, String>,
+    viewed: ViewedMarks,
+    /// A save of the tabs is on its way, at the end of this effect cycle.
+    snapshot_due: bool,
     /// The full ref the branch is reviewed against, while Changes shows that review.
     review: Option<String>,
     left: SideState,
@@ -158,7 +161,8 @@ impl Workspace {
             tabs: Tabs::default(),
             shown: Vec::new(),
             closed: Vec::new(),
-            viewed: BTreeMap::new(),
+            viewed: ViewedMarks::new(),
+            snapshot_due: false,
             review: None,
             left: side(!sizes.left.collapsed, cx),
             right: side(!sizes.right.collapsed, cx),
@@ -478,7 +482,7 @@ impl Workspace {
             viewed: self
                 .viewed
                 .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
+                .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             review: self.review.clone(),
         }
@@ -513,7 +517,18 @@ impl Workspace {
         if event == WorkspaceEvent::LayoutChanged {
             self.save_layout(cx);
         }
-        self.save_snapshot(cx);
+        // Once per effect cycle: Mark All Viewed sets hundreds of marks in one, and each save
+        // copies every tab and mark.
+        if !self.snapshot_due {
+            self.snapshot_due = true;
+            let this = cx.weak_entity();
+            cx.defer(move |cx| {
+                let _ = this.update(cx, |ws, cx| {
+                    ws.snapshot_due = false;
+                    ws.save_snapshot(cx);
+                });
+            });
+        }
         cx.emit(event);
         cx.notify();
     }
@@ -522,10 +537,10 @@ impl Workspace {
 
     /// The signature a file had when it was marked viewed, under `key` (`kind:path`).
     pub fn viewed(&self, key: &str) -> Option<&str> {
-        self.viewed.get(key).map(String::as_str)
+        self.viewed.get(key)
     }
 
-    pub fn viewed_marks(&self) -> &BTreeMap<String, String> {
+    pub fn viewed_marks(&self) -> &ViewedMarks {
         &self.viewed
     }
 
@@ -538,9 +553,11 @@ impl Workspace {
     ) {
         let key = key.into();
         match signature {
-            Some(sig) => self.viewed.insert(key, sig),
-            None => self.viewed.remove(&key),
-        };
+            Some(sig) => self.viewed.set(key, sig),
+            None => {
+                self.viewed.remove(&key);
+            }
+        }
         self.changed(WorkspaceEvent::TabsChanged, cx);
     }
 
@@ -1850,5 +1867,97 @@ mod tests {
         cx.update(|_, cx| first(true, cx));
         cx.run_until_parked();
         assert_eq!(root(&ws, cx), Some(c));
+    }
+
+    /// A saved tab that doesn't read as a selection (a compare side stored otherwise) is left out;
+    /// the others come back, the saved active one too.
+    #[gpui_kit::test]
+    fn a_tab_that_doesnt_read_is_left_out(cx: &mut TestAppContext) {
+        setup(cx);
+        let root = "/tmp/gitviber-project-misshapen";
+        let tab = |sel: serde_json::Value| TabSnapshot {
+            key: "old".into(),
+            sel,
+            preview: false,
+        };
+        cx.update(|cx| {
+            UiState::update(cx, |s| {
+                s.save_workspace(
+                    root,
+                    WorkspaceSnapshot {
+                        tabs: vec![
+                            tab(serde_json::json!({
+                                "kind": "compare", "mergeBase": true,
+                                "base": { "ref": 5, "label": "main" },
+                                "head": { "ref": "refs/heads/x", "label": "x" }
+                            })),
+                            TabSnapshot {
+                                key: "file::a.rs".into(),
+                                ..tab(serde_json::json!({ "kind": "file", "path": "a.rs" }))
+                            },
+                        ],
+                        active: Some("file::a.rs".into()),
+                        ..WorkspaceSnapshot::default()
+                    },
+                )
+            })
+        });
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_project(PathBuf::from(root), window, cx);
+                let keys: Vec<_> = ws.tabs().tabs().iter().map(|t| t.key.to_string()).collect();
+                assert_eq!(keys, ["file::a.rs"]);
+                assert_eq!(ws.tabs().active_key().unwrap(), "file::a.rs");
+            })
+        });
+    }
+
+    #[gpui_kit::test]
+    fn viewed_marks_save_in_the_order_set_and_come_back(cx: &mut TestAppContext) {
+        setup(cx);
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        let root = PathBuf::from("/tmp/gitviber-project-viewed");
+        let marks = |ws: &Workspace| {
+            ws.viewed_marks()
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<Vec<_>>()
+        };
+        let want: Vec<(String, String)> = [
+            ("unstaged:y", "2"),
+            ("commit:a:x", "3"),
+            ("commit:b:x", "4"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_project(root.clone(), window, cx);
+                ws.set_viewed("commit:b:x", Some("1".into()), cx);
+                ws.set_viewed("unstaged:y", Some("2".into()), cx);
+                ws.set_viewed("commit:a:x", Some("3".into()), cx);
+                // Marked again: the latest, so the last a long review gives up.
+                ws.set_viewed("commit:b:x", Some("4".into()), cx);
+                ws.set_viewed("unstaged:gone", Some("5".into()), cx);
+                ws.set_viewed("unstaged:gone", None, cx);
+            })
+        });
+        assert_eq!(ws.read_with(cx, |ws, _| ws.snapshot().viewed), want);
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_project(
+                    PathBuf::from("/tmp/gitviber-project-viewed-other"),
+                    window,
+                    cx,
+                );
+                assert!(ws.viewed_marks().is_empty());
+                ws.open_project(root.clone(), window, cx);
+                assert_eq!(marks(ws), want);
+            })
+        });
     }
 }

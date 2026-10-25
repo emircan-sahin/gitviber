@@ -109,4 +109,64 @@ mod tests {
         assert_eq!(relative_time(0, 86_400 * 8), "1w ago");
         assert_eq!(relative_time(100, 0), "just now");
     }
+
+    struct Times {
+        show: bool,
+    }
+
+    impl gpui_kit::Render for Times {
+        fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+            use gpui_kit::prelude::FluentBuilder as _;
+            div().when(self.show, |d| {
+                d.child(RelativeTime::new(0)).child(RelativeTime::new(60))
+            })
+        }
+    }
+
+    /// Whether the timer is armed, and for how many windows.
+    fn ticker(cx: &mut gpui_kit::TestAppContext) -> (bool, usize) {
+        cx.update(|cx| {
+            cx.try_global::<MinuteTicker>()
+                .map_or((false, 0), |t| (t.task.is_some(), t.windows.len()))
+        })
+    }
+
+    /// One timer for every window showing times, armed only while one does: at the minute it
+    /// repaints them and they arm it again as they draw; once none shows a time it stays off.
+    #[gpui_kit::test]
+    fn one_minute_timer_runs_only_while_a_time_is_shown(cx: &mut gpui_kit::TestAppContext) {
+        let minute = || Duration::from_secs(61);
+        assert_eq!(ticker(cx), (false, 0));
+        let (none, _) = cx.add_window_view(|_, _| Times { show: false });
+        cx.run_until_parked();
+        assert_eq!(ticker(cx), (false, 0), "no time shown, no timer");
+        let (a, _) = cx.add_window_view(|_, _| Times { show: true });
+        let (b, _) = cx.add_window_view(|_, _| Times { show: true });
+        cx.run_until_parked();
+        // Four times in two windows: one timer.
+        assert_eq!(ticker(cx), (true, 2));
+        cx.executor().advance_clock(minute());
+        cx.run_until_parked();
+        assert_eq!(ticker(cx), (true, 2), "drawn again, armed again");
+        for view in [&a, &b] {
+            view.update(cx, |t, cx| {
+                t.show = false;
+                cx.notify();
+            });
+        }
+        cx.run_until_parked();
+        cx.executor().advance_clock(minute());
+        cx.run_until_parked();
+        assert_eq!(ticker(cx), (false, 0), "the last time left");
+        cx.executor().advance_clock(minute());
+        cx.run_until_parked();
+        assert_eq!(ticker(cx), (false, 0));
+        // Shown again later: armed again, from that draw.
+        none.update(cx, |t, cx| {
+            t.show = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(ticker(cx), (true, 1));
+    }
 }

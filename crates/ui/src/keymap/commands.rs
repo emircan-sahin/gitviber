@@ -767,3 +767,84 @@ pub static SYSTEM_COMMANDS: &[Command] = &[
     .other(&[]),
     cmd::<window::BringAllToFront>("window.bringAllToFront", "Bring All to Front", General, &[]),
 ];
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::keymap::chord::{is_reserved, runs_in_terminal, runs_while_typing};
+    use crate::keymap::{Overrides, bindings_for, command};
+
+    #[test]
+    fn no_two_global_commands_share_a_default_and_macos_takes_none() {
+        for mac in [true, false] {
+            let mut owner: HashMap<String, &str> = HashMap::new();
+            for c in COMMANDS.iter().filter(|c| c.local.is_none()) {
+                for chord in bindings_for(c, &Overrides::new(), mac) {
+                    assert!(!is_reserved(&chord, mac), "{chord} ({}, mac {mac})", c.id);
+                    if let Some(other) = owner.insert(chord.clone(), c.id) {
+                        panic!("{chord} is {other}'s and {}'s (mac {mac})", c.id);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_two_commands_of_one_place_share_a_default() {
+        for mac in [true, false] {
+            let mut owner: HashMap<(&str, String), &str> = HashMap::new();
+            for c in COMMANDS {
+                let Some(place) = c.local else { continue };
+                for chord in bindings_for(c, &Overrides::new(), mac) {
+                    if let Some(other) = owner.insert((place, chord.clone()), c.id) {
+                        panic!("{chord} is {other}'s and {}'s in {place} (mac {mac})", c.id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A key meant for the code view mustn't stage or discard from the commit message or the
+    /// terminal.
+    #[test]
+    fn stage_unstage_and_discard_stay_out_of_text_fields_and_the_terminal() {
+        for id in [
+            "diff.stageChange",
+            "diff.unstageChange",
+            "diff.discardChange",
+        ] {
+            let c = command(id).unwrap();
+            for mac in [true, false] {
+                for chord in bindings_for(c, &Overrides::new(), mac) {
+                    assert!(!runs_while_typing(&chord, c, mac), "{id}: {chord}");
+                    assert!(!runs_in_terminal(&chord, c, mac), "{id}: {chord}");
+                }
+            }
+        }
+        // ⌥ turns S into ß and N into a dead key; the key's letter still finds the command.
+        let winner =
+            |chord| crate::keymap::edit::winner(chord, &Overrides::new(), true).map(|c| c.id);
+        assert_eq!(winner("alt+cmd+s"), Some("diff.stageChange"));
+        assert_eq!(winner("alt+cmd+n"), Some("diff.unstageChange"));
+    }
+
+    #[test]
+    fn fetch_pull_push_and_focus_commit_reach_the_app_from_fields_and_the_terminal_on_macos() {
+        for (id, chord) in [
+            ("git.fetch", "ctrl+shift+cmd+t"),
+            ("git.pull", "ctrl+shift+cmd+p"),
+            ("git.push", "ctrl+cmd+p"),
+            ("changes.focusMessage", "ctrl+cmd+c"),
+        ] {
+            let c = command(id).unwrap();
+            assert_eq!(bindings_for(c, &Overrides::new(), true), [chord], "{id}");
+            assert!(bindings_for(c, &Overrides::new(), false).is_empty(), "{id}");
+            assert!(runs_while_typing(chord, c, true), "{id}");
+            assert!(runs_in_terminal(chord, c, true), "{id}");
+        }
+        // ⌘G stays macOS's Find Next.
+        assert!(crate::keymap::edit::winner("cmd+g", &Overrides::new(), true).is_none());
+    }
+}

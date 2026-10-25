@@ -12,7 +12,7 @@ mod palettes;
 pub mod syntax;
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui_kit::component::{Theme, ThemeConfig, ThemeConfigColors, ThemeMode};
@@ -537,12 +537,18 @@ pub struct Os {
     pub dark: bool,
     /// Reduce transparency is on: the window stays opaque whatever its opacity setting.
     pub reduce_transparency: bool,
+    /// A window is in full screen, where the desktop is out of sight and a see-through window
+    /// shows a gray backdrop: solid, as at 100%.
+    pub full_screen: bool,
 }
 
 impl Os {
     fn now(cx: &App) -> Self {
         Self {
             dark: system_dark(cx),
+            full_screen: cx
+                .try_global::<FullScreen>()
+                .is_some_and(|f| !f.0.is_empty()),
             #[cfg(target_os = "macos")]
             reduce_transparency: display::reduce_transparency(),
             #[cfg(not(target_os = "macos"))]
@@ -620,7 +626,11 @@ impl Global for NativeAppearance {}
 pub fn build(settings: &Settings, os: Os, fonts: Fonts) -> AppTheme {
     let id = settings.theme(os.dark);
     let p = id.palette();
-    let opacity = if IS_MAC && settings.window_opacity < 100.0 && !os.reduce_transparency {
+    let opacity = if IS_MAC
+        && settings.window_opacity < 100.0
+        && !os.reduce_transparency
+        && !os.full_screen
+    {
         settings.window_opacity.max(appearance_floor(settings))
     } else {
         100.0
@@ -824,6 +834,26 @@ pub fn refresh(cx: &mut App) {
     });
 }
 
+/// The windows in full screen, by their NSWindow.
+#[derive(Default)]
+struct FullScreen(HashSet<usize>);
+
+impl Global for FullScreen {}
+
+/// `window` (an NSWindow) starts entering full screen (`on`) or leaving it, or closes: the theme
+/// turns solid while one is in full screen, and see-through again after.
+fn full_screen(window: usize, on: bool, cx: &mut App) {
+    let set = &mut cx.default_global::<FullScreen>().0;
+    let changed = if on {
+        set.insert(window)
+    } else {
+        set.remove(&window)
+    };
+    if changed {
+        refresh(cx);
+    }
+}
+
 /// Keeps a window in step with the theme: the OS appearance it reports, its see-through
 /// background, and a clear root so our surfaces paint the window. Call once per window and keep
 /// the subscriptions as long as the window's view.
@@ -864,7 +894,10 @@ pub(crate) fn init(cx: &mut App) {
     syntax::init(cx);
     cx.observe_global::<Settings>(refresh).detach();
     #[cfg(target_os = "macos")]
-    watch_display_options(cx);
+    {
+        watch_display_options(cx);
+        watch_full_screen(cx);
+    }
     #[cfg(feature = "snapshot")]
     snapshot_flip::schedule(cx);
 }
@@ -887,6 +920,24 @@ fn watch_display_options(cx: &mut App) {
     .detach();
 }
 
+/// As each full-screen transition starts, not once it's over, so the gray never shows; a window
+/// launched into full screen enters it after it opens, so it's seen too.
+#[cfg(target_os = "macos")]
+fn watch_full_screen(cx: &mut App) {
+    use futures::StreamExt as _;
+
+    let (tx, mut rx) = futures::channel::mpsc::unbounded::<(usize, bool)>();
+    display::watch_full_screen(move |window, on| {
+        let _ = tx.unbounded_send((window, on));
+    });
+    cx.spawn(async move |cx| {
+        while let Some((window, on)) = rx.next().await {
+            cx.update(|cx| full_screen(window, on, cx));
+        }
+    })
+    .detach();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -895,6 +946,7 @@ mod tests {
         Os {
             dark,
             reduce_transparency: false,
+            full_screen: false,
         }
     }
 
@@ -1008,6 +1060,198 @@ mod tests {
                 .glass
                 .is_none()
         );
+    }
+
+    #[test]
+    fn glass_levels_step_the_bars_a_quarter_more_opaque() {
+        let g = Glass::at(1.0, false, false);
+        assert_eq!((g.code, g.chrome, g.step), (1.0, 1.0, 0.25));
+        let g = Glass::at(0.5, false, false);
+        assert_eq!((g.code, g.chrome, g.step), (0.5, 0.625, 0.25));
+        assert!((Glass::at(0.7, false, false).chrome - 0.775).abs() < 1e-6);
+        // The code's tint and one step over it come to the bars' level: tabs and headers match them.
+        for i in 0..=10 {
+            let o = 0.5 + i as f32 * 0.05;
+            let g = Glass::at(o, false, false);
+            assert!(
+                (1.0 - (1.0 - g.code) * (1.0 - g.step) - g.chrome).abs() < 1e-3,
+                "{o}"
+            );
+            assert!(g.chrome >= g.code, "{o}");
+        }
+    }
+
+    #[test]
+    fn light_and_dark_share_the_higher_floor_and_the_setting_keeps_its_value() {
+        let s = Settings {
+            window_opacity: 50.0,
+            ..Settings::default()
+        };
+        // Dark stays readable down to 55%, Light to 50%: both stop at 55%.
+        assert_eq!(opacity_floor(s.light_theme), 50.0);
+        assert_eq!(opacity_floor(s.dark_theme), 55.0);
+        assert_eq!(appearance_floor(&s), 55.0);
+        for dark in [true, false] {
+            let t = build(&s, os(dark), fonts());
+            assert_eq!(t.glass.map(|g| g.code), IS_MAC.then_some(0.55), "{dark}");
+        }
+        assert_eq!(s.window_opacity, 50.0);
+    }
+
+    #[test]
+    fn the_terminal_shows_through_only_with_its_switch_and_a_see_through_window() {
+        let with = |terminal_glass, window_opacity| Settings {
+            window_opacity,
+            terminal_glass,
+            ..Settings::default()
+        };
+        let t = build(&with(false, 80.0), os(true), fonts());
+        assert_eq!(t.terminal_background(), t.background);
+        let t = build(&with(true, 80.0), os(true), fonts());
+        let shown = if IS_MAC {
+            t.background.opacity(0.8)
+        } else {
+            t.background
+        };
+        assert_eq!(t.terminal_background(), shown);
+        let t = build(&with(true, 100.0), os(true), fonts());
+        assert_eq!(t.terminal_background(), t.background);
+    }
+
+    #[test]
+    fn full_screen_keeps_the_window_and_the_terminal_solid() {
+        let s = Settings {
+            window_opacity: 70.0,
+            background_blur: 20.0,
+            terminal_glass: true,
+            ..Settings::default()
+        };
+        let full = Os {
+            full_screen: true,
+            ..os(true)
+        };
+        let t = build(&s, full, fonts());
+        assert!(t.glass.is_none());
+        assert_eq!(t.window_background(), WindowBackgroundAppearance::Opaque);
+        assert_eq!(t.terminal_background(), t.background);
+        assert_eq!(t.chrome(t.sidebar), t.sidebar);
+        assert_eq!(build(&s, os(true), fonts()).glass.is_some(), IS_MAC);
+    }
+
+    /// Entering full screen turns the theme solid as the transition starts, the last window
+    /// leaving it (or closing) turns it see-through again, at the opacity set meanwhile.
+    #[gpui_kit::test]
+    fn full_screen_is_solid_and_see_through_again_on_the_way_out(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        crate::test_support::config_dir("theme-full-screen");
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::settings::init(cx);
+            init(cx);
+        });
+        // Its observer starts with the next update.
+        cx.update(|cx| {
+            Settings::update(cx, |s| {
+                s.window_opacity = 70.0;
+                s.terminal_glass = true;
+            });
+        });
+        let glass = |cx: &mut gpui_kit::TestAppContext| cx.update(|cx| cx.app_theme().glass);
+        assert_eq!(glass(cx).map(|g| g.code), IS_MAC.then_some(0.7));
+        cx.update(|cx| full_screen(1, true, cx));
+        let t = cx.update(|cx| cx.app_theme().clone());
+        assert!(t.glass.is_none());
+        assert_eq!(t.terminal_background(), t.background);
+        assert_eq!(t.window_background(), WindowBackgroundAppearance::Opaque);
+        // Another window in full screen too: solid until the last one leaves.
+        cx.update(|cx| {
+            full_screen(2, true, cx);
+            full_screen(1, false, cx);
+            Settings::update(cx, |s| s.window_opacity = 60.0);
+        });
+        assert!(glass(cx).is_none());
+        cx.update(|cx| full_screen(2, false, cx));
+        let back = glass(cx);
+        assert_eq!(
+            back.map(|g| (g.code, g.terminal)),
+            IS_MAC.then_some((0.6, true))
+        );
+        // Its close after it left changes nothing.
+        cx.update(|cx| full_screen(2, false, cx));
+        assert_eq!(glass(cx), back);
+    }
+
+    #[gpui_kit::test]
+    fn reset_makes_the_window_solid_again(cx: &mut gpui_kit::TestAppContext) {
+        crate::test_support::config_dir("theme-reset");
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::settings::init(cx);
+            init(cx);
+        });
+        // Its observer starts with the next update.
+        cx.update(|cx| {
+            Settings::update(cx, |s| {
+                s.window_opacity = 70.0;
+                s.background_blur = 30.0;
+            });
+        });
+        assert_eq!(cx.update(|cx| cx.app_theme().glass.is_some()), IS_MAC);
+        cx.update(Settings::reset);
+        let (t, s) = cx.update(|cx| (cx.app_theme().clone(), Settings::get(cx).clone()));
+        assert_eq!((s.window_opacity, s.background_blur), (100.0, 0.0));
+        assert!(t.glass.is_none());
+        assert_eq!(t.window_background(), WindowBackgroundAppearance::Opaque);
+    }
+
+    /// Stored below 100%, a window opens see-through with its root clear, so our surfaces paint
+    /// it, and stays so behind other windows.
+    #[gpui_kit::test]
+    fn a_window_opens_see_through_and_stays_so_in_the_background(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        struct Plain;
+        impl gpui_kit::Render for Plain {
+            fn render(
+                &mut self,
+                _: &mut Window,
+                _: &mut gpui_kit::Context<Self>,
+            ) -> impl gpui_kit::IntoElement {
+                gpui_kit::div()
+            }
+        }
+        let dir = crate::test_support::config_dir("theme-launch");
+        std::fs::write(
+            dir.join("settings.json"),
+            r#"{"windowOpacity": 70, "backgroundBlur": 20}"#,
+        )
+        .unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::settings::init(cx);
+            init(cx);
+        });
+        let want = if IS_MAC {
+            WindowBackgroundAppearance::Blurred
+        } else {
+            WindowBackgroundAppearance::Opaque
+        };
+        assert_eq!(cx.update(|cx| cx.app_theme().window_background()), want);
+        let (_, vcx) = cx.add_window_view(|window, cx| {
+            use gpui_kit::AppContext as _;
+            let view = cx.new(|_| Plain);
+            gpui_kit::base::Root::new(view, window, cx)
+        });
+        let _subs = vcx.update(attach);
+        vcx.run_until_parked();
+        let bg = vcx.update(|window, cx| {
+            gpui_kit::base::Root::update(window, cx, |root, _, _| root.style().background.clone())
+        });
+        assert_eq!(bg, Some(gpui_kit::transparent_black().into()));
+        vcx.deactivate_window();
+        vcx.run_until_parked();
+        assert_eq!(vcx.update(|_, cx| cx.app_theme().window_background()), want);
     }
 
     #[test]

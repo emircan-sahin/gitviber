@@ -98,12 +98,31 @@ impl Settings {
         (settings, unknown)
     }
 
+    /// The known keys as the file has them. An f32 is written as typed (1.2, not the
+    /// 1.2000000476837158 it widens to), which also reads back as unchanged from the file.
+    fn to_map(&self) -> Map<String, Value> {
+        let Ok(Value::Object(mut map)) = serde_json::to_value(self) else {
+            return Map::new();
+        };
+        for v in map.values_mut() {
+            if let Some(n) = v.as_f64()
+                && v.is_f64()
+                && f64::from(n as f32) == n
+                && let Some(short) = (n as f32)
+                    .to_string()
+                    .parse()
+                    .ok()
+                    .and_then(serde_json::Number::from_f64)
+            {
+                *v = Value::Number(short);
+            }
+        }
+        map
+    }
+
     /// The file's text: the known keys as this build has them, then what it didn't know.
     pub fn to_json(&self, unknown: &Map<String, Value>) -> String {
-        let mut map = match serde_json::to_value(self) {
-            Ok(Value::Object(map)) => map,
-            _ => Map::new(),
-        };
+        let mut map = self.to_map();
         for (k, v) in unknown {
             map.entry(k.clone()).or_insert_with(|| v.clone());
         }
@@ -127,9 +146,8 @@ pub fn settings_path() -> PathBuf {
 /// Writes the keys that changed into the file as it is now: a hand edit to another key, or
 /// keys this build doesn't know, stay.
 fn save(cx: &mut App) {
-    if let Ok(Value::Object(map)) = serde_json::to_value(Settings::get(cx)) {
-        store::save_object(cx, settings_path(), map);
-    }
+    let map = Settings::get(cx).to_map();
+    store::save_object(cx, settings_path(), map);
 }
 
 /// A file that can't be read is moved aside (`settings.json.bad-<time>`) rather than replaced
@@ -236,6 +254,21 @@ mod tests {
     }
 
     #[test]
+    fn decimals_are_written_as_typed() {
+        let s = Settings {
+            ui_scale: 1.2,
+            line_height: 1.6,
+            code_font_size: 13.5,
+            ..Settings::default()
+        };
+        let text = s.to_json(&Map::new());
+        assert!(text.contains("\"uiScale\": 1.2,"), "{text}");
+        assert!(text.contains("\"lineHeight\": 1.6,"), "{text}");
+        assert!(text.contains("\"codeFontSize\": 13.5,"), "{text}");
+        assert_eq!(Settings::from_json(&text), s);
+    }
+
+    #[test]
     fn unknown_keys_survive_a_save() {
         let (s, unknown) =
             Settings::from_value(&serde_json::json!({"futureThing": [1], "uiScale": 1.2}));
@@ -260,6 +293,74 @@ mod tests {
         );
         assert!(!s.suggest_efforts.contains_key("codex"));
         assert_eq!(s.suggest_efforts.get("pi").map(String::as_str), Some(""));
+    }
+
+    #[test]
+    fn review_agent_settings_are_checked_on_load_and_reset() {
+        let s = Settings::from_json(
+            r#"{"reviewCommand": "codex exec", "reviewLanguage": "Türkçe",
+                "reviewModels": {"claude": "opus", "nope": "x", "codex": 3},
+                "reviewEfforts": {"claude": "max", "codex": "max", "pi": "", "llm": "high"}}"#,
+        );
+        assert_eq!(s.review_command.as_deref(), Some("codex exec"));
+        assert_eq!(s.review_language, "Türkçe");
+        assert_eq!(
+            s.review_models.iter().collect::<Vec<_>>(),
+            [(&"claude".to_string(), &"opus".to_string())]
+        );
+        // An effort its CLI doesn't have goes; "" (the CLI's own) stays.
+        let efforts: Vec<_> = s
+            .review_efforts
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(efforts, [("claude", "max"), ("pi", "")]);
+        // A change is checked as a load is.
+        let mut changed = s.clone();
+        changed.review_models.insert("nope".into(), "x".into());
+        changed.normalize();
+        assert_eq!(changed.review_models, s.review_models);
+        let reset = s.reset_value();
+        assert_eq!(reset.review_command, None);
+        assert!(reset.review_models.is_empty() && reset.review_efforts.is_empty());
+        assert_eq!(reset.review_language, "English");
+    }
+
+    /// Only what changed goes into the file as it is now: a hand edit to another key and keys
+    /// this build doesn't know stay, and an update that changes nothing writes nothing.
+    #[gpui_kit::test]
+    fn an_update_reaches_settings_json_and_keeps_the_rest(cx: &mut gpui_kit::TestAppContext) {
+        let dir = crate::test_support::config_dir("settings-save");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"uiScale": 1.2, "theirs": [1]}"#).unwrap();
+        let read = || -> Value {
+            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
+                .unwrap()
+        };
+        cx.update(init);
+        cx.update(|cx| Settings::update(cx, |s| s.code_font_size = 15.0));
+        cx.run_until_parked();
+        cx.update(store::flush);
+        let saved = read();
+        assert_eq!(saved["codeFontSize"], 15.0);
+        assert_eq!(saved["uiScale"], 1.2);
+        assert_eq!(saved["theirs"], serde_json::json!([1]));
+        // Edited by hand meanwhile: the edit stays through the app's next change.
+        let mut edited = saved.clone();
+        edited["uiScale"] = 1.4.into();
+        std::fs::write(&path, edited.to_string()).unwrap();
+        cx.update(|cx| Settings::update(cx, |s| s.code_font_size = 16.0));
+        cx.run_until_parked();
+        cx.update(store::flush);
+        let saved = read();
+        assert_eq!(saved["codeFontSize"], 16.0);
+        assert_eq!(saved["uiScale"], 1.4);
+        assert_eq!(saved["theirs"], serde_json::json!([1]));
+        std::fs::remove_file(&path).unwrap();
+        cx.update(|cx| Settings::update(cx, |s| s.code_font_size = 16.0));
+        cx.run_until_parked();
+        cx.update(store::flush);
+        assert!(!path.exists());
     }
 
     #[test]

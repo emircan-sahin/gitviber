@@ -350,6 +350,7 @@ unsafe fn parse_keystroke(native_event: id) -> Keystroke {
         let control = modifiers.contains(NSEventModifierFlags::NSControlKeyMask);
         let alt = modifiers.contains(NSEventModifierFlags::NSAlternateKeyMask);
         let mut shift = modifiers.contains(NSEventModifierFlags::NSShiftKeyMask);
+        let shift_held = shift;
         let command = modifiers.contains(NSEventModifierFlags::NSCommandKeyMask);
         let function = modifiers.contains(NSEventModifierFlags::NSFunctionKeyMask)
             && first_char
@@ -482,6 +483,18 @@ unsafe fn parse_keystroke(native_event: id) -> Keystroke {
             }
         };
 
+        // GitViber: a ⌘ or ⌃ chord on a punctuation key the layout types something else on
+        // also counts as the key's US name (Turkish Q types " left of 1, where ⌃` is). The keymap
+        // matches key_char with ⌘ and ⌃ alone, so not with ⌥: Turkish ⌥⌘ on the US = key would
+        // match ⌘=. Neither key_char is set for these chords otherwise.
+        if (control || command)
+            && !alt
+            && let Some(us) = us_name(native_event.keyCode(), shift_held, iso_keyboard())
+            && us != key
+        {
+            key_char = Some(us.to_string());
+        }
+
         Keystroke {
             modifiers: Modifiers {
                 control,
@@ -492,6 +505,68 @@ unsafe fn parse_keystroke(native_event: id) -> Keystroke {
             },
             key,
             key_char,
+        }
+    }
+}
+
+/// GitViber: what a US keyboard prints on the punctuation key `code`, shifted or not, as the
+/// keymap names it (⇧⌘] is ⌘}). On an ISO keyboard macOS reports the key left of 1 as
+/// kVK_ISO_Section and the one beside the left Shift as kVK_ANSI_Grave: by place, the US ` key
+/// is the first there, and the second has no US name.
+fn us_name(code: u16, shift: bool, iso: bool) -> Option<&'static str> {
+    const ISO_SECTION: u16 = 0x0A;
+    const GRAVE: u16 = 0x32;
+    let (plain, shifted) = match code {
+        0x18 => ("=", "+"),
+        0x1B => ("-", "_"),
+        0x1E => ("]", "}"),
+        0x21 => ("[", "{"),
+        0x27 => ("'", "\""),
+        0x29 => (";", ":"),
+        0x2A => ("\\", "|"),
+        0x2B => (",", "<"),
+        0x2C => ("/", "?"),
+        0x2F => (".", ">"),
+        ISO_SECTION if iso => ("`", "~"),
+        GRAVE if !iso => ("`", "~"),
+        _ => return None,
+    };
+    Some(if shift { shifted } else { plain })
+}
+
+/// GitViber: the keyboard is an ISO one (the § key left of 1, a key beside the left Shift).
+fn iso_keyboard() -> bool {
+    #[link(name = "Carbon", kind = "framework")]
+    unsafe extern "C" {
+        fn KBGetLayoutType(keyboard_type: i16) -> u32;
+    }
+    const ISO: u32 = u32::from_be_bytes(*b"ISO ");
+    unsafe { KBGetLayoutType(LMGetKbdType() as i16) == ISO }
+}
+
+#[cfg(test)]
+mod gitviber_tests {
+    use super::us_name;
+
+    #[test]
+    fn punctuation_keys_have_their_us_names() {
+        // kVK_ANSI_Equal, Minus, the brackets, Quote, Semicolon, Backslash, Comma, Slash, Period.
+        let plain: Vec<_> = [0x18, 0x1B, 0x1E, 0x21, 0x27, 0x29, 0x2A, 0x2B, 0x2C, 0x2F]
+            .into_iter()
+            .map(|c| us_name(c, false, false).unwrap())
+            .collect();
+        assert_eq!(plain, ["=", "-", "]", "[", "'", ";", "\\", ",", "/", "."]);
+        assert_eq!(us_name(0x1E, true, false), Some("}"));
+        assert_eq!(us_name(0x18, true, true), Some("+"));
+        // The key left of 1: kVK_ANSI_Grave on ANSI, kVK_ISO_Section on ISO.
+        assert_eq!(us_name(0x32, false, false), Some("`"));
+        assert_eq!(us_name(0x32, true, false), Some("~"));
+        assert_eq!(us_name(0x0A, false, true), Some("`"));
+        assert_eq!(us_name(0x32, false, true), None);
+        assert_eq!(us_name(0x0A, false, false), None);
+        // Letters and digits only count as typed: German ⌘Y (the US Z key) isn't ⌘Z.
+        for code in [0x00, 0x06, 0x10, 0x12, 0x1D] {
+            assert_eq!(us_name(code, false, false), None, "{code}");
         }
     }
 }
