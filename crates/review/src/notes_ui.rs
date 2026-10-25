@@ -362,11 +362,7 @@ pub(crate) fn note_card(note: &ReviewNote, root: &str, t: &AppTheme) -> AnyEleme
                                 .xsmall()
                                 .text_color(t.primary),
                         )
-                        .child(
-                            div()
-                                .font_weight(gpui_kit::FontWeight::MEDIUM)
-                                .child("Review note"),
-                        )
+                        .child(div().font_weight(t.medium()).child("Review note"))
                         .child(div().text_color(t.subtle).child(format!(
                             "on {}{}",
                             note_lines(note),
@@ -676,7 +672,7 @@ impl Render for NotesSection {
             .px(px(12.))
             .h(px(28.))
             .text_size(rems(0.72))
-            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+            .font_weight(t.semibold())
             .text_color(t.muted_foreground)
             .child("REVIEW NOTES")
             .child(div().text_color(t.subtle).child(open.to_string()))

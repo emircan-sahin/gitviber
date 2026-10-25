@@ -33,7 +33,7 @@ fn mark(status: PartStatus, t: &AppTheme) -> AnyElement {
         .w(px(10.))
         .flex_none()
         .text_center()
-        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+        .font_weight(t.semibold())
         .text_color(color)
         .child(sign)
         .into_any_element()
@@ -92,7 +92,7 @@ fn model_card(i: usize, m: &Model, t: &AppTheme, go: &OnSection) -> AnyElement {
                         .min_w_0()
                         .truncate()
                         .font_family(t.fonts.code.clone())
-                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                        .font_weight(t.semibold())
                         .child(m.name.clone()),
                 )
                 .when(!file.is_empty(), |d| {
@@ -262,9 +262,7 @@ fn flow_view(fi: usize, flow: &Flow, t: &AppTheme, go: &OnSection) -> AnyElement
                     .truncate()
                     .text_size(rems(0.72))
                     .when(!step.decision, |d| d.font_family(t.fonts.code.clone()))
-                    .when(step.decision, |d| {
-                        d.font_weight(gpui_kit::FontWeight::MEDIUM)
-                    })
+                    .when(step.decision, |d| d.font_weight(t.medium()))
                     .child(step.label.clone()),
             )
     });
@@ -301,7 +299,7 @@ fn flow_view(fi: usize, flow: &Flow, t: &AppTheme, go: &OnSection) -> AnyElement
         .child(
             div()
                 .text_size(rems(0.75))
-                .font_weight(gpui_kit::FontWeight::MEDIUM)
+                .font_weight(t.medium())
                 .text_color(t.muted_foreground)
                 .child(title),
         )
@@ -345,7 +343,7 @@ pub fn diagram(
                 .child(
                     div()
                         .text_size(rems(0.75))
-                        .font_weight(gpui_kit::FontWeight::MEDIUM)
+                        .font_weight(t.medium())
                         .text_color(t.muted_foreground)
                         .child("Data"),
                 )

@@ -41,11 +41,13 @@ fn terminal(window: &mut Window, cx: &mut App) -> Option<Entity<TerminalPanel>> 
     panel.view().downcast::<TerminalPanel>().ok()
 }
 
-/// A new terminal tab in `root`, `run` typed at its first prompt.
+/// A new terminal tab in `root`, `run` run at its first prompt.
 fn open_terminal(root: PathBuf, run: Option<String>, window: &mut Window, cx: &mut App) -> bool {
     let Some(panel) = terminal(window, cx) else {
         return false;
     };
+    // The panel only types it: without its Enter it sat at the prompt.
+    let run = run.map(|line| format!("{line}\r"));
     panel.update(cx, |p, cx| p.open_terminal(root, run, window, cx));
     true
 }

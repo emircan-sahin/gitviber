@@ -865,11 +865,7 @@ mod tests {
 
     #[gpui_kit::test]
     fn the_old_apps_guides_and_risks_come_over_once(cx: &mut gpui_kit::TestAppContext) {
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-review-legacy-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        // SAFETY: each test runs in its own process (nextest), before any thread reads it.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        let dir = gitviber_ui::test_support::config_dir("review-legacy");
         // As localStorage had them: id → run, oldest first, and one an older build mangled.
         let old = serde_json::json!({
             "gitviber.guides": {

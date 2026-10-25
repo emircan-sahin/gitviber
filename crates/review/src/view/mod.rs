@@ -19,10 +19,11 @@ use std::time::Duration;
 use gitviber_core::api;
 use gitviber_core::git::FileChange;
 use gitviber_diff::{
-    Annotation, Compare, DiffSource, LinePos, NoticeLevel, Side, StackedDiff, StackedEvent,
+    Annotation, Compare, DiffSource, LinePos, Notice, NoticeLevel, Side, StackedDiff, StackedEvent,
     StackedFile,
 };
 use gitviber_markdown::{MarkdownBase, MarkdownView};
+use gitviber_refs::toast::{Fixes, Note, git_failed};
 use gitviber_refs::{RepoEvent, RepoState};
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{now_unix, relative_time};
@@ -158,6 +159,21 @@ pub struct GuideView {
 
 fn short(s: &str) -> &str {
     &s[..s.len().min(7)]
+}
+
+/// A diff's notice as a toast. A git failure (a line action's) says what it means and offers
+/// the way out (another git holds the index lock: Remove lock), git's own words after.
+pub fn notice_note(n: &Notice) -> Note {
+    let title = n.title.clone();
+    match n.level {
+        NoticeLevel::Error => git_failed(
+            title,
+            n.detail.as_deref().unwrap_or_default(),
+            &Fixes::new(),
+        ),
+        NoticeLevel::Success => Note::success(title).maybe_detail(n.detail.clone()),
+        NoticeLevel::Info => Note::info(title).maybe_detail(n.detail.clone()),
+    }
 }
 
 /// What a viewed mark remembers of a file: a new edit changes it, and the mark lapses.
@@ -890,15 +906,7 @@ impl GuideView {
                     ws.update(cx, |ws, cx| ws.open(sel, false, window, cx));
                 }
             }
-            StackedEvent::Notice(n) => {
-                let toast = match n.level {
-                    NoticeLevel::Error => Toast::error(n.detail.clone().unwrap_or_default()),
-                    NoticeLevel::Success => Toast::success(n.detail.clone().unwrap_or_default()),
-                    NoticeLevel::Info => Toast::info(n.detail.clone().unwrap_or_default()),
-                }
-                .title(n.title.clone());
-                self.toast(toast, cx);
-            }
+            StackedEvent::Notice(n) => notice_note(n).show(window, cx),
             // A commit's guide takes the user's notes, on the commit's version.
             StackedEvent::AddNote { source, range } => {
                 let (source, range) = (source.clone(), *range);
@@ -1217,7 +1225,7 @@ fn note_box(text: &str, critical: bool, t: &AppTheme) -> AnyElement {
                             d.child(
                                 div()
                                     .text_color(t.destructive)
-                                    .font_weight(gpui_kit::FontWeight::MEDIUM)
+                                    .font_weight(t.medium())
                                     .child("Review carefully"),
                             )
                         })
@@ -1249,3 +1257,35 @@ impl TabItem for GuideView {
 }
 
 mod render;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn error(detail: &str) -> Notice {
+        Notice {
+            level: NoticeLevel::Error,
+            title: "Stage failed".into(),
+            detail: Some(detail.into()),
+        }
+    }
+
+    #[test]
+    fn a_line_actions_git_failure_is_explained_with_a_way_out() {
+        let lock = "fatal: Unable to create '/tmp/r/.git/index.lock': File exists.\n\nAnother \
+                    git process seems to be running in this repository.";
+        let note = notice_note(&error(lock));
+        assert_eq!(note.title.as_ref(), "Stage failed");
+        let detail = note.detail.clone().unwrap_or_default();
+        assert!(
+            detail.starts_with("Another git command holds the index lock\n"),
+            "{detail}"
+        );
+        assert!(detail.ends_with("running in this repository."), "{detail}");
+        assert_eq!(note.action.map(|a| a.label), Some("Remove lock".into()));
+        // What git doesn't explain shows as it said it.
+        let note = notice_note(&error("error: patch failed: a.rs:3"));
+        assert_eq!(note.detail.as_deref(), Some("error: patch failed: a.rs:3"));
+        assert!(note.action.is_none());
+    }
+}

@@ -40,11 +40,7 @@ impl Render for WsHost {
 
 /// A repo with `files` committed, and the config dir beside it.
 fn repo(name: &str, files: &[(&str, &str)]) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "gitviber-review-code-{name}-{}",
-        std::process::id()
-    ));
-    _ = std::fs::remove_dir_all(&dir);
+    let dir = gitviber_ui::test_support::temp_dir(&format!("review-code-{name}"));
     let repo = dir.join("repo");
     for (path, text) in files {
         let at = repo.join(path);

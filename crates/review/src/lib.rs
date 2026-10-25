@@ -32,7 +32,7 @@ pub use note_store::ReviewNotes;
 pub use notes_ui::{DiffNotes, NotesSection, attach_notes};
 pub use stacked_notes::{StackedNotes, attach_stacked_notes};
 pub use store::{Guides, RunKind, SavedRun};
-pub use view::GuideView;
+pub use view::{GuideView, notice_note};
 
 /// Guide tabs asked to write their guide once they know what's kept: a click is the ask, a tab
 /// restored from a saved workspace isn't.

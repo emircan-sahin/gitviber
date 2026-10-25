@@ -282,11 +282,7 @@ mod tests {
 
     #[gpui_kit::test]
     fn the_old_apps_notes_come_over_once_and_stay_bounded(cx: &mut gpui_kit::TestAppContext) {
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-review-notes-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        // SAFETY: each test runs in its own process (nextest), before any thread reads it.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        let dir = gitviber_ui::test_support::config_dir("review-notes");
         let note = serde_json::json!({ "id": "1", "path": "src/a.ts", "body": "Why?", "start": 2, "end": 3, "code": ["b", "c"], "before": ["a"], "after": [] });
         let old = serde_json::json!({
             "gitviber.reviewNotes": {

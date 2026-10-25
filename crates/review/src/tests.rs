@@ -118,8 +118,7 @@ fn git(dir: &Path, args: &[&str]) {
 
 /// A repo with a commit to explain and an uncommitted change, and the stand-in CLI beside it.
 fn setup(name: &str) -> (PathBuf, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("gitviber-review-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = gitviber_ui::test_support::temp_dir(&format!("review-{name}"));
     let repo = dir.join("repo");
     std::fs::create_dir_all(repo.join("src")).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
@@ -189,8 +188,7 @@ fn calls(agent: &Path) -> usize {
         .unwrap_or(0)
 }
 
-/// A commit to explain. Its guide reads only what git keeps: nothing writes in the repo, so
-/// core's watcher has no news for the test's single thread.
+/// A commit to explain.
 fn head_commit(cx: &mut VisualTestContext) -> GuideOf {
     let commit = cx.update(|_, cx| {
         let core = gitviber_ui::core(cx);
@@ -297,7 +295,9 @@ fn closing_its_tab_stops_the_run_before_the_agent_starts(cx: &mut TestAppContext
 #[gpui_kit::test]
 fn a_cancel_kills_the_agent_and_what_it_started(cx: &mut TestAppContext) {
     let (repo, agent) = setup("cancel");
-    std::fs::write(agent.with_file_name("delay"), "30").unwrap();
+    // 30 s, and a command line (`sleep 30.<pid>`) no other test's sleep has.
+    let delay = format!("30.{}", std::process::id());
+    std::fs::write(agent.with_file_name("delay"), &delay).unwrap();
     boot(cx, &agent);
     let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
     let ws = host.read_with(cx, |h, _| h.0.clone());
@@ -338,7 +338,7 @@ fn a_cancel_kills_the_agent_and_what_it_started(cx: &mut TestAppContext) {
         .success();
     assert!(!alive, "the agent CLI was killed");
     let sleeping = Command::new("pgrep")
-        .args(["-fx", "sleep 30"])
+        .args(["-fx", &format!("sleep {delay}")])
         .output()
         .unwrap();
     assert!(
@@ -411,9 +411,7 @@ fn a_note_written_on_a_commits_lines_is_kept_and_drawn_until_resolved(cx: &mut T
 
 #[gpui_kit::test]
 fn notes_on_the_files_on_disk_follow_their_lines(cx: &mut TestAppContext) {
-    let dir = std::env::temp_dir().join(format!("gitviber-review-check-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = gitviber_ui::test_support::temp_dir("review-check");
     // SAFETY: each test runs in its own process (nextest), before any thread reads it.
     unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", dir.join("config")) };
     let file = dir.join("a.txt");
@@ -646,10 +644,7 @@ fn a_branchs_guide_opens_once_its_branch_is_known(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn the_ask_box_starts_claude_code_with_the_model_last_picked(cx: &mut TestAppContext) {
-    let dir = std::env::temp_dir().join(format!("gitviber-review-model-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    // SAFETY: each test runs in its own process (nextest), before any thread reads it.
-    unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+    let dir = gitviber_ui::test_support::config_dir("review-model");
     cx.update(|cx| {
         gitviber_ui::init(cx);
         Settings::update(cx, |s| s.review_command = Some("claude -p".into()));

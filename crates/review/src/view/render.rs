@@ -313,7 +313,7 @@ impl GuideView {
                 .child(
                     div()
                         .text_size(rems(0.75))
-                        .font_weight(gpui_kit::FontWeight::MEDIUM)
+                        .font_weight(t.medium())
                         .child(format!(
                             "Ask {} about {}",
                             agent_name(&ReviewAgent::from_settings(Settings::get(cx)).command),
@@ -517,7 +517,7 @@ impl GuideView {
                             .flex_1()
                             .min_w_0()
                             .text_size(rems(1.2))
-                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                            .font_weight(t.semibold())
                             .child(title),
                     )
                     .child(buttons),
@@ -696,15 +696,12 @@ impl GuideView {
                     .items_center()
                     .gap(px(8.))
                     .child(icon(IconName::Bug, t.subtle))
-                    .child(
-                        div()
-                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                            .text_size(rems(0.82))
-                            .child(match &self.risks {
-                                Some(r) => format!("Risks ({})", r.len()),
-                                None => "Risks".into(),
-                            }),
-                    )
+                    .child(div().font_weight(t.semibold()).text_size(rems(0.82)).child(
+                        match &self.risks {
+                            Some(r) => format!("Risks ({})", r.len()),
+                            None => "Risks".into(),
+                        },
+                    ))
                     .child(
                         div()
                             .flex_1()
@@ -806,13 +803,11 @@ impl GuideView {
                             .flex_wrap()
                             .items_baseline()
                             .gap(px(8.))
-                            .child(div().font_weight(gpui_kit::FontWeight::MEDIUM).child(
-                                if r.title.is_empty() {
-                                    "Untitled".to_string()
-                                } else {
-                                    r.title.clone()
-                                },
-                            ))
+                            .child(div().font_weight(t.medium()).child(if r.title.is_empty() {
+                                "Untitled".to_string()
+                            } else {
+                                r.title.clone()
+                            }))
                             .children(place.map(|p| {
                                 div()
                                     .id(SharedString::from(format!("risk-at-{i}")))
@@ -1035,7 +1030,7 @@ impl GuideView {
                                     .child(
                                         div()
                                             .text_color(t.foreground)
-                                            .font_weight(gpui_kit::FontWeight::MEDIUM)
+                                            .font_weight(t.medium())
                                             .child("Check:"),
                                     )
                                     .child(s.check.clone()),
@@ -1134,7 +1129,7 @@ impl GuideView {
                             .flex_1()
                             .min_w_0()
                             .text_size(rems(0.92))
-                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                            .font_weight(t.semibold())
                             .cursor_pointer()
                             .hover(|s| s.text_color(t.primary))
                             .child(title.clone())
@@ -1194,7 +1189,7 @@ impl GuideView {
                 div()
                     .id("title-other")
                     .text_size(rems(0.92))
-                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                    .font_weight(t.semibold())
                     .cursor_pointer()
                     .hover(|s| s.text_color(t.primary))
                     .child(other.title)
@@ -1221,7 +1216,7 @@ impl GuideView {
             div()
                 .mb(px(6.))
                 .text_size(rems(0.82))
-                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                .font_weight(t.semibold())
                 .text_color(t.foreground)
                 .child(s)
         };

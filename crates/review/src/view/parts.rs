@@ -89,9 +89,7 @@ pub fn importance_tag(i: Importance, t: &AppTheme) -> impl IntoElement {
         .flex_none()
         .text_size(rems(0.72))
         .text_color(tone)
-        .when(i == Importance::High, |d| {
-            d.font_weight(gpui_kit::FontWeight::MEDIUM)
-        })
+        .when(i == Importance::High, |d| d.font_weight(t.medium()))
         .child(icon(importance_icon(i), tone))
         .child(i.label())
 }
@@ -135,7 +133,7 @@ pub fn count(n: usize, of: usize, t: &AppTheme) -> impl IntoElement {
         .gap(px(3.))
         .child(
             div()
-                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                .font_weight(t.semibold())
                 .text_color(if n == of { t.added } else { t.foreground })
                 .child(SharedString::from(n.to_string())),
         )
