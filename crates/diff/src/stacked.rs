@@ -4,14 +4,12 @@
 //! change holds a few dozen at a time. J/K walk the files, V marks the one on top viewed, C
 //! puts a note on the line under the pointer, else the first changed one in view.
 
-use crate::actions::{
-    AddNote, Command, NextFile, PrevFile, STACKED_CONTEXT, ToggleViewed, on_scroll_keys,
-};
+use crate::actions::{AddNote, Command, NextFile, PrevFile, STACKED_CONTEXT, ToggleViewed};
 use crate::annotate::{self, Annotation};
 use crate::data::DiffData;
 use crate::highlight::{self, Highlighted};
 use crate::language;
-use crate::list::{Heights, Place, Scroll, Step, vlist};
+use crate::list::{Heights, Place, Scroll, vlist};
 use crate::model::display::{self, CONTEXT as CONTEXT_LINES, FOLD_MIN, Item};
 use crate::model::overview::{Mark, counted_marks, item_marks};
 use crate::model::{LinePos, LineRange, REMOVED, Side};
@@ -21,6 +19,7 @@ use crate::source::{Compare, DiffSource};
 use crate::style::{DiffOptions, DiffStyle};
 use crate::view::Notice;
 use gitviber_core::Core;
+use gitviber_ui::keymap::scroll::{self, Step};
 use gitviber_ui::widgets::Toggle as _;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -1571,7 +1570,7 @@ impl Render for StackedDiff {
             .on_action(cx.listener(|this, _: &PrevFile, _, cx| this.step(false, cx)))
             .on_action(cx.listener(|this, _: &ToggleViewed, _, cx| this.toggle_top_viewed(cx)))
             .on_action(cx.listener(|this, _: &AddNote, _, cx| this.add_note(cx)))
-            .map(|el| on_scroll_keys(el, Self::scroll_key, cx))
+            .map(|el| scroll::on_keys(el, Self::scroll_key, cx))
             .map(|mut el| {
                 for (action, command) in crate::actions::answers(cx).iter() {
                     let (view, command) = (cx.weak_entity(), *command);

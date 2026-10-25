@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gitviber_ui::ActiveAppTheme as _;
+use gitviber_ui::keymap::scroll::{self, Step};
 use gitviber_ui::memory::Live;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::text::{
@@ -405,6 +406,27 @@ impl MarkdownView {
         self.state.update(cx, |s, cx| {
             _ = s.set_range_highlights(marks, cx);
         });
+    }
+
+    /// A scroll key (bound for "MarkdownView" in the app's keymap) moves the document. An
+    /// inline view doesn't take them: they go on to the page it's in.
+    fn scroll_key(&mut self, step: Step, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| {
+            if scroll::step_list(state.list_state(), step) {
+                cx.notify();
+            }
+        });
+    }
+
+    /// How far a view that scrolls itself is scrolled (tests).
+    #[doc(hidden)]
+    pub fn scroll_top(&self, cx: &App) -> Pixels {
+        -self
+            .state
+            .read(cx)
+            .list_state()
+            .scroll_px_offset_for_scrollbar()
+            .y
     }
 
     /// Scrolls to the footnote or the heading `anchor` names (GitHub's anchors); false if
@@ -903,6 +925,7 @@ impl Render for MarkdownView {
             .id("markdown-view")
             .key_context("MarkdownView")
             .track_focus(&self.focus)
+            .map(|el| scroll::on_keys(el, Self::scroll_key, cx))
             .size_full()
             .bg(t.code(t.background))
             .flex()
@@ -945,6 +968,7 @@ mod tests {
     use gpui_kit::{AnyView, TestAppContext, VisualTestContext};
 
     use super::*;
+    use crate::FindBar;
 
     struct Host(Option<AnyView>);
 
@@ -1112,6 +1136,117 @@ mod tests {
         });
         draw(cx);
         assert!(view.read_with(cx, |v, _| v.reveal.is_none()));
+    }
+
+    /// A long document filling the window, as a file's preview shows it, focused.
+    fn long_page(cx: &mut TestAppContext) -> (Entity<MarkdownView>, &mut VisualTestContext) {
+        let (host, cx) = window(cx);
+        let text: String = (1..=300)
+            .map(|i| format!("Paragraph {i}, a line of words to read.\n\n"))
+            .collect();
+        let view = cx.update(|window, cx| {
+            let view = cx.new(|cx| MarkdownView::new(&text, MarkdownBase::default(), window, cx));
+            host.update(cx, |h, cx| {
+                h.0 = Some(view.clone().into());
+                cx.notify();
+            });
+            window.focus(&view.focus_handle(cx), cx);
+            view
+        });
+        draw(cx);
+        (view, cx)
+    }
+
+    /// How far the document is scrolled, and how far it can be.
+    fn scrolled(view: &Entity<MarkdownView>, cx: &mut VisualTestContext) -> (f32, f32) {
+        view.read_with(cx, |v, cx| {
+            let max = v.state.read(cx).list_state().max_offset_for_scrollbar().y;
+            (f32::from(v.scroll_top(cx)), f32::from(max))
+        })
+    }
+
+    #[gpui_kit::test]
+    fn scroll_keys_move_a_focused_document(cx: &mut TestAppContext) {
+        let (view, cx) = long_page(cx);
+        let (_, max) = scrolled(&view, cx);
+        let height = view.read_with(cx, |v, cx| {
+            f32::from(v.state.read(cx).list_state().viewport_bounds().size.height)
+        });
+        assert!(height > 100. && max > height * 4., "{height} {max}");
+        let (line, page) = (f32::from(scroll::LINE), height * scroll::PAGE);
+        let (top, bottom) = if cfg!(target_os = "macos") {
+            ("cmd-up", "cmd-down")
+        } else {
+            ("ctrl-home", "ctrl-end")
+        };
+        for (keys, want) in [
+            ("up", 0.),
+            ("down", line),
+            ("down down", line * 3.),
+            ("up", line * 2.),
+            ("pagedown", line * 2. + page),
+            ("space", line * 2. + page * 2.),
+            ("shift-space", line * 2. + page),
+            ("pageup", line * 2.),
+            ("end", max),
+            ("down pagedown space", max),
+            ("home", 0.),
+            (bottom, max),
+            (top, 0.),
+        ] {
+            cx.simulate_keystrokes(keys);
+            draw(cx);
+            let (at, _) = scrolled(&view, cx);
+            assert!((at - want).abs() < 0.5, "{keys}: at {at}, not {want}");
+        }
+    }
+
+    /// A page of inline views, as a note or a pull request is: it scrolls with the keys, also
+    /// from a view focused in it, and never takes them from its find box.
+    struct Page {
+        view: Entity<MarkdownView>,
+        bar: Entity<FindBar>,
+        steps: Vec<Step>,
+    }
+
+    impl Render for Page {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .key_context("MarkdownView")
+                .size_full()
+                .map(|el| scroll::on_keys(el, |p: &mut Self, step, _| p.steps.push(step), cx))
+                .child(self.view.clone())
+                .child(self.bar.clone())
+        }
+    }
+
+    #[gpui_kit::test]
+    fn an_inline_view_leaves_the_keys_to_its_page_and_a_field_keeps_them(cx: &mut TestAppContext) {
+        gitviber_ui::test_support::config_dir("markdown-test");
+        cx.update(gitviber_ui::init);
+        let (page, cx) = cx.add_window_view(|window, cx| Page {
+            view: cx
+                .new(|cx| MarkdownView::inline("Some text", MarkdownBase::default(), window, cx)),
+            bar: cx.new(|cx| FindBar::new(window, cx)),
+            steps: Vec::new(),
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            let focus = page.read(cx).view.focus_handle(cx);
+            window.focus(&focus, cx);
+        });
+        cx.simulate_keystrokes("pagedown down");
+        let steps = page.read_with(cx, |p, _| p.steps.clone());
+        assert_eq!(steps, [Step::Pages(1.), Step::Lines(1.)]);
+        cx.update(|window, cx| {
+            let bar = page.read(cx).bar.clone();
+            bar.update(cx, |b, cx| b.focus(window, cx));
+        });
+        cx.simulate_keystrokes("space pagedown end");
+        let (steps, query) = page.read_with(cx, |p, cx| {
+            (p.steps.len(), p.bar.read(cx).query().text.clone())
+        });
+        assert_eq!((steps, query.as_str()), (2, " "), "typed into the box");
     }
 
     #[test]

@@ -52,7 +52,7 @@ impl FileSource {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
+pub(crate) enum Mode {
     Code,
     Preview,
 }
@@ -697,7 +697,7 @@ impl FileView {
         *preview = Some(view);
     }
 
-    fn shown_preview(&self) -> Option<Entity<MarkdownView>> {
+    pub(crate) fn shown_preview(&self) -> Option<Entity<MarkdownView>> {
         match &self.content {
             Content::Text {
                 preview: Some(p), ..
@@ -784,10 +784,13 @@ impl FileView {
         cx.notify();
     }
 
-    fn set_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn set_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
         if self.mode == mode {
             return;
         }
+        // The keyboard was in the tab: it goes into what shows now, so the preview's scroll keys
+        // or the editor's take it.
+        let had_focus = self.focus.contains_focused(window, cx);
         self.mode = mode;
         // The box searches the rendered copy, which goes or comes anew.
         self.find_open = false;
@@ -808,6 +811,9 @@ impl FileView {
                     *svg = None;
                 }
             }
+        }
+        if had_focus && let Some(focus) = self.tab_focus(cx) {
+            focus.focus(window, cx);
         }
         cx.notify();
     }

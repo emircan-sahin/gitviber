@@ -750,6 +750,110 @@ fn find_in_the_rendered_markdown_preview(cx: &mut TestAppContext) {
     _ = std::fs::remove_dir_all(&repo);
 }
 
+/// A markdown file opened with the keyboard (⌘P) shows its preview with the keyboard in it, so
+/// the page keys scroll it; switching Code and Preview takes the keyboard along, and the find
+/// box keeps its keys.
+#[gpui_kit::test]
+fn a_markdown_preview_opened_with_focus_scrolls_with_the_keys(cx: &mut TestAppContext) {
+    use crate::file_view::Mode;
+    setup(cx);
+    let repo = gitviber_ui::test_support::temp_dir("files-mdkeys");
+    let text: String = (1..=300)
+        .map(|i| format!("Paragraph {i}, a line of words to read.\n\n"))
+        .collect();
+    std::fs::write(repo.join("CHANGELOG.md"), text).unwrap();
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    cx.update(gitviber_ui::install_core);
+    let (host, cx) = cx.add_window_view(|_, cx| WsHost(cx.new(Workspace::new)));
+    let ws = host.read_with(cx, |h, _| h.0.clone());
+    cx.update(|window, cx| {
+        Workspace::register_window(&ws, window, cx);
+        ws.update(cx, |ws, cx| ws.open_project(repo.clone(), window, cx));
+    });
+    cx.run_until_parked();
+    let weak = ws.downgrade();
+    cx.update(|window, cx| {
+        let opts = crate::OpenOptions {
+            focus: true,
+            ..Default::default()
+        };
+        crate::open_file(&weak, "CHANGELOG.md", opts, window, cx)
+    });
+    cx.run_until_parked();
+    let draw = |cx: &mut gpui_kit::VisualTestContext| {
+        for _ in 0..2 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        }
+    };
+    draw(cx);
+    let file = cx.update(|_, cx| {
+        let view = ws.read(cx).tabs().active().unwrap().item.handle().unwrap();
+        view.view().downcast::<crate::FileView>().unwrap()
+    });
+    let preview = |cx: &mut gpui_kit::VisualTestContext| {
+        file.read_with(cx, |f, _| f.shown_preview().expect("the preview shows"))
+    };
+    let focused = |cx: &mut gpui_kit::VisualTestContext| {
+        let preview = preview(cx);
+        cx.update(|window, cx| {
+            gpui_kit::Focusable::focus_handle(preview.read(cx), cx).is_focused(window)
+        })
+    };
+    let top = |cx: &mut gpui_kit::VisualTestContext| {
+        let preview = preview(cx);
+        preview.read_with(cx, |p, cx| p.scroll_top(cx))
+    };
+    assert!(focused(cx), "the keyboard is in the preview");
+    cx.simulate_keystrokes("pagedown");
+    draw(cx);
+    let page = top(cx);
+    assert!(page > gpui_kit::px(100.), "{page:?}");
+    cx.simulate_keystrokes("space");
+    draw(cx);
+    assert!(top(cx) > page);
+
+    cx.update(|window, cx| file.update(cx, |f, cx| f.set_mode(Mode::Code, window, cx)));
+    draw(cx);
+    cx.update(|window, cx| {
+        let code = file.read(cx).code().expect("the text shows");
+        assert!(
+            code.read(cx).editor_focus(cx).is_focused(window),
+            "into the code"
+        );
+    });
+    cx.update(|window, cx| file.update(cx, |f, cx| f.set_mode(Mode::Preview, window, cx)));
+    draw(cx);
+    assert!(focused(cx), "back into the preview");
+    cx.simulate_keystrokes("end");
+    draw(cx);
+    let end = top(cx);
+    assert!(end > page * 4., "{end:?}");
+
+    // The find box takes Space and the page keys; Esc gives them back to the page.
+    cx.update(|window, cx| file.update(cx, |f, cx| f.open_find(window, cx)));
+    draw(cx);
+    cx.simulate_keystrokes("space");
+    draw(cx);
+    let found = file.read_with(cx, |f, cx| f.preview_find(cx));
+    assert!(found.is_some_and(|(_, n)| n > 0), "Space typed a space");
+    let at = top(cx);
+    cx.simulate_keystrokes("pagedown end");
+    draw(cx);
+    assert_eq!(top(cx), at, "the box's keys");
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    assert!(focused(cx));
+    cx.simulate_keystrokes("end");
+    draw(cx);
+    assert_eq!(top(cx), end);
+    _ = std::fs::remove_dir_all(&repo);
+}
+
 /// The workspace's active tab and a panel, side by side.
 struct PanelHost(gpui_kit::Entity<Workspace>, Option<AnyView>);
 

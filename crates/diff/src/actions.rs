@@ -1,9 +1,8 @@
 //! The diff's commands and their default keys, as the old app's Diff and Review commands had
 //! them. Bound in the diff's own key context, so the app's keymap can rebind them by name.
 
-use crate::list::Step;
-use gitviber_ui::keymap::INPUT_CONTEXT;
-use gpui_kit::{Action, App, Context, Global, InteractiveElement, KeyBinding};
+use gitviber_ui::keymap::scroll;
+use gpui_kit::{Action, App, Global, KeyBinding};
 use std::rc::Rc;
 
 /// The key context of a focused diff.
@@ -41,14 +40,6 @@ gpui_kit::actions!(
         FindMatchCase,
         FindWholeWord,
         FindRegex,
-        ScrollUp,
-        ScrollDown,
-        PageUp,
-        PageDown,
-        ScrollToTop,
-        ScrollToBottom,
-        ScrollLeft,
-        ScrollRight,
     ]
 );
 
@@ -104,45 +95,9 @@ pub fn init_local(cx: &mut App) {
 /// The keys that scroll the lines, the old diff's set. Never while typing in a field over or
 /// between them (find, a note); the editor has its own context.
 fn bind_scroll(cx: &mut App) {
-    let (top, bottom) = if cfg!(target_os = "macos") {
-        ("cmd-up", "cmd-down")
-    } else {
-        ("ctrl-home", "ctrl-end")
-    };
     for context in [CONTEXT, STACKED_CONTEXT] {
-        let context = format!("{context} && !{INPUT_CONTEXT}");
-        let c = Some(context.as_str());
-        cx.bind_keys([
-            KeyBinding::new("up", ScrollUp, c),
-            KeyBinding::new("down", ScrollDown, c),
-            KeyBinding::new("pageup", PageUp, c),
-            KeyBinding::new("pagedown", PageDown, c),
-            KeyBinding::new("shift-space", PageUp, c),
-            KeyBinding::new("space", PageDown, c),
-            KeyBinding::new("home", ScrollToTop, c),
-            KeyBinding::new("end", ScrollToBottom, c),
-            KeyBinding::new(top, ScrollToTop, c),
-            KeyBinding::new(bottom, ScrollToBottom, c),
-            KeyBinding::new("left", ScrollLeft, c),
-            KeyBinding::new("right", ScrollRight, c),
-        ]);
+        scroll::bind(cx, context, true);
     }
-}
-
-/// Hands each scroll key's step to `f`.
-pub(crate) fn on_scroll_keys<T: 'static, E: InteractiveElement>(
-    el: E,
-    f: fn(&mut T, Step, &mut Context<T>),
-    cx: &Context<T>,
-) -> E {
-    el.on_action(cx.listener(move |t, _: &ScrollUp, _, cx| f(t, Step::Lines(-1.), cx)))
-        .on_action(cx.listener(move |t, _: &ScrollDown, _, cx| f(t, Step::Lines(1.), cx)))
-        .on_action(cx.listener(move |t, _: &PageUp, _, cx| f(t, Step::Pages(-1.), cx)))
-        .on_action(cx.listener(move |t, _: &PageDown, _, cx| f(t, Step::Pages(1.), cx)))
-        .on_action(cx.listener(move |t, _: &ScrollToTop, _, cx| f(t, Step::Start, cx)))
-        .on_action(cx.listener(move |t, _: &ScrollToBottom, _, cx| f(t, Step::End, cx)))
-        .on_action(cx.listener(move |t, _: &ScrollLeft, _, cx| f(t, Step::Side(-1.), cx)))
-        .on_action(cx.listener(move |t, _: &ScrollRight, _, cx| f(t, Step::Side(1.), cx)))
 }
 
 /// Match Case, Whole Word and Regex while typing in the find box, as the code view's box has them.

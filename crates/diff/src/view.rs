@@ -9,7 +9,7 @@ use crate::edit::{DiffEditor, EditEvent};
 use crate::highlight::{self, Highlighted};
 use crate::image::{ImageCompare, image_format};
 use crate::language;
-use crate::list::{Heights, Place, Scroll, Step, vlist};
+use crate::list::{Heights, Place, Scroll, vlist};
 use crate::model::display::{self, CONTEXT as CONTEXT_LINES, FOLD_MIN, Item};
 use crate::model::overview::item_marks;
 use crate::model::staging::{self, Change, Picked};
@@ -19,6 +19,7 @@ use crate::paint::{self, Metrics};
 use crate::source::{Compare, DiffSource};
 use crate::style::{DiffOptions, DiffStyle, ImageMode, Layout, Whitespace};
 use gitviber_core::Core;
+use gitviber_ui::keymap::scroll::{self, Step};
 use gitviber_ui::keymap::{editor, find as find_keys};
 use gitviber_ui::widgets::{Toggle as _, segmented};
 use gpui_kit::assets::IconName as Lucide;
@@ -2478,7 +2479,7 @@ impl Render for DiffView {
             .on_action(cx.listener(|this, _: &Save, window, cx| this.save(window, cx)))
             .on_action(cx.listener(|this, _: &SelectUp, _, cx| this.select_step(false, cx)))
             .on_action(cx.listener(|this, _: &SelectDown, _, cx| this.select_step(true, cx)))
-            .map(|el| on_scroll_keys(el, Self::scroll_key, cx))
+            .map(|el| scroll::on_keys(el, Self::scroll_key, cx))
             .on_action(cx.listener(|this, _: &editor::Find, window, cx| this.open_find(window, cx)))
             .on_action(cx.listener(|this, _: &find_keys::Next, _, cx| this.find_key(true, cx)))
             .on_action(cx.listener(|this, _: &find_keys::Prev, _, cx| this.find_key(false, cx)))

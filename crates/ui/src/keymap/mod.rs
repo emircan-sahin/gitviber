@@ -5,6 +5,7 @@
 pub mod chord;
 mod commands;
 pub mod edit;
+pub mod scroll;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -464,6 +465,9 @@ pub(crate) fn init(cx: &mut App) {
     install(cx);
     // Not ours to replace on a rebinding (no META): install keeps them.
     cx.bind_keys(find_bindings(IS_MAC));
+    // A rendered document, whichever view shows it; one inside a page that scrolls hands the
+    // keys on to it.
+    scroll::bind(cx, "MarkdownView", false);
     // For the app's life, holding nothing.
     cx.intercept_keystrokes(|e, window, cx| {
         PRESSED.set(Some(e.keystroke.clone()));

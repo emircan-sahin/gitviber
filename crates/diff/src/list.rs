@@ -2,6 +2,7 @@
 //! front (a code line, a file header, the room a file not loaded yet keeps), so the scroll
 //! height is exact and a rebuilt list can put the same content back at the top.
 
+use gitviber_ui::keymap::scroll::Step;
 use gpui_kit::base::ScrollbarHandle;
 use gpui_kit::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, DispatchPhase, Element, ElementId,
@@ -143,17 +144,7 @@ impl Scroll {
     }
 }
 
-/// How far a scroll key moves the list: down or right, negative up or left.
-#[derive(Clone, Copy, Debug)]
-pub enum Step {
-    Lines(f32),
-    Pages(f32),
-    Start,
-    End,
-    /// `SIDE_STEP` at a time.
-    Side(f32),
-}
-
+/// A sideways scroll key's step.
 const SIDE_STEP: Pixels = px(40.);
 
 impl ScrollbarHandle for Scroll {
