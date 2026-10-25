@@ -2,7 +2,7 @@
 
 A pushed `v*` tag runs [`release.yml`](.github/workflows/release.yml): it builds the macOS app
 for Apple Silicon and for Intel (`aarch64` and `x64`, each app and its `.dmg` signed and
-notarized; the LZMA disk images came to 19.5 MB and 22.6 MB for 0.1.18, and one universal app
+notarized; the LZMA disk images came to 20.6 MB and 23.7 MB for 0.1.18, and one universal app
 would be twice the download and the disk for everyone) and the
 Linux `.deb`, `.rpm` and AppImage, then leaves them on a **draft** release with `SHA256SUMS`, the updater's `latest.json`
 and notes from [CHANGELOG.md](CHANGELOG.md). Nothing is public until you publish the draft.

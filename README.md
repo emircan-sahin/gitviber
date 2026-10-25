@@ -178,8 +178,8 @@ brew install --cask emircan-sahin/tap/gitviber
 ```
 
 Or grab the `.dmg` for your Mac from [Releases](https://github.com/emircan-sahin/gitviber/releases/latest):
-`GitViber_<version>_aarch64.dmg` for Apple Silicon (19.5 MB), `GitViber_<version>_x64.dmg` for
-Intel (22.6 MB). Apple menu → About This Mac says which chip you have; Homebrew and the updater pick
+`GitViber_<version>_aarch64.dmg` for Apple Silicon (20.6 MB), `GitViber_<version>_x64.dmg` for
+Intel (23.7 MB). Apple menu → About This Mac says which chip you have; Homebrew and the updater pick
 the right one themselves.
 
 **Linux x86_64** from the same page: `.deb` for Debian and Ubuntu, `.rpm` for Fedora, `.AppImage` for the rest.

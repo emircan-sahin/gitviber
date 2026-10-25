@@ -103,7 +103,7 @@
       {
         "big": "~20 MB",
         "title": "The whole download.",
-        "text": "19.5 MB for Apple Silicon, 22.6 MB for Intel. No browser engine is packed inside: the app draws its own window."
+        "text": "20.6 MB for Apple Silicon, 23.7 MB for Intel. No browser engine is packed inside: the app draws its own window."
       },
       {
         "big": "~100 MB",

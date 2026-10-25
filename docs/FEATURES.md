@@ -429,7 +429,7 @@ last release built on a web view, was measured the same way on the same Mac.
 
 | | 0.1.18 | 0.1.17 |
 | --- | --- | --- |
-| Download, Apple Silicon / Intel | 19.5 MB / 22.6 MB | 29 MB, one for both |
+| Download, Apple Silicon / Intel | 20.6 MB / 23.7 MB | 29 MB, one for both |
 | Memory at launch, the repository open | 95–100 MB | 317 MB |
 | With History and a file open | 104 MB | |
 | Minimized or covered by another window | 52–62 MB | |
