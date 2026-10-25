@@ -422,6 +422,38 @@ fn a_flow_in_words() {
     );
 }
 
+/// guideMermaid.test.ts' `asDrawn`: a flow's text is drawn without the bidi controls that
+/// would reorder it; other marks (RLM, zero width space) stay.
+#[test]
+fn a_flows_text_loses_its_bidi_controls() {
+    let answer = json!({
+        "title": "T",
+        "overview": "o",
+        "diagram": { "flows": [{
+            "title": "\u{2067}Claim\u{2069} flow",
+            "steps": [
+                { "id": "a", "label": "\u{202E}evil\u{202C} \u{200F} RTL مرحبا \u{200B}", "file": "src/\u{2066}x\u{2069}.ts" },
+                { "id": "b", "label": "\u{202A}\u{202B}\u{202D}\u{2068}" },
+                { "id": "c", "label": "next" }
+            ],
+            "edges": [{ "from": "a", "to": "c", "label": "\u{202A}yes\u{202C}" }]
+        }]},
+        "sections": [{ "title": "S", "summary": "s", "files": ["a.ts"] }]
+    });
+    let g = parse_guide(&answer.to_string()).unwrap();
+    let f = &g.flows[0];
+    assert_eq!(f.title, "Claim flow");
+    let labels: Vec<&str> = f.steps.iter().map(|s| s.label.as_str()).collect();
+    // Only controls: nothing left to draw, so not a step.
+    assert_eq!(labels, ["evil \u{200F} RTL مرحبا \u{200B}", "next"]);
+    assert_eq!(f.steps[0].file, "src/x.ts");
+    assert_eq!(f.edges[0].label, "yes");
+    assert_eq!(
+        describe_flow(f)[0],
+        "evil \u{200F} RTL مرحبا \u{200B} (unchanged in src/x.ts), then yes: next"
+    );
+}
+
 #[test]
 fn a_hostile_5_mb_answer_parses_fast_with_its_diagram_capped() {
     let word = "x".repeat(200);

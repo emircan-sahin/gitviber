@@ -554,6 +554,15 @@ fn line(v: Option<&Value>, max: usize) -> String {
     clip(&one_line(&text(v)), max)
 }
 
+/// `line`, without the bidi controls that would reorder a flow's text when it's drawn.
+fn flow_line(v: Option<&Value>, max: usize) -> String {
+    let t: String = text(v)
+        .chars()
+        .filter(|c| !matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'))
+        .collect();
+    clip(&one_line(&t), max)
+}
+
 /// A part's section number, when it names one of the `count` there are.
 fn section_of(v: Option<&Value>, count: usize) -> Option<usize> {
     let n = whole(v)?;
@@ -604,7 +613,7 @@ fn parse_flows(v: Option<&Value>, count: usize) -> Vec<Flow> {
             if id.is_empty() {
                 id = format!("#{i}");
             }
-            let label = line(s.get("label"), 100);
+            let label = flow_line(s.get("label"), 100);
             if label.is_empty() || ids.contains(&id) || steps.len() >= limits::STEPS {
                 continue;
             }
@@ -612,7 +621,7 @@ fn parse_flows(v: Option<&Value>, count: usize) -> Vec<Flow> {
             steps.push(FlowStep {
                 id,
                 label,
-                file: bare(line(s.get("file"), 200)),
+                file: bare(flow_line(s.get("file"), 200)),
                 status: PartStatus::read(s.get("status")),
                 decision: text(s.get("kind")).eq_ignore_ascii_case("decision"),
                 section: section_of(s.get("section"), count),
@@ -627,7 +636,7 @@ fn parse_flows(v: Option<&Value>, count: usize) -> Vec<Flow> {
             let edge = FlowEdge {
                 from: line(e.get("from"), 80),
                 to: line(e.get("to"), 80),
-                label: line(e.get("label"), 40),
+                label: flow_line(e.get("label"), 40),
             };
             let key = format!("{}\0{}\0{}", edge.from, edge.to, edge.label);
             if !ids.contains(&edge.from) || !ids.contains(&edge.to) || !seen.insert(key) {
@@ -639,7 +648,7 @@ fn parse_flows(v: Option<&Value>, count: usize) -> Vec<Flow> {
             }
         }
         out.push(Flow {
-            title: line(f.get("title"), 100),
+            title: flow_line(f.get("title"), 100),
             steps,
             edges,
         });
@@ -829,7 +838,7 @@ pub fn section_badge(n: usize) -> String {
     format!("{n:02}")
 }
 
-/// A flow in words, a line a step, for when it can't be drawn.
+/// A flow in words, a line a step: what a screen reader reads of each step's box.
 pub fn describe_flow(flow: &Flow) -> Vec<String> {
     let label: HashMap<&str, &str> = flow
         .steps

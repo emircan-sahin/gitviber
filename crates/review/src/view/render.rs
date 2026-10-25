@@ -1209,7 +1209,7 @@ impl GuideView {
             .into_any_element()
     }
 
-    fn guide_column(&self, guide: &Rc<Guide>, cx: &mut Context<Self>) -> AnyElement {
+    fn guide_column(&self, guide: &Rc<Guide>, a11y: bool, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.app_theme().clone();
         let mut children: Vec<AnyElement> = vec![];
         let section_h = |s: &'static str, t: &AppTheme| {
@@ -1249,6 +1249,7 @@ impl GuideView {
                         &guide.models,
                         &guide.flows,
                         self.legacy.clone().map(|v| v.into_any_element()),
+                        a11y,
                         &t,
                         &go,
                     ))
@@ -1477,12 +1478,11 @@ impl Render for GuideView {
                             .when(nav && !rail, |d| {
                                 d.child(self.nav_chips(&items, &guide, cx))
                             })
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_h_0()
-                                    .child(self.guide_column(&guide, cx)),
-                            ),
+                            .child(div().flex_1().min_h_0().child(self.guide_column(
+                                &guide,
+                                window.is_a11y_active(),
+                                cx,
+                            ))),
                     )
                     .child(div().flex_1().min_w_0().h_full().child(self.diffs(cx)))
                     .into_any_element()

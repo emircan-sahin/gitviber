@@ -255,6 +255,98 @@ mod tests {
         ));
     }
 
+    /// suggest.test.ts: a guided review runs Commit Messages' agent, model and effort, each
+    /// per preset, unless it has its own.
+    #[test]
+    fn a_review_takes_its_own_model_and_effort_per_preset() {
+        let line = |own: gitviber_ui::Settings| {
+            let s = gitviber_ui::Settings {
+                suggest_command: "codex exec".into(),
+                suggest_models: m(&[("codex", "gpt-x"), ("claude", "opus")]),
+                suggest_efforts: m(&[("codex", "high")]),
+                ..own
+            };
+            ReviewAgent::from_settings(&s).line(true)
+        };
+        let own = gitviber_ui::Settings::default;
+        let reads = "--strict-mcp-config --no-session-persistence --disable-slash-commands --tools Read,Grep,Glob";
+        assert_eq!(
+            line(own()),
+            "codex exec -m gpt-x -c model_reasoning_effort=high"
+        );
+        // Its own effort with Commit Messages' model, and the other way round.
+        let efforts = |e| gitviber_ui::Settings {
+            review_efforts: m(e),
+            ..own()
+        };
+        assert_eq!(
+            line(efforts(&[("codex", "xhigh")])),
+            "codex exec -m gpt-x -c model_reasoning_effort=xhigh"
+        );
+        assert_eq!(
+            line(gitviber_ui::Settings {
+                review_models: m(&[("codex", "gpt-y")]),
+                ..own()
+            }),
+            "codex exec -m gpt-y -c model_reasoning_effort=high"
+        );
+        // Its own effort "", the CLI's default, passes none.
+        assert_eq!(line(efforts(&[("codex", "")])), "codex exec -m gpt-x");
+        // Its own command takes Commit Messages' model for that preset and the preset's effort.
+        let claude = || gitviber_ui::Settings {
+            review_command: Some("claude -p".into()),
+            ..own()
+        };
+        assert_eq!(
+            line(claude()),
+            format!("claude -p {reads} --model opus --effort medium")
+        );
+        assert_eq!(
+            line(gitviber_ui::Settings {
+                review_models: m(&[("claude", "sonnet")]),
+                review_efforts: m(&[("claude", "max")]),
+                ..claude()
+            }),
+            format!("claude -p {reads} --model sonnet --effort max")
+        );
+        // A custom one carries its own: no preset's model reaches it.
+        assert_eq!(
+            line(gitviber_ui::Settings {
+                review_command: Some("my-agent --fast".into()),
+                review_models: m(&[("codex", "z")]),
+                ..own()
+            }),
+            "my-agent --fast"
+        );
+        // The header's model and effort are the ones that ran.
+        assert_eq!(
+            run_details(&line(efforts(&[("codex", "low")]))),
+            ["gpt-x", "low"]
+        );
+    }
+
+    /// Left from when its own command was Claude Code, a review's Claude model and effort don't
+    /// reach Commit Messages' codex; and its own command "" is its own.
+    #[test]
+    fn another_presets_choice_stays_with_it() {
+        let s = gitviber_ui::Settings {
+            suggest_command: "codex exec".into(),
+            review_models: m(&[("claude", "opus")]),
+            review_efforts: m(&[("claude", "max")]),
+            ..Default::default()
+        };
+        let none = Models::new();
+        assert_eq!(
+            ReviewAgent::from_settings(&s).line(true),
+            command_line("codex exec", &none, &none, true, true)
+        );
+        let own = gitviber_ui::Settings {
+            review_command: Some(String::new()),
+            ..s
+        };
+        assert_eq!(ReviewAgent::from_settings(&own).command, "");
+    }
+
     #[test]
     fn the_review_agent_falls_back_to_commit_messages() {
         let mut s = gitviber_ui::Settings {
