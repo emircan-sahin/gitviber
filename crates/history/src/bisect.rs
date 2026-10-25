@@ -11,8 +11,8 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _};
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, FontWeight, Global, IntoElement, ParentElement as _,
-    Render, SharedString, Styled as _, Task, Window, div, prelude::FluentBuilder as _, rems,
+    App, AppContext as _, Context, Entity, Global, IntoElement, ParentElement as _, Render,
+    SharedString, Styled as _, Task, Window, div, prelude::FluentBuilder as _, rems,
 };
 
 /// What git said last: its words, and the first bad commit once found.
@@ -146,7 +146,7 @@ impl Render for BisectBar {
                             .small()
                             .text_color(t.primary),
                     )
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child("Bisecting"))
+                    .child(div().font_weight(t.semibold()).child("Bisecting"))
                     .child(
                         div()
                             .min_w_0()

@@ -12,8 +12,8 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, FontWeight,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString,
+    App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, InteractiveElement as _,
+    IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
     prelude::FluentBuilder as _, px, rems,
 };
@@ -172,7 +172,7 @@ impl Render for RefPicker {
                         .pt_2()
                         .pb_1()
                         .text_size(rems(0.65625))
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_weight(t.semibold())
                         .text_color(t.subtle)
                         .child(row.group.to_uppercase())
                         .into_any_element(),

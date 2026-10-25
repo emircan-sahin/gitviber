@@ -1377,7 +1377,7 @@ impl HistoryPanel {
                     .child(
                         div()
                             .flex_none()
-                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                            .font_weight(t.semibold())
                             .child(title.to_uppercase()),
                     )
                     .child(

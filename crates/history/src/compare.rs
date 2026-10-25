@@ -16,10 +16,9 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{Disableable as _, Icon, Selectable as _, Sizable as _};
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, FocusHandle, FontWeight, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
-    rems,
+    App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::files::FileList;
@@ -381,7 +380,7 @@ impl CompareView {
                 div()
                     .flex_none()
                     .text_size(rems(0.65625))
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .font_weight(t.semibold())
                     .text_color(t.subtle)
                     .child(side.to_uppercase()),
             )
@@ -495,7 +494,7 @@ impl CompareView {
                     .text_color(t.muted_foreground)
                     .child(div().font_family(mono.clone()).text_color(t.foreground).child(self.head.label.clone()))
                     .child("is")
-                    .child(div().font_weight(FontWeight::SEMIBOLD).text_color(t.foreground).child(standing))
+                    .child(div().font_weight(t.semibold()).text_color(t.foreground).child(standing))
                     .child(div().font_family(mono).text_color(t.foreground).child(self.base.label.clone()))
                     .when(!c.files.is_empty(), |d| {
                         d.child(div().px_1().text_color(t.subtle).child("·"))
@@ -728,7 +727,7 @@ impl Render for CompareView {
                                             .px_3()
                                             .text_size(rems(0.65625))
                                             .text_color(t.subtle)
-                                            .child(div().font_weight(FontWeight::SEMIBOLD).child("CHANGED FILES"))
+                                            .child(div().font_weight(t.semibold()).child("CHANGED FILES"))
                                             .child(div().font_family(t.fonts.code.clone()).text_color(t.muted_foreground).child(c.files.len().to_string()))
                                             .child(div().min_w_0().truncate().text_size(rems(0.6875)).child(between)),
                                     )

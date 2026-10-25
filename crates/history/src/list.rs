@@ -21,11 +21,10 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, DragMoveEvent, Entity,
-    EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement as _, IntoElement,
-    KeyDownEvent, ListAlignment, ListOffset, ListState, MouseButton, ParentElement as _,
-    PathBuilder, Pixels, Point, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Task, WeakEntity, Window, canvas, div, fill, list, point, prelude::FluentBuilder as _, px,
-    rems, size,
+    EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent,
+    ListAlignment, ListOffset, ListState, MouseButton, ParentElement as _, PathBuilder, Pixels,
+    Point, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Task, WeakEntity,
+    Window, canvas, div, fill, list, point, prelude::FluentBuilder as _, px, rems, size,
 };
 
 use crate::commit::{Badge, Commit, GraphRefs, RefKind, group_refs};
@@ -1424,7 +1423,7 @@ impl CommitList {
                             } else {
                                 t.foreground.opacity(0.9)
                             })
-                            .when(open, |d| d.font_weight(FontWeight::MEDIUM))
+                            .when(open, |d| d.font_weight(t.medium()))
                             .child(commit.subject.clone()),
                     )
                     .child(
@@ -1547,11 +1546,7 @@ impl CommitList {
             .border_color(t.border)
             .text_size(rems(0.65625))
             .text_color(t.subtle)
-            .child(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("CHANGED FILES"),
-            )
+            .child(div().font_weight(t.semibold()).child("CHANGED FILES"))
             .child(
                 div()
                     .font_family(t.fonts.code.clone())
@@ -1849,7 +1844,7 @@ fn render_badges(badges: &[Badge], t: &AppTheme) -> impl IntoElement {
                 .font_family(t.fonts.code.clone())
                 .text_size(rems(0.625))
                 .line_height(px(18.))
-                .font_weight(FontWeight::MEDIUM)
+                .font_weight(t.medium())
                 .text_color(fg)
                 .when_some(bg, |d, bg| d.bg(bg))
                 .when_some(border, |d, c| d.border_1().border_color(c))

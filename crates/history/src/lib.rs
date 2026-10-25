@@ -195,20 +195,54 @@ mod tests {
         }
     }
 
-    /// This repository: History only reads it.
+    /// 500 commits, each changing `log.txt`; every 3rd also `Cargo.toml` and every 10th
+    /// `crates/history/Cargo.toml`, the newest neither. Not this repository: CI's checkout is
+    /// shallow, and work going on in it moves it under the test.
     fn repo() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .canonicalize()
+        use std::fmt::Write as _;
+        use std::io::Write as _;
+        let dir = gitviber_ui::test_support::temp_dir("history-long");
+        git(&dir, &["init", "-q", "-b", "main"]);
+        let mut stream = String::new();
+        for i in 1..=500 {
+            let at = 1_700_000_000 + i * 60;
+            let _ = write!(
+                stream,
+                "commit refs/heads/main\ncommitter T <t@t> {at} +0000\ndata <<E\nCommit {i}\nE\n\
+                 M 644 inline log.txt\ndata <<E\n{i}\nE\n"
+            );
+            if i % 3 == 0 && i != 500 {
+                let _ = write!(stream, "M 644 inline Cargo.toml\ndata <<E\n{i}\nE\n");
+            }
+            if i % 10 == 0 && i != 500 {
+                let _ = write!(
+                    stream,
+                    "M 644 inline crates/history/Cargo.toml\ndata <<E\n{i}\nE\n"
+                );
+            }
+        }
+        let mut import = std::process::Command::new("git")
+            .args(["fast-import", "--quiet"])
+            .current_dir(&dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("git runs");
+        import
+            .stdin
+            .take()
             .unwrap()
+            .write_all(stream.as_bytes())
+            .unwrap();
+        assert!(import.wait().unwrap().success());
+        git(&dir, &["reset", "-q", "--hard"]);
+        dir.canonicalize().unwrap()
     }
 
     #[gpui_kit::test]
     fn panels_and_commit_tabs_give_their_entities_back(cx: &mut TestAppContext) {
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-history-test-{}", std::process::id()));
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        gitviber_ui::test_support::config_dir("history-test");
         cx.update(|cx| {
             gitviber_ui::init(cx);
             let core = gitviber_ui::install_core(cx);
@@ -259,10 +293,7 @@ mod tests {
 
     #[gpui_kit::test]
     fn the_list_acts_on_the_head_it_read_and_ignores_rows_gone_since(cx: &mut TestAppContext) {
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-history-test-{}", std::process::id()));
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        gitviber_ui::test_support::config_dir("history-test");
         cx.update(|cx| {
             gitviber_ui::init(cx);
             let core = gitviber_ui::install_core(cx);
@@ -348,15 +379,9 @@ mod tests {
 
     #[gpui_kit::test]
     fn a_fork_shows_the_originals_history_with_what_your_branch_lacks(cx: &mut TestAppContext) {
-        let config =
-            std::env::temp_dir().join(format!("gitviber-history-test-{}", std::process::id()));
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &config) };
+        gitviber_ui::test_support::config_dir("history-test");
         // Your branch has one commit; the original's main, fetched before, one more.
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-history-fork-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = gitviber_ui::test_support::temp_dir("history-fork");
         git(&dir, &["init", "-q", "-b", "main"]);
         git(&dir, &["commit", "-q", "--allow-empty", "-m", "one"]);
         let two = git(
@@ -476,21 +501,12 @@ mod tests {
         cx.update(|_, _| {});
         cx.run_until_parked();
         assert!(weak.upgrade().is_none(), "the original's pane is released");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[gpui_kit::test]
     fn tags_made_moved_or_deleted_outside_show_on_the_next_refresh(cx: &mut TestAppContext) {
-        // The repo changes while open: core's watcher thread wakes the test.
-        cx.executor().allow_parking();
-        let config =
-            std::env::temp_dir().join(format!("gitviber-history-test-{}", std::process::id()));
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &config) };
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-history-tags-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        gitviber_ui::test_support::config_dir("history-test");
+        let dir = gitviber_ui::test_support::temp_dir("history-tags");
         git(&dir, &["init", "-q", "-b", "main"]);
         git(&dir, &["commit", "-q", "--allow-empty", "-m", "one"]);
         git(&dir, &["commit", "-q", "--allow-empty", "-m", "two"]);
@@ -541,7 +557,6 @@ mod tests {
         step(&["tag", "v1"], [true, false], cx);
         step(&["tag", "-f", "v1", "HEAD~1"], [false, true], cx);
         step(&["tag", "-d", "v1"], [false, false], cx);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     use gpui_kit::Styled as _;
@@ -568,14 +583,8 @@ mod tests {
 
     #[gpui_kit::test]
     fn the_lists_times_stay_current_on_an_idle_window(cx: &mut TestAppContext) {
-        let config =
-            std::env::temp_dir().join(format!("gitviber-history-test-{}", std::process::id()));
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &config) };
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-history-times-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        gitviber_ui::test_support::config_dir("history-test");
+        let dir = gitviber_ui::test_support::temp_dir("history-times");
         git(&dir, &["init", "-q", "-b", "main"]);
         git(&dir, &["commit", "-q", "--allow-empty", "-m", "one"]);
         cx.update(|cx| {
@@ -623,21 +632,24 @@ mod tests {
         let settled = renders.get();
         frame(cx);
         assert_eq!(renders.get(), settled, "an idle frame reuses the list");
-        // "just now" turns "1m ago" with nothing else happening.
-        cx.executor()
-            .advance_clock(std::time::Duration::from_secs(61));
-        cx.run_until_parked();
-        frame(cx);
+        // "just now" turns "1m ago" with nothing else happening. A second at a time: the ticker
+        // waits for the wall clock's next minute, which doesn't move with the test's clock, so a
+        // longer step could see it fire, re-arm and fire again.
+        for _ in 0..61 {
+            if renders.get() > settled {
+                break;
+            }
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(1));
+            cx.run_until_parked();
+            frame(cx);
+        }
         assert_eq!(renders.get(), settled + 1, "the next minute draws it again");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[gpui_kit::test]
     fn a_commits_link_selects_it_in_history_reading_pages_until_its_there(cx: &mut TestAppContext) {
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-history-test-{}", std::process::id()));
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        gitviber_ui::test_support::config_dir("history-test");
         cx.update(|cx| {
             gitviber_ui::init(cx);
             let core = gitviber_ui::install_core(cx);

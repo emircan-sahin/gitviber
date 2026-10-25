@@ -21,11 +21,10 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight,
-    HighlightStyle, InteractiveElement as _, InteractiveText, IntoElement, ParentElement as _,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, StyledText, Subscription,
-    Task, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, rems,
-    uniform_list,
+    App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable, HighlightStyle,
+    InteractiveElement as _, InteractiveText, IntoElement, ParentElement as _, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, StyledText, Subscription, Task,
+    UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, rems, uniform_list,
 };
 
 use crate::commit::Commit;
@@ -238,16 +237,10 @@ impl CommitView {
             None => {
                 let diff = cx.new(|cx| DiffView::new(source, cx));
                 self._diff = Some(cx.subscribe(&diff, |_, _, e: &DiffEvent, cx| {
-                    if let DiffEvent::Notice(n) = e {
-                        let note = match n.level {
-                            gitviber_diff::NoticeLevel::Error => Note::error(n.title.clone()),
-                            gitviber_diff::NoticeLevel::Success => Note::success(n.title.clone()),
-                            gitviber_diff::NoticeLevel::Info => Note::info(n.title.clone()),
-                        };
-                        let note = note.maybe_detail(n.detail.clone());
-                        if let Some(handle) = cx.active_window() {
-                            note.show_in(handle, cx);
-                        }
+                    if let DiffEvent::Notice(n) = e
+                        && let Some(handle) = cx.active_window()
+                    {
+                        gitviber_review::notice_note(n).show_in(handle, cx);
                     }
                 }));
                 // A commit's version, as the note says; a range's files take none.
@@ -295,7 +288,7 @@ impl CommitView {
             .child(
                 div()
                     .text_size(rems(0.78125))
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .font_weight(t.semibold())
                     .child(format!("All Changes · {label}")),
             )
             .child(
@@ -374,7 +367,7 @@ impl CommitView {
                                     .truncate()
                                     .line_height(px(20.))
                                     .text_size(rems(0.78125))
-                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .font_weight(t.semibold())
                                     .child(subject(&c.subject, &self.subject_links, &t)),
                             )
                             .child(
@@ -595,11 +588,7 @@ impl CommitView {
                     .px_2()
                     .text_size(rems(0.65625))
                     .text_color(t.subtle)
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("CHANGED FILES"),
-                    )
+                    .child(div().font_weight(t.semibold()).child("CHANGED FILES"))
                     .child(
                         div()
                             .font_family(t.fonts.code.clone())
@@ -843,10 +832,7 @@ mod tests {
 
     #[gpui_kit::test]
     fn refs_link_into_the_commits_github_repo_or_origins_until_its_pushed(cx: &mut TestAppContext) {
-        let dir =
-            std::env::temp_dir().join(format!("gitviber-history-test-{}", std::process::id()));
-        // SAFETY: the tests that read the config dir all point it at a temporary folder.
-        unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
+        gitviber_ui::test_support::config_dir("history-test");
         cx.update(|cx| {
             gitviber_ui::init(cx);
             gitviber_ui::install_core(cx);
