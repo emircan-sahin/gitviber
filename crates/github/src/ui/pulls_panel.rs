@@ -772,6 +772,9 @@ fn pull_row(
     div()
         .id(("pull", ix))
         .relative()
+        // A list row is laid out on its own: without the full width it shrinks to its text,
+        // and a long title neither truncates nor leaves the hover the list's width.
+        .w_full()
         .h(px(ROW))
         .flex()
         .gap(px(10.))

@@ -231,7 +231,11 @@ pub fn filter_tabs<P: ListPanel>(
         .items_center()
         .gap(px(2.))
         .rounded(px(4.))
-        .focus(move |s| s.border_1().border_color(ring))
+        // Keys only: a click on a tab focuses the group too, and ringed it all. The border is
+        // always there, so the ring doesn't shift the tabs.
+        .border_1()
+        .border_color(gpui_kit::transparent_black())
+        .focus_visible(move |s| s.border_color(ring))
         .on_key_down(cx.listener(|this: &mut P, ev: &KeyDownEvent, window, cx| {
             let m = ev.keystroke.modifiers;
             let step: isize = match ev.keystroke.key.as_str() {
