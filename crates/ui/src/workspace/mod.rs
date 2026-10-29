@@ -1061,6 +1061,7 @@ impl Workspace {
         let Some(spec) = Registry::get(cx).panel(id).cloned() else {
             return;
         };
+        self.leave_maximized(spec.slot);
         let side = self.side_mut(spec.slot);
         side.open = true;
         side.active = Some(spec.id);
@@ -1135,6 +1136,9 @@ impl Workspace {
 
     /// Opens a slot and moves focus into its panel.
     pub fn focus_slot(&mut self, slot: Slot, window: &mut Window, cx: &mut Context<Self>) {
+        if self.leave_maximized(slot) {
+            self.changed(WorkspaceEvent::LayoutChanged, cx);
+        }
         self.set_open(slot, true, cx);
         let id = self.active_panel(slot, cx);
         if let Some(id) = id.filter(|id| !self.panels.contains_key(id)) {
@@ -1159,6 +1163,9 @@ impl Workspace {
 
     /// Moves focus into the active tab (⌘E).
     pub fn focus_center(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.leave_maximized(Slot::Left) {
+            self.changed(WorkspaceEvent::LayoutChanged, cx);
+        }
         let handle = self.tabs.active().and_then(|t| t.item.focus_handle(cx));
         handle
             .unwrap_or_else(|| self.center_focus.clone())
@@ -1192,6 +1199,20 @@ impl Workspace {
 
     pub fn terminal_maximized(&self) -> bool {
         self.bottom_maximized && self.bottom.open
+    }
+
+    /// Open and on screen: a maximized terminal covers the side panels, open or not.
+    pub fn is_shown(&self, slot: Slot) -> bool {
+        self.is_open(slot) && (slot == Slot::Bottom || !self.terminal_maximized())
+    }
+
+    /// Asking for anything the maximized terminal covers brings the layout back (⌘B, ⌘E, ⌃1).
+    fn leave_maximized(&mut self, slot: Slot) -> bool {
+        let covered = slot != Slot::Bottom && self.terminal_maximized();
+        if covered {
+            self.bottom_maximized = false;
+        }
+        covered
     }
 
     pub fn set_terminal_maximized(&mut self, maximized: bool, cx: &mut Context<Self>) {
