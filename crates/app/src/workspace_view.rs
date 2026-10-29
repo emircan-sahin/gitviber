@@ -208,6 +208,15 @@ impl WorkspaceView {
             },
         ));
         let overlay = cx.new(|_| ShortcutOverlay::new(workspace.clone()));
+        // The workspace's own key listeners miss what goes to a dialog, which sits beside it.
+        let here = window.window_handle();
+        subs.push(cx.observe_keystrokes(move |this, e, window, cx| {
+            if window.window_handle() == here {
+                let m = window.modifiers();
+                let key = e.keystroke.key.as_str();
+                this.overlay.update(cx, |o, cx| o.keystroke(key, &m, cx));
+            }
+        }));
         let open_in = cx.new(|_| OpenInButton::new(workspace.clone()));
         let focus = cx.focus_handle();
         focus.focus(window, cx);
@@ -574,7 +583,7 @@ impl WorkspaceView {
             .rounded(px(4.))
             .border_1()
             .border_color(t.border)
-            .bg(t.chrome(t.sidebar))
+            .bg(t.chrome(t.panel))
             .invisible()
             .group_hover(SIDE_GROUP, |s| s.visible())
             // Over the tree's rows: a click here is the buttons' alone. Not occluded, which would
@@ -676,7 +685,7 @@ impl WorkspaceView {
             .flex_none()
             .w(px(width))
             .h_full()
-            .bg(t.chrome(t.sidebar))
+            .bg(t.chrome(t.panel))
             .when(
                 slot == Slot::Left && Settings::get(cx).sidebar_projects,
                 |d| {
@@ -823,7 +832,7 @@ impl WorkspaceView {
 
 /// ⌘B, ⌥⌘B, ⌘J: a hidden panel shows with focus in it, a shown one hides.
 fn toggle_slot(ws: &Entity<Workspace>, slot: Slot, window: &mut Window, cx: &mut App) {
-    if ws.read(cx).is_open(slot) {
+    if ws.read(cx).is_shown(slot) {
         hide_slot(ws, slot, window, cx);
     } else {
         ws.update(cx, |ws, cx| ws.focus_slot(slot, window, cx));
@@ -2232,6 +2241,27 @@ mod tests {
         }
 
         #[gpui_kit::test]
+        fn a_side_toggle_or_the_code_view_leaves_a_maximized_terminal(cx: &mut TestAppContext) {
+            let project = setup("unmaximize", cx);
+            let cx = &mut launch(Some(project), START, cx);
+            keys(cx, "secondary-j");
+            let ws = workspace(cx);
+            for key in ["secondary-b", "alt-secondary-b", "secondary-e"] {
+                // As the terminal's Maximize leaves it: focus in the terminal.
+                cx.update(|window, cx| {
+                    ws.update(cx, |ws, cx| {
+                        ws.set_terminal_maximized(true, cx);
+                        ws.focus_slot(Slot::Bottom, window, cx);
+                    })
+                });
+                keys(cx, key);
+                let ws = cx.update(|_, cx| ws.read(cx).terminal_maximized());
+                assert!(!ws, "{key} left the terminal maximized");
+            }
+            assert_eq!(open(cx), [true, true, true]);
+        }
+
+        #[gpui_kit::test]
         fn a_toggle_shows_a_panel_with_focus_and_hides_it_leaving_focus_to_the_code_view(
             cx: &mut TestAppContext,
         ) {
@@ -2337,6 +2367,19 @@ mod tests {
             cx.deactivate_window();
             cx.run_until_parked();
             assert!(!shown(cx), "⌘Tab away: no keyup comes");
+        }
+
+        #[gpui_kit::test]
+        fn a_dialog_opened_with_cmd_held_keeps_it_down(cx: &mut TestAppContext) {
+            let cx = &mut launch("overlay-dialog", None, cx);
+            press(cmd(), Duration::ZERO, cx);
+            cx.simulate_keystrokes("secondary-shift-p");
+            press(cmd(), HOLD * 2, cx);
+            assert!(!shown(cx), "behind the palette");
+            cx.update(gpui_kit::component::WindowExt::close_dialog);
+            press(Modifiers::none(), Duration::ZERO, cx);
+            press(cmd(), HOLD, cx);
+            assert!(shown(cx), "and back after it");
         }
 
         #[gpui_kit::test]

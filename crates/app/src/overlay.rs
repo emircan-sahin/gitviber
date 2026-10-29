@@ -10,6 +10,7 @@ use gitviber_ui::keymap::{self, Category, IS_MAC, bindings_for, chord_keys};
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{Part, Slot, Workspace};
 use gitviber_ui::{ActiveAppTheme, Settings};
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::{
     AnyElement, App, Context, Entity, InteractiveElement as _, IntoElement, KeyDownEvent,
     Modifiers, ModifiersChangedEvent, MouseButton, MouseMoveEvent, ParentElement as _, Point,
@@ -250,14 +251,17 @@ impl ShortcutOverlay {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (held, alone) = (held(&e.modifiers, IS_MAC), alone(&e.modifiers, IS_MAC));
-        if alone {
+        let held = held(&e.modifiers, IS_MAC);
+        if alone(&e.modifiers, IS_MAC) {
             if self.shown.is_none() && self.hold.is_none() && Settings::get(cx).shortcut_overlay {
                 self.hold = Some(cx.spawn_in(window, async move |this, cx| {
                     cx.background_executor().timer(HOLD).await;
-                    let _ = this.update(cx, |this, cx| {
+                    // Not over a dialog (⌘P, ⌘K): it would show behind it.
+                    let _ = this.update_in(cx, |this, window, cx| {
                         this.hold = None;
-                        this.set(Some(Shown::Held), cx);
+                        if !window.has_active_dialog(cx) {
+                            this.set(Some(Shown::Held), cx);
+                        }
                     });
                 }));
             }
@@ -285,6 +289,16 @@ impl ShortcutOverlay {
         }
         self.set(None, cx);
         e.keystroke.key == "escape"
+    }
+
+    /// Any keystroke resolved in the window, a dialog's too: it ends the wait, and a held overlay
+    /// once ⌘ is up. A modifier let go alone is reported too, late, even after the next ⌘ went
+    /// down: that one starts no new wait and ends none.
+    pub fn keystroke(&mut self, key: &str, m: &Modifiers, cx: &mut Context<Self>) {
+        if !matches!(key, "platform" | "control" | "alt" | "shift" | "function") {
+            self.hold = None;
+        }
+        self.still_held(m, cx);
     }
 
     /// A click or a move of the pointer: a ⌘-click on its way, which the overlay would swallow.
