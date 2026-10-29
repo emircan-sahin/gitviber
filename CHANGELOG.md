@@ -6,6 +6,31 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.19] - 2026-10-30
+
+### Added
+
+- **Download with Git LFS from a diff.** A diff of a file whose LFS object isn't on disk offers the download, in a single diff and in stacked diffs, and reads the diff again once it's there.
+- **Comment on a line from the diff's right-click menu:** "Add Comment on Line…" in a pull request's diff, "Add Review Note…" in the others, as the C key does.
+- **The agents menu works from the keyboard.** ↑ and ↓ move through the agents, Enter opens one and Escape closes the menu; Show Agents opens it with the first one picked. A long list scrolls.
+- **Undo history entries say what they do** on hover ("Undo back to before …", "Redo up to …", and the branch a step switches to), and the issue Close menu says what each reason is for.
+
+### Changed
+
+- **The Obsidian vault is a section under the explorer's files again,** as before 0.1.18: it opens and closes from its header, resizes against the files, and remembers both. It no longer takes a tab of its own.
+- **Menus, popovers and dialogs look as they did before 0.1.18.** The highlighted menu row is solid blue again, popups have a clear edge and a real shadow and no extra padding, dialogs sit on the raised surface a little lower on the screen, and the side panels are a shade lighter, set apart from the top bar.
+
+### Fixed
+
+- **Scrolling a diff in Edit is smooth.** Every frame copied and compared the whole file to see whether it had unsaved changes; syntax colors are now kept per block of lines instead of worked out again each frame, and Edit follows Word Wrap and the file viewer's size limits.
+- **⌘B, ⌥⌘B and ⌘E leave a maximized terminal** and show what they ask for, instead of hiding a panel the terminal covered.
+- **The shortcut overlay no longer gets stuck.** Holding ⌘ and pressing ⌘P left it open behind the palette after ⌘ came up, and sometimes it stopped showing at all.
+- **Agents in two windows stay apart.** The agents menu merged both windows' first tabs under one heading and could open the wrong pane, and a notification click opened a pane in every window.
+- **A long pull request title ends in "…"** instead of running past the list, and every row takes the list's full width.
+- **The active terminal tab's line sits at the top of the strip,** and a tab's hover fills its height.
+- **Clicking Open, Closed or All no longer rings the whole group;** the ring shows only when you reach it with the keyboard.
+- **The ignore-whitespace toggle keeps the mode chosen in Settings** instead of switching "All" to "Amount".
+
 ## [0.1.18] - 2026-10-25
 
 ### Changed
