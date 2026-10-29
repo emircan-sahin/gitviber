@@ -62,6 +62,13 @@ impl CloseReason {
             Self::NotPlanned => "Close as not planned",
         }
     }
+
+    fn note(self) -> &'static str {
+        match self {
+            Self::Completed => "Done, closed, fixed, resolved",
+            Self::NotPlanned => "Won't fix, can't repro, duplicate, stale",
+        }
+    }
 }
 
 /// A write's end, and whether the comment in the box went out on the way: a close that failed
@@ -921,13 +928,15 @@ impl IssueView {
                                 } else {
                                     IconName::CircleSlash
                                 };
-                                menu =
-                                    menu.item(PopupMenuItem::new(r.label()).icon(icon).on_click(
-                                        move |_, _, cx| {
-                                            weak.update(cx, |this, cx| this.set_open(false, r, cx))
-                                                .ok();
-                                        },
-                                    ));
+                                let item = PopupMenuItem::element(move |_, _| {
+                                    div().flex().flex_col().child(r.label()).child(
+                                        // Faded, not muted: the row's ink turns light when highlighted.
+                                        div().text_size(rems(0.75)).opacity(0.7).child(r.note()),
+                                    )
+                                });
+                                menu = menu.item(item.icon(icon).on_click(move |_, _, cx| {
+                                    weak.update(cx, |this, cx| this.set_open(false, r, cx)).ok();
+                                }));
                             }
                             menu
                         }),

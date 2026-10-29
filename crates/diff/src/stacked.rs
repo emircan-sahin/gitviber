@@ -416,6 +416,15 @@ impl StackedDiff {
             .collect()
     }
 
+    /// Reads the file keyed `key` again, if it's still listed.
+    fn read_again(&mut self, key: &str, cx: &mut Context<Self>) {
+        if let Some(slot) = self.slots.iter_mut().find(|s| s.file.source.key() == key) {
+            slot.body = Body::Idle;
+            self.dirty = true;
+            cx.notify();
+        }
+    }
+
     /// Lays out and starts the reads near the screen, as a frame would (tests).
     #[doc(hidden)]
     pub fn schedule_now(&mut self, cx: &mut Context<Self>) {
@@ -1291,6 +1300,9 @@ impl StackedDiff {
             }
             Body::Held { lines } => (format!("A large diff, {lines} lines"), Some("Show")),
             Body::Ready(l) => match &l.data.placeholder {
+                Some(p) if l.data.old.lfs_missing.is_some() || l.data.new.lfs_missing.is_some() => {
+                    (p.clone(), Some("Download with Git LFS"))
+                }
                 Some(p) => (p.clone(), None),
                 None => (
                     format!("A large diff, {} lines", l.items.len()),
@@ -1311,8 +1323,16 @@ impl StackedDiff {
                     Button::new(("message", f))
                         .xsmall()
                         .label(label)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if label == "Show" {
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if label == "Download with Git LFS" {
+                                let source = this.slots[f].file.source.clone();
+                                crate::view::download_lfs(
+                                    source.path.clone(),
+                                    window,
+                                    cx,
+                                    move |this, cx| this.read_again(&source.key(), cx),
+                                );
+                            } else if label == "Show" {
                                 this.slots[f].large = true;
                                 // Read again, its text kept this time.
                                 if matches!(this.slots[f].body, Body::Held { .. }) {

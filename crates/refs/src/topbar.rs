@@ -15,6 +15,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _, DropdownButton};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::popover::Popover;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _};
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, Context, Entity, FontWeight, Global,
@@ -686,18 +687,31 @@ fn history_menu(
     let item = |e: &Entry, forward: bool, steps: Vec<(u64, Option<String>)>, disabled: bool| {
         let state = state.downgrade();
         let when = gitviber_ui::widgets::relative_time(e.2 as i64, now);
-        PopupMenuItem::new(format!("{}  ·  {when}", e.1))
-            .icon(Icon::new(if forward {
-                IconName::Redo2
-            } else {
-                IconName::Undo2
-            }))
-            .disabled(disabled)
-            .on_click(move |_, window, cx| {
-                if let Some(s) = state.upgrade() {
-                    ops::travel(&s, forward, steps.clone(), window, cx);
-                }
-            })
+        let text: SharedString = format!("{}  ·  {when}", e.1).into();
+        let note: SharedString = entry_tip(forward, &e.1, &steps).into();
+        let id = (
+            if forward { "redo-entry" } else { "undo-entry" },
+            e.0 as usize,
+        );
+        PopupMenuItem::element(move |_, _| {
+            let note = note.clone();
+            div()
+                .id(id)
+                .flex_1()
+                .child(text.clone())
+                .tooltip(move |window, cx| Tooltip::new(note.clone()).build(window, cx))
+        })
+        .icon(Icon::new(if forward {
+            IconName::Redo2
+        } else {
+            IconName::Undo2
+        }))
+        .disabled(disabled)
+        .on_click(move |_, window, cx| {
+            if let Some(s) = state.upgrade() {
+                ops::travel(&s, forward, steps.clone(), window, cx);
+            }
+        })
     };
     let steps = |list: &[Entry], upto: usize| {
         list[..=upto]
@@ -718,6 +732,17 @@ fn history_menu(
         menu = menu.separator().label(b);
     }
     menu
+}
+
+/// A history entry's tooltip: how far picking it goes, and the branch it lands on if it switches.
+fn entry_tip(forward: bool, label: &str, steps: &[(u64, Option<String>)]) -> String {
+    let to = ops::landing(&steps.iter().map(|s| s.1.clone()).collect::<Vec<_>>());
+    let what = if forward {
+        format!("Redo up to {label}")
+    } else {
+        format!("Undo back to before {label}")
+    };
+    what + &ops::switch_note(forward, to.as_deref())
 }
 
 fn tracked(st: &git::RepoStatus) -> bool {
@@ -1020,5 +1045,20 @@ fn publish_button(state: &Entity<RepoState>, status: &git::RepoStatus, busy: boo
                 button.primary().disabled(disabled).into_any_element()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::entry_tip;
+
+    #[test]
+    fn a_history_entry_says_how_far_it_goes_and_where_it_lands() {
+        let steps = vec![(2, Some("main".to_string())), (1, None)];
+        assert_eq!(
+            entry_tip(false, "Commit", &steps),
+            "Undo back to before Commit: switches back to main"
+        );
+        assert_eq!(entry_tip(true, "Commit", &[(1, None)]), "Redo up to Commit");
     }
 }

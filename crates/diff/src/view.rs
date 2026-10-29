@@ -22,6 +22,7 @@ use gitviber_core::Core;
 use gitviber_ui::keymap::scroll::{self, Step};
 use gitviber_ui::keymap::{editor, find as find_keys};
 use gitviber_ui::widgets::{Toggle as _, segmented};
+use gitviber_ui::workspace::Toast;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::input::Rope;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -1155,6 +1156,16 @@ impl DiffView {
         let lines = self.sel.is_some_and(|s| !s.is_cursor());
         let picked = self.picked(false).is_some_and(|p| !p.is_empty());
         let mut menu = menu;
+        if self.notes {
+            let v = view.clone();
+            menu = menu
+                .item(
+                    PopupMenuItem::new(self.note_label()).on_click(move |_, _, cx| {
+                        v.update(cx, |this, cx| this.add_note(cx)).ok();
+                    }),
+                )
+                .separator();
+        }
         let actions = [
             LineAction::Stage,
             LineAction::Stash,
@@ -1509,6 +1520,16 @@ impl DiffView {
             Command::ToggleViewed if self.viewed.is_some() => cx.emit(DiffEvent::ToggleViewed),
             Command::Save => self.save(window, cx),
             Command::ToggleViewed | Command::NextFile | Command::PrevFile => cx.propagate(),
+        }
+    }
+
+    /// What `DiffEvent::AddNote` starts: a PR's diff (the one range diff that takes notes)
+    /// comments on GitHub; every other diff writes a review note.
+    fn note_label(&self) -> &'static str {
+        if matches!(self.source.compare, Compare::Range { .. }) {
+            "Add Comment on Line…"
+        } else {
+            "Add Review Note…"
         }
     }
 
@@ -2115,17 +2136,17 @@ impl DiffView {
                     })),
                 )
                 .child(
-                    icon_button("whitespace", Lucide::Space, "Ignore whitespace changes")
-                        .toggle(o.whitespace != Whitespace::Exact, cx)
-                        .on_click(cx.listener(|_, _, _, cx| {
-                            DiffOptions::update(cx, |o| {
-                                o.whitespace = if o.whitespace == Whitespace::Exact {
-                                    Whitespace::Amount
-                                } else {
-                                    Whitespace::Exact
-                                }
-                            })
-                        })),
+                    icon_button(
+                        "whitespace",
+                        Lucide::Space,
+                        if ignored_whitespace(cx) == Whitespace::All {
+                            "Ignore all whitespace"
+                        } else {
+                            "Ignore whitespace changes"
+                        },
+                    )
+                    .toggle(o.whitespace != Whitespace::Exact, cx)
+                    .on_click(cx.listener(|_, _, _, cx| toggle_whitespace(cx))),
                 )
             })
             .when(self.is_editable() && !self.previewing(), |el| {
@@ -2207,6 +2228,35 @@ impl DiffView {
             .child(text)
             .into_any_element()
     }
+
+    /// A Git LFS pointer's message, with the download that shows the file.
+    fn render_lfs_message(
+        &self,
+        text: String,
+        style: &DiffStyle,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        v_flex()
+            .flex_1()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .p_6()
+            .text_size(style.ui_font_size + px(0.5))
+            .text_color(style.colors.muted)
+            .child(text)
+            .child(
+                Button::new("lfs-pull")
+                    .small()
+                    .label("Download with Git LFS")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        download_lfs(this.source.path.clone(), window, cx, |this, cx| {
+                            this.refresh(cx)
+                        })
+                    })),
+            )
+            .into_any_element()
+    }
 }
 
 /// A fade over the header's end while more of it is to the right. Painted, not laid out: the
@@ -2233,6 +2283,57 @@ fn more_right(scroll: ScrollHandle, bg: gpui_kit::Hsla) -> impl IntoElement {
     // Clear of the bar's bottom border.
     .bottom(px(1.))
     .w(px(32.))
+}
+
+/// Fetches `path`'s Git LFS object, says how it went, then `done` reads the diff again.
+pub(crate) fn download_lfs<V: 'static>(
+    path: String,
+    window: &mut Window,
+    cx: &mut Context<V>,
+    done: impl FnOnce(&mut V, &mut Context<V>) + 'static,
+) {
+    let core = crate::core(cx);
+    cx.spawn_in(window, async move |this, cx| {
+        let op = format!("lfs-pull:{path}");
+        let shown = path.clone();
+        let pulled = cx
+            .background_spawn(
+                async move { gitviber_core::api::sync::lfs_pull(&core, path, op, |_| {}) },
+            )
+            .await;
+        _ = this.update_in(cx, |this, window, cx| {
+            match pulled {
+                Ok(()) => Toast::success(format!("Downloaded {shown}")),
+                Err(e) => Toast::error(e).title("Could not download the LFS file"),
+            }
+            .show(window, cx);
+            done(this, cx);
+        });
+    })
+    .detach();
+}
+
+/// The whitespace Ignore Whitespace hides: Settings → Diff's mode, which the toggle only
+/// turns on and off and never overwrites.
+fn ignored_whitespace(cx: &App) -> Whitespace {
+    match cx
+        .try_global::<gitviber_ui::Settings>()
+        .map(|s| s.whitespace_mode)
+    {
+        Some(gitviber_ui::settings::Whitespace::All) => Whitespace::All,
+        _ => Whitespace::Amount,
+    }
+}
+
+fn toggle_whitespace(cx: &mut App) {
+    let on = ignored_whitespace(cx);
+    DiffOptions::update(cx, |o| {
+        o.whitespace = if o.whitespace == Whitespace::Exact {
+            on
+        } else {
+            Whitespace::Exact
+        }
+    })
 }
 
 fn icon_button(id: &'static str, icon: Lucide, tip: &'static str) -> Button {
@@ -2317,7 +2418,12 @@ impl Render for DiffView {
             (State::Failed(e), None) => self.render_message(format!("Could not load: {e}"), &style),
             (_, None) => div().flex_1().into_any_element(),
             (_, Some(data)) if data.placeholder.is_some() => {
-                self.render_message(data.placeholder.clone().unwrap_or_default(), &style)
+                let text = data.placeholder.clone().unwrap_or_default();
+                if data.old.lfs_missing.is_some() || data.new.lfs_missing.is_some() {
+                    self.render_lfs_message(text, &style, cx)
+                } else {
+                    self.render_message(text, &style)
+                }
             }
             (_, Some(_)) => {
                 let view = cx.entity().downgrade();
@@ -2432,15 +2538,7 @@ impl Render for DiffView {
             .on_action(cx.listener(|_, _: &ToggleCollapse, _, cx| {
                 DiffOptions::update(cx, |o| o.collapse = !o.collapse)
             }))
-            .on_action(cx.listener(|_, _: &ToggleWhitespace, _, cx| {
-                DiffOptions::update(cx, |o| {
-                    o.whitespace = if o.whitespace == Whitespace::Exact {
-                        Whitespace::Amount
-                    } else {
-                        Whitespace::Exact
-                    }
-                })
-            }))
+            .on_action(cx.listener(|_, _: &ToggleWhitespace, _, cx| toggle_whitespace(cx)))
             .on_action(cx.listener(|this, _: &StageLines, _, cx| {
                 this.run_action(LineAction::Stage, false, cx)
             }))
@@ -2537,6 +2635,25 @@ mod tests {
             // Next Change's cursor takes the whole change.
             v.step_change(true, cx);
             assert_eq!(v.picked(false).map(|p| p.added.len()), Some(30));
+        });
+    }
+
+    /// The toggle turns Settings' mode on and off; it never swaps All for Amount.
+    #[gpui_kit::test]
+    fn the_whitespace_toggle_keeps_the_settings_mode(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(gitviber_ui::Settings {
+                whitespace_mode: gitviber_ui::settings::Whitespace::All,
+                ..Default::default()
+            });
+            toggle_whitespace(cx);
+            assert_eq!(DiffOptions::get(cx).whitespace, Whitespace::All);
+            toggle_whitespace(cx);
+            assert_eq!(DiffOptions::get(cx).whitespace, Whitespace::Exact);
+            cx.global_mut::<gitviber_ui::Settings>().whitespace_mode =
+                gitviber_ui::settings::Whitespace::Amount;
+            toggle_whitespace(cx);
+            assert_eq!(DiffOptions::get(cx).whitespace, Whitespace::Amount);
         });
     }
 
