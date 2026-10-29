@@ -31,6 +31,8 @@ const INJECTION_PARSE_TIMEOUT: Duration = Duration::from_millis(20);
 pub struct SyntaxHighlighter {
     language: SharedString,
     query: Option<Query>,
+    /// `query`'s capture names, made once so a capture costs no allocation.
+    capture_names: Vec<SharedString>,
     /// The full injections query. This is used to build injection layers during parsing.
     injections_query: Option<Arc<Query>>,
 
@@ -396,6 +398,7 @@ impl SyntaxHighlighter {
         Self {
             language,
             query: None,
+            capture_names: Vec::new(),
             injections_query: None,
             locals_pattern_index: 0,
             highlights_pattern_index: 0,
@@ -514,10 +517,16 @@ impl SyntaxHighlighter {
         }
 
         // let highlight_indices = vec![None; query.capture_names().len()];
+        let capture_names = query
+            .capture_names()
+            .iter()
+            .map(|name| SharedString::from(name.to_string()))
+            .collect();
 
         Ok(Self {
             language: config.name.clone(),
             query: Some(query),
+            capture_names,
             injections_query,
 
             locals_pattern_index,
@@ -1097,12 +1106,12 @@ impl SyntaxHighlighter {
             for cap in query_match.captures {
                 let node = cap.node;
 
-                let Some(highlight_name) = query.capture_names().get(cap.index as usize) else {
+                let Some(highlight_name) = self.capture_names.get(cap.index as usize).cloned()
+                else {
                     continue;
                 };
 
                 let node_range: Range<usize> = node.start_byte()..node.end_byte();
-                let highlight_name = SharedString::from(highlight_name.to_string());
 
                 // Merge near range and same highlight name
                 let last_item = highlights.last();

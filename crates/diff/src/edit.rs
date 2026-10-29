@@ -18,6 +18,9 @@ use gpui_kit::{
 use std::sync::Arc;
 use std::time::Duration;
 
+/// The file viewer's cap (gitviber_files::code), which this crate can't depend on.
+const MAX_HIGHLIGHT_BYTES: usize = 2_000_000;
+
 /// How long typing must pause before the tints follow.
 const SETTLE: Duration = Duration::from_millis(150);
 
@@ -37,6 +40,9 @@ pub struct DiffEditor {
     base: Arc<str>,
     /// What was last read from or written to disk.
     saved: Arc<str>,
+    /// What's typed differs from `saved`: found on each change, as the tab strip asks every
+    /// frame and the editor's text is a whole-file copy to read.
+    dirty: bool,
     state: Entity<EditorState>,
     tints: RangeDecorationCollection,
     /// A save is on its way: the next ⌘S waits for it rather than race it to the disk.
@@ -44,6 +50,7 @@ pub struct DiffEditor {
     /// Saving is off: the file on disk became something the editor can't write back as it was.
     refused: Option<String>,
     _change: Subscription,
+    _wrap: Subscription,
     _tint: Task<()>,
     _save: Task<()>,
     /// The asks (before a close or a switch) waiting for the save on its way.
@@ -63,10 +70,18 @@ impl DiffEditor {
         cx: &mut Context<Self>,
     ) -> Self {
         let initial = text.to_string();
+        // As the file viewer: Word Wrap's setting (the editor's own default wraps, and re-wraps
+        // the whole file on Edit and on each resize), no colors or folds past its size cap.
+        let big = text.len() > MAX_HIGHLIGHT_BYTES;
+        let wrap = cx
+            .try_global::<gitviber_ui::Settings>()
+            .is_some_and(|s| s.word_wrap);
         let state = cx.new(|cx| {
             EditorState::new(window, cx)
-                .language(language)
+                .language(if big { "text" } else { language })
                 .line_number(true)
+                .folding(!big)
+                .soft_wrap(wrap)
                 .default_value(initial)
         });
         let tints = state.update(cx, |s, cx| {
@@ -77,6 +92,7 @@ impl DiffEditor {
             window,
             |this: &mut Self, _, e: &InputEvent, _, cx| {
                 if matches!(e, InputEvent::Change) {
+                    this.refresh_dirty(cx);
                     this.tint_soon(cx);
                     cx.emit(EditEvent::Changed);
                 }
@@ -87,11 +103,19 @@ impl DiffEditor {
             path,
             base: base.into(),
             saved: text.into(),
+            dirty: false,
             state,
             tints,
             saving: false,
             refused: None,
             _change: change,
+            _wrap: cx.observe_global_in::<gitviber_ui::Settings>(window, |this, window, cx| {
+                let wrap = cx
+                    .try_global::<gitviber_ui::Settings>()
+                    .is_some_and(|s| s.word_wrap);
+                this.state
+                    .update(cx, |st, cx| st.set_soft_wrap(wrap, window, cx));
+            }),
             _tint: Task::ready(()),
             _save: Task::ready(()),
             waiters: Vec::new(),
@@ -100,8 +124,12 @@ impl DiffEditor {
         editor
     }
 
-    pub fn is_dirty(&self, cx: &gpui_kit::App) -> bool {
-        *self.state.read(cx).value() != *self.saved
+    pub fn is_dirty(&self, _: &gpui_kit::App) -> bool {
+        self.dirty
+    }
+
+    fn refresh_dirty(&mut self, cx: &gpui_kit::App) {
+        self.dirty = *self.state.read(cx).value() != *self.saved;
     }
 
     /// What's typed and not saved, and the file's text it was typed over.
@@ -127,6 +155,7 @@ impl DiffEditor {
             self.saved = text.into();
             let text = text.to_string();
             self.state.update(cx, |s, cx| s.set_value(text, window, cx));
+            self.refresh_dirty(cx);
         }
         self.tint_soon(cx);
     }
@@ -136,6 +165,7 @@ impl DiffEditor {
     pub fn set_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         let text = text.to_string();
         self.state.update(cx, |s, cx| s.set_value(text, window, cx));
+        self.refresh_dirty(cx);
         self.tint_soon(cx);
         cx.emit(EditEvent::Changed);
     }
@@ -201,6 +231,7 @@ impl DiffEditor {
                 match result {
                     Ok(true) => {
                         this.saved = text;
+                        this.refresh_dirty(cx);
                         this.answer_waiters(true);
                         cx.emit(EditEvent::Saved);
                     }
@@ -270,21 +301,26 @@ impl DiffEditor {
     }
 }
 
-/// Byte ranges of `text`'s lines that `base` doesn't have as they are.
+/// Byte ranges of `text`'s lines that `base` doesn't have as they are, adjacent lines as one
+/// range: the editor builds a path per range every frame.
 fn changed_lines(base: &str, text: &str) -> Vec<std::ops::Range<usize>> {
     let (rows, _) =
         gitviber_core::diff::rows(base, text, gitviber_core::diff::whitespace_mode(None));
     let starts: Vec<usize> = std::iter::once(0)
         .chain(text.match_indices('\n').map(|(i, _)| i + 1))
         .collect();
-    rows.iter()
-        .filter(|r| r.k == ADDED)
-        .filter_map(|r| {
-            let start = *starts.get(r.n as usize - 1)?;
-            let end = starts.get(r.n as usize).copied().unwrap_or(text.len());
-            Some(start..end)
-        })
-        .collect()
+    let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
+    for r in rows.iter().filter(|r| r.k == ADDED) {
+        let Some(&start) = starts.get(r.n as usize - 1) else {
+            continue;
+        };
+        let end = starts.get(r.n as usize).copied().unwrap_or(text.len());
+        match ranges.last_mut() {
+            Some(last) if last.end == start => last.end = end,
+            _ => ranges.push(start..end),
+        }
+    }
+    ranges
 }
 
 impl Render for DiffEditor {
@@ -304,6 +340,7 @@ mod tests {
     #[test]
     fn tints_the_lines_the_index_lacks() {
         assert_eq!(changed_lines("a\nb\nc\n", "a\nB\nc\nd\n"), vec![2..4, 6..8]);
+        assert_eq!(changed_lines("a\nb\nc\n", "a\nB\nC\nd\n"), vec![2..8]);
         assert_eq!(
             changed_lines("a\n", "a\n"),
             Vec::<std::ops::Range<usize>>::new()

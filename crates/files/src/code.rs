@@ -1535,7 +1535,19 @@ impl CodeView {
         let map = s.display_map();
         let t = cx.app_theme();
         let x = input.origin.x + px(1.);
-        for bar in bars {
+        // Bars are sorted by line: walk only the visible lines', with one line to spare each side
+        // (a deleted mark overhangs its line's top).
+        let last_row = map.display_row_count().saturating_sub(1);
+        let line_at = |y: Pixels| {
+            let row = ((y - text_bounds.origin.y) / line_height).max(0.) as usize;
+            map.display_row_to_buffer_line(row.min(last_row)) as u32 + 1
+        };
+        let (first, last) = (
+            line_at(bounds.top()).saturating_sub(1),
+            line_at(bounds.bottom()) + 1,
+        );
+        let from = bars.partition_point(|bar| bar.line < first);
+        for bar in bars[from..].iter().take_while(|bar| bar.line <= last) {
             let line = bar.line.max(1) as usize - 1;
             let Some(rows) = map.buffer_line_to_display_row_range(line) else {
                 continue;
