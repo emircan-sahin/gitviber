@@ -1,4 +1,4 @@
-//! The Obsidian panel beside a vault file's tab, for screenshots and memory checks.
+//! The vault section (open, the whole sidebar) beside a vault file's tab, for screenshots and memory checks.
 //!
 //! obsidian-demo [REPO] [--vault PATH] [--open FILE[#anchor]]... [--code] [--zoom F]
 //!               [--cycles N]
@@ -10,8 +10,8 @@
 
 use std::time::Duration;
 
-use gitviber_obsidian::{Mode, VaultTab, Vaults, VaultsEvent};
-use gitviber_ui::workspace::Workspace;
+use gitviber_obsidian::{Mode, VaultSection, VaultTab, Vaults, VaultsEvent};
+use gitviber_ui::workspace::{PanelContext, Workspace};
 use gitviber_ui::{ActiveAppTheme as _, dev, memory};
 use gpui_kit::{
     AnyView, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
@@ -197,9 +197,15 @@ fn main() {
         if let Some(v) = &a.vault {
             model.update(cx, |m, cx| m.pick(v, cx));
         }
-        let side = Workspace::ensure_panel(&workspace, gitviber_obsidian::PANEL_ID, window, cx)
-            .expect("the panel")
-            .view();
+        model.update(cx, |m, cx| m.set_collapsed(false, cx));
+        let ctx = PanelContext {
+            workspace: workspace.downgrade(),
+            project: None,
+        };
+        let room = std::rc::Rc::new(std::cell::Cell::new(gpui_kit::px(0.)));
+        let side: AnyView = cx
+            .new(|cx| VaultSection::new(&ctx, room, window, cx))
+            .into();
         let a2 = a.clone();
         cx.new(|cx| {
             let subs = vec![

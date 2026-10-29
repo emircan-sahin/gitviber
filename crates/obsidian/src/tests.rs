@@ -1,6 +1,7 @@
 //! The views against a vault in a temporary folder, listed in an obsidian.json under a temporary
 //! $HOME: closing a note or a canvas tab gives everything it built back, a change core reports
-//! is shown, ⌘S keeps the note's line endings, and the panel lists the vault as Obsidian would.
+//! is shown, ⌘S keeps the note's line endings, and the explorer's vault section lists the vault
+//! as Obsidian would, holding nothing while closed.
 
 use std::path::{Path, PathBuf};
 
@@ -15,7 +16,7 @@ use gpui_kit::{
     div,
 };
 
-use crate::panel::VaultPanel;
+use crate::panel::VaultSection;
 use crate::vaults::Vaults;
 use crate::view::{Mode, VaultTab};
 
@@ -234,14 +235,16 @@ fn saving_a_note_keeps_its_line_endings(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_panel_lists_the_vault_as_obsidian_does(cx: &mut TestAppContext) {
+fn the_section_lists_the_vault_as_obsidian_does(cx: &mut TestAppContext) {
     setup("panel", cx);
     let (host, cx) = cx.add_window_view(|_, _| Host(None));
     let ctx = PanelContext {
         workspace: WeakEntity::new_invalid(),
         project: None,
     };
-    let panel = cx.update(|window, cx| cx.new(|cx| VaultPanel::new(&ctx, window, cx)));
+    let room = std::rc::Rc::new(std::cell::Cell::new(gpui_kit::px(400.)));
+    let panel =
+        cx.update(|window, cx| cx.new(|cx| VaultSection::new(&ctx, room.clone(), window, cx)));
     show(&host, Some(panel.clone().into()), cx);
     let rows = cx.update(|_, cx| panel.read(cx).row_paths());
     // Folders first, nothing hidden.
@@ -249,6 +252,32 @@ fn the_panel_lists_the_vault_as_obsidian_does(cx: &mut TestAppContext) {
         rows,
         ["assets", "Folder", "Board.canvas", "Home.md", "Plan.md"]
     );
+    let holds = |cx: &mut VisualTestContext| cx.update(|_, cx| Vaults::global(cx).read(cx).holds());
+    assert_eq!(holds(cx), 1, "open, its vault is watched");
+    cx.update(|_, cx| panel.update(cx, |p, cx| p.open_folder("Folder", cx)));
+    show(&host, Some(panel.clone().into()), cx);
+    assert!(
+        cx.update(|_, cx| panel.read(cx).row_paths())
+            .contains(&"Folder/Deep.md".into())
+    );
+    // Closed: a header only, nothing listed or watched; the choice is kept.
+    cx.update(|_, cx| panel.update(cx, |p, cx| p.toggle(cx)));
+    show(&host, Some(panel.clone().into()), cx);
+    assert!(cx.update(|_, cx| panel.read(cx).row_paths()).is_empty());
+    assert_eq!(holds(cx), 0, "closed, nothing holds the vault");
+    cx.update(|_, cx| gitviber_ui::store::flush(cx));
+    let saved =
+        gitviber_ui::store::read_object(&gitviber_ui::store::config_dir().join("vaults.json"))
+            .unwrap();
+    assert_eq!(saved.get("collapsed"), Some(&serde_json::Value::Bool(true)));
+    // Open again: the folder it had open still is.
+    cx.update(|_, cx| panel.update(cx, |p, cx| p.toggle(cx)));
+    show(&host, Some(panel.clone().into()), cx);
+    assert!(
+        cx.update(|_, cx| panel.read(cx).row_paths())
+            .contains(&"Folder/Deep.md".into())
+    );
+    assert_eq!(holds(cx), 1);
     // A vault turned off in Settings isn't shown, nor watched.
     cx.update(|_, cx| {
         let vaults: Vec<String> = Vaults::global(cx)
@@ -263,7 +292,75 @@ fn the_panel_lists_the_vault_as_obsidian_does(cx: &mut TestAppContext) {
     assert!(cx.update(|_, cx| panel.read(cx).row_paths()).is_empty());
     drop(panel);
     show(&host, None, cx);
-    assert_eq!(live("VaultPanel"), 0);
+    assert_eq!(live("VaultSection"), 0);
+}
+
+#[gpui_kit::test]
+fn the_section_sits_under_the_explorers_files_and_the_arrows_cross_into_it(
+    cx: &mut TestAppContext,
+) {
+    setup("explorer", cx);
+    let repo = gitviber_ui::test_support::temp_dir("obsidian-explorer-repo");
+    std::fs::write(repo.join("README.md"), "hi").unwrap();
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    cx.update(|cx| Vaults::global(cx).update(cx, |m, cx| m.set_collapsed(true, cx)));
+    let (host, cx) = cx.add_window_view(|_, _| Host(None));
+    let ws = cx.update(|window, cx| {
+        let ws = cx.new(Workspace::new);
+        Workspace::register_window(&ws, window, cx);
+        ws.update(cx, |ws, cx| ws.open_project(repo.clone(), window, cx));
+        ws
+    });
+    cx.run_until_parked();
+    let explorer = cx
+        .update(|window, cx| {
+            Workspace::ensure_panel(&ws, gitviber_files::explorer::PANEL_ID, window, cx)
+        })
+        .unwrap();
+    show(&host, Some(explorer.view()), cx);
+    let explorer = explorer
+        .view()
+        .downcast::<gitviber_files::ExplorerPanel>()
+        .unwrap();
+    let section = cx.update(|_, cx| {
+        explorer
+            .read(cx)
+            .section()
+            .unwrap()
+            .view()
+            .downcast::<VaultSection>()
+            .unwrap()
+    });
+    assert!(cx.update(|_, cx| !section.read(cx).is_open()));
+    // Where the Obsidian panel's tab was: the explorer, its section opened and focused.
+    assert!(cx.update(|window, cx| crate::show_vault(&ws, window, cx)));
+    show(&host, Some(explorer.clone().into()), cx);
+    let in_section = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            let f = gitviber_ui::workspace::Panel::panel_focus(section.read(cx), cx);
+            f.is_some_and(|f| f.contains_focused(window, cx))
+        })
+    };
+    assert!(cx.update(|_, cx| section.read(cx).is_open()));
+    assert!(in_section(cx));
+    assert!(!cx.update(|_, cx| section.read(cx).row_paths()).is_empty());
+    // ↑ from its first row goes up into the files; ↓ past their last row comes back.
+    let in_files = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            let f = gitviber_ui::workspace::Panel::panel_focus(explorer.read(cx), cx);
+            f.is_some_and(|f| f.is_focused(window))
+        })
+    };
+    cx.simulate_keystrokes("up");
+    assert!(in_files(cx) && !in_section(cx));
+    cx.simulate_keystrokes("down");
+    assert!(in_files(cx), "the files' first row");
+    cx.simulate_keystrokes("down");
+    assert!(in_section(cx));
 }
 
 /// A window whose root is gpui-kit's (it draws dialogs) showing a code view of `note`.

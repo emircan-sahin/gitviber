@@ -4,6 +4,7 @@
 
 pub mod tree;
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -15,17 +16,17 @@ use gitviber_ui::keymap::explorer;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{ChangeKind, FileIcon};
 use gitviber_ui::workspace::{
-    Panel, PanelContext, Project, ProjectEvent, Toast, Workspace, WorkspaceEvent,
+    Panel, PanelContext, PanelHandle, Project, ProjectEvent, Toast, Workspace, WorkspaceEvent,
 };
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::{
     App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, FocusHandle,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, PromptLevel, Render,
-    ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
-    UniformListScrollHandle, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
-    uniform_list,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Pixels, PromptLevel,
+    Render, ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Task, UniformListScrollHandle, WeakEntity, Window, div,
+    prelude::FluentBuilder as _, px, uniform_list,
 };
 
 use crate::backend;
@@ -46,6 +47,22 @@ impl gpui_kit::Global for HistoryHook {}
 pub fn set_history_handler(cx: &mut App, handler: HistoryHandler) {
     cx.set_global(HistoryHook(handler));
 }
+
+/// A section under the files that another crate draws (Obsidian's vault): built once per
+/// explorer with the files' height as last drawn, so its divider leaves them `MIN_FILES`. Its
+/// view sets its own height; `panel_focus` is None while it isn't shown.
+pub type SectionBuilder =
+    Rc<dyn Fn(&PanelContext, Rc<Cell<Pixels>>, &mut Window, &mut App) -> PanelHandle>;
+
+struct SectionHook(SectionBuilder);
+impl gpui_kit::Global for SectionHook {}
+
+pub fn set_section(cx: &mut App, build: SectionBuilder) {
+    cx.set_global(SectionHook(build));
+}
+
+/// The files' least height beside a section.
+pub const MIN_FILES: f32 = 80.;
 
 /// The filter (⌘F in the explorer): every file git lists and the ignored ones, matched by path.
 struct Filter {
@@ -117,8 +134,10 @@ pub struct ExplorerPanel {
         gpui_kit::Point<gpui_kit::Pixels>,
         Subscription,
     )>,
-    /// The list's height when last drawn, for a page of PgUp/PgDn.
-    list_height: Rc<std::cell::Cell<gpui_kit::Pixels>>,
+    /// The list's height when last drawn, for a page of PgUp/PgDn and the section's divider.
+    list_height: Rc<Cell<Pixels>>,
+    /// Drawn under the files (`set_section`).
+    section: Option<PanelHandle>,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
     listings: HashMap<SharedString, Task<()>>,
@@ -135,7 +154,7 @@ impl Panel for ExplorerPanel {
 }
 
 impl ExplorerPanel {
-    pub fn new(ctx: &PanelContext, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(ctx: &PanelContext, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let root = ctx
             .project
             .as_ref()
@@ -166,6 +185,11 @@ impl ExplorerPanel {
                 }
             }));
         }
+        let list_height = Rc::new(Cell::new(px(0.)));
+        let section = cx
+            .try_global::<SectionHook>()
+            .map(|h| h.0.clone())
+            .map(|build| build(ctx, list_height.clone(), window, cx));
         let mut panel = ExplorerPanel {
             workspace: ctx.workspace.clone(),
             root,
@@ -185,7 +209,8 @@ impl ExplorerPanel {
             web_url: None,
             discardable: HashSet::new(),
             kb_menu: None,
-            list_height: Rc::new(std::cell::Cell::new(px(0.))),
+            list_height: list_height.clone(),
+            section,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
             listings: HashMap::new(),
@@ -563,6 +588,11 @@ impl ExplorerPanel {
         cx.notify();
     }
 
+    /// The section under the files, when one is set (`set_section`).
+    pub fn section(&self) -> Option<PanelHandle> {
+        self.section.clone()
+    }
+
     pub fn collapse_all(&mut self, cx: &mut Context<Self>) {
         self.tree.collapse_all();
         self.picked.clear();
@@ -698,6 +728,15 @@ impl ExplorerPanel {
         cx.stop_propagation();
         match k {
             TreeKey::Move(to) => {
+                // ↓ past the last row goes on into the section under the files.
+                let at_end = self.rows.is_empty() || cur == Some(self.rows.len() - 1);
+                if ks.key == "down"
+                    && !ks.modifiers.shift
+                    && at_end
+                    && let Some(f) = self.section.as_ref().and_then(|s| s.focus_handle(cx))
+                {
+                    return f.focus(window, cx);
+                }
                 if self.rows.is_empty() {
                     return;
                 }
@@ -1670,11 +1709,13 @@ impl Render for ExplorerPanel {
         });
         let count = self.items.len();
         let me = cx.weak_entity();
-        div()
+        let files = div()
             .id("explorer")
             .key_context("Explorer")
             .track_focus(&self.focus)
-            .size_full()
+            .w_full()
+            .flex_1()
+            .min_h(px(MIN_FILES))
             .flex()
             .flex_col()
             .text_color(t.foreground)
@@ -1819,6 +1860,12 @@ impl Render for ExplorerPanel {
                         Some(this) => Self::build_menu(&this, None, menu, window, cx),
                         None => menu,
                     }),
-            )
+            );
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(files)
+            .children(self.section.as_ref().map(PanelHandle::view))
     }
 }

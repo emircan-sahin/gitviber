@@ -1,38 +1,44 @@
-//! The Obsidian panel (right sidebar, id "vault", after Explorer and Search): the vault's folders
-//! and files as Obsidian's file explorer lists them, listed folder by folder as they open (the
-//! explorer's tree model), notes by their name. A switcher picks among the vaults Obsidian
-//! lists; the one on show is watched, so the tree and open notes follow edits made in Obsidian.
+//! The Explorer's vault section, under the files: the vault's folders and files as Obsidian's
+//! file explorer lists them, listed folder by folder as they open (the explorer's tree model),
+//! notes by their name. Its header opens and closes it (a header at the bottom while closed) and
+//! switches among the vaults Obsidian lists; while open it resizes against the files, and the
+//! vault on show is watched, so the tree and open notes follow edits made in Obsidian.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gitviber_core::obsidian::Vault;
 use gitviber_core::{Core, api};
+use gitviber_files::explorer::MIN_FILES;
 use gitviber_files::explorer::tree::{LazyTree, Listed, Node, Row, TreeKey, tree_key};
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::FileIcon;
-use gitviber_ui::workspace::{Panel, PanelContext, Toast, Workspace, WorkspaceEvent};
+use gitviber_ui::workspace::{Panel, PanelContext, Slot, Toast, Workspace, WorkspaceEvent};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::{Icon, Sizable as _};
+use gpui_kit::component::resizable::HandleEdge;
+use gpui_kit::component::{Icon, Sizable as _, resize_handle};
 use gpui_kit::{
-    App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, FocusHandle,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, ScrollStrategy,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
-    UniformListScrollHandle, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
-    uniform_list,
+    App, AppContext as _, Axis, ClickEvent, ClipboardItem, Context, DragMoveEvent, Empty, Entity,
+    FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Pixels,
+    Render, ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Task, UniformListScrollHandle, WeakEntity, Window, div,
+    prelude::FluentBuilder as _, px, uniform_list,
 };
 
 use crate::links::note_name;
 use crate::note::open_in_tab;
 use crate::vaults::{Vaults, VaultsEvent};
 
-pub const PANEL_ID: &str = "vault";
 const ROW_HEIGHT: f32 = 24.;
 const INDENT: f32 = 12.;
+/// The open section's least height (its header and two rows), and its height until dragged.
+const MIN_SECTION: f32 = 84.;
+const DEFAULT_SECTION: f32 = 240.;
 
 /// As the file manager is named where the file opens.
 const REVEAL_LABEL: &str = if cfg!(target_os = "macos") {
@@ -43,13 +49,28 @@ const REVEAL_LABEL: &str = if cfg!(target_os = "macos") {
     "Show in Folder"
 };
 
-type MenuAction = Rc<dyn Fn(&mut VaultPanel, &mut Window, &mut Context<VaultPanel>)>;
+type MenuAction = Rc<dyn Fn(&mut VaultSection, &mut Window, &mut Context<VaultSection>)>;
 
-pub struct VaultPanel {
+/// The divider over the open section, as it's dragged.
+#[derive(Clone)]
+struct VaultSplit;
+
+impl Render for VaultSplit {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
+pub struct VaultSection {
     workspace: WeakEntity<Workspace>,
     core: Arc<Core>,
     model: Entity<Vaults>,
     vault: Option<Vault>,
+    /// The section is open (`Vaults::collapsed`, every window's): only then is the vault listed
+    /// and watched.
+    open: bool,
+    /// The files' height above, as the explorer last drew them.
+    room: Rc<Cell<Pixels>>,
     hold: Option<u64>,
     tree: LazyTree,
     rows: Vec<Row>,
@@ -57,8 +78,6 @@ pub struct VaultPanel {
     error: Option<SharedString>,
     /// The keyboard's row, apart from the open tab.
     selected: Option<SharedString>,
-    /// Open folders per vault, kept while the panel is: switching back finds them open.
-    open_folders: HashMap<String, Vec<SharedString>>,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
     listings: HashMap<SharedString, Task<()>>,
@@ -66,16 +85,24 @@ pub struct VaultPanel {
     _live: Live,
 }
 
-impl Panel for VaultPanel {
-    fn panel_focus(&self, _: &App) -> Option<FocusHandle> {
-        Some(self.focus.clone())
+impl Panel for VaultSection {
+    /// None while it isn't drawn: the explorer's ↓ stays in the files.
+    fn panel_focus(&self, cx: &App) -> Option<FocusHandle> {
+        self.shown(cx).then(|| self.focus.clone())
     }
 }
 
-impl VaultPanel {
-    pub fn new(ctx: &PanelContext, window: &mut Window, cx: &mut Context<Self>) -> Self {
+impl VaultSection {
+    pub fn new(
+        ctx: &PanelContext,
+        room: Rc<Cell<Pixels>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let model = Vaults::global(cx);
         let mut subs = vec![
+            // Opened or closed (here or in another window), or resized.
+            cx.observe(&model, |this, _, cx| this.sync(cx)),
             cx.subscribe(&model, |this, _, e: &VaultsEvent, cx| match e {
                 VaultsEvent::ListChanged => this.sync(cx),
                 VaultsEvent::Changed {
@@ -107,64 +134,117 @@ impl VaultPanel {
             }
         }));
         cx.on_release(|this: &mut Self, cx| {
+            this.keep_open_folders(cx);
             if let Some(id) = this.hold.take() {
                 this.model.update(cx, |m, cx| m.release(id, cx));
             }
         })
         .detach();
-        let mut panel = VaultPanel {
+        let focus = cx.focus_handle();
+        // Come into from the files (↓ past their last row): the first row is the keyboard's.
+        subs.push(cx.on_focus_in(&focus, window, |this, _, cx| {
+            if this.selected.is_none()
+                && let Some(first) = this.rows.first()
+            {
+                this.selected = Some(first.node.path.clone());
+                cx.notify();
+            }
+        }));
+        let mut panel = VaultSection {
             workspace: ctx.workspace.clone(),
             core: gitviber_ui::core(cx),
             model,
             vault: None,
+            open: false,
+            room,
             hold: None,
             tree: LazyTree::new(),
             rows: Vec::new(),
             error: None,
             selected: None,
-            open_folders: HashMap::new(),
             scroll: UniformListScrollHandle::new(),
-            focus: cx.focus_handle(),
+            focus,
             listings: HashMap::new(),
             _subs: subs,
-            _live: Live::new("VaultPanel"),
+            _live: Live::new("VaultSection"),
         };
         panel.sync(cx);
         panel
     }
 
-    /// Follows the vault to show: another one starts its tree over (with the folders it had open).
+    /// Follows the vault to show and whether the section is open: another vault, or the section
+    /// opening, starts the tree over with the folders it had open; closed, it holds nothing.
     fn sync(&mut self, cx: &mut Context<Self>) {
-        let want = self.model.read(cx).current(cx);
-        if want.as_ref().map(|v| &v.path) == self.vault.as_ref().map(|v| &v.path) {
+        let model = self.model.read(cx);
+        let want = model.current(cx);
+        let open = !model.collapsed();
+        if want.as_ref().map(|v| &v.path) == self.vault.as_ref().map(|v| &v.path)
+            && open == self.open
+        {
             self.vault = want;
             return cx.notify();
         }
-        if let Some(old) = self.vault.take() {
-            let open: Vec<SharedString> = self
-                .tree
-                .expanded()
-                .filter(|p| !p.is_empty())
-                .cloned()
-                .collect();
-            self.open_folders.insert(old.path, open);
-        }
+        self.keep_open_folders(cx);
         if let Some(id) = self.hold.take() {
             self.model.update(cx, |m, cx| m.release(id, cx));
         }
         self.tree = LazyTree::new();
-        self.rows.clear();
+        self.rows = Vec::new();
         self.error = None;
         self.selected = None;
         self.listings.clear();
-        if let Some(v) = &want {
+        if let Some(v) = want.as_ref().filter(|_| open) {
             self.hold = Some(self.model.update(cx, |m, cx| m.hold(&v.path, cx)));
-            for dir in self.open_folders.get(&v.path).cloned().unwrap_or_default() {
+            for dir in self.model.read(cx).open_folders(&v.path) {
                 self.tree.set_open(&dir, true);
             }
         }
         self.vault = want;
+        self.open = open;
         self.refresh(cx);
+    }
+
+    fn keep_open_folders(&self, cx: &mut App) {
+        let Some(vault) = self.vault.as_ref().filter(|_| self.open) else {
+            return;
+        };
+        let open: Vec<SharedString> = self
+            .tree
+            .expanded()
+            .filter(|p| !p.is_empty())
+            .cloned()
+            .collect();
+        self.model
+            .update(cx, |m, _| m.keep_open_folders(&vault.path, open));
+    }
+
+    /// Drawn: Obsidian is on and lists a vault.
+    pub fn shown(&self, cx: &App) -> bool {
+        self.vault.is_some() && gitviber_ui::Settings::get(cx).obsidian
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// Opens or closes the section, in every window.
+    pub fn toggle(&mut self, cx: &mut Context<Self>) {
+        let collapsed = self.open;
+        self.model
+            .update(cx, |m, cx| m.set_collapsed(collapsed, cx));
+    }
+
+    /// Opens the section and moves the keyboard into it.
+    pub fn open_and_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.model.update(cx, |m, cx| m.set_collapsed(false, cx));
+        self.focus.focus(window, cx);
+    }
+
+    /// Back up into the files.
+    fn focus_files(&self, window: &mut Window, cx: &mut Context<Self>) {
+        _ = self
+            .workspace
+            .update(cx, |ws, cx| ws.focus_slot(Slot::Right, window, cx));
     }
 
     /// Lists every open folder again.
@@ -177,7 +257,12 @@ impl VaultPanel {
     }
 
     fn load(&mut self, path: SharedString, cx: &mut Context<Self>) {
-        let Some(vault) = self.vault.as_ref().map(|v| v.path.clone()) else {
+        let Some(vault) = self
+            .vault
+            .as_ref()
+            .filter(|_| self.open)
+            .map(|v| v.path.clone())
+        else {
             return;
         };
         let id = self.tree.begin(&path);
@@ -227,6 +312,7 @@ impl VaultPanel {
 
     pub fn collapse_all(&mut self, cx: &mut Context<Self>) {
         self.tree.collapse_all();
+        self.keep_open_folders(cx);
         self.rebuild(cx);
     }
 
@@ -265,6 +351,18 @@ impl VaultPanel {
             return;
         }
         let cur = self.selected.as_ref().and_then(|s| self.row_index(s));
+        // ↑ from the header or the first row goes back up into the files.
+        if ks.key == "up" && (!self.open || cur.is_none_or(|c| c == 0)) {
+            cx.stop_propagation();
+            return self.focus_files(window, cx);
+        }
+        if !self.open {
+            if matches!(ks.key.as_str(), "enter" | "space" | "right" | "down") {
+                cx.stop_propagation();
+                self.toggle(cx);
+            }
+            return;
+        }
         let tree = &self.tree;
         let Some(k) = tree_key(&ks.key, &self.rows, cur, |p| tree.is_open(p)) else {
             return;
@@ -489,6 +587,7 @@ impl VaultPanel {
 
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.app_theme();
+        let open = self.open;
         let vaults = self.model.read(cx).vaults(cx);
         let current = self.vault.clone();
         let me = cx.weak_entity();
@@ -531,19 +630,42 @@ impl VaultPanel {
                 .child(name)
                 .into_any_element()
         };
+        let toggle = div()
+            .id("vault-toggle")
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap_1()
+            .cursor_pointer()
+            .text_size(px(11.))
+            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+            .text_color(t.subtle)
+            .hover(|s| s.text_color(t.foreground))
+            .child(
+                Icon::new(if open {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                })
+                .size(px(12.)),
+            )
+            .child("OBSIDIAN")
+            .on_click(cx.listener(|this, _, _, cx| this.toggle(cx)));
         div()
             .flex_none()
-            .h(px(30.))
+            .h(px(28.))
             .flex()
             .items_center()
             .gap_1()
             .pl_2()
             .pr_1()
-            .border_b_1()
             .border_color(t.border)
-            .child(switcher)
+            .when(open, |d| d.border_b_1())
+            .when(!open, |d| d.border_t_1())
+            .child(toggle)
+            .child(div().min_w_0().child(switcher))
             .child(div().flex_1())
-            .when(current.is_some(), |d| {
+            .when(open, |d| {
                 d.child(
                     Button::new("collapse-folders")
                         .ghost()
@@ -555,6 +677,11 @@ impl VaultPanel {
                         }),
                 )
             })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_folder(&mut self, path: &str, cx: &mut Context<Self>) {
+        self.set_open(path, true, cx);
     }
 
     #[cfg(test)]
@@ -587,34 +714,27 @@ fn notice(title: &str, detail: &str, cx: &App) -> impl IntoElement + use<> {
         )
 }
 
-impl Render for VaultPanel {
+impl Render for VaultSection {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.app_theme();
         let base = div()
-            .id("vault-panel")
+            .id("vault-section")
             .key_context("Explorer")
             .track_focus(&self.focus)
-            .size_full()
+            .w_full()
             .flex()
             .flex_col()
-            .text_color(t.foreground);
-        if !gitviber_ui::Settings::get(cx).obsidian {
-            return base.child(notice(
-                "Obsidian is turned off",
-                "Turn it on in Settings → Obsidian.",
-                cx,
-            ));
-        }
-        let Some(vault) = self.vault.clone() else {
-            let loaded = self.model.read(cx).loaded();
-            return base.when(loaded, |d| {
-                d.child(notice(
-                    "No Obsidian vault",
-                    "A folder opened as a vault in Obsidian shows here.",
-                    cx,
-                ))
-            });
+            .text_color(t.foreground)
+            .on_key_down(
+                cx.listener(|this, e: &KeyDownEvent, window, cx| this.on_key(e, window, cx)),
+            );
+        // Nothing to show: the files have the whole explorer.
+        let Some(vault) = self.vault.clone().filter(|_| self.shown(cx)) else {
+            return base.flex_none();
         };
+        if !self.open {
+            return base.flex_none().child(self.header(cx));
+        }
         // The open tab's file, when it's one of this vault's (selection_key's "vault:" form).
         let prefix = format!("vault:{}:", vault.path);
         let active: Option<SharedString> = self.workspace.upgrade().and_then(|ws| {
@@ -625,36 +745,51 @@ impl Render for VaultPanel {
         let empty = self.tree.children("").is_some_and(|c| c.is_empty());
         let count = self.rows.len();
         let me = cx.weak_entity();
-        base.on_key_down(
-            cx.listener(|this, e: &KeyDownEvent, window, cx| this.on_key(e, window, cx)),
-        )
-        .child(self.header(cx))
-        .when_some(self.error.clone(), |d, e| {
-            d.child(notice(&format!("Could not list {}", vault.name), &e, cx))
-        })
-        .when(empty, |d| d.child(notice("This vault is empty", "", cx)))
-        .child(
-            uniform_list(
-                "vault-rows",
-                count,
-                cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
-                    range
-                        .map(|ix| this.render_row(ix, active.as_deref(), window, cx))
-                        .collect::<Vec<_>>()
-                }),
+        let size = self.model.read(cx).size().unwrap_or(DEFAULT_SECTION);
+        let handle = resize_handle::<VaultSplit, VaultSplit>("vault-split", Axis::Vertical)
+            .inside(HandleEdge::Leading)
+            .on_drag(VaultSplit, |d, _, _, cx| cx.new(|_| d.clone()));
+        // Too short a window shrinks it first down to MIN_SECTION, then the files.
+        base.relative()
+            .h(px(size))
+            .min_h(px(MIN_SECTION))
+            .flex_shrink(1.)
+            .on_drag_move(cx.listener(|this, e: &DragMoveEvent<VaultSplit>, _, cx| {
+                let want = f32::from(e.bounds.bottom() - e.event.position.y);
+                let most = f32::from(e.bounds.size.height + this.room.get()) - MIN_FILES;
+                let size = want.min(most).max(MIN_SECTION).round();
+                this.model.update(cx, |m, cx| m.set_size(size, cx));
+            }))
+            .child(self.header(cx))
+            .when_some(self.error.clone(), |d, e| {
+                d.child(notice(&format!("Could not list {}", vault.name), &e, cx))
+            })
+            .when(empty, |d| d.child(notice("This vault is empty", "", cx)))
+            .child(
+                uniform_list(
+                    "vault-rows",
+                    count,
+                    cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
+                        range
+                            .map(|ix| this.render_row(ix, active.as_deref(), window, cx))
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(&self.scroll)
+                .flex_1()
+                .py_1(),
             )
-            .track_scroll(&self.scroll)
-            .flex_1()
-            .py_1(),
-        )
-        // The space below the rows: the vault's own menu.
-        .child(
-            div().id("vault-blank").h(px(48.)).flex_none().context_menu(
-                move |menu, _, cx| match me.upgrade() {
-                    Some(this) => this.update(cx, |this, cx| this.menu(None, menu, cx)),
-                    None => menu,
-                },
-            ),
-        )
+            // The space below the rows: the vault's own menu.
+            .child(
+                div()
+                    .id("vault-blank")
+                    .h(px(ROW_HEIGHT))
+                    .flex_none()
+                    .context_menu(move |menu, _, cx| match me.upgrade() {
+                        Some(this) => this.update(cx, |this, cx| this.menu(None, menu, cx)),
+                        None => menu,
+                    }),
+            )
+            .child(handle)
     }
 }

@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gitviber_core::api;
 use gitviber_core::obsidian::Vault;
@@ -50,8 +51,12 @@ pub struct Vaults {
     /// Obsidian's vaults as last read; None before the first read.
     list: Option<Vec<Vault>>,
     picked: Option<String>,
-    /// The old app's vault section was left closed (imported; nothing here closes yet).
+    /// The explorer's vault section is closed, and its height while open (every window's).
     collapsed: bool,
+    size: Option<f32>,
+    /// Open folders by vault, for the app's life: a closed section or a new project's explorer
+    /// finds them open again.
+    open_folders: HashMap<String, Vec<SharedString>>,
     /// What Settings says about vaults, to tell its changes from others'.
     shown: (bool, Vec<String>),
     /// Open views of a vault, the latest last: the watcher follows the last one.
@@ -60,6 +65,7 @@ pub struct Vaults {
     watched: Option<String>,
     watching: bool,
     indexes: HashMap<String, IndexSlot>,
+    _save_size: Task<()>,
     _read: Task<()>,
     _watch: Task<()>,
     _subs: Vec<Subscription>,
@@ -71,7 +77,10 @@ struct VaultsGlobal(Entity<Vaults>);
 
 impl Global for VaultsGlobal {}
 
-/// Where the vault picked to show is kept, beside the app's settings.
+/// A divider's drag saves once it rests.
+const SAVE_SIZE: Duration = Duration::from_millis(500);
+
+/// Where the vault picked to show and its section's state are kept, beside the app's settings.
 fn picked_file() -> PathBuf {
     store::config_dir().join("vaults.json")
 }
@@ -124,6 +133,11 @@ impl Vaults {
             .get("collapsed")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let size = saved
+            .get("size")
+            .and_then(Value::as_f64)
+            .filter(|s| s.is_finite() && *s > 0.)
+            .map(|s| s as f32);
         let shown = |cx: &App| {
             let s = Settings::get(cx);
             (s.obsidian, s.hidden_vaults.clone())
@@ -147,12 +161,15 @@ impl Vaults {
             list: None,
             picked,
             collapsed,
+            size,
+            open_folders: HashMap::new(),
             shown: shown(cx),
             holds: Vec::new(),
             next_hold: 0,
             watched: None,
             watching: false,
             indexes: HashMap::new(),
+            _save_size: Task::ready(()),
             _read: Task::ready(()),
             _watch: Task::ready(()),
             _subs: subs,
@@ -212,9 +229,56 @@ impl Vaults {
             .collect()
     }
 
-    /// The old app's vault section was left closed (its first launch here).
     pub fn collapsed(&self) -> bool {
         self.collapsed
+    }
+
+    /// Opens or closes the explorer's vault section in every window, and keeps it so.
+    pub fn set_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
+        if self.collapsed != collapsed {
+            self.collapsed = collapsed;
+            self.save(cx);
+            cx.notify();
+        }
+    }
+
+    /// The open section's height in pixels, None until its divider is dragged.
+    pub fn size(&self) -> Option<f32> {
+        self.size
+    }
+
+    pub fn set_size(&mut self, size: f32, cx: &mut Context<Self>) {
+        if self.size == Some(size) {
+            return;
+        }
+        self.size = Some(size);
+        cx.notify();
+        let timer = cx.background_executor().timer(SAVE_SIZE);
+        self._save_size = cx.spawn(async move |this, cx| {
+            timer.await;
+            _ = this.update(cx, |this, cx| this.save(cx));
+        });
+    }
+
+    pub fn open_folders(&self, vault: &str) -> Vec<SharedString> {
+        self.open_folders.get(vault).cloned().unwrap_or_default()
+    }
+
+    pub fn keep_open_folders(&mut self, vault: &str, open: Vec<SharedString>) {
+        self.open_folders.insert(vault.to_string(), open);
+    }
+
+    /// Every key at once: a save's keys left out of the one queued before it would be lost.
+    fn save(&self, cx: &mut App) {
+        let mut ours = Map::new();
+        if let Some(p) = &self.picked {
+            ours.insert("picked".into(), Value::String(p.clone()));
+        }
+        ours.insert("collapsed".into(), Value::Bool(self.collapsed));
+        if let Some(size) = self.size {
+            ours.insert("size".into(), Value::from(size as f64));
+        }
+        store::save_object(cx, picked_file(), ours);
     }
 
     /// Whether Obsidian's list has been read yet.
@@ -238,9 +302,7 @@ impl Vaults {
             return;
         }
         self.picked = Some(vault.to_string());
-        let mut ours = Map::new();
-        ours.insert("picked".into(), Value::String(vault.to_string()));
-        store::save_object(cx, picked_file(), ours);
+        self.save(cx);
         cx.emit(VaultsEvent::ListChanged);
     }
 
@@ -269,6 +331,11 @@ impl Vaults {
         let held = self.held_vaults();
         self.indexes.retain(|v, _| held.contains(v));
         self.rewatch(cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn holds(&self) -> usize {
+        self.holds.len()
     }
 
     fn held_vaults(&self) -> Vec<String> {
