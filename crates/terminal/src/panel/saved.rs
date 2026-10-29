@@ -754,8 +754,7 @@ impl TerminalPanel {
             let layout = layout::map_panes(&saved_layout(g.layout.as_ref(), ids.len()), &|i| {
                 ids[i as usize]
             });
-            let gid = self.next_id;
-            self.next_id += 1;
+            let gid = fresh_id();
             groups.push(Group {
                 id: gid,
                 name: g.name.clone(),

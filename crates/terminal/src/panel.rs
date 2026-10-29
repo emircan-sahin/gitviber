@@ -150,6 +150,13 @@ const TOOLBAR_HEIGHT: f32 = 36.;
 const MIN_WIDTH: f32 = 160.;
 const MIN_HEIGHT: f32 = 80.;
 
+/// A new pane or tab id. One count for every window's panel: the Agents menu, notifications and
+/// element ids find a pane by its id alone, so two windows' "pane 1" would be mixed up.
+fn fresh_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 pub struct TerminalPanel {
     core: Arc<Core>,
     config: TerminalConfig,
@@ -157,7 +164,6 @@ pub struct TerminalPanel {
     root: PathBuf,
     sets: HashMap<PathBuf, TabSet>,
     panes: HashMap<PaneId, PaneSlot>,
-    next_id: u64,
     maximized: bool,
     zoomed: bool,
     worktrees: Vec<WorktreeInfo>,
@@ -449,7 +455,6 @@ impl TerminalPanel {
             root,
             sets: HashMap::new(),
             panes: HashMap::new(),
-            next_id: 1,
             maximized: false,
             zoomed: false,
             worktrees: Vec::new(),
@@ -991,8 +996,7 @@ impl TerminalPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PaneId {
-        let id = self.next_id;
-        self.next_id += 1;
+        let id = fresh_id();
         let view = new_pane(
             id,
             self.core.clone(),
@@ -1040,8 +1044,7 @@ impl TerminalPanel {
         cx: &mut Context<Self>,
     ) {
         let id = self.make_pane(cwd, None, run, window, cx);
-        let gid = self.next_id;
-        self.next_id += 1;
+        let gid = fresh_id();
         let set = self.set_mut();
         set.groups.push(Group {
             id: gid,
@@ -2272,6 +2275,7 @@ impl TerminalPanel {
             .relative()
             .flex()
             .flex_none()
+            .h_full()
             .max_w(px(256.))
             .items_center()
             .gap_1p5()

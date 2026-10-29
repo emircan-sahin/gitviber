@@ -9,6 +9,7 @@ use std::sync::OnceLock;
 use gitviber_core::Event;
 use gitviber_core::api::app as pty_api;
 use gitviber_ui::workspace::Toast;
+use gpui::{AnimationExt as _, Hsla};
 
 use super::*;
 use crate::agent::{self, AgentEntry, Look, Note, PaneAgent, next_agent, pane_look};
@@ -367,6 +368,58 @@ pub(super) fn look_dot(look: Look, cx: &App) -> AnyElement {
         .border_1()
         .border_color(ring)
         .child(dot)
+        .into_any_element()
+}
+
+/// The Agents menu's dot: in a highlighted row's `ink`, and a working one pulses. Only in the
+/// menu, open for a moment: a pulse on a tab or the top bar would redraw the window for as long
+/// as an agent works.
+pub(super) fn menu_dot(look: Look, ink: Option<Hsla>, cx: &App) -> AnyElement {
+    let Some(ink) = ink else {
+        return pulsing(look, look_dot(look, cx));
+    };
+    let dot = div().flex_none().size(px(6.)).rounded_full();
+    let dot = match look {
+        Look::Done => dot.border_1().border_color(ink),
+        Look::Needs => dot.bg(ink).shadow(vec![gpui::BoxShadow {
+            color: ink.opacity(0.3),
+            offset: gpui::point(px(0.), px(0.)),
+            blur_radius: px(0.),
+            spread_radius: px(2.),
+            inset: false,
+        }]),
+        _ => dot.bg(ink),
+    };
+    let dot = if look == Look::Working {
+        div()
+            .flex_none()
+            .p(px(1.5))
+            .rounded_full()
+            .border_1()
+            .border_color(ink.opacity(0.45))
+            .child(dot)
+            .into_any_element()
+    } else {
+        dot.into_any_element()
+    };
+    pulsing(look, dot)
+}
+
+/// A working dot fading to 35% and back over 1.6 s; held still under Reduce Motion (gpui's).
+fn pulsing(look: Look, dot: AnyElement) -> AnyElement {
+    if look != Look::Working {
+        return dot;
+    }
+    div()
+        .flex_none()
+        .child(dot)
+        .with_animation(
+            "agent-working",
+            gpui::Animation::new(Duration::from_millis(1600))
+                .repeat()
+                .with_max_fps(30.),
+            |d, t| d.opacity(1. - 0.65 * (1. - (t * std::f32::consts::TAU).cos()) / 2.),
+        )
         .into_any_element()
 }
 
