@@ -17,6 +17,10 @@ const FOCUS_LINE_GAP: f32 = 0.125;
 /// shadcn/ui spends at each elevation.
 const SURFACE_SHADOW_INK: f32 = 0.1;
 
+/// GitViber: menus, popovers and toasts float at `shadow-lg shadow-black/50`, as the old app's
+/// did (upstream: shadcn's 0.1, which vanishes on the dark themes' near-black surfaces).
+const FLOATING_SHADOW_INK: f32 = 0.5;
+
 /// Ink of the hairline ring standing in for a popover's border.
 ///
 /// shadcn/ui draws no border on a popup surface at all: its edge is a 1px
@@ -25,7 +29,6 @@ const SURFACE_SHADOW_INK: f32 = 0.1;
 /// as part of one grounded surface rather than as an outline with a separate
 /// shadow below it. An opaque border cannot reproduce that — a border composites
 /// over the element's own background, not over the shadow.
-const POPOVER_RING_INK: f32 = 0.1;
 
 /// The colour of a popup surface's hairline ring in this theme.
 ///
@@ -34,7 +37,9 @@ const POPOVER_RING_INK: f32 = 0.1;
 /// token: a fixed black ring would all but vanish on a dark surface.
 ///
 pub(crate) fn popover_ring(cx: &App) -> Hsla {
-    cx.theme().foreground.alpha(POPOVER_RING_INK)
+    // GitViber: the solid border-strong edge its popups had (the theme maps it to `input`); the
+    // 10% foreground hairline left them hard to tell from the page.
+    cx.theme().input
 }
 
 /// shadcn/ui's popup surface shadow — a hairline `ring` plus `shadow-md` — at
@@ -58,20 +63,16 @@ pub(crate) fn popover_ring(cx: &App) -> Hsla {
 /// animation can hold it across frames, where no `App` is in hand.
 pub(crate) fn popover_shadow(ring: Hsla, strength: f32) -> Vec<BoxShadow> {
     let strength = strength.clamp(0., 1.);
-    let ink = hsla(0., 0., 0., SURFACE_SHADOW_INK * strength);
-    vec![
+    let mut layers = vec![
         // The ring, sitting in the 1px band outside the surface. No blur, so it
         // takes the shader's crisp path rather than the gaussian one.
         BoxShadow::new(px(0.), px(0.), ring.alpha(ring.a * strength))
             .blur_radius(px(0.))
             .spread_radius(px(1.)),
-        BoxShadow::new(px(0.), px(4.), ink)
-            .blur_radius(px(3.))
-            .spread_radius(px(-1.)),
-        BoxShadow::new(px(0.), px(2.), ink)
-            .blur_radius(px(2.))
-            .spread_radius(px(-2.)),
-    ]
+    ];
+    // GitViber: `shadow-lg` (upstream: `shadow-md`), see FLOATING_SHADOW_INK.
+    layers.extend(toast_shadow(strength));
+    layers
 }
 
 /// shadcn/ui's `shadow-lg`, the elevation it lifts a toast to, at `strength` of
@@ -83,7 +84,12 @@ pub(crate) fn popover_shadow(ring: Hsla, strength: f32) -> Vec<BoxShadow> {
 ///
 /// The radii are Tailwind's halved, for the reason [`popover_shadow`] explains.
 pub(crate) fn toast_shadow(strength: f32) -> Vec<BoxShadow> {
-    let ink = hsla(0., 0., 0., SURFACE_SHADOW_INK * strength.clamp(0., 1.));
+    lg_shadow(FLOATING_SHADOW_INK * strength.clamp(0., 1.))
+}
+
+/// Tailwind's `shadow-lg` with each layer at `ink`, radii halved as [`popover_shadow`] explains.
+pub(crate) fn lg_shadow(ink: f32) -> Vec<BoxShadow> {
+    let ink = hsla(0., 0., 0., ink);
     vec![
         BoxShadow::new(px(0.), px(10.), ink)
             .blur_radius(px(7.5))

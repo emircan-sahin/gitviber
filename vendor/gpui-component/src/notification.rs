@@ -427,7 +427,8 @@ impl Render for Notification {
             .relative()
             .w_full()
             .border_1()
-            .border_color(cx.theme().border)
+            // GitViber: the old app's strong border (`input` is our border_strong).
+            .border_color(cx.theme().input)
             .bg(cx.theme().tokens.popover)
             .rounded(cx.theme().radius_lg)
             .shadow(toast_shadow(1.))

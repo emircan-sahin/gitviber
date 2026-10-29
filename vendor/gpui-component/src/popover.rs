@@ -305,7 +305,8 @@ impl Popover {
             .id("content")
             .occlude()
             .tab_group()
-            .when(appearance, |this| this.popover_style(cx).p_3())
+            // GitViber: no padding of its own, as its popovers had; each content lays out its own.
+            .when(appearance, |this| this.popover_style(cx))
             .map(|this| match anchor {
                 Anchor::TopLeft | Anchor::TopCenter | Anchor::TopRight => this.top_1(),
                 Anchor::BottomLeft | Anchor::BottomCenter | Anchor::BottomRight => this.bottom_1(),
@@ -352,7 +353,8 @@ impl RenderOnce for Popover {
                     .id("content")
                     .occlude()
                     .tab_group()
-                    .when(appearance, |this| this.popover_style(cx).p_3())
+                    // GitViber: no padding of its own, as its popovers had; each content lays out its own.
+            .when(appearance, |this| this.popover_style(cx))
                     .when_some(content, |this, content| {
                         this.child((content)(state, window, cx))
                     })

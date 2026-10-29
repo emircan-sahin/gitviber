@@ -121,7 +121,8 @@ impl Render for Tooltip {
                 .text_color(cx.theme().popover_foreground)
                 .bg(cx.theme().tokens.popover)
                 .border_1()
-                .border_color(cx.theme().border)
+                // GitViber: the old app's strong border (`input` is our border_strong).
+                .border_color(cx.theme().input)
                 .shadow_md()
                 .rounded(cx.theme().radius)
                 .justify_between()

@@ -45,5 +45,25 @@ size table once beats setting a size at ~360 call sites.
   `menu/menu_item.rs` + `menu/popup_menu.rs`, an item with a check mark is a
   `MenuItemCheckBox`, toggled on (upstream: a plain item, the check mark unsaid).
 
+- The old app's overlay look. `menu/menu_item.rs` + `menu/popup_menu.rs`: a highlighted menu
+  row is solid primary with primary-foreground ink, its icons, check mark and shortcut too;
+  at rest icons are muted and check marks primary; a submenu whose own rows hold the
+  highlight shows the hover color (upstream: the accent, icons in the label's color).
+  Completion rows keep the accent. `styled.rs`: menus, popovers and toasts at `shadow-lg`
+  black/50 (`lg_shadow`; upstream `shadow-md`/`shadow-lg` at 0.1). `dialog/dialog.rs`: the
+  popover surface, `input` border (our border_strong), 4px corners, `shadow-lg` black/60, and
+  22% of the viewport from the top by default (upstream: background, border, radius_lg,
+  `shadow-xl` at 0.1, a tenth). `notification.rs`, `tooltip.rs`: the `input` border.
+  `styled.rs` `popover_ring`: menus and popovers edged in solid `input` (border_strong);
+  upstream a 10% foreground hairline. `popover.rs`: no `p_3` of its own, as the old app's
+  popover had none; each content pads itself.
+
+- Scrolling the code editor (`highlighter/input_adapter.rs`): the editor asks for the
+  visible lines' styles every frame and upstream ran the tree-sitter query each time. Styles are
+  now cached per 32 lines (at most 128 chunks; a chunk over 32 KB isn't cached), keyed by the
+  resolver, and cleared whenever the tree changes (an edit, or a background parse landing).
+  `highlighter/highlighter.rs`: the main query's capture names are made into `SharedString`s
+  once instead of a `String` per capture.
+
 Untouched on purpose: icon sizes, tabs, toggles, lists' row padding, the switch's own sizes
 (28×16 at Small is the old app's).

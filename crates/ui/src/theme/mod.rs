@@ -789,7 +789,8 @@ pub fn component_config(t: &AppTheme) -> ThemeConfig {
         description_list_label_foreground = t.muted_foreground,
         drag_border = t.primary,
         drop_target = t.primary.opacity(0.2),
-        overlay = hex("#00000066"),
+        // Black at 0.55 behind a dialog, the old app's backdrop.
+        overlay = hex("#0000008c"),
         window_border = t.border,
     );
     ThemeConfig {

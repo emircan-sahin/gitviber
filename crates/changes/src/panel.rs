@@ -3596,7 +3596,7 @@ impl Render for ChangesPanel {
             .key_context(CONTEXT)
             .track_focus(&self.focus)
             .size_full()
-            .bg(t.chrome(t.sidebar))
+            .bg(t.chrome(t.panel))
             .text_color(t.foreground)
             .children(filter)
             .children(banner)

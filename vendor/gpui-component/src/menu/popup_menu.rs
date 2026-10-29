@@ -11,7 +11,7 @@ use gpui::{
     ParentElement, Pixels, Render, Role, ScrollHandle, SharedString, StatefulInteractiveElement,
     Styled, WeakEntity, Window, anchored, deferred, div, prelude::FluentBuilder, px, rems,
 };
-use gpui::{ClickEvent, Half, MouseDownEvent, OwnedMenuItem, Point, Subscription};
+use gpui::{ClickEvent, Half, Hsla, MouseDownEvent, OwnedMenuItem, Point, Subscription};
 use gpui_base::TestSupportExt as _;
 
 use std::rc::Rc;
@@ -1138,6 +1138,7 @@ impl PopupMenu {
     fn render_key_binding(
         &self,
         action: Option<Box<dyn Action>>,
+        lit: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Kbd> {
@@ -1167,29 +1168,51 @@ impl PopupMenu {
                 .flex_nowrap()
                 .border_0()
                 .bg(gpui::transparent_white())
+                .when(lit, |this| {
+                    this.text_color(cx.theme().primary_foreground.opacity(0.7))
+                })
         })
     }
 
+    /// GitViber: icons muted and check marks primary, both in the primary ink on a lit row,
+    /// as the old app's menus (upstream: the label's color).
     fn render_icon(
         has_icon: bool,
         checked: bool,
         icon: Option<Icon>,
+        lit: bool,
         _: &mut Window,
-        _: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
         if !has_icon {
             return None;
         }
 
         let icon = if let Some(icon) = icon {
-            icon.clone()
+            icon.clone().text_color(Self::icon_ink(lit, cx))
         } else if checked {
-            Icon::new(IconName::Check)
+            Self::check_icon(lit, cx)
         } else {
             Icon::empty()
         };
 
         Some(icon.xsmall())
+    }
+
+    fn icon_ink(lit: bool, cx: &App) -> Hsla {
+        if lit {
+            cx.theme().primary_foreground
+        } else {
+            cx.theme().muted_foreground
+        }
+    }
+
+    fn check_icon(lit: bool, cx: &App) -> Icon {
+        Icon::new(IconName::Check).text_color(if lit {
+            cx.theme().primary_foreground
+        } else {
+            cx.theme().primary
+        })
     }
 
     #[inline]
@@ -1225,17 +1248,29 @@ impl PopupMenu {
     ) -> MenuItemElement {
         let has_left_icon = options.has_left_icon;
         let is_left_check = options.check_side.is_left() && item.is_checked();
+        let selected = self.selected_index == Some(ix);
+        let is_submenu = matches!(item, PopupMenuItem::Submenu { .. });
+        let disabled = match item {
+            PopupMenuItem::Item { disabled, .. }
+            | PopupMenuItem::ElementItem { disabled, .. }
+            | PopupMenuItem::Submenu { disabled, .. } => *disabled,
+            _ => true,
+        };
+        // A submenu whose own rows have the highlight shows as open, the hover color, as the old
+        // app's did; the primary color marks one row at a time.
+        let open = is_submenu
+            && selected
+            && self
+                .active_submenu()
+                .is_some_and(|menu| menu.read(cx).selected_index.is_some());
+        let lit = selected && !disabled && !open;
         let right_check_icon = if options.check_side.is_right() && item.is_checked() {
-            Some(Icon::new(IconName::Check).xsmall())
+            Some(Self::check_icon(lit, cx).xsmall())
         } else {
             None
         };
-
-        let selected = self.selected_index == Some(ix);
         const EDGE_PADDING: Pixels = px(4.);
         const INNER_PADDING: Pixels = px(8.);
-
-        let is_submenu = matches!(item, PopupMenuItem::Submenu { .. });
 
         let (item_height, radius) = match self.size {
             Size::Small => (px(20.), options.radius.half()),
@@ -1251,6 +1286,7 @@ impl PopupMenu {
             .rounded(radius)
             .items_center()
             .selected(selected)
+            .primary(true)
             .checked(item.is_checked())
             .on_hover(cx.listener(move |this, hovered, window, cx| {
                 if *hovered {
@@ -1292,7 +1328,7 @@ impl PopupMenu {
                     .cursor_default()
                     .items_center()
                     .gap_x_1()
-                    .children(Self::render_icon(has_left_icon, false, None, window, cx))
+                    .children(Self::render_icon(has_left_icon, false, None, false, window, cx))
                     .child(div().flex_1().child(label.clone())),
             ),
             PopupMenuItem::ElementItem {
@@ -1317,6 +1353,7 @@ impl PopupMenu {
                             has_left_icon,
                             is_left_check,
                             icon.clone(),
+                            lit,
                             window,
                             cx,
                         ))
@@ -1333,7 +1370,7 @@ impl PopupMenu {
             } => {
                 let show_link_icon = *is_link && self.external_link_icon;
                 let action = action.as_ref().map(|action| action.boxed_clone());
-                let key = self.render_key_binding(action, window, cx);
+                let key = self.render_key_binding(action, lit, window, cx);
 
                 this.when(!disabled, |this| {
                     this.on_click(cx.listener(move |this, event, window, cx| {
@@ -1347,6 +1384,7 @@ impl PopupMenu {
                     has_left_icon,
                     is_left_check,
                     icon.clone(),
+                    lit,
                     window,
                     cx,
                 ))
@@ -1368,7 +1406,7 @@ impl PopupMenu {
                                     .child(
                                         Icon::new(IconName::ExternalLink)
                                             .xsmall()
-                                            .text_color(cx.theme().muted_foreground),
+                                            .text_color(Self::icon_ink(lit, cx)),
                                     ),
                             )
                         })
@@ -1381,7 +1419,8 @@ impl PopupMenu {
                 menu,
                 disabled,
             } => this
-                .selected(selected)
+                .selected(selected && !open)
+                .when(open, |this| this.bg(cx.theme().tokens.accent))
                 .disabled(*disabled)
                 .items_start()
                 .child(
@@ -1394,6 +1433,7 @@ impl PopupMenu {
                             has_left_icon,
                             false,
                             icon.clone(),
+                            lit,
                             window,
                             cx,
                         ))
@@ -1407,7 +1447,7 @@ impl PopupMenu {
                                 .child(
                                     Icon::new(IconName::ChevronRight)
                                         .xsmall()
-                                        .text_color(cx.theme().muted_foreground),
+                                        .text_color(Self::icon_ink(lit, cx)),
                                 ),
                         ),
                 )

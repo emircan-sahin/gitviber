@@ -503,7 +503,7 @@ mod tests {
         });
     }
 
-    /// `margin_top` overrides the tenth-of-the-viewport default offset, which
+    /// `margin_top` overrides the 22%-of-the-viewport default offset, which
     /// seats a short alert near the top of a tall window.
     #[gpui::test]
     fn margin_top_moves_the_alert_surface_off_the_default_offset(cx: &mut TestAppContext) {
@@ -527,8 +527,8 @@ mod tests {
             .expect("the alert dialog surface was not painted");
         // The alert chrome carries fractional text metrics (this surface is
         // 128.5px tall), so the painted origin lands within a subpixel of the
-        // requested offset. The default offset would be a tenth of the
-        // viewport: 60px.
+        // requested offset. The default offset would be 22% of the
+        // viewport: 132px.
         assert!(
             (bounds.origin.y - px(100.)).abs() <= px(0.5),
             "expected the surface within 0.5px of y=100, got {bounds:?}"

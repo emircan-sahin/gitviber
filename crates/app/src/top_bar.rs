@@ -78,7 +78,7 @@ fn divider(cx: &App) -> AnyElement {
         .w(px(1.))
         .h(px(18.))
         .mx_1()
-        .bg(cx.app_theme().border)
+        .bg(cx.app_theme().border_strong)
         .into_any_element()
 }
 

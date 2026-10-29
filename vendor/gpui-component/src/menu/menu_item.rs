@@ -15,6 +15,7 @@ pub(crate) struct MenuItemElement {
     disabled: bool,
     selected: bool,
     checked: bool,
+    primary: bool,
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
     on_hover: Option<Box<dyn Fn(&bool, &mut Window, &mut App) + 'static>>,
     children: SmallVec<[AnyElement; 2]>,
@@ -31,6 +32,7 @@ impl MenuItemElement {
             disabled: false,
             selected: false,
             checked: false,
+            primary: false,
             on_click: None,
             on_hover: None,
             children: SmallVec::new(),
@@ -46,6 +48,13 @@ impl MenuItemElement {
     /// GitViber: the item shows a check mark, so a screen reader says it's checked.
     pub(crate) fn checked(mut self, checked: bool) -> Self {
         self.checked = checked;
+        self
+    }
+
+    /// GitViber: highlight in the primary color with its ink, as the old app's menus did
+    /// (upstream: the accent). Completion rows keep the accent: their match marks are colored.
+    pub(crate) fn primary(mut self, primary: bool) -> Self {
+        self.primary = primary;
         self
     }
 
@@ -99,6 +108,11 @@ impl ParentElement for MenuItemElement {
 
 impl RenderOnce for MenuItemElement {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let (lit_bg, lit_fg) = if self.primary {
+            (cx.theme().tokens.primary, cx.theme().primary_foreground)
+        } else {
+            (cx.theme().tokens.accent, cx.theme().accent_foreground)
+        };
         h_flex()
             .id(self.id)
             .test_support()
@@ -134,14 +148,8 @@ impl RenderOnce for MenuItemElement {
                 // Not `group_hover` on the item's own group: GPUI styles an
                 // element before registering its group, and that fallback keeps
                 // the pointer's item lit after a key moves the highlight away.
-                this.hover(|this| {
-                    this.bg(cx.theme().tokens.accent)
-                        .text_color(cx.theme().accent_foreground)
-                })
-                .when(self.selected, |this| {
-                    this.bg(cx.theme().tokens.accent)
-                        .text_color(cx.theme().accent_foreground)
-                })
+                this.hover(|this| this.bg(lit_bg).text_color(lit_fg))
+                    .when(self.selected, |this| this.bg(lit_bg).text_color(lit_fg))
                 .when_some(self.on_click, |this, on_click| {
                     this.on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         cx.stop_propagation();

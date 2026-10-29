@@ -327,23 +327,9 @@ pub(crate) fn overlay_color(overlay: bool, cx: &App) -> Hsla {
     cx.theme().overlay
 }
 
+// GitViber: the old app's `shadow-lg shadow-black/60` (upstream: shadcn's `shadow-xl` at 0.1).
 fn dialog_shadow(delta: f32) -> Vec<BoxShadow> {
-    vec![
-        BoxShadow {
-            color: hsla(0., 0., 0., 0.1 * delta),
-            offset: point(px(0.), px(20.)),
-            blur_radius: px(25.),
-            spread_radius: px(-5.),
-            inset: false,
-        },
-        BoxShadow {
-            color: hsla(0., 0., 0., 0.1 * delta),
-            offset: point(px(0.), px(8.)),
-            blur_radius: px(10.),
-            spread_radius: px(-6.),
-            inset: false,
-        },
-    ]
+    crate::styled::lg_shadow(0.6 * delta)
 }
 
 impl Dialog {
@@ -610,12 +596,12 @@ impl RenderOnce for Dialog {
             );
         // The dialog keeps this much of the viewport clear around its edges,
         // so a small window shrinks the surface instead of letting it run off
-        // the window. A dialog that fits keeps `margin_top` (a tenth of the
-        // viewport by default); an overflowing one is snapped up to this edge
+        // the window. A dialog that fits keeps `margin_top` (GitViber: 22% of the
+        // viewport by default, the old app's; upstream a tenth); an overflowing one is snapped up to this edge
         // margin so that the preferred offset does not waste usable height.
         let margin = cx.theme().spacing_tokens().lg;
         let layer_offset = px(layer_ix as f32 * 16.);
-        let y = self.props.margin_top.unwrap_or(view_size.height / 10.) + layer_offset;
+        let y = self.props.margin_top.unwrap_or(view_size.height * 22. / 100.) + layer_offset;
         let entrance = self.props.entrance;
         let motion = cx.theme().motion_tokens();
         let animated = entrance != DialogEntrance::None
@@ -719,10 +705,12 @@ impl RenderOnce for Dialog {
                                         .id(layer_ix)
                                         .test_support()
                                         .debug_selector(move || format!("dialog-{layer_ix}"))
-                                        .bg(cx.theme().tokens.background)
+                                        // GitViber: the old app's elevated surface, strong
+                                        // border and 4px corners (`input` is our border_strong).
+                                        .bg(cx.theme().tokens.popover)
                                         .border_1()
-                                        .border_color(cx.theme().border)
-                                        .rounded(cx.theme().radius_lg)
+                                        .border_color(cx.theme().input)
+                                        .rounded(cx.theme().radius)
                                         .min_h_24()
                                         .pt(paddings.top)
                                         .pb(paddings.bottom)
@@ -928,7 +916,7 @@ pub(crate) mod tests {
     }
 
     /// The clamp must not touch a dialog that already fits: the default width
-    /// and the tenth-of-the-viewport top offset are the documented contract.
+    /// and the 22%-of-the-viewport top offset are the documented contract.
     #[gpui::test]
     fn a_dialog_that_fits_keeps_its_default_width_and_top_offset(cx: &mut TestAppContext) {
         let cx = window(cx, size(px(1000.), px(800.)));
@@ -937,7 +925,7 @@ pub(crate) mod tests {
         let bounds = surface(cx, 0);
         assert_eq!(bounds.size.width, px(448.));
         assert_eq!(bounds.origin.x, px(276.));
-        assert_eq!(bounds.origin.y, px(80.));
+        assert_eq!(bounds.origin.y, px(176.));
     }
 
     /// A dialog wider and taller than the window must shrink to the viewport
