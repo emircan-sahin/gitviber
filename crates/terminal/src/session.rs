@@ -288,6 +288,8 @@ pub(crate) struct Emu {
     pub scrolled: u64,
     /// A command started since the last prompt.
     command_ran: bool,
+    /// The shell is the pty's foreground job: nothing alive owns the other buffer.
+    shell_in_front: Box<dyn Fn() -> bool + Send>,
     outbox: Arc<Outbox>,
     /// The terminal's grid and scrollback, counted in the debug memory readout.
     _live: gitviber_ui::memory::Live,
@@ -307,6 +309,7 @@ impl Emu {
             kitty_notes: Default::default(),
             scrolled: 0,
             command_ran: false,
+            shell_in_front: Box::new(|| false),
             outbox,
             _live: gitviber_ui::memory::Live::new("Terminal"),
         }
@@ -425,6 +428,15 @@ impl Emu {
         let Some(mark) = mark else {
             return;
         };
+        // A prompt after a command in the other buffer, with the shell in front (not a shell under
+        // tmux): the program that used it died there (a crash, `kill -9`) and left it on.
+        if mark.kind == MarkKind::A
+            && self.command_ran
+            && self.mode().contains(TermMode::ALT_SCREEN)
+            && (self.shell_in_front)()
+        {
+            self.parser.advance(&mut self.term, marks::ALT_SCREEN_OFF);
+        }
         // As if the program had turned them off itself.
         if marks::mouse_left_on(mark.kind, *self.term.mode()) {
             self.parser.advance(&mut self.term, marks::MODES_OFF);
@@ -435,6 +447,14 @@ impl Emu {
                 let ran = std::mem::take(&mut self.command_ran);
                 if marks::keys_left_on(*self.term.mode(), ran) {
                     self.parser.advance(&mut self.term, marks::KEYS_OFF);
+                }
+                // A program that hid the cursor and died: the shell draws its prompt with it shown.
+                let mode = self.mode();
+                if ran
+                    && !mode.contains(TermMode::SHOW_CURSOR)
+                    && !mode.contains(TermMode::ALT_SCREEN)
+                {
+                    self.parser.advance(&mut self.term, marks::CURSOR_ON);
                 }
             }
             _ => {}
@@ -507,11 +527,20 @@ impl Session {
         let outbox = Arc::new(Outbox::default());
         let (tx, rx) = channel();
         *outbox.io.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
-        let emu = Arc::new(FairMutex::new(Emu::new(80, 24, config, outbox.clone())));
+        let pty = Arc::new(OnceLock::<u32>::new());
+        let mut first = Emu::new(80, 24, config, outbox.clone());
+        first.shell_in_front = {
+            let (core, pty) = (core.clone(), pty.clone());
+            Box::new(move || {
+                pty.get()
+                    .is_some_and(|&id| pty::pty_busy(&core, Some(vec![id])) == 0)
+            })
+        };
+        let emu = Arc::new(FairMutex::new(first));
         Session {
             emu,
             outbox,
-            pty: Arc::new(OnceLock::new()),
+            pty,
             core,
             rx: Mutex::new(Some(rx)),
         }
@@ -888,6 +917,53 @@ mod tests {
         // Inside a full-screen program, its own.
         emu.feed(b"\x1b]133;C\x07\x1b[?1049h\x1b[>1u\x1b]133;A\x07");
         assert!(emu.mode().contains(TermMode::DISAMBIGUATE_ESC_CODES));
+    }
+
+    /// Killed in the other buffer with the mouse on and the cursor hidden: with the shell in front
+    /// its prompt is back in the history's buffer, the cursor shown, the mouse off. Under tmux (the
+    /// shell not in front) the buffer is tmux's own.
+    #[test]
+    fn a_prompt_after_a_program_died_full_screen_puts_the_terminal_back() {
+        let crashed = b"\x1b]133;A\x07$ \x1b]133;C\x07\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[?25l";
+        let left = TermMode::ALT_SCREEN | TermMode::MOUSE_MOTION | TermMode::SGR_MOUSE;
+        let outbox = Arc::new(Outbox::default());
+        let mut emu = Emu::new(20, 5, test_config(), outbox);
+        emu.feed(crashed);
+        emu.feed(b"\x1b]133;A\x07$ ");
+        assert!(emu.mode().contains(left));
+        assert!(!emu.mode().contains(TermMode::SHOW_CURSOR));
+
+        let outbox = Arc::new(Outbox::default());
+        let mut emu = Emu::new(20, 5, test_config(), outbox);
+        emu.shell_in_front = Box::new(|| true);
+        emu.feed(crashed);
+        emu.feed(b"\x1b]133;A\x07$ ");
+        assert!(
+            !emu.mode().intersects(left | TermMode::MOUSE_MODE),
+            "{:?}",
+            emu.mode()
+        );
+        assert!(emu.mode().contains(TermMode::SHOW_CURSOR));
+        // The new prompt is drawn in the history's buffer, on the row the program started from.
+        let row: String = (0..3)
+            .map(|c| {
+                emu.term.grid()[alacritty_terminal::index::Line(0)]
+                    [alacritty_terminal::index::Column(c)]
+                .c
+            })
+            .collect();
+        assert_eq!(row, "$ $");
+    }
+
+    /// A prompt that isn't after a command (a redraw) leaves a shell's own hidden cursor alone.
+    #[test]
+    fn the_cursor_comes_back_only_at_a_prompt_after_a_command() {
+        let outbox = Arc::new(Outbox::default());
+        let mut emu = Emu::new(20, 5, test_config(), outbox);
+        emu.feed(b"\x1b[?25l\x1b]133;A\x07");
+        assert!(!emu.mode().contains(TermMode::SHOW_CURSOR));
+        emu.feed(b"$ \x1b]133;C\x07\x1b[?25l\x1b]133;D;137\x07\x1b]133;A\x07");
+        assert!(emu.mode().contains(TermMode::SHOW_CURSOR));
     }
 
     #[test]
