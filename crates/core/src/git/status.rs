@@ -45,6 +45,14 @@ pub struct FileChange {
     pub nested: Option<Nested>,
 }
 
+impl FileChange {
+    /// An untracked folder listed as one entry (status.showUntrackedFiles=normal, see
+    /// `is_untracked_folder`), not a nested repository: no diff of its own, staged whole.
+    pub fn untracked_folder(&self) -> bool {
+        self.status == "?" && self.nested.is_none() && self.path.ends_with('/')
+    }
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Nested {
@@ -123,14 +131,15 @@ fn untracked_modes() -> &'static std::sync::Mutex<HashMap<PathBuf, &'static str>
 /// status.showUntrackedFiles, which monorepos set to skip the walk. Unset (git's own default
 /// would be `normal`) or a value git refuses: every file, one by one.
 fn untracked_mode(config: &ConfigList) -> &'static str {
-    match config
-        .value("status.showuntrackedfiles")
-        .map(|v| v.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("no" | "false" | "off" | "0") => UNTRACKED_NO,
-        Some("normal" | "true" | "yes" | "on" | "1") => UNTRACKED_NORMAL,
-        _ => UNTRACKED_ALL,
+    let key = "status.showuntrackedfiles";
+    match config.value(key).map(|v| v.to_ascii_lowercase()).as_deref() {
+        Some("normal") => UNTRACKED_NORMAL,
+        Some("all") => UNTRACKED_ALL,
+        _ => match config.bool(key) {
+            Some(false) => UNTRACKED_NO,
+            Some(true) => UNTRACKED_NORMAL,
+            None => UNTRACKED_ALL,
+        },
     }
 }
 
@@ -272,7 +281,7 @@ pub(super) fn count_lines(repo: &Path, rel: &str, budget: &mut CountBudget) -> O
     };
     let key = (path, meta.len(), meta.modified().ok());
     let cache = CACHE.get_or_init(Default::default);
-    if let Some(n) = cache.lock().unwrap().get(&key) {
+    if let Some(n) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return Some(*n);
     }
     // Past MAX_TEXT_BYTES nothing is read.
@@ -294,7 +303,7 @@ pub(super) fn count_lines(repo: &Path, rel: &str, budget: &mut CountBudget) -> O
         let trailing = !bytes.is_empty() && *bytes.last().unwrap() != b'\n';
         (n + trailing as usize) as u32
     });
-    let mut cache = cache.lock().unwrap();
+    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
     // Stale keys (old mtimes) pile up as files change; start over rather than track them.
     if cache.len() > 50_000 {
         cache.clear();
@@ -312,14 +321,18 @@ pub(crate) fn status_in(repo: &Path, dirs: Option<&GitDirs>) -> Result<RepoStatu
     let args = |untracked| ["status", "--porcelain=v2", "-z", "--branch", untracked];
     // The config is read alongside status, so status goes with the mode it had last time and
     // runs again only when that changed (the first refresh of a repo that sets it, an edit).
-    let last = untracked_modes().lock().unwrap().get(repo).copied();
+    let last = untracked_modes()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(repo)
+        .copied();
     let guess = last.unwrap_or(UNTRACKED_ALL);
     let (raw, config) = both(|| run(repo, &args(guess)), || ConfigList::read(repo));
     let config = config.ok();
     let mode = config.as_ref().map_or(guess, untracked_mode);
     untracked_modes()
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(repo.to_path_buf(), mode);
     let raw = if mode == guess {
         raw?

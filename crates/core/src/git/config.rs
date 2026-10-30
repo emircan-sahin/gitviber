@@ -42,6 +42,20 @@ impl ConfigList {
         Some(value.as_deref()?.trim().to_string()).filter(|v| !v.is_empty())
     }
 
+    /// As git reads a boolean: a key with no `=` is true, an empty value false, a number true
+    /// unless 0. None when unset or not a boolean.
+    pub(crate) fn bool(&self, key: &str) -> Option<bool> {
+        let (_, value) = self.0.iter().rev().find(|(k, _)| k == key)?;
+        let Some(v) = value else {
+            return Some(true);
+        };
+        match v.trim().to_ascii_lowercase().as_str() {
+            "true" | "yes" | "on" => Some(true),
+            "false" | "no" | "off" | "" => Some(false),
+            n => n.parse::<i64>().ok().map(|n| n != 0),
+        }
+    }
+
     /// `remote_urls` without a git call: each remote by name with the URL it fetches from,
     /// the longest `url.<base>.insteadOf` applied. None where git's own reading would differ
     /// (an empty URL resets the list only since git 2.46; a string key with no value makes git
