@@ -107,6 +107,15 @@ impl InstanceBufferPool {
     }
 }
 
+/// GitViber: where a window frame's drawable comes from.
+enum DrawableSource {
+    /// `nextDrawable` on the layer.
+    Layer,
+    /// A `CAMetalDisplayLink` drives the layer and hands out each frame's drawable; the layer's
+    /// `nextDrawable` must not be called meanwhile. Holds the current update's drawable.
+    DisplayLink(Option<metal::MetalDrawable>),
+}
+
 pub struct MetalRenderer {
     device: metal::Device,
     layer: Option<metal::MetalLayer>,
@@ -137,6 +146,7 @@ pub struct MetalRenderer {
     path_sample_count: u32,
     /// GitViber: the real drawable size while a hidden window is trimmed to 1x1.
     trimmed_drawable_size: Option<CGSize>,
+    drawable_source: DrawableSource,
     /// Offscreen render target reused across `render_scene` calls when
     /// rendering headlessly without reading pixels back.
     #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
@@ -412,6 +422,7 @@ impl MetalRenderer {
             path_intermediate_msaa_texture: None,
             path_sample_count: PATH_SAMPLE_COUNT,
             trimmed_drawable_size: None,
+            drawable_source: DrawableSource::Layer,
             #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
             headless_render_target: None,
         }
@@ -430,6 +441,33 @@ impl MetalRenderer {
 
     pub fn sprite_atlas(&self) -> &Arc<MetalAtlas> {
         &self.sprite_atlas
+    }
+
+    /// GitViber: whether a `CAMetalDisplayLink` drives the layer. While one does, frames draw
+    /// only into the drawable `set_frame_drawable` gives; detach only an invalidated link.
+    pub fn set_display_link_attached(&mut self, attached: bool) {
+        self.drawable_source = if attached {
+            DrawableSource::DisplayLink(None)
+        } else {
+            DrawableSource::Layer
+        };
+    }
+
+    /// GitViber: the drawable for the next frame, from the display link's update. Pass `None`
+    /// after the frame to hand back a drawable it did not use; the one returned is that
+    /// drawable, so `Some` then means the frame neither drew nor presented. A setter, not a
+    /// frame-scoped guard, because the window unlocks the renderer while GPUI draws.
+    pub fn set_frame_drawable(
+        &mut self,
+        drawable: Option<metal::MetalDrawable>,
+    ) -> Option<metal::MetalDrawable> {
+        match &mut self.drawable_source {
+            DrawableSource::DisplayLink(current) => mem::replace(current, drawable),
+            DrawableSource::Layer => {
+                debug_assert!(drawable.is_none(), "a display link drawable while detached");
+                None
+            }
+        }
     }
 
     pub fn set_presents_with_transaction(&mut self, presents_with_transaction: bool) {
@@ -570,20 +608,32 @@ impl MetalRenderer {
                 return;
             }
         };
-        let viewport_size = layer.drawable_size();
-        let viewport_size: Size<DevicePixels> = size(
-            (viewport_size.width.ceil() as i32).into(),
-            (viewport_size.height.ceil() as i32).into(),
-        );
-        let drawable = if let Some(drawable) = layer.next_drawable() {
-            drawable
-        } else {
-            log::error!(
-                "failed to retrieve next drawable, drawable size: {:?}",
-                viewport_size
-            );
-            return;
+        let drawable = match &mut self.drawable_source {
+            DrawableSource::DisplayLink(drawable) => {
+                let Some(drawable) = drawable.take() else {
+                    log::error!("skipped a frame drawn outside its display link's update");
+                    return;
+                };
+                drawable
+            }
+            DrawableSource::Layer => {
+                let Some(drawable) = layer.next_drawable() else {
+                    log::error!(
+                        "failed to retrieve next drawable, drawable size: {:?}",
+                        layer.drawable_size()
+                    );
+                    return;
+                };
+                drawable.to_owned()
+            }
         };
+        // GitViber: a display link's drawable was sized when the link handed it out, which can
+        // be before a resize the layer has since taken.
+        let texture = drawable.texture();
+        let viewport_size: Size<DevicePixels> = size(
+            (texture.width() as i32).into(),
+            (texture.height() as i32).into(),
+        );
 
         let command_buffer = match self.render_frame(scene, drawable.texture(), viewport_size) {
             Ok(command_buffer) => command_buffer,
@@ -598,7 +648,7 @@ impl MetalRenderer {
             command_buffer.wait_until_scheduled();
             drawable.present();
         } else {
-            command_buffer.present_drawable(drawable);
+            command_buffer.present_drawable(&drawable);
             command_buffer.commit();
         }
     }
@@ -1910,5 +1960,98 @@ mod tests {
             assert!(blue.abs_diff(128) <= 2);
             assert_eq!(*alpha, 255);
         }
+    }
+
+    fn window_renderer() -> MetalRenderer {
+        let mut renderer = MetalRenderer::new(Arc::new(Mutex::new(Default::default())), false);
+        renderer.update_drawable_size(size(DevicePixels(64), DevicePixels(64)));
+        renderer
+    }
+
+    fn next_drawable(renderer: &MetalRenderer) -> metal::MetalDrawable {
+        renderer
+            .layer()
+            .unwrap()
+            .next_drawable()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[test]
+    fn gitviber_display_link_drawables_are_used_once_or_handed_back() {
+        let mut renderer = window_renderer();
+        let drawable = next_drawable(&renderer);
+
+        renderer.set_display_link_attached(true);
+        assert!(
+            renderer
+                .set_frame_drawable(Some(drawable.clone()))
+                .is_none()
+        );
+        renderer.draw(&Scene::default());
+        assert!(
+            renderer.set_frame_drawable(None).is_none(),
+            "a frame that drew used the link's drawable"
+        );
+
+        renderer.set_frame_drawable(Some(drawable.clone()));
+        assert!(
+            renderer.set_frame_drawable(None).is_some(),
+            "a frame that didn't draw hands it back"
+        );
+
+        // Outside an update there is no drawable: the frame is skipped, not drawn with
+        // `nextDrawable` under the link.
+        renderer.draw(&Scene::default());
+        assert!(renderer.set_frame_drawable(None).is_none());
+
+        renderer.set_frame_drawable(Some(drawable));
+        renderer.set_display_link_attached(false);
+        assert!(matches!(renderer.drawable_source, DrawableSource::Layer));
+        assert!(renderer.set_frame_drawable(None).is_none());
+    }
+
+    #[test]
+    fn gitviber_layer_vends_drawables_again_after_its_display_link_is_invalidated() {
+        use objc2::AnyThread;
+        use objc2_quartz_core::CAMetalDisplayLink;
+
+        if !crate::display_link::MetalFrameSource::is_available() {
+            return;
+        }
+        let mut renderer = window_renderer();
+        let layer = unsafe {
+            &*renderer
+                .layer_ptr()
+                .cast::<objc2_quartz_core::CAMetalLayer>()
+        };
+        // Not on a run loop: being attached to the layer is the state under test.
+        let link = CAMetalDisplayLink::initWithMetalLayer(CAMetalDisplayLink::alloc(), layer);
+        renderer.set_display_link_attached(true);
+        renderer.draw(&Scene::default());
+
+        link.invalidate();
+        renderer.set_display_link_attached(false);
+        assert!(renderer.layer().unwrap().next_drawable().is_some());
+        renderer.draw(&Scene::default());
+    }
+
+    #[test]
+    fn gitviber_a_trimmed_window_draws_at_its_real_size_while_detached() {
+        let mut renderer = window_renderer();
+        renderer.trim();
+        renderer.draw(&Scene::default());
+        let layer_size = renderer.layer().unwrap().drawable_size();
+        assert_eq!(
+            (layer_size.width, layer_size.height),
+            (1., 1.),
+            "trimmed again after"
+        );
+        renderer.restore();
+        let drawable = next_drawable(&renderer);
+        assert_eq!(
+            (drawable.texture().width(), drawable.texture().height()),
+            (64, 64)
+        );
     }
 }
