@@ -7,7 +7,7 @@ use gitviber_core::network::CANCELLED;
 use gitviber_core::{Core, Res, api, git};
 use gpui_kit::{App, AppContext as _, Entity, SharedString, WeakEntity, Window};
 
-use crate::ask::{Ask, ask, ask_stacked};
+use crate::ask::{Ask, ask, ask_or, ask_stacked};
 use crate::errors::{GitFix, explain_git_error, secret_commits};
 use crate::names::{Branch, folder_name, plural, short_ref};
 use crate::net::NetOp;
@@ -577,9 +577,77 @@ fn switched(state: &Entity<RepoState>, name: &str, cx: &App) -> String {
     )
 }
 
+/// Leaving a detached HEAD whose commits no branch, tag or remote branch holds would leave them
+/// to the reflog: asked first, with a branch made here as the way to keep them. `go` leaves.
+fn unless_left_behind(
+    state: &Entity<RepoState>,
+    verb: &'static str,
+    window: &mut Window,
+    cx: &mut App,
+    go: impl FnOnce(&mut Window, &mut App) + 'static,
+) {
+    if state.read(cx).branch().is_some() {
+        return go(window, cx);
+    }
+    let core = gitviber_ui::core(cx);
+    let handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        let n = cx
+            .background_spawn(async move { api::branches::left_behind(&core).unwrap_or(0) })
+            .await;
+        let _ = handle.update(cx, |_, window, cx| {
+            if n == 0 {
+                return go(window, cx);
+            }
+            let count = if n >= git::LEFT_BEHIND_MAX {
+                format!("{n}+ commits")
+            } else {
+                plural(n, "commit")
+            };
+            let rx = ask_or(
+                Ask::new(
+                    "Leave commits behind?",
+                    format!(
+                        "No branch holds the {count} made here: once you leave, only the reflog has {}. Create a branch here first?",
+                        if n == 1 { "it" } else { "them" }
+                    ),
+                    format!("{verb} anyway"),
+                )
+                .danger(),
+                "Create branch here",
+                window,
+                cx,
+            );
+            let handle = window.window_handle();
+            cx.spawn(async move |cx| match rx.await {
+                Ok(Some(true)) => {
+                    let _ = handle.update(cx, |_, window, cx| go(window, cx));
+                }
+                Ok(Some(false)) => {
+                    let _ = handle.update(cx, |_, window, cx| {
+                        crate::branches::open_new_branch("HEAD".into(), window, cx)
+                    });
+                }
+                _ => {}
+            })
+            .detach();
+        });
+    })
+    .detach();
+}
+
 pub fn switch_branch(state: &Entity<RepoState>, name: String, window: &mut Window, cx: &mut App) {
+    let weak = state.downgrade();
+    unless_left_behind(state, "Switch", window, cx, move |window, cx| {
+        with(&weak, window, cx, |s, w, cx| switch_now(s, name, w, cx))
+    });
+}
+
+fn switch_now(state: &Entity<RepoState>, name: String, window: &mut Window, cx: &mut App) {
     let again = name.clone();
+    // .net(): a Git LFS repository downloads the branch's files first.
     let action = GitAction::new("Switch branch")
+        .net()
         .done(switched(state, &name, cx))
         .on_error(switching(state, name.clone(), move |s, w, cx| {
             switch_branch(s, again.clone(), w, cx)
@@ -587,7 +655,15 @@ pub fn switch_branch(state: &Entity<RepoState>, name: String, window: &mut Windo
     go(
         state,
         action,
-        move |core, _| plain(api::branches::switch_branch(core, name, false)),
+        move |core, op| {
+            plain(api::branches::switch_branch(
+                core,
+                name,
+                false,
+                op.id.clone(),
+                op.progress(),
+            ))
+        },
         window,
         cx,
     );
@@ -603,7 +679,15 @@ pub fn create_branch_here(
     go(
         state,
         action,
-        move |core, _| plain(api::branches::switch_branch(core, name, true)),
+        move |core, op| {
+            plain(api::branches::switch_branch(
+                core,
+                name,
+                true,
+                op.id.clone(),
+                op.progress(),
+            ))
+        },
         window,
         cx,
     );
@@ -611,9 +695,17 @@ pub fn create_branch_here(
 
 /// A branch another worktree holds, checked out here as its commit: nothing is moved.
 pub fn detach_here(state: &Entity<RepoState>, b: Branch, window: &mut Window, cx: &mut App) {
+    let weak = state.downgrade();
+    unless_left_behind(state, "Check out", window, cx, move |window, cx| {
+        with(&weak, window, cx, |s, w, cx| detach_now(s, b, w, cx))
+    });
+}
+
+fn detach_now(state: &Entity<RepoState>, b: Branch, window: &mut Window, cx: &mut App) {
     let root = folder_name(&state.read(cx).root().to_string_lossy()).to_string();
     let again = b.clone();
     let action = GitAction::new("Check out")
+        .net()
         .done(format!("Checked out {} in {root}, detached", b.name))
         .detail("No branch is moved: commits made here belong to no branch until you create one.")
         .on_error(switching(state, b.name.clone(), move |s, w, cx| {
@@ -622,7 +714,14 @@ pub fn detach_here(state: &Entity<RepoState>, b: Branch, window: &mut Window, cx
     go(
         state,
         action,
-        move |core, _| plain(api::history::checkout_commit(core, b.sha)),
+        move |core, op| {
+            plain(api::history::checkout_commit(
+                core,
+                b.sha,
+                op.id.clone(),
+                op.progress(),
+            ))
+        },
         window,
         cx,
     );
@@ -895,14 +994,17 @@ pub fn branch_terminal(state: &Entity<RepoState>, name: String, window: &mut Win
         with(&weak, w, cx, |s, w, cx| {
             let action = GitAction::new("Create worktree")
                 .untracked()
+                .net()
                 .done(format!("{name} checked out in {where_}"));
             let made = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
             let slot = made.clone();
             let rx = run(
                 s,
                 action,
-                move |core, _| {
-                    let path = api::worktrees::add_worktree(core, name, None, false, dir)?;
+                move |core, op| {
+                    let (id, progress) = (op.id.clone(), op.progress());
+                    let path =
+                        api::worktrees::add_worktree(core, name, None, false, dir, id, progress)?;
                     *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
                     Ok(false)
                 },

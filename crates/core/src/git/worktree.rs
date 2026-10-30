@@ -1,9 +1,10 @@
 //! Linked worktrees: listing, adding, renaming, locking and removing them.
 
 use super::{
-    default_branch, delete_branch_at, include_source, is_nested_repo, landed, refresh_stat_cache,
-    run, run_text, validate_base, validate_branch, worktree_includes,
+    branch_tip, default_branch, delete_branch_at, include_source, is_nested_repo, landed,
+    refresh_stat_cache, run, run_text, validate_base, validate_branch, worktree_includes,
 };
+use crate::network::Net;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -124,10 +125,32 @@ pub fn add_worktree(
     track: bool,
     dir: Option<&str>,
 ) -> Result<String, String> {
+    add_worktree_with(repo, branch, base, track, dir, &Net::default())
+}
+
+/// `add_worktree` with its Git LFS download watched by `net`.
+pub fn add_worktree_with(
+    repo: &Path,
+    branch: &str,
+    base: Option<&str>,
+    track: bool,
+    dir: Option<&str>,
+    net: &Net,
+) -> Result<String, String> {
     let target = worktree_target(repo, branch, dir)?;
-    match base {
+    let tip = match base {
         Some(base) => {
             validate_base(repo, base)?;
+            Some(base.to_string())
+        }
+        None => branch_tip(repo, branch),
+    };
+    if let Some(tip) = tip {
+        crate::lfs::prefetch(repo, &tip, net)?;
+    }
+    net.updating_files()?;
+    match base {
+        Some(base) => {
             let track = if track { "--track" } else { "--no-track" };
             let args = ["worktree", "add", track, "-b", branch, &target, base];
             run(repo, &args)?
@@ -139,6 +162,8 @@ pub fn add_worktree(
     if let Ok(files) = worktree_includes(&from) {
         crate::fs::copy_into(&from, Path::new(&target), &files);
     }
+    // Best effort too: what didn't set up shows as missing, for Update.
+    let _ = super::submodules_like(Path::new(&target), repo, net);
     // Nobody works in it yet, so nothing to race.
     refresh_stat_cache(Path::new(&target));
     // As `worktree list` spells it, which callers compare with: git resolves a folder picked

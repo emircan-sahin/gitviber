@@ -1,8 +1,9 @@
 //! Git LFS files in a diff. git stores only a small pointer for them; the file itself is in
 //! `.git/lfs/objects` once downloaded. A diff never downloads one: that's a network transfer
-//! the user didn't ask for.
+//! the user didn't ask for. A checkout does, and downloads them first (prefetch).
 
 use crate::git;
+use crate::network::{self, Net};
 use std::path::{Path, PathBuf};
 
 const SPEC: &str = "version https://git-lfs.github.com/spec/v1";
@@ -54,6 +55,72 @@ pub fn object(repo: &Path, p: &Pointer) -> Option<PathBuf> {
         .join(&p.oid[2..4])
         .join(&p.oid);
     path.is_file().then_some(path)
+}
+
+/// Downloads the LFS objects commit `rev` (a full ref or a sha) needs before a checkout of it.
+/// Inside the checkout git-lfs downloads them file by file, with no progress, no askpass for
+/// its ssh or https login, and no safe point to stop; here it is a fetch like any other. Does
+/// nothing for a repository without LFS, or without git-lfs installed.
+pub fn prefetch(repo: &Path, rev: &str, net: &Net) -> Result<(), String> {
+    let Ok(sha) = git::run_text(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{rev}^{{commit}}"),
+        ],
+    ) else {
+        return Ok(());
+    };
+    let sha = sha.trim();
+    if !in_use(repo, sha) {
+        return Ok(());
+    }
+    let Some(remote) = remote_for(repo, rev) else {
+        return Ok(());
+    };
+    let mut cmd = git::command(repo, &["lfs", "fetch", &remote, sha]);
+    // Its progress is drawn for terminals only unless asked, and then on stdout.
+    cmd.env("GIT_LFS_FORCE_PROGRESS", "1");
+    match network::run(cmd, "git lfs fetch", net, None) {
+        Err(e) if e.contains("'lfs' is not a git command") => Ok(()),
+        r => r.map(|_| ()),
+    }
+}
+
+/// The repository has LFS objects, or `sha` says some files are stored there.
+fn in_use(repo: &Path, sha: &str) -> bool {
+    let attrs = format!("{sha}:.gitattributes");
+    git::run_text(repo, &["cat-file", "-p", &attrs]).is_ok_and(|a| a.contains("filter=lfs"))
+        || git::run_text(repo, &["rev-parse", "--git-common-dir"])
+            .is_ok_and(|c| repo.join(c.trim()).join("lfs/objects").is_dir())
+}
+
+/// Where `rev`'s objects are: its remote for a remote branch, a local branch's upstream, else
+/// origin or the only remote.
+fn remote_for(repo: &Path, rev: &str) -> Option<String> {
+    let listed = git::run_text(repo, &["remote"]).ok()?;
+    let remotes: Vec<&str> = listed.lines().collect();
+    let tracked = match rev.strip_prefix("refs/heads/") {
+        Some(b) => git::config_value(repo, None, &format!("branch.{b}.remote")),
+        None => rev.strip_prefix("refs/remotes/").and_then(|r| {
+            remotes
+                .iter()
+                .filter(|name| r.starts_with(&format!("{name}/")))
+                .max_by_key(|name| name.len())
+                .map(|name| name.to_string())
+        }),
+    };
+    tracked
+        .filter(|r| remotes.contains(&r.as_str()))
+        .or_else(|| {
+            remotes
+                .iter()
+                .find(|r| **r == "origin")
+                .map(|r| r.to_string())
+        })
+        .or_else(|| (remotes.len() == 1).then(|| remotes[0].to_string()))
 }
 
 pub fn not_downloaded(p: &Pointer) -> String {

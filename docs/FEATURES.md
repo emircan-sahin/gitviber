@@ -31,7 +31,8 @@ Give every agent its own worktree and switch between them from the top bar.
   check a pull request out into its own worktree without touching yours. Settings can put new
   worktrees under a folder of your own.
 - **Setup.** A new worktree can run a command such as `claude` in its terminal right away, and gets
-  copies of the ignored files `.worktreeinclude` lists, like your `.env`.
+  copies of the ignored files `.worktreeinclude` lists, like your `.env`. The submodules you have set
+  up come along, copied from your clone rather than downloaded again.
 - **Organize.** Rename one along with its folder, give it a color its chip and picker row wear,
   lock it, and remove or prune it when the work is merged.
 - **Clean up.** One action removes every merged worktree with nothing uncommitted, branches too,
@@ -42,6 +43,10 @@ Give every agent its own worktree and switch between them from the top bar.
   says where it is: Enter opens that worktree (with a way back), and the row's menu checks the commit
   out here detached, or starts a new branch from it. When a linked worktree holds the default branch
   and the main folder is on another, the worktree picker offers to move it back.
+- **Detached commits.** Leaving a detached HEAD whose commits no branch holds asks first, and offers
+  to create a branch for them.
+- **Git LFS.** Switching branches, checking out a commit or creating a worktree downloads its LFS
+  files first, with progress in the top bar, a Cancel button and the login prompt git-lfs may need.
 
 ### Terminals per worktree
 
@@ -315,6 +320,7 @@ writes a skill for them while agent control is on:
 ### The file explorer
 
 - Change bars in the gutter, quick open (`⌘P`), and rename, create and delete from the right-click menu.
+  Changing only a name's letter case reaches git too, as a rename to commit.
 - Pick two files with `⌘`-click and Compare Selected from the right-click menu to see them as a diff.
 - Fix a line right in the file view and save it with `⌘S`. Go to Definition, references and `⌃G`
   for a line work there too.
@@ -402,7 +408,8 @@ it changes first, merges with your edits where it must, and `⌘Z` takes it back
 ### Conflicts
 
 Resolve block by block (current, incoming or both), or take a whole side or mark a file resolved
-from the Changes list, then continue, skip or abort.
+from the Changes list, then continue, skip or abort. A Git LFS file is never merged line by line:
+you keep one side whole, and the real file comes back.
 
 ### Big repositories
 

@@ -429,3 +429,37 @@ fn the_stat_cache_refresh_saves_what_status_learns() {
     refresh_stat_cache(&r);
     assert_eq!(stat_dirty(&r), "");
 }
+
+/// On a filesystem that ignores case, git ignores it too: a case-only rename of a tracked file
+/// or folder reaches the index as a rename, ready to commit; untracked ones just move.
+#[test]
+fn case_only_rename_reaches_the_index() {
+    let sb = Sandbox::new("case-rename");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "Button.tsx", "b\n", "button");
+    write_commit(&r, "Lib/util.ts", "u\n", "lib");
+    if !r.join("BUTTON.TSX").exists() {
+        eprintln!("case-sensitive filesystem; skipping");
+        return;
+    }
+    fs::write(r.join("Notes.md"), "n\n").unwrap();
+    vfs::rename_entry(&r, "Button.tsx", "button.tsx").unwrap();
+    vfs::rename_entry(&r, "Lib", "lib").unwrap();
+    vfs::rename_entry(&r, "Notes.md", "notes.md").unwrap();
+    let listed = run(&r, &["ls-files"]).unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&listed),
+        "button.tsx\nlib/util.ts\n"
+    );
+    let names: Vec<_> = fs::read_dir(&r)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    for name in ["button.tsx", "lib", "notes.md"] {
+        assert!(names.iter().any(|n| n == name), "{name} in {names:?}");
+    }
+    let st = status(&r).unwrap();
+    let staged: Vec<_> = st.staged.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(staged.len(), 2, "{staged:?}");
+}

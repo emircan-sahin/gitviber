@@ -211,7 +211,18 @@ pub fn cherry_pick_into(target: &Path, sha: &str) -> Result<bool, String> {
 
 /// Detached checkout of a commit. Git refuses if local changes would be overwritten.
 pub fn checkout_commit(repo: &Path, sha: &str) -> Result<(), String> {
+    checkout_commit_with(repo, sha, &crate::network::Net::default())
+}
+
+/// `checkout_commit` with its Git LFS download watched by `net`.
+pub fn checkout_commit_with(
+    repo: &Path,
+    sha: &str,
+    net: &crate::network::Net,
+) -> Result<(), String> {
     validate_rev(sha)?;
+    crate::lfs::prefetch(repo, sha, net)?;
+    net.updating_files()?;
     run(repo, &["switch", "--detach", sha]).map(|_| ())
 }
 

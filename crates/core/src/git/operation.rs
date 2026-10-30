@@ -329,6 +329,9 @@ pub struct ConflictSides {
     /// either way, so a conflict at the end of the file can't tell.
     pub ours_newline: bool,
     pub theirs_newline: bool,
+    /// Some when a side is a Git LFS pointer: each side's file size, None for a side that isn't
+    /// one. git merged the pointer text, so the file is chosen whole, never line by line.
+    pub lfs: Option<[Option<u64>; 2]>,
 }
 
 /// The conflicted `path` merged again from its index stages in diff3 style, whatever
@@ -367,7 +370,13 @@ pub fn conflict_sides(repo: &Path, path: &str) -> Result<Option<ConflictSides>, 
         merged: None,
         ours_newline: ends(&sides[0]),
         theirs_newline: ends(&sides[2]),
+        lfs: None,
     };
+    let pointers = [&sides[0], &sides[2]].map(|s| crate::lfs::pointer(s).map(|p| p.size));
+    if pointers.iter().any(Option::is_some) {
+        out.lfs = Some(pointers);
+        return Ok(Some(out));
+    }
     if sides
         .iter()
         .any(|s| s.len() > MERGE_BASE_MAX || s.contains(&0))

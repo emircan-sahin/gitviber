@@ -31,15 +31,28 @@ pub fn delete_merged(core: &Core, merged: Vec<String>, upstream: Vec<String>) ->
     })
 }
 
-pub fn switch_branch(core: &Core, name: String, create: bool) -> Res<()> {
+/// `op`: a Git LFS repository downloads the branch's files first, with progress and Cancel.
+pub fn switch_branch(
+    core: &Core,
+    name: String,
+    create: bool,
+    op: String,
+    progress: impl Fn(network::Progress) + Send + Sync + 'static,
+) -> Res<()> {
     let label = if create {
         format!("Create branch {name}")
     } else {
         format!("Switch to {name}")
     };
+    let net = core.watch_network(op, progress);
     core.journaled(Action::new(label, Mode::Keep), move |r| {
-        git::switch_branch(r, &name, create)
+        git::switch_branch_with(r, &name, create, &net)
     })
+}
+
+/// Asked before switching away from a detached HEAD.
+pub fn left_behind(core: &Core) -> Res<usize> {
+    core.read_repo(git::left_behind)
 }
 
 pub fn delete_branches(core: &Core, names: Vec<String>, force: bool) -> Res<()> {

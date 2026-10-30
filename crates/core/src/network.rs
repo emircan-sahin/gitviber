@@ -40,6 +40,8 @@ const TRANSFER_PHASES: &[&str] = &[
     "Resolving deltas",
     "Writing objects",
     "Unpacking objects",
+    // git-lfs, under GIT_LFS_FORCE_PROGRESS.
+    "Downloading LFS objects",
 ];
 /// The checkout after a clone or a pull's merge.
 const LOCAL_PHASE: &str = "Updating files";
@@ -104,6 +106,22 @@ impl Net {
             .is_ok()
     }
 
+    /// The download before a checkout is done and the checkout begins: Cancel is ignored from
+    /// here, and the page says so. Err when it was cancelled before.
+    pub fn updating_files(&self) -> Result<(), String> {
+        if self.settle() {
+            self.report(Progress {
+                phase: LOCAL_PHASE.into(),
+                percent: None,
+                cancellable: false,
+            });
+        }
+        if self.cancelled() {
+            return Err(CANCELLED.into());
+        }
+        Ok(())
+    }
+
     fn report(&self, p: Progress) {
         if let Some(f) = &self.progress {
             f(p);
@@ -166,15 +184,17 @@ pub fn run(
 
 /// A local command watched the same way, for a commit whose hooks lint or test for minutes:
 /// each line it prints is its progress, and `input` goes to its stdin. It never times out (a
-/// quiet hook may be running tests, a signing tool waiting on a passphrase) and gets no askpass,
-/// as when it ran without being watched. Cancel works until it exits.
+/// quiet hook may be running tests, a signing tool waiting on a passphrase). `askpass` for one
+/// that may ask for a passphrase itself (ssh-keygen signing with a key not in the agent); hooks
+/// otherwise get none, as when they ran without being watched. Cancel works until it exits.
 pub fn run_local(
     cmd: Command,
     label: &str,
     net: &Net,
     input: Option<&[u8]>,
+    askpass: bool,
 ) -> Result<Vec<u8>, Failed> {
-    supervise(cmd, label, net, None, Kind::Local { input })
+    supervise(cmd, label, net, None, Kind::Local { input, askpass })
 }
 
 /// A command that didn't succeed: its words (stderr, and for a local one stdout too, where git
@@ -197,7 +217,16 @@ impl From<String> for Failed {
 #[derive(Clone, Copy)]
 enum Kind<'a> {
     Network,
-    Local { input: Option<&'a [u8]> },
+    Local {
+        input: Option<&'a [u8]>,
+        askpass: bool,
+    },
+}
+
+impl Kind<'_> {
+    fn is_network(&self) -> bool {
+        matches!(self, Kind::Network)
+    }
 }
 
 fn supervise(
@@ -216,7 +245,12 @@ fn supervise(
     process::in_own_group(&mut cmd);
     let (asking, input) = match kind {
         Kind::Network => (askpass::attach(&mut cmd, label, net.op()), None),
-        Kind::Local { input } => (None, input),
+        Kind::Local { input, askpass } => (
+            askpass
+                .then(|| askpass::attach(&mut cmd, label, net.op()))
+                .flatten(),
+            input,
+        ),
     };
     let mut child = process::spawn(
         cmd.stdin(if input.is_some() {
@@ -246,11 +280,29 @@ fn supervise(
         }
         let out = s.spawn(|| {
             let mut buf = Vec::new();
+            // Where the line being read starts.
+            let mut line = 0;
             if let Some(mut r) = stdout {
                 let mut chunk = [0u8; 8192];
                 while let Ok(n @ 1..) = r.read(&mut chunk) {
                     touch();
                     buf.extend_from_slice(&chunk[..n]);
+                    // git-lfs draws its progress on stdout.
+                    while let Some(i) = kind
+                        .is_network()
+                        .then(|| buf[line..].iter().position(|b| *b == b'\r' || *b == b'\n'))
+                        .flatten()
+                    {
+                        if let Some(p) =
+                            parse_progress(&String::from_utf8_lossy(&buf[line..line + i]))
+                        {
+                            if !p.cancellable {
+                                net.settle();
+                            }
+                            net.report(p);
+                        }
+                        line += i + 1;
+                    }
                 }
             }
             buf
@@ -410,6 +462,10 @@ mod tests {
         assert_eq!(
             parse_progress("Counting objects:   3% (3/100)"),
             p("Counting objects", Some(3))
+        );
+        assert_eq!(
+            parse_progress("Downloading LFS objects:  33% (1/3), 1.2 MB | 3.0 MB/s     "),
+            p("Downloading LFS objects", Some(33))
         );
     }
 

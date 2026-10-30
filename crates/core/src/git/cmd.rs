@@ -64,15 +64,19 @@ pub(crate) fn command(repo: &Path, args: &[&str]) -> Command {
         .env("GIT_EDITOR", "true")
         // Paths are file names, never globs: `app/[id].tsx` must not also match `app/i.tsx`.
         .env("GIT_LITERAL_PATHSPECS", "1")
-        // log.showSignature=true put gpg's verdict into every message we read (a squash commit
-        // kept it) and ran a verify per signed commit in history. As env, not `-c`, so the
-        // args still start with the subcommand; an explicit --show-signature still wins.
-        .env("GIT_CONFIG_COUNT", "1")
-        .env("GIT_CONFIG_KEY_0", "log.showSignature")
-        .env("GIT_CONFIG_VALUE_0", "false")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // log.showSignature=true put gpg's verdict into every message we read (a squash commit
+    // kept it) and ran a verify per signed commit in history. As env, not `-c`, so the args
+    // still start with the subcommand; appended to any GIT_CONFIG_* the user already set.
+    let n = std::env::var("GIT_CONFIG_COUNT")
+        .ok()
+        .and_then(|c| c.parse::<usize>().ok())
+        .unwrap_or(0);
+    cmd.env("GIT_CONFIG_COUNT", (n + 1).to_string())
+        .env(format!("GIT_CONFIG_KEY_{n}"), "log.showSignature")
+        .env(format!("GIT_CONFIG_VALUE_{n}"), "false");
     cmd
 }
 

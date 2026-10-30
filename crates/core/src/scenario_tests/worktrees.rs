@@ -753,3 +753,35 @@ fn worktree_time_over_thousands_of_untracked_files() {
     assert_eq!(s.uncommitted, 3000);
     assert_eq!(s.updated, Some(later));
 }
+
+/// A new worktree gets the submodules its source has set up, cloned from there (then copied,
+/// so it doesn't depend on that one); Update in a worktree does the same.
+#[test]
+fn new_worktrees_get_the_submodules_their_source_has() {
+    // The local-path clones are refused otherwise; a clone reads no repository's config.
+    std::env::set_var("GIT_CONFIG_COUNT", "1");
+    std::env::set_var("GIT_CONFIG_KEY_0", "protocol.file.allow");
+    std::env::set_var("GIT_CONFIG_VALUE_0", "always");
+    let sb = Sandbox::new("wt-submodules");
+    let r = repo_with_submodule(&sb);
+    let wt = add_worktree(&r, "feat", Some("refs/heads/main"), false, None).unwrap();
+    let wt = Path::new(&wt);
+    assert!(wt.join("sub/l.txt").exists());
+    assert_eq!(submodules(wt).unwrap()[0].state, "ok");
+    let alternates = run_text(
+        &wt.join("sub"),
+        &["rev-parse", "--git-path", "objects/info/alternates"],
+    )
+    .unwrap();
+    assert!(!wt.join("sub").join(alternates.trim()).exists());
+
+    // Not set up where it came from: left alone.
+    run(&r, &["submodule", "deinit", "-q", "-f", "sub"]).unwrap();
+    let bare = add_worktree(&r, "bare", Some("refs/heads/main"), false, None).unwrap();
+    let bare = Path::new(&bare);
+    assert_eq!(submodules(bare).unwrap()[0].state, "missing");
+    // Update there, once the main worktree has it again, borrows it the same way.
+    run(&r, &["submodule", "update", "-q", "--init"]).unwrap();
+    submodule_update(bare, &Net::default()).unwrap();
+    assert!(bare.join("sub/l.txt").exists());
+}

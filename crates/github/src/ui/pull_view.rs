@@ -2103,7 +2103,12 @@ impl PullView {
                                             "Checkout",
                                             format!("Checked out {short}"),
                                             move |core| {
-                                                done(api::history::checkout_commit(core, sha))
+                                                done(api::history::checkout_commit(
+                                                    core,
+                                                    sha,
+                                                    "pr-checkout-commit".into(),
+                                                    |_| {},
+                                                ))
                                             },
                                             |_, _| {},
                                             cx,

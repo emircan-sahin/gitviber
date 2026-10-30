@@ -343,9 +343,41 @@ pub fn rename_entry(root: &Path, from: &str, to: &str) -> Result<(), String> {
         if !same_entry(&src, &dst) {
             return Err(format!("{to} already exists"));
         }
-        return std::fs::rename(src, dst).map_err(|e| e.to_string());
+        std::fs::rename(src, dst).map_err(|e| e.to_string())?;
+        // git ignores case here too: renamed on disk alone, the index (and every commit after)
+        // would keep the old name (`git mv` refuses a folder's case-only rename).
+        if from != to && from.to_lowercase() == to.to_lowercase() {
+            return rename_in_index(root, from, to);
+        }
+        return Ok(());
     }
     rename_exclusive(&src, &dst).map_err(|e| io_error(to, e))
+}
+
+/// git's entries for `from` (a file, or a folder's files) moved to `to`, as they're staged.
+/// Nothing to do outside a repository or for untracked files.
+fn rename_in_index(root: &Path, from: &str, to: &str) -> Result<(), String> {
+    let Ok(out) = git::run(root, &["ls-files", "-s", "-z", "--", from]) else {
+        return Ok(());
+    };
+    let mut info = String::new();
+    // "<mode> <object> <stage>\t<path>"; mode 0 removes the old path.
+    for entry in String::from_utf8_lossy(&out).split('\0') {
+        let Some((meta, path)) = entry.split_once('\t') else {
+            continue;
+        };
+        let Some(rest) = path.strip_prefix(from) else {
+            continue;
+        };
+        let object = meta.split(' ').nth(1).unwrap_or_default();
+        let zero = "0".repeat(object.len());
+        info.push_str(&format!("0 {zero}\t{path}\0{meta}\t{to}{rest}\0"));
+    }
+    if info.is_empty() {
+        return Ok(());
+    }
+    let args = ["update-index", "-z", "--index-info"];
+    git::run_with(root, &args, &[], Some(info.as_bytes())).map(|_| ())
 }
 
 /// `dst` is `src` spelled differently (APFS ignores case and Unicode normalization): same

@@ -2,12 +2,12 @@
 //! changed a click away, and a choice for it (current, incoming, both, or written by hand). The
 //! text between folds to a few lines; the result can be previewed whole. Once every block is
 //! chosen, Mark resolved writes the file and stages it. A conflict with no blocks to choose in
-//! (a deleted side, a binary, markers already gone) keeps one side of the whole file instead.
+//! (a deleted side, a binary, Git LFS files, markers already gone) keeps one side of the whole file instead.
 //! The conflicts can also go to the worktree's agent, or to the merge tool git's config names.
 
 use crate::model::conflicts::{
-    Choice, Pick, bases_for, ends_with_newline, for_terminal, is_crlf, merging_what,
-    resolve_prompt, result_lines, side_names, tool_can_open, tool_name, whole_file,
+    Choice, Pick, WholeFile, bases_for, ends_with_newline, for_terminal, is_crlf, lfs_file,
+    merging_what, resolve_prompt, result_lines, side_names, tool_can_open, tool_name, whole_file,
 };
 use crate::model::text::{Block, Parsed, Segment, parse_conflicts};
 use crate::model::versions::{Lines, Version, choice_source, result_sources, versions};
@@ -50,6 +50,8 @@ struct Loaded {
     /// Whether each side's file ends with a newline, for a conflict at the very end.
     sides: Option<(bool, bool)>,
     crlf: bool,
+    /// Each side's size when a side is a Git LFS pointer: chosen whole, never by blocks.
+    lfs: Option<[Option<u64>; 2]>,
     /// Spaces an indentation level, widened when drawn (model::indent).
     unit: usize,
     /// Where each segment is in ours, theirs and the base, and their syntax colors once parsed
@@ -64,6 +66,7 @@ struct Read {
     lossy: bool,
     parsed: Option<Parsed>,
     sides: Option<(bool, bool)>,
+    lfs: Option<[Option<u64>; 2]>,
     unit: usize,
     bases: Vec<Option<Vec<String>>>,
     /// The versions to parse for colors, and their language.
@@ -85,7 +88,8 @@ impl Read {
         let sides = api::changes::conflict_base(core, path.clone())
             .ok()
             .flatten();
-        let parsed = if f.lossy {
+        let lfs = sides.as_ref().and_then(|s| s.lfs);
+        let parsed = if f.lossy || lfs.is_some() {
             None
         } else {
             parse_conflicts(&text)
@@ -108,6 +112,7 @@ impl Read {
             unit: indent_unit([text.as_str()]),
             lossy: f.lossy,
             sides: sides.map(|s| (s.ours_newline, s.theirs_newline)),
+            lfs,
             parsed,
             text,
             bases,
@@ -245,6 +250,7 @@ impl ConflictView {
                         crlf: is_crlf(&r.text),
                         lossy: r.lossy,
                         sides: r.sides,
+                        lfs: r.lfs,
                         parsed: r.parsed,
                         text: r.text,
                         lines: r.lines,
@@ -606,12 +612,7 @@ impl ConflictView {
 
     pub(crate) fn whole_file_for_test(&self) -> Option<crate::model::conflicts::WholeFile> {
         match &self.state {
-            State::Loaded(l) if self.blocks().is_empty() => Some(whole_file(
-                &self.code,
-                l.lossy,
-                !l.lossy && l.parsed.is_none(),
-                self.rebase,
-            )),
+            State::Loaded(l) if self.blocks().is_empty() => Some(self.whole_choice(l)),
             _ => None,
         }
     }
@@ -956,13 +957,20 @@ impl ConflictView {
     }
 
     /// Conflicts without text blocks (deletions, binaries): a side of the whole file.
+    fn whole_choice(&self, l: &Loaded) -> WholeFile {
+        match l.lfs {
+            Some(sizes) => lfs_file(sizes, self.rebase),
+            None => whole_file(
+                &self.code,
+                l.lossy,
+                !l.lossy && l.parsed.is_none(),
+                self.rebase,
+            ),
+        }
+    }
+
     fn whole(&self, l: &Loaded, t: &AppTheme, cx: &mut Context<Self>) -> AnyElement {
-        let w = whole_file(
-            &self.code,
-            l.lossy,
-            !l.lossy && l.parsed.is_none(),
-            self.rebase,
-        );
+        let w = self.whole_choice(l);
         let busy = self.busy;
         let side = |ix: usize, git: GitSide, cx: &mut Context<Self>| {
             let (label, note) = w.sides[ix];
