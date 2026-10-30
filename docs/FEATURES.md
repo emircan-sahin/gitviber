@@ -404,6 +404,12 @@ it changes first, merges with your edits where it must, and `⌘Z` takes it back
 Resolve block by block (current, incoming or both), or take a whole side or mark a file resolved
 from the Changes list, then continue, skip or abort.
 
+### Big repositories
+
+Your `status.showUntrackedFiles` holds in the Changes list: `normal` shows a new folder as one row
+that stages whole, `no` leaves untracked files out and says so. A big history gets a commit-graph
+in the background when it has none, so its pages come up at once.
+
 ### Pull requests (GitHub)
 
 List them, narrow it to the ones you created, are assigned, are asked to review or are mentioned in,
