@@ -85,7 +85,7 @@ pub fn ask(ask: Ask, window: &mut Window, cx: &mut App) -> oneshot::Receiver<boo
 }
 
 /// `ask` with a second way forward beside its button: Some(true) for the button, Some(false)
-/// for `other`, None when cancelled or closed.
+/// for `other`, None when cancelled or closed. The same alert as `ask`, with its own footer.
 pub fn ask_or(
     ask: Ask,
     other: impl Into<SharedString>,
@@ -95,8 +95,7 @@ pub fn ask_or(
     let (tx, rx) = oneshot::channel();
     let slot: Reply<Option<bool>> = Rc::new(RefCell::new(Some(tx)));
     let other = other.into();
-    window.open_dialog(cx, move |dialog, _, cx| {
-        let t = cx.app_theme();
+    window.open_alert_dialog(cx, move |alert, _, _| {
         let (yes, alt, cancel, closed) = (slot.clone(), slot.clone(), slot.clone(), slot.clone());
         let ok = Button::new("ask-ok").label(ask.ok.clone());
         let ok = if ask.danger {
@@ -104,14 +103,11 @@ pub fn ask_or(
         } else {
             ok.primary()
         };
-        dialog
+        alert
             .title(ask.title.clone())
-            .w(px(448.))
-            .child(
-                div()
-                    .text_color(t.muted_foreground)
-                    .child(ask.message.clone()),
-            )
+            .description(ask.message.clone())
+            // Three buttons don't fit the alert's default 420 px.
+            .width(px(448.))
             .footer(
                 DialogFooter::new()
                     .child(Button::new("ask-cancel").label("Cancel").on_click(
