@@ -104,6 +104,8 @@ pub(crate) enum Note {
     Cwd(String),
     /// A program's notification escape.
     Attention(crate::agent::Note),
+    /// The state the program in the pane reported (OSC 7501).
+    Status(crate::agent::AgentState),
     Exited {
         exit: Option<Exit>,
         lived: Duration,
@@ -156,6 +158,13 @@ impl Default for Answers {
 }
 
 impl Answers {
+    /// The background is dark: the color scheme a program is told.
+    pub fn dark(&self) -> bool {
+        let Rgb { r, g, b } = self.background;
+        // Rec. 709 luma.
+        0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b) < 128.
+    }
+
     fn color(&self, index: usize) -> Rgb {
         match index {
             0..16 => self.ansi[index],
@@ -227,6 +236,10 @@ impl Outbox {
         self.closed.load(Ordering::Acquire)
     }
 
+    pub fn answers(&self) -> Answers {
+        *self.answers.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub fn set_answers(&self, f: impl FnOnce(&mut Answers)) {
         f(&mut self.answers.lock().unwrap_or_else(|e| e.into_inner()));
     }
@@ -243,6 +256,9 @@ impl EventListener for Listener {
             Event::ResetTitle => out.note(Note::Title(None)),
             Event::Bell => out.note(Note::Bell),
             Event::ClipboardStore(_, text) if osc52_accepts(&text) => out.note(Note::Copy(text)),
+            // A program never reads the clipboard; it's told it's empty at once rather than left
+            // waiting out its timeout (neovim's OSC 52 paste).
+            Event::ClipboardLoad(_, format) => out.write(format(""), false),
             Event::ColorRequest(index, format) => {
                 let color = out
                     .answers
@@ -275,6 +291,8 @@ pub(crate) struct Emu {
     pub scrolled: u64,
     /// A command started since the last prompt.
     command_ran: bool,
+    /// The shell is the pty's foreground job: nothing alive owns the other buffer.
+    shell_in_front: Box<dyn Fn() -> bool + Send>,
     outbox: Arc<Outbox>,
     /// The terminal's grid and scrollback, counted in the debug memory readout.
     _live: gitviber_ui::memory::Live,
@@ -294,6 +312,7 @@ impl Emu {
             kitty_notes: Default::default(),
             scrolled: 0,
             command_ran: false,
+            shell_in_front: Box::new(|| false),
             outbox,
             _live: gitviber_ui::memory::Live::new("Terminal"),
         }
@@ -385,6 +404,19 @@ impl Emu {
             // XTVERSION names this app: answered as xterm.js, Claude Code took the pane for VS Code's
             // terminal and its wheel and glyph atlas workarounds.
             Found::XtVersion => self.outbox.write("\x1bP>|GitViber\x1b\\".into(), false),
+            // Answered here, ahead of the DA1 that follows the probe: a later reply is taken as none.
+            Found::ProgramStatus(data) if data.starts_with('?') => {
+                self.outbox.write("\x1b]7501;?\x1b\\".into(), false)
+            }
+            Found::ProgramStatus(data) => {
+                if let Some(state) = crate::agent::program_status(data) {
+                    self.outbox.note(Note::Status(state));
+                }
+            }
+            Found::ColorScheme => {
+                let dark = self.outbox.answers().dark();
+                self.outbox.write(scheme_report(dark), false);
+            }
             Found::Cwd(url) => {
                 if let Some(dir) = cwd_from_url(url) {
                     self.outbox.note(Note::Cwd(dir));
@@ -399,6 +431,15 @@ impl Emu {
         let Some(mark) = mark else {
             return;
         };
+        // A prompt after a command in the other buffer, with the shell in front (not a shell under
+        // tmux): the program that used it died there (a crash, `kill -9`) and left it on.
+        if mark.kind == MarkKind::A
+            && self.command_ran
+            && self.mode().contains(TermMode::ALT_SCREEN)
+            && (self.shell_in_front)()
+        {
+            self.parser.advance(&mut self.term, marks::ALT_SCREEN_OFF);
+        }
         // As if the program had turned them off itself.
         if marks::mouse_left_on(mark.kind, *self.term.mode()) {
             self.parser.advance(&mut self.term, marks::MODES_OFF);
@@ -409,6 +450,14 @@ impl Emu {
                 let ran = std::mem::take(&mut self.command_ran);
                 if marks::keys_left_on(*self.term.mode(), ran) {
                     self.parser.advance(&mut self.term, marks::KEYS_OFF);
+                }
+                // A program that hid the cursor and died: the shell draws its prompt with it shown.
+                let mode = self.mode();
+                if ran
+                    && !mode.contains(TermMode::SHOW_CURSOR)
+                    && !mode.contains(TermMode::ALT_SCREEN)
+                {
+                    self.parser.advance(&mut self.term, marks::CURSOR_ON);
                 }
             }
             _ => {}
@@ -426,6 +475,11 @@ impl Emu {
     pub fn mode(&self) -> TermMode {
         *self.term.mode()
     }
+}
+
+/// The color scheme report (DSR 997): sent to `CSI ? 996 n`, and unasked on a change under mode 2031.
+pub(crate) fn scheme_report(dark: bool) -> String {
+    format!("\x1b[?997;{}n", if dark { 1 } else { 2 })
 }
 
 /// How a pane's shell starts.
@@ -454,6 +508,8 @@ pub(crate) fn term_config(
     Config {
         scrolling_history: scrollback,
         kitty_keyboard: true,
+        // Reads reach the listener only to be answered empty.
+        osc52: alacritty_terminal::term::Osc52::CopyPaste,
         default_cursor_style: CursorStyle {
             shape,
             blinking: blink,
@@ -476,11 +532,20 @@ impl Session {
         let outbox = Arc::new(Outbox::default());
         let (tx, rx) = channel();
         *outbox.io.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
-        let emu = Arc::new(FairMutex::new(Emu::new(80, 24, config, outbox.clone())));
+        let pty = Arc::new(OnceLock::<u32>::new());
+        let mut first = Emu::new(80, 24, config, outbox.clone());
+        first.shell_in_front = {
+            let (core, pty) = (core.clone(), pty.clone());
+            Box::new(move || {
+                pty.get()
+                    .is_some_and(|&id| pty::pty_busy(&core, Some(vec![id])) == 0)
+            })
+        };
+        let emu = Arc::new(FairMutex::new(first));
         Session {
             emu,
             outbox,
-            pty: Arc::new(OnceLock::new()),
+            pty,
             core,
             rx: Mutex::new(Some(rx)),
         }
@@ -769,6 +834,57 @@ mod tests {
         assert_eq!(emu.marks.last_output(&emu.term).as_deref(), Some("a"));
     }
 
+    fn writes(rx: &Receiver<Io>) -> Vec<String> {
+        rx.try_iter()
+            .filter_map(|io| match io {
+                Io::Write(text, _) => Some(text),
+                Io::Resize(..) => None,
+            })
+            .collect()
+    }
+
+    /// The probe's answer goes out before alacritty's DA1 reply: one after it counts as none.
+    #[test]
+    fn the_status_probe_is_answered_before_the_da1_after_it_and_reports_are_noted() {
+        let outbox = Arc::new(Outbox::default());
+        let (tx, rx) = channel();
+        *outbox.io.lock().unwrap() = Some(tx);
+        let mut emu = Emu::new(20, 5, test_config(), outbox.clone());
+        emu.feed(b"\x1b[>0q\x1b]7501;?\x1b\\\x1b[c");
+        let w = writes(&rx);
+        assert_eq!(w.len(), 3, "{w:?}");
+        assert_eq!(w[1], "\x1b]7501;?\x1b\\");
+        assert!(w[2].starts_with("\x1b[?"), "{w:?}");
+        emu.feed(b"\x1b]7501;state=blocked:app=claude-code:kind=question\x07");
+        emu.feed(b"\x1b]7501;state=working:app=claude-code:id=1\x07");
+        let notes = outbox.take_notes();
+        assert!(
+            matches!(
+                &notes[..],
+                [Note::Status(crate::agent::AgentState::Waiting)]
+            ),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn the_color_scheme_query_is_answered_from_the_background() {
+        let outbox = Arc::new(Outbox::default());
+        let (tx, rx) = channel();
+        *outbox.io.lock().unwrap() = Some(tx);
+        let mut emu = Emu::new(20, 5, test_config(), outbox.clone());
+        emu.feed(b"\x1b[?996n");
+        outbox.set_answers(|a| {
+            a.background = Rgb {
+                r: 250,
+                g: 250,
+                b: 248,
+            }
+        });
+        emu.feed(b"\x1b[?996n");
+        assert_eq!(writes(&rx), ["\x1b[?997;1n", "\x1b[?997;2n"]);
+    }
+
     #[test]
     fn a_prompt_turns_off_the_mouse_a_dead_program_left_on() {
         let outbox = Arc::new(Outbox::default());
@@ -806,6 +922,53 @@ mod tests {
         // Inside a full-screen program, its own.
         emu.feed(b"\x1b]133;C\x07\x1b[?1049h\x1b[>1u\x1b]133;A\x07");
         assert!(emu.mode().contains(TermMode::DISAMBIGUATE_ESC_CODES));
+    }
+
+    /// Killed in the other buffer with the mouse on and the cursor hidden: with the shell in front
+    /// its prompt is back in the history's buffer, the cursor shown, the mouse off. Under tmux (the
+    /// shell not in front) the buffer is tmux's own.
+    #[test]
+    fn a_prompt_after_a_program_died_full_screen_puts_the_terminal_back() {
+        let crashed = b"\x1b]133;A\x07$ \x1b]133;C\x07\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[?25l";
+        let left = TermMode::ALT_SCREEN | TermMode::MOUSE_MOTION | TermMode::SGR_MOUSE;
+        let outbox = Arc::new(Outbox::default());
+        let mut emu = Emu::new(20, 5, test_config(), outbox);
+        emu.feed(crashed);
+        emu.feed(b"\x1b]133;A\x07$ ");
+        assert!(emu.mode().contains(left));
+        assert!(!emu.mode().contains(TermMode::SHOW_CURSOR));
+
+        let outbox = Arc::new(Outbox::default());
+        let mut emu = Emu::new(20, 5, test_config(), outbox);
+        emu.shell_in_front = Box::new(|| true);
+        emu.feed(crashed);
+        emu.feed(b"\x1b]133;A\x07$ ");
+        assert!(
+            !emu.mode().intersects(left | TermMode::MOUSE_MODE),
+            "{:?}",
+            emu.mode()
+        );
+        assert!(emu.mode().contains(TermMode::SHOW_CURSOR));
+        // The new prompt is drawn in the history's buffer, on the row the program started from.
+        let row: String = (0..3)
+            .map(|c| {
+                emu.term.grid()[alacritty_terminal::index::Line(0)]
+                    [alacritty_terminal::index::Column(c)]
+                .c
+            })
+            .collect();
+        assert_eq!(row, "$ $");
+    }
+
+    /// A prompt that isn't after a command (a redraw) leaves a shell's own hidden cursor alone.
+    #[test]
+    fn the_cursor_comes_back_only_at_a_prompt_after_a_command() {
+        let outbox = Arc::new(Outbox::default());
+        let mut emu = Emu::new(20, 5, test_config(), outbox);
+        emu.feed(b"\x1b[?25l\x1b]133;A\x07");
+        assert!(!emu.mode().contains(TermMode::SHOW_CURSOR));
+        emu.feed(b"$ \x1b]133;C\x07\x1b[?25l\x1b]133;D;137\x07\x1b]133;A\x07");
+        assert!(emu.mode().contains(TermMode::SHOW_CURSOR));
     }
 
     #[test]
@@ -886,10 +1049,10 @@ mod tests {
         assert_eq!(emu.marks.last_output(&emu.term).as_deref(), Some("out"));
     }
 
-    /// OSC 52 copies text whichever clipboard it names; a read (`?`) is never answered: what the
-    /// user copied elsewhere isn't the program's.
+    /// OSC 52 copies text whichever clipboard it names; a read (`?`) is answered empty, at once:
+    /// what the user copied elsewhere isn't the program's.
     #[test]
-    fn osc_52_copies_text_and_never_answers_a_read() {
+    fn osc_52_copies_text_and_answers_a_read_empty() {
         let outbox = Arc::new(Outbox::default());
         let (tx, rx) = channel();
         *outbox.io.lock().unwrap() = Some(tx);
@@ -911,7 +1074,7 @@ mod tests {
         for nothing in ["c;?", "c;", "c", "c;not base64!", "c;//4="] {
             assert!(copied(&mut emu, nothing).is_empty(), "{nothing}");
         }
-        assert!(rx.try_recv().is_err());
+        assert_eq!(writes(&rx), ["\x1b]52;c;\x07"]);
     }
 
     fn screen(emu: &Emu) -> String {

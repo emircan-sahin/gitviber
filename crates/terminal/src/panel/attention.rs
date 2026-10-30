@@ -684,6 +684,28 @@ impl TerminalPanel {
         }
     }
 
+    /// The program in `id` reported its state in-band: taken as a change of its state file is, so
+    /// the newer of the two stands. One not found yet is looked up; the lookup brings its state.
+    pub(super) fn agent_reported(
+        &mut self,
+        id: PaneId,
+        state: agent::AgentState,
+        cx: &mut Context<Self>,
+    ) {
+        match self.panes.get(&id).and_then(|s| s.agent.clone()) {
+            Some(agent) => self.apply_agent(
+                id,
+                Some(PaneAgent {
+                    state: Some(state),
+                    ..agent
+                }),
+                true,
+                cx,
+            ),
+            None => self.refresh_agents(Some(vec![id]), cx),
+        }
+    }
+
     /// The shell prompts again: the agent there exited, and isn't one to resume.
     pub(super) fn agent_prompted(&mut self, id: PaneId, cx: &mut Context<Self>) {
         if self.panes.get(&id).is_some_and(|s| s.agent.is_some()) {

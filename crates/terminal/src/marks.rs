@@ -228,8 +228,12 @@ pub fn end_text(end: &CommandEnd) -> String {
 }
 
 /// What a full-screen program turns off on its way out: mouse tracking in each of its modes, SGR
-/// reports, focus reports (which the shell would read as typed ^[[I and ^[[O).
-pub const MODES_OFF: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l";
+/// and UTF-8 reports, focus reports (which the shell would read as typed ^[[I and ^[[O).
+pub const MODES_OFF: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1004l";
+
+/// Back to the history's buffer, the cursor shown: what a full-screen program sends on its way out.
+pub const ALT_SCREEN_OFF: &[u8] = b"\x1b[?1049l";
+pub const CURSOR_ON: &[u8] = b"\x1b[?25h";
 
 /// A prompt in the history's buffer while the mouse is still reported: the program that asked
 /// for it died without turning it off (a crash, `kill -9`), and a drag at the prompt would select

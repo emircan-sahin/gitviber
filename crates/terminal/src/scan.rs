@@ -1,5 +1,6 @@
 //! The few sequences alacritty's parser leaves unhandled that the pane acts on: OSC 133 (command
-//! marks), OSC 7 (the shell's folder) and XTVERSION (CSI > q). Watched alongside the parser, with
+//! marks), OSC 7 (the shell's folder), OSC 7501 (a program's status), XTVERSION (CSI > q) and the
+//! color scheme query (CSI ? 996 n). Watched alongside the parser, with
 //! where each one ends, so a mark lands where the cursor was at it. Plain text is skipped a chunk
 //! at a time; OSCs of other numbers (an OSC 52 of megabytes) aren't kept.
 //!
@@ -17,7 +18,11 @@ pub enum Found {
     Cwd(String),
     /// A notification escape: OSC 9, 777 or 99, and what follows its number.
     Notify(u32, String),
+    /// What follows `7501;`: a program's status, or `?`, the probe for it.
+    ProgramStatus(String),
     XtVersion,
+    /// CSI ? 996 n: is the background dark or light.
+    ColorScheme,
     /// An OSC past MAX_OSC: cancel it in the parser and skip what's left of it.
     CutOsc,
     /// The cut OSC ended here; `esc`: an ESC that ended it, to feed first.
@@ -99,8 +104,10 @@ impl Scanner {
                 }
                 State::Csi => match b {
                     0x40..=0x7e => {
-                        if b == b'q' && matches!(&self.buf[..], b">" | b">0") {
-                            out.push((i + 1, Found::XtVersion));
+                        match (b, &self.buf[..]) {
+                            (b'q', b">" | b">0") => out.push((i + 1, Found::XtVersion)),
+                            (b'n', b"?996") => out.push((i + 1, Found::ColorScheme)),
+                            _ => {}
                         }
                         self.state = State::Ground;
                     }
@@ -199,7 +206,7 @@ impl Scanner {
         let number_done = self.buf.last() == Some(&b';') || self.buf.len() > 4;
         if number_done {
             let number = self.buf.split(|&b| b == b';').next().unwrap_or(&[]);
-            if !matches!(number, b"133" | b"7" | b"9" | b"777" | b"99") {
+            if !matches!(number, b"133" | b"7" | b"9" | b"777" | b"99" | b"7501") {
                 self.keep = false;
             }
         }
@@ -232,6 +239,8 @@ impl Scanner {
             ));
         } else if let Some(url) = text.strip_prefix("7;") {
             out.push((end, Found::Cwd(url.to_string())));
+        } else if let Some(data) = text.strip_prefix("7501;") {
+            out.push((end, Found::ProgramStatus(data.to_string())));
         } else {
             for code in [9, 777, 99] {
                 if let Some(data) = text.strip_prefix(&format!("{code};")) {
@@ -364,6 +373,20 @@ mod tests {
                 (0, 39, Found::Notify(777, "notify;T;B".into())),
             ]
         );
+    }
+
+    #[test]
+    fn program_status_and_the_color_scheme_query_are_found() {
+        assert_eq!(
+            scan(&[b"\x1b]7501;?\x1b\\\x1b[c\x1b]7501;state=idle:app=x\x07\x1b[?996n"]),
+            vec![
+                (0, 10, Found::ProgramStatus("?".into())),
+                (0, 37, Found::ProgramStatus("state=idle:app=x".into())),
+                (0, 44, Found::ColorScheme),
+            ]
+        );
+        // Other numbers that start the same aren't kept; DSR 6 isn't the scheme query.
+        assert!(scan(&[b"\x1b]75012;x\x07\x1b]750;x\x07\x1b[?6n\x1b[996n"]).is_empty());
     }
 
     #[test]

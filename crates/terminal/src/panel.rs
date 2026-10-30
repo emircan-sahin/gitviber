@@ -394,6 +394,7 @@ pub fn config_from(s: &Settings, t: &AppTheme) -> TerminalConfig {
         option_as_meta: match s.option_as_meta {
             OptionKey::Off => OptionAsMeta::Off,
             OptionKey::Left => OptionAsMeta::Left,
+            OptionKey::Right => OptionAsMeta::Right,
             OptionKey::Both => OptionAsMeta::Both,
         },
         shell_integration: s.shell_integration,
@@ -1379,6 +1380,7 @@ impl TerminalPanel {
                 cx.emit(PanelEvent::Bell { pane: id });
             }
             PaneEvent::Attention(note) => self.needs_you(id, Some(note.clone()), None, cx),
+            PaneEvent::AgentStatus(state) => self.agent_reported(id, *state, cx),
             PaneEvent::CommandEnded(end) => {
                 self.command_ended(id, end, window, cx);
                 cx.emit(PanelEvent::CommandEnded {

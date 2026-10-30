@@ -468,6 +468,26 @@ impl KittyNotes {
     }
 }
 
+/// OSC 7501, a program's status: `state=<s>[:id=<n>][:kind=…]…`. The state of the program in the
+/// pane, not a subagent's (`id`); `clear` (it exited) and states this doesn't know say nothing, as
+/// the prompt that follows ends the agent anyway.
+pub fn program_status(data: &str) -> Option<AgentState> {
+    let mut state = None;
+    for (key, value) in data.split(':').filter_map(|kv| kv.split_once('=')) {
+        match key {
+            "id" => return None,
+            "state" => state = Some(value),
+            _ => {}
+        }
+    }
+    match state? {
+        "working" => Some(AgentState::Working),
+        "blocked" => Some(AgentState::Waiting),
+        "done" | "idle" | "error" => Some(AgentState::Idle),
+        _ => None,
+    }
+}
+
 fn base64(s: &str) -> Option<Vec<u8>> {
     let val = |c: u8| match c {
         b'A'..=b'Z' => Some(c - b'A'),
@@ -1342,5 +1362,27 @@ mod tests {
             (Some(AgentState::Working), Some("claude --resume b-2"))
         );
         assert_eq!(at_quit(None, false, None), None);
+    }
+
+    #[test]
+    fn a_programs_status_is_read_for_the_pane_not_its_subagents() {
+        use AgentState::*;
+        for (data, want) in [
+            ("state=working:app=claude-code", Some(Working)),
+            (
+                "app=claude-code:state=blocked:kind=permission",
+                Some(Waiting),
+            ),
+            ("state=done:app=x:title=aGk=", Some(Idle)),
+            ("state=idle", Some(Idle)),
+            ("state=error:msg=Ym9vbQ==", Some(Idle)),
+            ("state=clear:app=claude-code", None),
+            ("state=working:app=claude-code:id=2", None),
+            ("state=later", None),
+            ("app=claude-code", None),
+            ("?", None),
+        ] {
+            assert_eq!(program_status(data), want, "{data}");
+        }
     }
 }

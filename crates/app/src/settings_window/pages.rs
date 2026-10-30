@@ -563,11 +563,13 @@ pub fn terminal(cx: &App) -> Page {
             "option-meta",
             "Option as Meta",
             "Off, ⌥ types characters like @ or œ. As Meta, ⌥ keys go to the shell and agents \
-             instead (Claude Code's ⌥P, readline's ⌥B and ⌥F). Left ⌥ keeps the right one for \
-             the characters your layout needs.",
+             instead (Claude Code's ⌥P, readline's ⌥B and ⌥F). One side as Meta keeps the other \
+             for the characters your layout needs: on many European layouts left ⌥ types @ { [, \
+             so pick Right ⌥.",
             vec![
                 ("off".into(), "Off".into()),
                 ("left".into(), "Left ⌥".into()),
+                ("right".into(), "Right ⌥".into()),
                 ("both".into(), "Both ⌥".into()),
             ],
             |s| s.option_as_meta.as_str().into(),

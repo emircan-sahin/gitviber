@@ -58,6 +58,14 @@ const BLINK_IDLE: Duration = Duration::from_secs(30);
 const QUICK_EXIT: Duration = Duration::from_secs(1);
 /// How long a command waits for the first prompt: past it, typing ahead is no worse.
 const RUN_WAIT: Duration = Duration::from_secs(5);
+/// The copy key in the kitty protocol: ⌘C (super is 8, so 9) on a Mac, Ctrl+Shift+C elsewhere.
+const COPY_KEY: &str = if cfg!(target_os = "macos") {
+    "\x1b[99;9u"
+} else {
+    "\x1b[99;6u"
+};
+/// How often a pane without the keys redraws while output streams: about 30 frames a second.
+const BACKGROUND_FRAME: Duration = Duration::from_millis(33);
 /// Find refreshes its matches at most this often while output arrives.
 const FIND_REFRESH: Duration = Duration::from_millis(250);
 /// Pinch zoom per font step.
@@ -85,6 +93,8 @@ pub enum PaneEvent {
     Prompt,
     /// A program's notification escape (OSC 9, 777, 99): Claude Code's, Codex's.
     Attention(crate::agent::Note),
+    /// The state the program in it reported (OSC 7501).
+    AgentStatus(crate::agent::AgentState),
     /// A pinch over it asked the font a step bigger (1) or smaller (-1).
     FontStep(i32),
     /// ⌘-click on a link, or its hint typed.
@@ -218,19 +228,23 @@ impl Focusable for TerminalPane {
     }
 }
 
+/// NX_DEVICELALTKEYMASK, NX_DEVICERALTKEYMASK.
+const LEFT_OPTION: u64 = 0x20;
+const RIGHT_OPTION: u64 = 0x40;
+
 #[cfg(target_os = "macos")]
-fn left_option_down() -> bool {
+fn option_down(side: u64) -> bool {
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
         fn CGEventSourceFlagsState(state: i32) -> u64;
     }
-    // kCGEventSourceStateHIDSystemState; NX_DEVICELALTKEYMASK.
+    // kCGEventSourceStateHIDSystemState.
     // SAFETY: a pure query of the current modifier flags.
-    unsafe { CGEventSourceFlagsState(1) & 0x20 != 0 }
+    unsafe { CGEventSourceFlagsState(1) & side != 0 }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn left_option_down() -> bool {
+fn option_down(_: u64) -> bool {
     false
 }
 
@@ -254,10 +268,24 @@ impl TerminalPane {
             term_config(config.scrollback, config.cursor, config.cursor_blink),
         );
         let outbox = session.outbox.clone();
-        let wake = cx.spawn(async move |this, cx| {
+        let wake = cx.spawn_in(window, async move |this, cx| {
             while outbox.signal.wait().await {
-                if this.update(cx, |pane, cx| pane.on_wake(cx)).is_err() {
+                let Ok(looked_at) = this.update_in(cx, |pane, window, cx| {
+                    pane.on_wake(cx);
+                    // The program may have moved the cursor under a word being composed: the input
+                    // method's candidate window follows it.
+                    if pane.ime.is_some() {
+                        window.invalidate_character_coordinates();
+                    }
+                    pane.looked_at()
+                }) else {
                     break;
+                };
+                // A pane the user isn't on draws at most this often: several agents streaming
+                // kept the window repainting at the display's rate. Output in between waits in
+                // the session and shows in the next frame.
+                if !looked_at {
+                    cx.background_executor().timer(BACKGROUND_FRAME).await;
                 }
             }
         });
@@ -464,7 +492,12 @@ impl TerminalPane {
         if theme != self.theme {
             self.theme = theme;
             self.cache.borrow_mut().clear();
+            let was_dark = self.session.outbox.answers().dark();
             self.apply_theme_answers();
+            let dark = self.session.outbox.answers().dark();
+            if dark != was_dark && self.session.emu.lock().parser.scheme_notify() {
+                self.session.write(crate::session::scheme_report(dark));
+            }
             cx.notify();
         }
     }
@@ -617,6 +650,7 @@ impl TerminalPane {
                 }
                 Note::Ended(end) => cx.emit(PaneEvent::CommandEnded(end)),
                 Note::Attention(note) => cx.emit(PaneEvent::Attention(note)),
+                Note::Status(state) => cx.emit(PaneEvent::AgentStatus(state)),
                 Note::Cwd(dir) => self.dir = dir.into(),
                 Note::Exited { exit, lived } => {
                     self.exited = true;
@@ -818,7 +852,8 @@ impl TerminalPane {
         match self.config.option_as_meta {
             OptionAsMeta::Off => false,
             OptionAsMeta::Both => true,
-            OptionAsMeta::Left => left_option_down(),
+            OptionAsMeta::Left => option_down(LEFT_OPTION),
+            OptionAsMeta::Right => option_down(RIGHT_OPTION),
         }
     }
 
@@ -906,6 +941,14 @@ impl TerminalPane {
                 if stop {
                     cx.stop_propagation();
                 }
+            }
+            // A full-screen program with its own selection (it reads the mouse) and the kitty keys
+            // gets the copy key, as it binds it.
+            None if self.mode().contains(TermMode::DISAMBIGUATE_ESC_CODES)
+                && self.mode().intersects(TermMode::MOUSE_MODE) =>
+            {
+                self.session.write(COPY_KEY);
+                cx.stop_propagation();
             }
             None => cx.propagate(),
         }
@@ -2150,6 +2193,44 @@ mod tests {
         pane.update_in(cx, |p, window, cx| p.on_focus_change(false, window, cx));
         assert_eq!(pane.read_with(cx, |p, _| p.session.written()), ["にほ"]);
         assert_eq!(pane.read_with(cx, |p, _| p.ime.clone()), None);
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+    }
+
+    /// With nothing selected in the grid, the copy key reaches a full-screen program that keeps
+    /// its own selection (the mouse and the kitty keys on); a shell's prompt doesn't get it.
+    #[gpui::test]
+    fn copy_reaches_a_program_with_its_own_selection(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
+            crate::init(cx);
+        });
+        let core = Arc::new(Core::new(Arc::new(|_| {})));
+        let (_, cx) = cx.add_window_view(|_, _| Host);
+        let pane = cx.update(|window, cx| {
+            new_pane(
+                1,
+                core,
+                std::env::temp_dir(),
+                None,
+                None,
+                TerminalConfig::default(),
+                TerminalTheme::dark(),
+                window,
+                cx,
+            )
+        });
+        let copy = |cx: &mut VisualTestContext| {
+            pane.update_in(cx, |p, window, cx| p.on_copy(&Copy, window, cx));
+            pane.read_with(cx, |p, _| p.session.written())
+        };
+        pane.update(cx, |p, _| p.session.emu.lock().feed(b"\x1b[>1u"));
+        assert!(copy(cx).is_empty());
+        pane.update(cx, |p, _| {
+            p.session.emu.lock().feed(b"\x1b[?1002h\x1b[?1006h")
+        });
+        assert_eq!(copy(cx), [COPY_KEY]);
         cx.update(|window, _| window.remove_window());
         cx.run_until_parked();
     }
