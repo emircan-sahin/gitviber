@@ -15,6 +15,7 @@ pub mod legacy;
 pub mod memory;
 mod notify;
 pub mod open_in;
+pub mod projects;
 pub mod settings;
 pub mod state;
 pub mod store;

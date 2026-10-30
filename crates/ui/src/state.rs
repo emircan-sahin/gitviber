@@ -11,6 +11,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
+use crate::projects::ProjectOrg;
 use crate::store;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -110,6 +111,9 @@ pub struct UiState {
     pub workspaces: Vec<SavedWorkspace>,
     #[serde(deserialize_with = "lenient")]
     pub settings_section: Option<String>,
+    /// Pins, folders, the sort and the colors of `recent_projects`.
+    #[serde(deserialize_with = "lenient")]
+    pub project_org: ProjectOrg,
 }
 
 const RECENT_PROJECTS: usize = 20;
@@ -126,7 +130,48 @@ pub fn bump(list: &mut Vec<String>, item: &str, cap: usize) {
 
 impl UiState {
     pub fn add_recent_project(&mut self, root: &str) {
-        bump(&mut self.recent_projects, root, RECENT_PROJECTS);
+        self.recent_projects.retain(|p| p != root);
+        self.recent_projects.insert(0, root.to_string());
+        // Only loose projects fall off the end: a pinned or filed one stays until removed.
+        while self.recent_projects.len() > RECENT_PROJECTS {
+            let Some(at) = self
+                .recent_projects
+                .iter()
+                .rposition(|p| !self.project_org.organized(p))
+                .filter(|at| *at > 0)
+            else {
+                break;
+            };
+            let gone = self.recent_projects.remove(at);
+            self.project_org.forget(&gone);
+        }
+        self.project_org.assign_colors(&self.recent_projects);
+    }
+
+    /// Off the list, with its pin, folder and color.
+    pub fn forget_project(&mut self, root: &str) {
+        self.recent_projects.retain(|p| p != root);
+        self.project_org.forget(root);
+    }
+
+    /// `old` was moved to `new`, which takes its place in the list and keeps its arrangement.
+    pub fn relocate_project(&mut self, old: &str, new: &str) {
+        self.recent_projects.retain(|p| p != new);
+        if let Some(p) = self.recent_projects.iter_mut().find(|p| *p == old) {
+            *p = new.to_string();
+        }
+        self.project_org.relocate(old, new);
+    }
+
+    /// Clear Recent: the projects the user pinned or put in a folder stay.
+    pub fn clear_recent_projects(&mut self) {
+        let (keep, gone): (Vec<String>, Vec<String>) = std::mem::take(&mut self.recent_projects)
+            .into_iter()
+            .partition(|p| self.project_org.organized(p));
+        for p in &gone {
+            self.project_org.forget(p);
+        }
+        self.recent_projects = keep;
     }
 
     pub fn add_recent_command(&mut self, id: &str) {
@@ -215,7 +260,9 @@ thread_local! {
 }
 
 /// A field that doesn't read is its default; the rest of the file still counts.
-fn lenient<'de, D: Deserializer<'de>, T: DeserializeOwned + Default>(d: D) -> Result<T, D::Error> {
+pub(crate) fn lenient<'de, D: Deserializer<'de>, T: DeserializeOwned + Default>(
+    d: D,
+) -> Result<T, D::Error> {
     let value = Value::deserialize(d)?;
     Ok(serde_json::from_value(value).unwrap_or_else(|_| {
         DROPPED.set(true);
@@ -224,7 +271,9 @@ fn lenient<'de, D: Deserializer<'de>, T: DeserializeOwned + Default>(d: D) -> Re
 }
 
 /// A list keeps the items that read.
-fn lenient_list<'de, D: Deserializer<'de>, T: DeserializeOwned>(d: D) -> Result<Vec<T>, D::Error> {
+pub(crate) fn lenient_list<'de, D: Deserializer<'de>, T: DeserializeOwned>(
+    d: D,
+) -> Result<Vec<T>, D::Error> {
     let Value::Array(items) = Value::deserialize(d)? else {
         DROPPED.set(true);
         return Ok(Vec::new());
@@ -260,6 +309,9 @@ pub(crate) fn init(cx: &mut App) {
         }
         None => (UiState::default(), false),
     };
+    let mut state = state;
+    // A file from before colors were kept: given now, saved with the next change.
+    state.project_org.assign_colors(&state.recent_projects);
     cx.set_global(state);
     if dropped {
         store::keep_copy(&path);
@@ -278,6 +330,35 @@ mod tests {
         assert_eq!(list, ["c", "a", "b"]);
         bump(&mut list, "d", 3);
         assert_eq!(list, ["d", "c", "a"]);
+    }
+
+    #[test]
+    fn pinned_and_filed_projects_outlast_the_cap_and_clear_recent() {
+        let mut s = UiState::default();
+        s.add_recent_project("/p/pinned");
+        s.add_recent_project("/p/filed");
+        s.project_org.toggle_pin("/p/pinned");
+        let f = s.project_org.new_folder("Work");
+        s.project_org
+            .move_to("/p/filed", crate::projects::Place::Folder(f));
+        for i in 0..30 {
+            s.add_recent_project(&format!("/p/{i}"));
+        }
+        assert_eq!(s.recent_projects.len(), RECENT_PROJECTS);
+        assert!(
+            s.recent_projects
+                .ends_with(&["/p/filed".into(), "/p/pinned".into()])
+        );
+        // The ones that fell off took their colors with them.
+        assert!(!s.project_org.colors.contains_key("/p/0"));
+        assert!(s.project_org.colors.contains_key("/p/29"));
+        s.relocate_project("/p/pinned", "/q/pinned");
+        assert_eq!(s.project_org.pinned, ["/q/pinned"]);
+        s.clear_recent_projects();
+        assert_eq!(s.recent_projects, ["/p/filed", "/q/pinned"]);
+        s.forget_project("/q/pinned");
+        assert_eq!(s.recent_projects, ["/p/filed"]);
+        assert!(s.project_org.pinned.is_empty());
     }
 
     #[test]
