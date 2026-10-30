@@ -115,7 +115,7 @@ impl Candidates {
 }
 
 /// Scores `text` against a query from `prepare_query`; None when not every character is in it,
-/// in order.
+/// in order. `Scorer` repeats these sums: a change to the scoring changes both.
 pub fn fuzzy_match(query: &[char], text: &str) -> Option<Match> {
     let chars: Vec<char> = text.chars().collect();
     let lower: Vec<char> = chars.iter().map(|c| lower_char(*c)).collect();
