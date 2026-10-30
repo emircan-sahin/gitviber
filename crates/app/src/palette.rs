@@ -1038,6 +1038,121 @@ mod tests {
         assert!(tab_focused(&host, cx), "the change's tab has the keyboard");
     }
 
+    /// The main window with the top bar's project chip over the active tab.
+    struct ChipHost {
+        ws: Entity<Workspace>,
+        focus: FocusHandle,
+    }
+    impl Render for ChipHost {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let ctx = self.ws.update(cx, |ws, cx| ws.context(cx));
+            let chip = Registry::get(cx)
+                .bar_items(gitviber_ui::workspace::BarSlot::TopChips)
+                .into_iter()
+                .find(|item| item.id == "project")
+                .and_then(|item| (item.render)(&ctx, window, cx));
+            div().size_full().track_focus(&self.focus).children(chip)
+        }
+    }
+
+    /// Switch Project from the palette: the list takes the keys on its first other project,
+    /// the arrows, Home and End move through it, Esc gives focus back, ↵ opens the row's project.
+    #[gpui_kit::test]
+    fn switch_project_from_the_palette_takes_the_keys(cx: &mut TestAppContext) {
+        gitviber_ui::test_support::config_dir("palette-switch-project");
+        let dir = gitviber_ui::test_support::temp_dir("palette-switch-project");
+        let projects: Vec<PathBuf> = ["alpha", "beta", "gamma"]
+            .iter()
+            .map(|n| dir.join(n))
+            .collect();
+        for p in &projects {
+            std::fs::create_dir_all(p).unwrap();
+        }
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            gitviber_refs::topbar::register(cx);
+        });
+        let mut host = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let ws = cx.new(Workspace::new);
+            Workspace::register_window(&ws, window, cx);
+            let h = cx.new(|cx| ChipHost {
+                ws,
+                focus: cx.focus_handle(),
+            });
+            host = Some(h.clone());
+            gpui_kit::base::Root::new(h, window, cx)
+        });
+        let host = host.unwrap();
+        let ws = cx.update(|_, cx| host.read(cx).ws.clone());
+        let alpha = projects[0].clone();
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| ws.open_project(alpha, window, cx));
+            host.read(cx).focus.clone().focus(window, cx);
+            // Switch Project acts on the active window.
+            window.activate_window();
+            let recent = projects.iter().map(|p| p.to_string_lossy().into_owned());
+            UiState::update(cx, |s| s.recent_projects = recent.collect());
+        });
+        let draw = |cx: &mut VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        };
+        draw(cx);
+        let switch = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| Palette::show(Mode::Commands, &ws, window, cx));
+            cx.run_until_parked();
+            cx.simulate_input("switch project");
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            // Past any closing animation that could take focus back.
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(1));
+            draw(cx);
+        };
+        let chip = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                gitviber_refs::topbar::ProjectChip::of_window(window.window_handle(), cx).unwrap()
+            })
+        };
+        let row = |cx: &mut VisualTestContext| {
+            let chip = chip(cx);
+            cx.update(|window, cx| chip.read(cx).key_row(window))
+        };
+        let key = |keys: &str, cx: &mut VisualTestContext| {
+            cx.simulate_keystrokes(keys);
+            draw(cx);
+            row(cx)
+        };
+
+        switch(cx);
+        assert_eq!(row(cx), Some(1), "on the first project besides this one");
+        assert_eq!(key("down", cx), Some(2));
+        // Three projects, then Open and Clone repository….
+        assert_eq!(key("end", cx), Some(4));
+        assert_eq!(key("down", cx), Some(0), "wraps");
+        assert_eq!(key("up", cx), Some(4));
+        assert_eq!(key("home", cx), Some(0));
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        let closed = chip(cx);
+        assert!(!cx.update(|_, cx| closed.read(cx).is_open()));
+        let back = cx.update(|window, cx| host.read(cx).focus.is_focused(window));
+        assert!(back, "Esc gives focus back where it was");
+
+        switch(cx);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        let root = cx.update(|_, cx| {
+            ws.read(cx)
+                .project()
+                .map(|p| p.read(cx).root().to_path_buf())
+        });
+        assert_eq!(root.as_deref(), Some(projects[1].as_path()));
+        _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A committed repository holding `a.rs` and `b.md`, opened in `host`'s workspace with the
     /// files crate's quick open; nothing has listed its files yet.
     fn open_repo(name: &str, host: &Entity<Host>, cx: &mut VisualTestContext) -> PathBuf {

@@ -9,6 +9,7 @@ use std::time::Duration;
 use gitviber_core::{api, git};
 use gitviber_ui::keymap::{file, shortcut_label};
 use gitviber_ui::memory::Live;
+use gitviber_ui::widgets::{Ends, list_step};
 use gitviber_ui::workspace::{BarItem, BarSlot, PanelContext, register_bar_item};
 use gitviber_ui::{ActiveAppTheme, Project, Settings, UiState, Workspace};
 use gpui_kit::assets::IconName;
@@ -18,9 +19,9 @@ use gpui_kit::component::popover::Popover;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _};
 use gpui_kit::{
-    Anchor, AnyElement, App, AppContext as _, Context, Entity, FontWeight, Global,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
+    Anchor, AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight, Global,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, ScrollHandle,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
     prelude::FluentBuilder as _, px, rems,
 };
 
@@ -112,24 +113,25 @@ fn switch_project(cx: &mut App) {
     let Some(handle) = cx.active_window() else {
         return;
     };
-    let chip = cx
-        .try_global::<ProjectChips>()
-        .and_then(|c| c.0.iter().find(|(w, _)| *w == handle))
-        .and_then(|(_, c)| c.upgrade());
-    if let Some(chip) = chip {
-        chip.update(cx, |c, cx| {
-            c.open = true;
-            cx.notify();
-        });
+    if let Some(chip) = ProjectChip::of_window(handle, cx) {
+        chip.update(cx, |c, cx| c.set_open(true, cx));
     }
 }
 
 pub struct ProjectChip {
     project: Entity<Project>,
     open: bool,
+    /// The list's: it takes the keys as it opens.
+    focus: FocusHandle,
+    /// The row the keys are on: the projects, then Open and Clone.
+    index: Option<usize>,
+    scroll: ScrollHandle,
     _subs: Vec<Subscription>,
     _live: Live,
 }
+
+/// The list's rows past the projects: Open repository…, Clone repository….
+const PROJECT_ACTIONS: usize = 2;
 
 impl ProjectChip {
     fn new(project: &Entity<Project>, cx: &mut Context<Self>) -> Self {
@@ -137,9 +139,85 @@ impl ProjectChip {
         ProjectChip {
             project: project.clone(),
             open: false,
+            focus: cx.focus_handle(),
+            index: None,
+            scroll: ScrollHandle::new(),
             _subs: subs,
             _live: Live::new("ProjectChip"),
         }
+    }
+
+    /// The chip `window` drew last.
+    pub fn of_window(window: gpui_kit::AnyWindowHandle, cx: &App) -> Option<Entity<Self>> {
+        cx.try_global::<ProjectChips>()?
+            .0
+            .iter()
+            .find(|(w, _)| *w == window)?
+            .1
+            .upgrade()
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// The row the keys are on, while the list has them.
+    pub fn key_row(&self, window: &Window) -> Option<usize> {
+        self.index.filter(|_| self.focus.is_focused(window))
+    }
+
+    /// Opening, the keys start on the latest project besides this one.
+    fn set_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if open && !self.open {
+            let main = self.main_path(cx);
+            let recent = &UiState::get(cx).recent_projects;
+            self.index = Some(recent.iter().position(|p| *p != main).unwrap_or(0));
+        }
+        self.open = open;
+        cx.notify();
+    }
+
+    /// The project is its main worktree, even inside a linked one.
+    fn main_path(&self, cx: &App) -> String {
+        let p = self.project.read(cx);
+        p.main_worktree()
+            .map(|m| m.to_string_lossy().into_owned())
+            .unwrap_or_else(|| p.root().to_string_lossy().into_owned())
+    }
+
+    /// ↑/↓, Home/End, PgUp/PgDn move through the rows, ↵ picks one; Esc is the popover's.
+    fn on_key(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let n = UiState::get(cx).recent_projects.len() + PROJECT_ACTIONS;
+        let k = &e.keystroke;
+        if let Some(to) = list_step(k, self.index, n, Ends::Wrap, false) {
+            self.index = Some(to);
+            self.scroll.scroll_to_item(to);
+        } else if k.key == "enter" && !k.modifiers.modified() {
+            if let Some(i) = self.index {
+                self.pick(i, window, cx);
+            }
+        } else {
+            return;
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// Row `i`: a project opens in this window; past them, Open or Clone repository….
+    fn pick(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_open(false, cx);
+        let recent = &UiState::get(cx).recent_projects;
+        if let Some(path) = recent.get(i).cloned() {
+            if let Some(ws) = Workspace::for_window(window, cx) {
+                ws.update(cx, |ws, cx| ws.open_project(path.into(), window, cx));
+            }
+            return;
+        }
+        let act: Box<dyn gpui_kit::Action> = match i - recent.len() {
+            0 => Box::new(file::OpenRepo),
+            _ => Box::new(file::CloneRepo),
+        };
+        window.dispatch_action(act, cx);
     }
 }
 
@@ -170,12 +248,7 @@ fn tile(name: &str, cx: &App) -> AnyElement {
 impl Render for ProjectChip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.app_theme().clone();
-        let p = self.project.read(cx);
-        // The project is its main worktree, even inside a linked one.
-        let main = p
-            .main_worktree()
-            .map(|m| m.to_string_lossy().into_owned())
-            .unwrap_or_else(|| p.root().to_string_lossy().into_owned());
+        let main = self.main_path(cx);
         let name = folder_name(&main).to_string();
         let recent = UiState::get(cx).recent_projects.clone();
         let open_key = shortcut_label("file.openRepo", cx);
@@ -201,17 +274,30 @@ impl Render for ProjectChip {
         );
         let weak = cx.weak_entity();
         let main_c = main.clone();
+        let (focus, index, scroll) = (self.focus.clone(), self.index, self.scroll.clone());
+        let on_key = std::rc::Rc::new(cx.listener(Self::on_key));
         Popover::new("project-picker")
             .anchor(Anchor::TopLeft)
             .open(self.open)
-            .on_open_change(cx.listener(|this, open: &bool, _, cx| {
-                this.open = *open;
-                cx.notify();
-            }))
+            .track_focus(&focus)
+            .on_open_change(cx.listener(|this, open: &bool, _, cx| this.set_open(*open, cx)))
             .trigger(trigger)
             .content(move |_, _, cx| {
                 let t = cx.app_theme().clone();
                 let close = weak.clone();
+                // The pointer moves the keys' row too, so one row shows lit.
+                let hot = |i: usize, d: gpui_kit::Stateful<gpui_kit::Div>| {
+                    let weak = close.clone();
+                    d.when(index == Some(i), |d| d.bg(t.hover))
+                        .on_mouse_move(move |_, _, cx| {
+                            let _ = weak.update(cx, |c, cx| {
+                                if c.index != Some(i) {
+                                    c.index = Some(i);
+                                    cx.notify();
+                                }
+                            });
+                        })
+                };
                 let rows = recent.iter().enumerate().map(|(i, path)| {
                     let (path, weak) = (path.clone(), close.clone());
                     let current = path == main_c;
@@ -260,9 +346,11 @@ impl Render for ProjectChip {
                                 });
                             }
                         })
+                        .map(|d| hot(i, d))
                 });
                 let action =
-                    |id: &'static str,
+                    |i: usize,
+                     id: &'static str,
                      icon: IconName,
                      label: &'static str,
                      key: Option<SharedString>,
@@ -293,8 +381,15 @@ impl Render for ProjectChip {
                                 });
                                 window.dispatch_action(act.boxed_clone(), cx);
                             })
+                            .map(|d| hot(i, d))
                     };
+                let projects = recent.len();
                 div()
+                    .track_focus(&focus)
+                    .on_key_down({
+                        let on_key = on_key.clone();
+                        move |e, window, cx| on_key(e, window, cx)
+                    })
                     .w(px(320.))
                     .flex()
                     .flex_col()
@@ -311,6 +406,7 @@ impl Render for ProjectChip {
                     .child(
                         div()
                             .id("project-list")
+                            .track_scroll(&scroll)
                             .max_h(px(360.))
                             .overflow_y_scroll()
                             .p_1()
@@ -322,6 +418,7 @@ impl Render for ProjectChip {
                             .border_color(t.border)
                             .p_1()
                             .child(action(
+                                projects,
                                 "project-open",
                                 IconName::Plus,
                                 "Open repository…",
@@ -330,6 +427,7 @@ impl Render for ProjectChip {
                                 cx,
                             ))
                             .child(action(
+                                projects + 1,
                                 "project-clone",
                                 IconName::FolderDown,
                                 "Clone repository…",
