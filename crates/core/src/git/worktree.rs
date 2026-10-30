@@ -162,6 +162,8 @@ pub fn add_worktree_with(
     if let Ok(files) = worktree_includes(&from) {
         crate::fs::copy_into(&from, Path::new(&target), &files);
     }
+    // Best effort too: what didn't set up shows as missing, for Update.
+    let _ = super::submodules_like(Path::new(&target), repo, net);
     // As `worktree list` spells it, which callers compare with: git resolves a folder picked
     // through a symlink, yet keeps the letter case typed (canonicalize would take the disk's).
     let listed = worktrees(repo)
