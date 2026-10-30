@@ -200,7 +200,9 @@ arguments, if you turned those on.
   method's candidate window stays at Claude Code's input as it redraws.
 - Pasting several lines into a program that would run each one as it arrives asks first.
 - A program that crashed or was killed in full screen leaves no mess: the next prompt is back in
-  the scrollback with the cursor shown, and moving the mouse doesn't type into it.
+  the scrollback with the cursor shown and the shell's "killed" or "segmentation fault" line above
+  it, moving the mouse or switching light and dark doesn't type into it, and the next full-screen
+  program gets plain keys.
 
 ---
 
