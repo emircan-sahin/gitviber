@@ -2346,6 +2346,8 @@ mod tests {
     /// A trackpad swipe right after typing, the pointer still: a program reading the wheel gets a
     /// report for each row's height swiped, fingers and momentum alike. Typing puts the window in
     /// keyboard mode, where nothing counts as hovered; a swipe moves no pointer to end it.
+    /// macOS only: elsewhere a pixel delta in mouse mode is a wheel notch, one report each.
+    #[cfg(target_os = "macos")]
     #[gpui::test]
     fn a_swipe_after_typing_reports_every_row(cx: &mut TestAppContext) {
         use gpui::TouchPhase;
