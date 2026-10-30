@@ -5,7 +5,7 @@ use crate::model::text::{author_name, is_co_author};
 use gitviber_core::api;
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::{Ends, list_step};
+use gitviber_ui::widgets::{Ends, list_step, on_list_keys};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Icon, Sizable as _, v_flex};
@@ -143,7 +143,8 @@ impl Render for CoAuthorPicker {
             (Some(_), false) => "No match. Type it as Name <email@example.com>.",
             (Some(_), true) => "No recent authors yet. Type Name <email@example.com>.",
         };
-        v_flex()
+        on_list_keys(v_flex(), cx.listener(Self::on_key))
+            .key_context("ListFilter")
             .w(px(320.))
             .p_1()
             .gap_1()

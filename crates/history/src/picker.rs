@@ -8,7 +8,7 @@ use gitviber_refs::Branch;
 use gitviber_refs::points::{ComparePoint, branch_point, commit_point, head_point, tag_point};
 use gitviber_ui::ActiveAppTheme;
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::{Ends, list_step};
+use gitviber_ui::widgets::{Ends, list_step, on_list_keys};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
@@ -250,11 +250,12 @@ impl Render for RefPicker {
         } else {
             "Nothing matches."
         };
-        div()
+        on_list_keys(div(), cx.listener(Self::key))
+            .key_context("ListFilter")
             .flex()
             .flex_col()
             .gap_1()
-            .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| this.key(e, window, cx)))
+            .on_key_down(cx.listener(Self::key))
             .child(Input::new(&self.input))
             .child(
                 div()
@@ -361,4 +362,87 @@ pub fn open_ref_picker(offer: Offer, on_pick: OnPick, window: &mut Window, cx: &
             .w(px(380.))
             .child(picker.clone())
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::{TestAppContext, VisualTestContext};
+
+    use super::*;
+
+    struct Host(Entity<RefPicker>);
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().child(self.0.clone())
+        }
+    }
+
+    /// Through real key dispatch: the field binds Home/End/PgUp/PgDn itself, so they reach the
+    /// list only by its "ListFilter" bindings, and with text typed Home/End move the caret.
+    #[gpui_kit::test]
+    fn list_keys_in_the_filter_field_move_the_row_then_the_caret(cx: &mut TestAppContext) {
+        gitviber_ui::test_support::config_dir("history-ref-picker");
+        cx.update(gitviber_ui::init);
+        let branches: Vec<Branch> = (0..30)
+            .map(|i| Branch {
+                name: format!("b{i}"),
+                timestamp: 100 - i,
+                ..Branch::default()
+            })
+            .collect();
+        let (host, cx) = cx.add_window_view(|window, cx| {
+            let input = cx.new(|cx| InputState::new(window, cx));
+            let picker = cx.new(|cx| {
+                let sub = cx.subscribe(&input, |this: &mut RefPicker, _, e: &InputEvent, cx| {
+                    if let InputEvent::Change = e {
+                        this.changed(cx);
+                    }
+                });
+                let mut p = RefPicker {
+                    input: input.clone(),
+                    branches: Rc::new(branches),
+                    detached: false,
+                    with_tags: false,
+                    tags: vec![],
+                    commit: None,
+                    picked: None,
+                    rows: vec![],
+                    index: 0,
+                    on_pick: Rc::new(|_, _, _| {}),
+                    _tags: None,
+                    _lookup: None,
+                    _sub: sub,
+                    _live: Live::new("RefPicker"),
+                };
+                p.rank(cx);
+                p
+            });
+            Host(picker)
+        });
+        let picker = host.read_with(cx, |h, _| h.0.clone());
+        cx.update(|window, cx| picker.read(cx).focus(cx).focus(window, cx));
+        cx.run_until_parked();
+        let at = |cx: &mut VisualTestContext| picker.read_with(cx, |p, _| p.index);
+        let caret =
+            |cx: &mut VisualTestContext| picker.read_with(cx, |p, cx| p.input.read(cx).cursor());
+
+        cx.simulate_keystrokes("end");
+        assert_eq!(at(cx), 29);
+        cx.simulate_keystrokes("home");
+        assert_eq!(at(cx), 0);
+        cx.simulate_keystrokes("pagedown");
+        assert_eq!(at(cx), 10);
+        cx.simulate_keystrokes("pageup");
+        assert_eq!(at(cx), 0);
+
+        // "b1" leaves b1 and b10..b19; the caret stands after the text.
+        cx.simulate_input("b1");
+        cx.simulate_keystrokes("down");
+        assert_eq!(at(cx), 1);
+        assert_eq!(caret(cx), 2);
+        cx.simulate_keystrokes("home");
+        assert_eq!((at(cx), caret(cx)), (1, 0));
+        cx.simulate_keystrokes("end");
+        assert_eq!((at(cx), caret(cx)), (1, 2));
+    }
 }
