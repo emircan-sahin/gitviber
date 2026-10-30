@@ -32,6 +32,7 @@ pub fn delete_merged(core: &Core, merged: Vec<String>, upstream: Vec<String>) ->
 }
 
 /// `op`: a Git LFS repository downloads the branch's files first, with progress and Cancel.
+/// A branch made here downloads nothing, so `op` isn't registered then.
 pub fn switch_branch(
     core: &Core,
     name: String,
@@ -44,9 +45,13 @@ pub fn switch_branch(
     } else {
         format!("Switch to {name}")
     };
-    let net = core.watch_network(op, progress);
+    let net = if create {
+        network::Net::default()
+    } else {
+        core.watch_network(op, progress)
+    };
     core.journaled(Action::new(label, Mode::Keep), move |r| {
-        git::switch_branch_with(r, &name, create, &net)
+        git::switch_branch(r, &name, create, &net)
     })
 }
 

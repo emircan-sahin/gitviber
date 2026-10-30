@@ -272,7 +272,7 @@ fn publish_sets_upstream() {
     let sb = Sandbox::new("publish");
     let c = sb.remote_with_clones(1);
     let a = &c[0];
-    switch_branch(a, "feat/new-thing", true).unwrap();
+    switch_branch(a, "feat/new-thing", true, &Net::default()).unwrap();
     write_commit(a, "n.txt", "n\n", "new");
     assert!(status(a).unwrap().upstream.is_none());
     push(a, false, None, &Net::default()).unwrap();
@@ -285,7 +285,7 @@ fn publish_sets_upstream() {
         .unwrap()
         .iter()
         .any(|x| x.remote && x.name == "origin/feat/new-thing"));
-    switch_branch(&b, "feat/new-thing", false).unwrap();
+    switch_branch(&b, "feat/new-thing", false, &Net::default()).unwrap();
     assert_eq!(
         status(&b).unwrap().branch.as_deref(),
         Some("feat/new-thing")
@@ -298,7 +298,7 @@ fn publish_picks_the_remote_instead_of_assuming_origin() {
     let c = sb.remote_with_clones(1);
     let a = &c[0];
     run(a, &["remote", "rename", "origin", "gh"]).unwrap();
-    switch_branch(a, "feat", true).unwrap();
+    switch_branch(a, "feat", true, &Net::default()).unwrap();
     // The only remote, whatever its name.
     assert_eq!(status(a).unwrap().publish.as_deref(), Some("gh"));
     push(a, false, None, &Net::default()).unwrap();
@@ -308,7 +308,7 @@ fn publish_picks_the_remote_instead_of_assuming_origin() {
     let other = sb.path("other.git");
     run(&sb.0, &["init", "-q", "--bare", other.to_str().unwrap()]).unwrap();
     run(a, &["remote", "add", "other", other.to_str().unwrap()]).unwrap();
-    switch_branch(a, "feat2", true).unwrap();
+    switch_branch(a, "feat2", true, &Net::default()).unwrap();
     let st = status(a).unwrap();
     assert_eq!((st.publish.as_deref(), st.remotes.len()), (None, 2));
     assert!(push(a, false, None, &Net::default())
@@ -320,11 +320,11 @@ fn publish_picks_the_remote_instead_of_assuming_origin() {
 
     // remote.pushDefault decides when set.
     set_push_default(a, "other").unwrap();
-    switch_branch(a, "feat3", true).unwrap();
+    switch_branch(a, "feat3", true, &Net::default()).unwrap();
     assert_eq!(status(a).unwrap().publish.as_deref(), Some("other"));
     // The branch's own pushRemote beats it, found by its literal name: fXx1 would match
     // f.(x)+1 read as a regex.
-    switch_branch(a, "f.(x)+1", true).unwrap();
+    switch_branch(a, "f.(x)+1", true, &Net::default()).unwrap();
     run(a, &["config", "branch.fXx1.pushRemote", "gh"]).unwrap();
     assert_eq!(status(a).unwrap().publish.as_deref(), Some("other"));
     run(a, &["config", "branch.f.(x)+1.pushRemote", "gh"]).unwrap();
@@ -345,7 +345,7 @@ fn gone_upstream_is_unknown_not_pushed() {
     let sb = Sandbox::new("gone");
     let c = sb.remote_with_clones(1);
     let a = &c[0];
-    switch_branch(a, "feat", true).unwrap();
+    switch_branch(a, "feat", true, &Net::default()).unwrap();
     write_commit(a, "f.txt", "f\n", "feature");
     push(a, false, None, &Net::default()).unwrap();
     assert!(!status(a).unwrap().upstream_gone);
@@ -618,7 +618,7 @@ fn lfs_files_download_before_a_checkout() {
         return;
     }
     run(b, &["lfs", "install", "--local"]).unwrap();
-    switch_branch(a, "art", true).unwrap();
+    switch_branch(a, "art", true, &Net::default()).unwrap();
     let attrs = "*.psd filter=lfs diff=lfs merge=lfs -text\n";
     write_commit(a, ".gitattributes", attrs, "lfs");
     write_commit(a, "cover.psd", "layered cover art", "cover");
@@ -629,7 +629,7 @@ fn lfs_files_download_before_a_checkout() {
     let log = seen.clone();
     let running = crate::network::Running::default();
     let net = running.start("switch".into(), move |p| log.lock().unwrap().push(p));
-    switch_branch_with(b, "art", false, &net).unwrap();
+    switch_branch(b, "art", false, &net).unwrap();
     assert_eq!(
         fs::read_to_string(b.join("cover.psd")).unwrap(),
         "layered cover art"
@@ -645,9 +645,55 @@ fn lfs_files_download_before_a_checkout() {
     // A new worktree on a branch only the remote has: its files come down the same way.
     let fresh = sb.clone_of("fresh");
     run(&fresh, &["lfs", "install", "--local"]).unwrap();
-    let wt = add_worktree_with(&fresh, "art", None, false, None, &Net::default()).unwrap();
+    let wt = add_worktree(&fresh, "art", None, false, None, &Net::default()).unwrap();
     assert_eq!(
         fs::read_to_string(Path::new(&wt).join("cover.psd")).unwrap(),
         "layered cover art"
     );
+}
+
+/// No download for a checkout git refuses anyway (a change in the way), nor for a repository
+/// set to keep LFS files as pointers.
+#[test]
+fn lfs_prefetch_skips_refused_checkouts_and_skip_smudge() {
+    let sb = Sandbox::new("lfs-skip");
+    let c = sb.remote_with_clones(3);
+    let (a, dirty, skips) = (&c[0], &c[1], &c[2]);
+    if run(a, &["lfs", "install", "--local"]).is_err() {
+        eprintln!("git-lfs is not installed; skipping");
+        return;
+    }
+    switch_branch(a, "art", true, &Net::default()).unwrap();
+    let attrs = "*.psd filter=lfs diff=lfs merge=lfs -text\n";
+    write_commit(a, ".gitattributes", attrs, "lfs");
+    write_commit(a, "cover.psd", "layered cover art", "cover");
+    write_commit(a, "a.txt", "changed on art\n", "text");
+    run(a, &["push", "-q", "-u", "origin", "art"]).unwrap();
+
+    let switch = |repo: &Path| {
+        let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let running = crate::network::Running::default();
+        let net = running.start("switch".into(), move |p| log.lock().unwrap().push(p));
+        let done = switch_branch(repo, "art", false, &net);
+        let downloaded = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|p| p.phase == "Downloading LFS objects");
+        (done, downloaded)
+    };
+
+    run(dirty, &["lfs", "install", "--local"]).unwrap();
+    run(dirty, &["fetch", "-q"]).unwrap();
+    fs::write(dirty.join("a.txt"), "mine\n").unwrap();
+    let (done, downloaded) = switch(dirty);
+    assert!(done.is_err() && !downloaded, "{done:?}");
+
+    run(skips, &["lfs", "install", "--local", "--skip-smudge"]).unwrap();
+    run(skips, &["fetch", "-q"]).unwrap();
+    let (done, downloaded) = switch(skips);
+    assert!(done.is_ok() && !downloaded, "{done:?}");
+    let cover = fs::read(skips.join("cover.psd")).unwrap();
+    assert!(crate::lfs::pointer(&cover).is_some());
 }

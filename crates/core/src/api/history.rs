@@ -240,7 +240,7 @@ pub fn checkout_commit(
     let label = format!("Check out {}", short(&sha));
     let net = core.watch_network(op, progress);
     core.journaled(Action::new(label, Mode::Keep), move |r| {
-        git::checkout_commit_with(r, &sha, &net)
+        git::checkout_commit(r, &sha, &net)
     })
 }
 

@@ -19,7 +19,7 @@ pub fn add_worktree(
 ) -> Res<String> {
     let net = core.watch_network(op, progress);
     core.in_repo(move |r| {
-        git::add_worktree_with(r, &branch, base.as_deref(), track, dir.as_deref(), &net)
+        git::add_worktree(r, &branch, base.as_deref(), track, dir.as_deref(), &net)
     })
 }
 

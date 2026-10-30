@@ -9,13 +9,13 @@ fn pr_checkout_fast_forwards_and_never_resets() {
     let c = sb.remote_with_clones(2);
     let (a, b) = (&c[0], &c[1]);
     // The PR branch as it exists on the remote.
-    switch_branch(a, "feat", true).unwrap();
+    switch_branch(a, "feat", true, &Net::default()).unwrap();
     write_commit(a, "f.txt", "1\n", "f1");
     run(a, &["push", "-q", "-u", "origin", "feat"]).unwrap();
     // b has a stale local copy of it…
     run(b, &["fetch", "-q"]).unwrap();
-    switch_branch(b, "feat", false).unwrap();
-    switch_branch(b, "main", false).unwrap();
+    switch_branch(b, "feat", false, &Net::default()).unwrap();
+    switch_branch(b, "main", false, &Net::default()).unwrap();
     write_commit(a, "f.txt", "1\n2\n", "f2");
     run(a, &["push", "-q"]).unwrap();
     checkout(b, "origin", None, 1, "feat", true, &Net::default()).unwrap();
@@ -29,7 +29,7 @@ fn pr_checkout_fast_forwards_and_never_resets() {
     write_commit(b, "mine.txt", "mine\n", "local only");
     write_commit(a, "f.txt", "1\n2\n3\n", "f3");
     run(a, &["push", "-q"]).unwrap();
-    switch_branch(b, "main", false).unwrap();
+    switch_branch(b, "main", false, &Net::default()).unwrap();
     assert!(checkout(b, "origin", None, 1, "feat", true, &Net::default()).is_err());
     assert!(run(b, &["log", "--oneline", "feat"])
         .map(|o| String::from_utf8_lossy(&o).contains("local only"))
@@ -68,7 +68,7 @@ fn pr_checkout_fast_forwards_and_never_resets() {
     // Leaving it and coming back fast-forwards it by fetching straight into the branch.
     write_commit(a, "f.txt", "5\n", "f5");
     run(a, &["push", "-q", "origin", "HEAD:refs/pull/7/head"]).unwrap();
-    switch_branch(b, "main", false).unwrap();
+    switch_branch(b, "main", false, &Net::default()).unwrap();
     checkout(
         b,
         "origin",
@@ -98,7 +98,7 @@ fn pr_checkout_leaves_fetch_head_alone() {
     write_commit(a, "f.txt", "pr\n", "pr");
     run(a, &["push", "-q", "origin", "HEAD:refs/pull/3/head"]).unwrap();
     let pr = run_text(a, &["rev-parse", "HEAD"]).unwrap();
-    switch_branch(a, "feat", true).unwrap();
+    switch_branch(a, "feat", true, &Net::default()).unwrap();
     write_commit(a, "g.txt", "g\n", "feat");
     run(a, &["push", "-q", "-u", "origin", "feat"]).unwrap();
     let feat = run_text(a, &["rev-parse", "HEAD"]).unwrap();
@@ -131,7 +131,7 @@ fn pr_checkout_worktree_leaves_head_and_fast_forwards() {
             .find(|w| w.branch.as_deref() == Some(branch))
             .map(|w| w.path)
     };
-    switch_branch(a, "feat", true).unwrap();
+    switch_branch(a, "feat", true, &Net::default()).unwrap();
     write_commit(a, "f.txt", "1\n", "f1");
     run(a, &["push", "-q", "-u", "origin", "feat"]).unwrap();
 

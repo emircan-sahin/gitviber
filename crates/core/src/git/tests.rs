@@ -100,16 +100,16 @@ fn status_history_and_diffs() {
         vec!["target".to_string()]
     );
 
-    assert!(switch_branch(&repo, "--evil", true).is_err());
-    switch_branch(&repo, "feat/x", true).unwrap();
+    assert!(switch_branch(&repo, "--evil", true, &Net::default()).is_err());
+    switch_branch(&repo, "feat/x", true, &Net::default()).unwrap();
     assert!(branches(&repo)
         .unwrap()
         .iter()
         .any(|b| b.name == "feat/x" && b.current));
 
-    switch_branch(&repo, "main", false).unwrap();
-    assert!(add_worktree(&repo, "--evil", None, false, None).is_err());
-    let wt = add_worktree(&repo, "feat/x", None, false, None).unwrap();
+    switch_branch(&repo, "main", false, &Net::default()).unwrap();
+    assert!(add_worktree(&repo, "--evil", None, false, None, &Net::default()).is_err());
+    let wt = add_worktree(&repo, "feat/x", None, false, None, &Net::default()).unwrap();
     // git reports real paths: /var/folders is /private/var/folders on macOS.
     let real = repo.canonicalize().unwrap();
     let expected = real.with_file_name(format!(
@@ -121,7 +121,7 @@ fn status_history_and_diffs() {
         .unwrap()
         .iter()
         .any(|w| w.branch.as_deref() == Some("feat/x")));
-    assert!(add_worktree(&repo, "feat/x", None, false, None).is_err());
+    assert!(add_worktree(&repo, "feat/x", None, false, None, &Net::default()).is_err());
     let _ = fs::remove_dir_all(&repo);
     let _ = fs::remove_dir_all(&expected);
 }
@@ -143,9 +143,25 @@ fn worktree_new_branch_rename_and_prune() {
     };
 
     // A new branch, made in a chosen folder, tracking nothing.
-    assert!(add_worktree(&repo, "x", Some("main"), false, Some(d)).is_err());
-    assert!(add_worktree(&repo, "x", Some("refs/heads/main"), false, Some("rel")).is_err());
-    let wt = add_worktree(&repo, "feat/new", Some("refs/heads/main"), false, Some(d)).unwrap();
+    assert!(add_worktree(&repo, "x", Some("main"), false, Some(d), &Net::default()).is_err());
+    assert!(add_worktree(
+        &repo,
+        "x",
+        Some("refs/heads/main"),
+        false,
+        Some("rel"),
+        &Net::default()
+    )
+    .is_err());
+    let wt = add_worktree(
+        &repo,
+        "feat/new",
+        Some("refs/heads/main"),
+        false,
+        Some(d),
+        &Net::default(),
+    )
+    .unwrap();
     assert_eq!(Path::new(&wt), dir.join("feat-new"));
     assert_eq!(listed("feat/new").unwrap().path, wt);
     let upstream = run_text(
@@ -160,9 +176,33 @@ fn worktree_new_branch_rename_and_prune() {
     // From a commit, by its full id only.
     let first = run_text(&repo, &["rev-parse", "HEAD"]).unwrap();
     let first = first.trim();
-    assert!(add_worktree(&repo, "at", Some(&first[..12]), false, Some(d)).is_err());
-    assert!(add_worktree(&repo, "at", Some(&"0".repeat(40)), false, Some(d)).is_err());
-    let at = add_worktree(&repo, "at/first", Some(first), false, Some(d)).unwrap();
+    assert!(add_worktree(
+        &repo,
+        "at",
+        Some(&first[..12]),
+        false,
+        Some(d),
+        &Net::default()
+    )
+    .is_err());
+    assert!(add_worktree(
+        &repo,
+        "at",
+        Some(&"0".repeat(40)),
+        false,
+        Some(d),
+        &Net::default()
+    )
+    .is_err());
+    let at = add_worktree(
+        &repo,
+        "at/first",
+        Some(first),
+        false,
+        Some(d),
+        &Net::default(),
+    )
+    .unwrap();
     let head = run_text(Path::new(&at), &["rev-parse", "HEAD"]).unwrap();
     assert_eq!(head.trim(), first);
     remove_worktree(&repo, &listed("at/first").unwrap().path, false).unwrap();
@@ -192,7 +232,15 @@ fn worktree_new_branch_rename_and_prune() {
     assert!(unlock_worktree(&repo, "/not/a/worktree").is_err());
 
     // Only the case changes: on a case-insensitive disk the new folder name is "taken" by the old.
-    let upper = add_worktree(&repo, "Case", Some("refs/heads/main"), false, Some(d)).unwrap();
+    let upper = add_worktree(
+        &repo,
+        "Case",
+        Some("refs/heads/main"),
+        false,
+        Some(d),
+        &Net::default(),
+    )
+    .unwrap();
     let lower = rename_worktree(&repo, &upper, "case", true).unwrap();
     assert_eq!(Path::new(&lower), dir.join("case"));
     assert_eq!(listed("case").unwrap().path, lower);
@@ -218,7 +266,15 @@ fn worktree_new_branch_rename_and_prune() {
     assert!(listed("trunk").is_some_and(|w| w.main));
 
     // A worktree whose folder is gone is pruned by removing it.
-    let gone = add_worktree(&repo, "gone", Some("refs/heads/trunk"), false, Some(d)).unwrap();
+    let gone = add_worktree(
+        &repo,
+        "gone",
+        Some("refs/heads/trunk"),
+        false,
+        Some(d),
+        &Net::default(),
+    )
+    .unwrap();
     fs::remove_dir_all(&gone).unwrap();
     assert!(listed("gone").unwrap().prunable);
     remove_worktree(&repo, &gone, false).unwrap();
@@ -239,7 +295,7 @@ fn merge_conflict_resolve_and_continue() {
     let repo = temp_repo("merge");
     commit_file(&repo, "a.txt", "base\n", "base");
     commit_file(&repo, "gone.txt", "keep?\n", "add gone");
-    switch_branch(&repo, "feature", true).unwrap();
+    switch_branch(&repo, "feature", true, &Net::default()).unwrap();
     commit_file(&repo, "a.txt", "feature\n", "feature edit");
     run(&repo, &["rm", "-q", "gone.txt"]).unwrap();
     commit(
@@ -249,7 +305,7 @@ fn merge_conflict_resolve_and_continue() {
         &Net::default(),
     )
     .unwrap();
-    switch_branch(&repo, "main", false).unwrap();
+    switch_branch(&repo, "main", false, &Net::default()).unwrap();
     commit_file(&repo, "a.txt", "main\n", "main edit");
     commit_file(&repo, "gone.txt", "edited on main\n", "main edits gone");
 
@@ -291,11 +347,11 @@ fn merge_conflict_resolve_and_continue() {
 fn rebase_conflict_abort() {
     let repo = temp_repo("rebase");
     commit_file(&repo, "a.txt", "base\n", "base");
-    switch_branch(&repo, "feature", true).unwrap();
+    switch_branch(&repo, "feature", true, &Net::default()).unwrap();
     commit_file(&repo, "a.txt", "feature\n", "feature edit");
-    switch_branch(&repo, "main", false).unwrap();
+    switch_branch(&repo, "main", false, &Net::default()).unwrap();
     commit_file(&repo, "a.txt", "main\n", "main edit");
-    switch_branch(&repo, "feature", false).unwrap();
+    switch_branch(&repo, "feature", false, &Net::default()).unwrap();
 
     assert!(rebase(&repo, "main", false, None).unwrap());
     let op = operation(&repo).unwrap();
@@ -453,5 +509,26 @@ fn the_config_list_reads_remotes_and_settings_as_git_does() {
     text.push_str("[remote \"m\"]\n\tmirror\n");
     fs::write(&config, text).unwrap();
     assert_eq!(ConfigList::read(&repo).unwrap().remote_urls(), None);
+    let _ = fs::remove_dir_all(&repo);
+}
+
+/// Booleans read as `git config --type=bool` reads them.
+#[test]
+fn the_config_list_reads_booleans_as_git_does() {
+    let repo = temp_repo("configbool");
+    let config = repo.join(".git/config");
+    let mut text = fs::read_to_string(&config).unwrap();
+    text.push_str(
+        "[t]\n\tbare\n\tempty =\n\tyes = YES\n\toff = Off\n\tnum = 2\n\tzero = 0\n\tbad = maybe\n",
+    );
+    fs::write(&config, text).unwrap();
+    let list = ConfigList::read(&repo).unwrap();
+    for key in ["bare", "empty", "yes", "off", "num", "zero", "bad", "unset"] {
+        let key = format!("t.{key}");
+        let git = run_text(&repo, &["config", "--type=bool", "--get", &key])
+            .ok()
+            .map(|v| v.trim() == "true");
+        assert_eq!(list.bool(&key), git, "{key}");
+    }
     let _ = fs::remove_dir_all(&repo);
 }

@@ -29,12 +29,12 @@ fn multi_commit_rebase_with_skip() {
     let r = sb.path("r");
     init(&r);
     write_commit(&r, "a.txt", "base\n", "base");
-    switch_branch(&r, "feature", true).unwrap();
+    switch_branch(&r, "feature", true, &Net::default()).unwrap();
     write_commit(&r, "a.txt", "feature\n", "f1 conflicts");
     write_commit(&r, "f.txt", "f\n", "f2 clean");
-    switch_branch(&r, "main", false).unwrap();
+    switch_branch(&r, "main", false, &Net::default()).unwrap();
     write_commit(&r, "a.txt", "main\n", "main edit");
-    switch_branch(&r, "feature", false).unwrap();
+    switch_branch(&r, "feature", false, &Net::default()).unwrap();
 
     assert!(rebase(&r, "main", false, None).unwrap());
     let op = operation(&r).unwrap();
@@ -51,9 +51,9 @@ fn resolve_side_never_deletes_a_file_that_exists_on_that_side() {
     let r = sb.path("r");
     init(&r);
     write_commit(&r, "a.txt", "base\n", "base");
-    switch_branch(&r, "feature", true).unwrap();
+    switch_branch(&r, "feature", true, &Net::default()).unwrap();
     write_commit(&r, "a.txt", "feature\n", "f");
-    switch_branch(&r, "main", false).unwrap();
+    switch_branch(&r, "main", false, &Net::default()).unwrap();
     write_commit(&r, "a.txt", "main\n", "m");
     assert!(merge(&r, "feature", MergeKind::Ff, false).unwrap());
     resolve_side(&r, "a.txt", Side::Ours).unwrap();
@@ -71,9 +71,9 @@ fn continue_reports_hook_failures_instead_of_conflicts() {
     let r = sb.path("r");
     init(&r);
     write_commit(&r, "a.txt", "base\n", "base");
-    switch_branch(&r, "feature", true).unwrap();
+    switch_branch(&r, "feature", true, &Net::default()).unwrap();
     write_commit(&r, "a.txt", "feature\n", "f");
-    switch_branch(&r, "main", false).unwrap();
+    switch_branch(&r, "main", false, &Net::default()).unwrap();
     write_commit(&r, "a.txt", "main\n", "m");
     assert!(merge(&r, "feature", MergeKind::Ff, false).unwrap());
     resolve_side(&r, "a.txt", Side::Ours).unwrap();
@@ -97,10 +97,10 @@ fn git_am_is_detected_and_abortable() {
     let r = sb.path("r");
     init(&r);
     write_commit(&r, "a.txt", "base\n", "base");
-    switch_branch(&r, "feature", true).unwrap();
+    switch_branch(&r, "feature", true, &Net::default()).unwrap();
     write_commit(&r, "a.txt", "feature\n", "f");
     let patch = run(&r, &["format-patch", "-1", "--stdout"]).unwrap();
-    switch_branch(&r, "main", false).unwrap();
+    switch_branch(&r, "main", false, &Net::default()).unwrap();
     write_commit(&r, "a.txt", "main\n", "m");
     fs::write(sb.path("p.patch"), patch).unwrap();
     assert!(run(&r, &["am", "-3", sb.path("p.patch").to_str().unwrap()]).is_err());
@@ -169,9 +169,9 @@ fn revert_clean_conflicting_empty_and_merge() {
         .starts_with("Revert \"x\""));
 
     // Merge commits revert against their first parent.
-    switch_branch(&r, "feature", true).unwrap();
+    switch_branch(&r, "feature", true, &Net::default()).unwrap();
     write_commit(&r, "f.txt", "f\n", "feature");
-    switch_branch(&r, "main", false).unwrap();
+    switch_branch(&r, "main", false, &Net::default()).unwrap();
     write_commit(&r, "m.txt", "m\n", "main");
     run(&r, &["merge", "-q", "--no-edit", "feature"]).unwrap();
     let merge = log(&r, None, 0, 1).unwrap()[0].sha.clone();
@@ -229,11 +229,11 @@ fn checkout_branch_and_tag_at_a_commit() {
         .iter()
         .any(|x| x == "tag: v1.0"));
 
-    checkout_commit(&r, &base).unwrap();
+    checkout_commit(&r, &base, &Net::default()).unwrap();
     assert!(status(&r).unwrap().branch.is_none());
     assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "1\n");
 
-    switch_branch(&r, "main", false).unwrap();
+    switch_branch(&r, "main", false, &Net::default()).unwrap();
     create_branch_at(&r, "from-base", &base).unwrap();
     assert_eq!(status(&r).unwrap().branch.as_deref(), Some("from-base"));
     assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "1\n");
@@ -450,9 +450,9 @@ fn merge_and_rebase_autostash_uncommitted_changes() {
     let r = sb.path("r");
     init(&r);
     write_commit(&r, "a.txt", "1\n2\n3\n4\n5\n", "base");
-    switch_branch(&r, "feature", true).unwrap();
+    switch_branch(&r, "feature", true, &Net::default()).unwrap();
     write_commit(&r, "a.txt", "1\n2\n3\n4\nfive\n", "feature edit");
-    switch_branch(&r, "main", false).unwrap();
+    switch_branch(&r, "main", false, &Net::default()).unwrap();
     fs::write(r.join("a.txt"), "one\n2\n3\n4\n5\n").unwrap();
 
     let e = merge(&r, "feature", MergeKind::Ff, false).unwrap_err();
@@ -465,7 +465,7 @@ fn merge_and_rebase_autostash_uncommitted_changes() {
 
     run(&r, &["reset", "-q", "--hard", "HEAD~1"]).unwrap();
     write_commit(&r, "b.txt", "b\n", "main moves on");
-    switch_branch(&r, "feature", false).unwrap();
+    switch_branch(&r, "feature", false, &Net::default()).unwrap();
     fs::write(r.join("a.txt"), "one\n2\n3\n4\nfive\n").unwrap();
     let e = rebase(&r, "main", false, None).unwrap_err();
     assert!(
@@ -489,9 +489,9 @@ fn configured_merge_and_diff_tools_run_on_one_path() {
     init(&r);
     write_commit(&r, "a.txt", "base\n", "base");
     write_commit(&r, "b.txt", "b\n", "b");
-    switch_branch(&r, "feature", true).unwrap();
+    switch_branch(&r, "feature", true, &Net::default()).unwrap();
     write_commit(&r, "a.txt", "feature\n", "f");
-    switch_branch(&r, "main", false).unwrap();
+    switch_branch(&r, "main", false, &Net::default()).unwrap();
     write_commit(&r, "a.txt", "main\n", "m");
     assert!(merge(&r, "feature", MergeKind::Ff, false).unwrap());
 
@@ -539,10 +539,10 @@ fn conflict_base_from_the_index_stages() {
     init(&r);
     run(&r, &["config", "merge.conflictStyle", "merge"]).unwrap();
     write_commit(&r, "a.txt", "one\ntwo\nthree\n", "base");
-    switch_branch(&r, "feature", true).unwrap();
+    switch_branch(&r, "feature", true, &Net::default()).unwrap();
     write_commit(&r, "a.txt", "one\nTWO-f\nthree\n", "f");
     write_commit(&r, "new.txt", "f\n", "add f");
-    switch_branch(&r, "main", false).unwrap();
+    switch_branch(&r, "main", false, &Net::default()).unwrap();
     write_commit(&r, "a.txt", "one\nTWO-m\nthree\n", "m");
     write_commit(&r, "new.txt", "m\n", "add m");
     assert!(merge(&r, "feature", MergeKind::Ff, false).unwrap());
@@ -575,9 +575,9 @@ fn fake_tool(path: &Path, script: &str) {
 fn conflicted_on(r: &Path, path: &str) {
     init(r);
     write_commit(r, path, "base\n", "base");
-    switch_branch(r, "feature", true).unwrap();
+    switch_branch(r, "feature", true, &Net::default()).unwrap();
     write_commit(r, path, "feature\n", "f");
-    switch_branch(r, "main", false).unwrap();
+    switch_branch(r, "main", false, &Net::default()).unwrap();
     write_commit(r, path, "main\n", "m");
     assert!(merge(r, "feature", MergeKind::Ff, false).unwrap());
 }
@@ -770,9 +770,9 @@ fn conflict_bases_across_conflict_kinds() {
     commit(&r, "base", &CommitOptions::default(), &Net::default()).unwrap();
     for (branch, side) in [("feature", 2), ("main", 3)] {
         if branch == "feature" {
-            switch_branch(&r, "feature", true).unwrap();
+            switch_branch(&r, "feature", true, &Net::default()).unwrap();
         } else {
-            switch_branch(&r, "main", false).unwrap();
+            switch_branch(&r, "main", false, &Net::default()).unwrap();
         }
         for f in files {
             let text = if side == 2 { f.2 } else { f.3 };
@@ -820,7 +820,7 @@ fn conflict_bases_after_renames() {
     write_commit(&r, "old.txt", &body, "base");
     let other: String = (1..=30).map(|i| format!("other {i}\n")).collect();
     write_commit(&r, "split.txt", &other, "base2");
-    switch_branch(&r, "feature", true).unwrap();
+    switch_branch(&r, "feature", true, &Net::default()).unwrap();
     write_commit(
         &r,
         "old.txt",
@@ -829,7 +829,7 @@ fn conflict_bases_after_renames() {
     );
     run(&r, &["mv", "split.txt", "split-f.txt"]).unwrap();
     commit(&r, "f mv", &CommitOptions::default(), &Net::default()).unwrap();
-    switch_branch(&r, "main", false).unwrap();
+    switch_branch(&r, "main", false, &Net::default()).unwrap();
     run(&r, &["mv", "old.txt", "new.txt"]).unwrap();
     commit(&r, "mv", &CommitOptions::default(), &Net::default()).unwrap();
     write_commit(&r, "new.txt", &body.replace("line 15\n", "main 15\n"), "m");
@@ -855,9 +855,9 @@ fn conflict_base_keeps_twin_conflicts_apart() {
     let text =
         |a: &str, b: &str| format!("fn a() {{\n  {a};\n}}\n1\n2\n3\n4\nfn b() {{\n  {b};\n}}\n");
     write_commit(&r, "f.rs", &text("old_a()", "old_b()"), "base");
-    switch_branch(&r, "feature", true).unwrap();
+    switch_branch(&r, "feature", true, &Net::default()).unwrap();
     write_commit(&r, "f.rs", &text("theirs()", "theirs()"), "f");
-    switch_branch(&r, "main", false).unwrap();
+    switch_branch(&r, "main", false, &Net::default()).unwrap();
     write_commit(&r, "f.rs", &text("ours()", "ours()"), "m");
     assert!(merge(&r, "feature", MergeKind::Ff, false).unwrap());
     let rebuilt = conflict_base(&r, "f.rs").unwrap().unwrap();
@@ -874,9 +874,9 @@ fn conflict_base_skips_huge_files_and_cleans_up() {
     init(&r);
     let big: String = (0..600_000).map(|i| format!("row {i}\n")).collect();
     write_commit(&r, "big.txt", &big, "base");
-    switch_branch(&r, "feature", true).unwrap();
+    switch_branch(&r, "feature", true, &Net::default()).unwrap();
     write_commit(&r, "big.txt", &big.replace("row 7\n", "feature\n"), "f");
-    switch_branch(&r, "main", false).unwrap();
+    switch_branch(&r, "main", false, &Net::default()).unwrap();
     write_commit(&r, "big.txt", &big.replace("row 7\n", "main\n"), "m");
     assert!(merge(&r, "feature", MergeKind::Ff, false).unwrap());
     assert!(big.len() > 4 << 20);
@@ -1017,9 +1017,9 @@ fn lfs_conflict_is_chosen_whole() {
     let attrs = "*.psd filter=lfs diff=lfs merge=lfs -text\n";
     write_commit(&r, ".gitattributes", attrs, "lfs");
     write_commit(&r, "art.psd", "base art", "base");
-    switch_branch(&r, "feature", true).unwrap();
+    switch_branch(&r, "feature", true, &Net::default()).unwrap();
     write_commit(&r, "art.psd", "feature art, longer", "f");
-    switch_branch(&r, "main", false).unwrap();
+    switch_branch(&r, "main", false, &Net::default()).unwrap();
     write_commit(&r, "art.psd", "main art", "m");
     assert!(merge(&r, "feature", MergeKind::Ff, false).unwrap());
     let sides = conflict_sides(&r, "art.psd").unwrap().unwrap();

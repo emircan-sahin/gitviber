@@ -521,12 +521,8 @@ pub fn delete_branches(repo: &Path, names: &[String], force: bool) -> Result<(),
 /// it or let it go and leave every clone without one.
 pub fn delete_remote_branch(repo: &Path, name: &str, net: &Net) -> Result<(), String> {
     let remotes = run_text(repo, &["remote"])?;
-    let remote = remotes
-        .lines()
-        .filter(|r| name.starts_with(&format!("{r}/")))
-        .max_by_key(|r| r.len())
+    let (remote, branch) = split_remote(remotes.lines(), name)
         .ok_or_else(|| format!("{name} isn't a remote branch"))?;
-    let branch = &name[remote.len() + 1..];
     validate_branch(repo, branch)?;
     let head = format!("refs/remotes/{remote}/HEAD");
     if run_text(repo, &["symbolic-ref", "--quiet", "--short", &head])
@@ -538,19 +534,15 @@ pub fn delete_remote_branch(repo: &Path, name: &str, net: &Net) -> Result<(), St
     run_network(repo, &["push", remote, "--delete", &target], net).map(|_| ())
 }
 
-pub fn switch_branch(repo: &Path, name: &str, create: bool) -> Result<(), String> {
-    switch_branch_with(repo, name, create, &Net::default())
-}
-
-/// `switch_branch` with its Git LFS download watched by `net` (progress, Cancel until the
-/// checkout starts).
-pub fn switch_branch_with(repo: &Path, name: &str, create: bool, net: &Net) -> Result<(), String> {
+/// A Git LFS repository downloads the branch's files first, watched by `net` (progress, Cancel
+/// until the checkout starts).
+pub fn switch_branch(repo: &Path, name: &str, create: bool, net: &Net) -> Result<(), String> {
     validate_branch(repo, name)?;
     if create {
         return run(repo, &["switch", "-c", name]).map(|_| ());
     }
     if let Some(tip) = branch_tip(repo, name) {
-        crate::lfs::prefetch(repo, &tip, net)?;
+        crate::lfs::prefetch(repo, &tip, crate::lfs::Checkout::Here, net)?;
     }
     net.updating_files()?;
     run(repo, &["switch", name]).map(|_| ())
@@ -563,19 +555,36 @@ pub(crate) fn branch_tip(repo: &Path, name: &str) -> Option<String> {
     if run(repo, &["rev-parse", "--verify", "--quiet", &local]).is_ok() {
         return Some(local);
     }
+    let remotes = run_text(repo, &["remote"]).ok()?;
     let out = run_text(
         repo,
         &["for-each-ref", "--format=%(refname)", "refs/remotes/"],
     )
     .ok()?;
     let mut found = out.lines().filter(|r| {
-        r.strip_suffix(name)
-            .is_some_and(|rest| rest.ends_with('/') && rest.matches('/').count() == 3)
+        r.strip_prefix("refs/remotes/")
+            .and_then(|short| split_remote(remotes.lines(), short))
+            .is_some_and(|(_, branch)| branch == name)
     });
     match (found.next(), found.next()) {
         (Some(one), None) => Some(one.to_string()),
         _ => None,
     }
+}
+
+/// "upstream/feat/x" as its remote and branch. Remote names may hold a slash too, so the
+/// longest remote that prefixes it wins.
+pub(crate) fn split_remote<'a, 'r>(
+    remotes: impl IntoIterator<Item = &'r str>,
+    name: &'a str,
+) -> Option<(&'r str, &'a str)> {
+    let remote = remotes
+        .into_iter()
+        .filter(|r| {
+            name.len() > r.len() + 1 && name.starts_with(r) && name.as_bytes()[r.len()] == b'/'
+        })
+        .max_by_key(|r| r.len())?;
+    Some((remote, &name[remote.len() + 1..]))
 }
 
 /// Past this many the count reads "100+": the walk stops there.

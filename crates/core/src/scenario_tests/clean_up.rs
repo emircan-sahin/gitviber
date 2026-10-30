@@ -16,7 +16,7 @@ fn merged_worktree(sb: &Sandbox, ignore: &str, branch: &str) -> (PathBuf, String
     init(&r);
     write_commit(&r, ".gitignore", ignore, "ignore");
     run(&r, &["branch", branch]).unwrap();
-    let w = add_worktree(&r, branch, None, false, None).unwrap();
+    let w = add_worktree(&r, branch, None, false, None, &Net::default()).unwrap();
     write_commit(Path::new(&w), &format!("{branch}.txt"), "x\n", branch);
     run(&r, &["merge", "-q", branch]).unwrap();
     (r, w)
@@ -32,7 +32,7 @@ fn clean_up_checks_again_what_changed_since_the_dialog_opened() {
     write_commit(&r, "a.txt", "a\n", "base");
     let made = |name: &str| {
         run(&r, &["branch", name]).unwrap();
-        let w = add_worktree(&r, name, None, false, None).unwrap();
+        let w = add_worktree(&r, name, None, false, None, &Net::default()).unwrap();
         write_commit(Path::new(&w), &format!("{name}.txt"), "x\n", name);
         w
     };
@@ -108,7 +108,7 @@ fn clean_up_by_pull_request_leaves_commits_made_on_a_detached_head() {
     init(&r);
     write_commit(&r, "a.txt", "a\n", "base");
     run(&r, &["branch", "pr"]).unwrap();
-    let w = add_worktree(&r, "pr", None, false, None).unwrap();
+    let w = add_worktree(&r, "pr", None, false, None, &Net::default()).unwrap();
     write_commit(Path::new(&w), "pr.txt", "x\n", "the PR");
     let pr_head = rev(&r, "pr");
     run(Path::new(&w), &["checkout", "-q", "--detach"]).unwrap();
@@ -163,7 +163,7 @@ fn clean_up_leaves_locked_and_missing_worktrees() {
     write_commit(&r, "a.txt", "a\n", "base");
     let made = |name: &str| {
         run(&r, &["branch", name]).unwrap();
-        let w = add_worktree(&r, name, None, false, None).unwrap();
+        let w = add_worktree(&r, name, None, false, None, &Net::default()).unwrap();
         write_commit(Path::new(&w), &format!("{name}.txt"), "x\n", name);
         w
     };
@@ -195,7 +195,7 @@ fn undo_after_clean_up_brings_the_branches_back() {
     let mut tips = vec![];
     for name in ["one", "two", "fix/three"] {
         run(&r, &["branch", name]).unwrap();
-        let w = add_worktree(&r, name, None, false, None).unwrap();
+        let w = add_worktree(&r, name, None, false, None, &Net::default()).unwrap();
         write_commit(
             Path::new(&w),
             &format!("{}.txt", name.replace('/', "-")),

@@ -14,8 +14,6 @@ use gpui_kit::{AppContext as _, Context, Entity, Task};
 
 /// Focus flickers (a dialog, a click on the Dock) don't ask git again.
 pub const GAP: Duration = Duration::from_secs(2);
-/// A fingerprint this slow is worth a stat cache refresh (git::refresh_stat_cache).
-const SLOW_STATUS: Duration = Duration::from_millis(300);
 /// The changed files stat'ed for their times; past this many, the status alone says enough.
 const STATS: usize = 2000;
 
@@ -55,17 +53,9 @@ impl Wake {
         };
         let root = project.read(cx).root().to_path_buf();
         let at = root.clone();
-        let core = gitviber_ui::has_core(cx).then(|| gitviber_ui::core(cx));
-        let look = cx.background_spawn(async move {
-            let started = Instant::now();
-            let print = fingerprint(&at);
-            // Files rewritten while away (a build, another tool's checkout) are hashed again on
-            // every status until git saves their stat data; the user is back here, not in git.
-            if let Some(core) = core.filter(|_| started.elapsed() > SLOW_STATUS) {
-                core.refresh_stat_cache(&at);
-            }
-            print
-        });
+        // No stat cache refresh here: it takes index.lock, and an agent's git in this
+        // worktree would fail on it.
+        let look = cx.background_spawn(async move { fingerprint(&at) });
         let project = project.downgrade();
         self._look = Some(cx.spawn(async move |this, cx| {
             let Some(print) = look.await else {

@@ -117,19 +117,9 @@ pub fn main_worktree(repo: &Path) -> Option<String> {
 /// `dir` is `<parent>/<project>.worktrees` unless given. With `base`, `branch` is a new branch
 /// made there, tracking nothing like `create_branch`'s, or with `track` tracking `base`. Without, a branch only on a remote gets a
 /// local tracking branch (git's own DWIM for `worktree add`). The ignored files the main
-/// worktree's `.worktreeinclude` lists are copied in.
+/// worktree's `.worktreeinclude` lists are copied in. A Git LFS repository downloads the
+/// branch's files first, watched by `net`.
 pub fn add_worktree(
-    repo: &Path,
-    branch: &str,
-    base: Option<&str>,
-    track: bool,
-    dir: Option<&str>,
-) -> Result<String, String> {
-    add_worktree_with(repo, branch, base, track, dir, &Net::default())
-}
-
-/// `add_worktree` with its Git LFS download watched by `net`.
-pub fn add_worktree_with(
     repo: &Path,
     branch: &str,
     base: Option<&str>,
@@ -146,7 +136,7 @@ pub fn add_worktree_with(
         None => branch_tip(repo, branch),
     };
     if let Some(tip) = tip {
-        crate::lfs::prefetch(repo, &tip, net)?;
+        crate::lfs::prefetch(repo, &tip, crate::lfs::Checkout::NewWorktree, net)?;
     }
     net.updating_files()?;
     match base {

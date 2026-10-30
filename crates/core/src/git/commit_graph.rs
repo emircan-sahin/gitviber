@@ -50,16 +50,10 @@ pub(crate) fn wants_commit_graph(repo: &Path) -> bool {
     let Ok(config) = ConfigList::read(repo) else {
         return false;
     };
-    let off = |key| {
-        config.value(key).is_some_and(|v| {
-            matches!(
-                v.to_ascii_lowercase().as_str(),
-                "false" | "no" | "off" | "0"
-            )
-        })
-    };
     // The user turned graphs off; a partial clone would fetch every missing tree for the filters.
-    if off("core.commitgraph") || config.value("extensions.partialclone").is_some() {
+    if config.bool("core.commitgraph") == Some(false)
+        || config.value("extensions.partialclone").is_some()
+    {
         return false;
     }
     objects(repo).is_some_and(|n| n >= BIG)

@@ -276,10 +276,9 @@ pub fn stageable(files: &[Arc<FileChange>]) -> (Vec<String>, usize) {
     (paths, skipped)
 }
 
-/// A folder status listed as one entry (status.showUntrackedFiles=normal): it has no diff of
-/// its own and stages whole. Shown as a row of its own, like a nested repository.
+/// Shown as a row of its own, like a nested repository (FileChange::untracked_folder).
 pub fn untracked_folder(f: &FileChange) -> bool {
-    f.status == "?" && f.nested.is_none() && f.path.ends_with('/')
+    f.untracked_folder()
 }
 
 pub const NESTED_EXPLAINED: &str = "It's a separate git repository. git add would record only a pointer to its current commit, not its files. Commit inside it instead.";

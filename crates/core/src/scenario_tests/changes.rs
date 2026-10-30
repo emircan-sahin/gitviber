@@ -462,4 +462,14 @@ fn case_only_rename_reaches_the_index() {
     let st = status(&r).unwrap();
     let staged: Vec<_> = st.staged.iter().map(|f| f.path.as_str()).collect();
     assert_eq!(staged.len(), 2, "{staged:?}");
+
+    // Another git held index.lock: renamed on disk, not in the index. The retry finishes it.
+    write_commit(&r, "Card.tsx", "c\n", "card");
+    let lock = r.join(".git/index.lock");
+    fs::write(&lock, "").unwrap();
+    assert!(vfs::rename_entry(&r, "Card.tsx", "card.tsx").is_err());
+    fs::remove_file(&lock).unwrap();
+    vfs::rename_entry(&r, "Card.tsx", "card.tsx").unwrap();
+    let listed = run(&r, &["ls-files", "--", "card.tsx"]).unwrap();
+    assert_eq!(String::from_utf8_lossy(&listed), "card.tsx\n");
 }
