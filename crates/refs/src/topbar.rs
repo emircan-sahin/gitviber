@@ -1,4 +1,4 @@
-//! The top bar's items: the project, branch, worktree and pull request chips, and the git
+//! The top bar's items: the project chip (project_picker.rs), the branch, worktree and pull request chips, and the git
 //! actions on the right: what's running (with Cancel), undo and redo with their history, Fetch,
 //! Pull and Push (or Publish) with their menus. Each keeps its state in the bar's element state
 //! per project, so it goes with the project.
@@ -10,21 +10,18 @@ use gitviber_core::{api, git};
 use gitviber_ui::keymap::{file, shortcut_label};
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{BarItem, BarSlot, PanelContext, register_bar_item};
-use gitviber_ui::{ActiveAppTheme, Project, Settings, UiState, Workspace};
+use gitviber_ui::{ActiveAppTheme, Project, Settings};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _, DropdownButton};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::popover::Popover;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _};
 use gpui_kit::{
-    Anchor, AnyElement, App, AppContext as _, Context, Entity, FontWeight, Global,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
-    prelude::FluentBuilder as _, px, rems,
+    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Task, Window, div, prelude::FluentBuilder as _, px, rems,
 };
 
-use crate::names::folder_name;
 use crate::net::{NetActivity, NetOp, progress_text};
 use crate::ops;
 use crate::remote_tags;
@@ -32,10 +29,15 @@ use crate::repo::RepoState;
 use crate::worktrees::{list as wt_list, worktree_chip};
 
 pub fn register(cx: &mut App) {
-    cx.on_action(|_: &file::SwitchProject, cx| switch_project(cx));
+    cx.on_action(|_: &file::SwitchProject, cx| crate::project_picker::switch_project(cx));
     register_bar_item(
         cx,
-        BarItem::new("project", BarSlot::TopChips, project_chip).order(0),
+        BarItem::new(
+            "project",
+            BarSlot::TopChips,
+            crate::project_picker::project_chip,
+        )
+        .order(0),
     );
     register_bar_item(
         cx,
@@ -84,262 +86,6 @@ fn pull_request_chip(ctx: &PanelContext, _: &mut Window, cx: &mut App) -> Option
         cx,
     )?;
     Some(crate::worktrees::picker_pull_chip(&pull, false, cx))
-}
-
-/// Each window's project chip as last drawn, for Switch Project to open; a closed window's or an
-/// old project's goes with it (weak).
-#[derive(Default)]
-struct ProjectChips(Vec<(gpui_kit::AnyWindowHandle, gpui_kit::WeakEntity<ProjectChip>)>);
-impl Global for ProjectChips {}
-
-fn project_chip(ctx: &PanelContext, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    let project = ctx.project.clone()?;
-    let id = project.entity_id().as_u64() as usize;
-    let chip = window.use_keyed_state(("refs-project-chip", id), cx, |_, cx| {
-        ProjectChip::new(&project, cx)
-    });
-    let handle = window.window_handle();
-    let chips = cx.default_global::<ProjectChips>();
-    chips
-        .0
-        .retain(|(w, c)| *w != handle && c.upgrade().is_some());
-    chips.0.push((handle, chip.downgrade()));
-    Some(chip.into_any_element())
-}
-
-/// File → Switch Project: the window's project chip opens its list.
-fn switch_project(cx: &mut App) {
-    let Some(handle) = cx.active_window() else {
-        return;
-    };
-    let chip = cx
-        .try_global::<ProjectChips>()
-        .and_then(|c| c.0.iter().find(|(w, _)| *w == handle))
-        .and_then(|(_, c)| c.upgrade());
-    if let Some(chip) = chip {
-        chip.update(cx, |c, cx| {
-            c.open = true;
-            cx.notify();
-        });
-    }
-}
-
-pub struct ProjectChip {
-    project: Entity<Project>,
-    open: bool,
-    _subs: Vec<Subscription>,
-    _live: Live,
-}
-
-impl ProjectChip {
-    fn new(project: &Entity<Project>, cx: &mut Context<Self>) -> Self {
-        let subs = vec![cx.observe(project, |_, _, cx| cx.notify())];
-        ProjectChip {
-            project: project.clone(),
-            open: false,
-            _subs: subs,
-            _live: Live::new("ProjectChip"),
-        }
-    }
-}
-
-/// The project's tile: its first letter on a tint.
-fn tile(name: &str, cx: &App) -> AnyElement {
-    let t = cx.app_theme();
-    div()
-        .size(px(18.))
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .rounded(px(4.))
-        .bg(t.renamed_fill)
-        .text_color(t.on_status)
-        .text_size(rems(0.6875))
-        .font_weight(FontWeight::BOLD)
-        .child(
-            name.chars()
-                .next()
-                .unwrap_or('?')
-                .to_uppercase()
-                .collect::<String>(),
-        )
-        .into_any_element()
-}
-
-impl Render for ProjectChip {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.app_theme().clone();
-        let p = self.project.read(cx);
-        // The project is its main worktree, even inside a linked one.
-        let main = p
-            .main_worktree()
-            .map(|m| m.to_string_lossy().into_owned())
-            .unwrap_or_else(|| p.root().to_string_lossy().into_owned());
-        let name = folder_name(&main).to_string();
-        let recent = UiState::get(cx).recent_projects.clone();
-        let open_key = shortcut_label("file.openRepo", cx);
-        let trigger = Button::new("project-chip").ghost().small().child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .max_w(px(256.))
-                .child(tile(&name, cx))
-                .child(
-                    div()
-                        .truncate()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_size(rems(0.78125))
-                        .child(name.clone()),
-                )
-                .child(
-                    Icon::new(IconName::ChevronsUpDown)
-                        .xsmall()
-                        .text_color(t.subtle),
-                ),
-        );
-        let weak = cx.weak_entity();
-        let main_c = main.clone();
-        Popover::new("project-picker")
-            .anchor(Anchor::TopLeft)
-            .open(self.open)
-            .on_open_change(cx.listener(|this, open: &bool, _, cx| {
-                this.open = *open;
-                cx.notify();
-            }))
-            .trigger(trigger)
-            .content(move |_, _, cx| {
-                let t = cx.app_theme().clone();
-                let close = weak.clone();
-                let rows = recent.iter().enumerate().map(|(i, path)| {
-                    let (path, weak) = (path.clone(), close.clone());
-                    let current = path == main_c;
-                    let name = folder_name(&path).to_string();
-                    div()
-                        .id(("project-row", i))
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .h(px(36.))
-                        .px_2()
-                        .rounded(px(3.))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(t.hover))
-                        .child(tile(&name, cx))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_size(rems(0.75))
-                                        .when(current, |d| d.font_weight(FontWeight::SEMIBOLD))
-                                        .child(name),
-                                )
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_size(rems(0.65625))
-                                        .text_color(t.subtle)
-                                        .child(path.clone()),
-                                ),
-                        )
-                        .when(current, |d| d.child(Icon::new(IconName::Check).small()))
-                        .on_click(move |_, window, cx| {
-                            let _ = weak.update(cx, |c, cx| {
-                                c.open = false;
-                                cx.notify();
-                            });
-                            if let Some(ws) = Workspace::for_window(window, cx) {
-                                ws.update(cx, |ws, cx| {
-                                    ws.open_project(path.clone().into(), window, cx)
-                                });
-                            }
-                        })
-                });
-                let action =
-                    |id: &'static str,
-                     icon: IconName,
-                     label: &'static str,
-                     key: Option<SharedString>,
-                     act: Box<dyn gpui_kit::Action>,
-                     cx: &App| {
-                        let (weak, act) = (close.clone(), act);
-                        let t = cx.app_theme().clone();
-                        div()
-                            .id(id)
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .h(px(28.))
-                            .px_2()
-                            .rounded(px(3.))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(t.hover))
-                            .text_size(rems(0.75))
-                            .child(Icon::new(icon).small().text_color(t.muted_foreground))
-                            .child(div().flex_1().child(label))
-                            .children(key.map(|k| {
-                                div().text_size(rems(0.6875)).text_color(t.subtle).child(k)
-                            }))
-                            .on_click(move |_, window, cx| {
-                                let _ = weak.update(cx, |c, cx| {
-                                    c.open = false;
-                                    cx.notify();
-                                });
-                                window.dispatch_action(act.boxed_clone(), cx);
-                            })
-                    };
-                div()
-                    .w(px(320.))
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .px_3()
-                            .pt_2p5()
-                            .pb_1()
-                            .text_size(rems(0.65625))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(t.subtle)
-                            .child("PROJECTS"),
-                    )
-                    .child(
-                        div()
-                            .id("project-list")
-                            .max_h(px(360.))
-                            .overflow_y_scroll()
-                            .p_1()
-                            .children(rows),
-                    )
-                    .child(
-                        div()
-                            .border_t_1()
-                            .border_color(t.border)
-                            .p_1()
-                            .child(action(
-                                "project-open",
-                                IconName::Plus,
-                                "Open repository…",
-                                open_key.clone().map(Into::into),
-                                Box::new(file::OpenRepo),
-                                cx,
-                            ))
-                            .child(action(
-                                "project-clone",
-                                IconName::FolderDown,
-                                "Clone repository…",
-                                None,
-                                Box::new(file::CloneRepo),
-                                cx,
-                            )),
-                    )
-            })
-    }
 }
 
 // MARK: Actions
