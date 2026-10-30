@@ -29,7 +29,6 @@ pub fn install(cx: &mut App) {
         mode,
         found: Rc::default(),
         downloaded: Rc::default(),
-        _restart: RefCell::default(),
     };
     set_updater(Rc::new(native), cx);
 }
@@ -59,7 +58,6 @@ struct Native {
     found: Rc<RefCell<Option<updater::Update>>>,
     /// Verified and waiting for the restart; its file goes when it's dropped.
     downloaded: Rc<RefCell<Option<updater::Download>>>,
-    _restart: RefCell<Option<Task<()>>>,
 }
 
 impl Updater for Native {
@@ -120,11 +118,11 @@ impl Updater for Native {
         })
     }
 
-    /// Installs, has the new version start once this one is gone, then quits the usual way
-    /// (which asks first while something runs).
-    fn restart(&self, cx: &mut App) {
+    fn restart(&self, cx: &mut App) -> Task<bool> {
+        // Taken by an install that failed to relaunch: it's in place, a reopen starts it.
         let Some(download) = self.downloaded.borrow_mut().take() else {
-            return;
+            relaunch_failed("", cx);
+            return Task::ready(false);
         };
         let downloaded = self.downloaded.clone();
         let installing = cx.background_spawn(async move {
@@ -134,25 +132,34 @@ impl Updater for Native {
                 Err(err) => Err((err.to_string(), Some(download))),
             }
         });
-        let task = cx.spawn(async move |cx| {
+        cx.spawn(async move |cx| {
             let result = installing.await;
             cx.update(|cx| match result {
-                Ok(()) => crate::quit::request(cx),
+                Ok(()) => true,
                 Err((err, Some(download))) => {
                     *downloaded.borrow_mut() = Some(download);
                     toast(Toast::error(err).title("Couldn't install the update"), cx);
+                    false
                 }
-                Err((err, None)) => toast(
-                    Toast::error(format!(
-                        "The update is installed: quit and reopen GitViber to start it. {err}"
-                    ))
-                    .title("Couldn't restart GitViber"),
-                    cx,
-                ),
-            });
-        });
-        *self._restart.borrow_mut() = Some(task);
+                Err((err, None)) => {
+                    relaunch_failed(&err, cx);
+                    false
+                }
+            })
+        })
     }
+}
+
+fn relaunch_failed(err: &str, cx: &mut App) {
+    toast(
+        Toast::error(
+            format!("The update is installed: quit and reopen GitViber to start it. {err}")
+                .trim_end()
+                .to_string(),
+        )
+        .title("Couldn't restart GitViber"),
+        cx,
+    );
 }
 
 #[cfg(test)]
