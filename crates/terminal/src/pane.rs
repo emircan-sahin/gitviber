@@ -2214,6 +2214,69 @@ mod tests {
         cx.run_until_parked();
     }
 
+    /// A trackpad swipe right after typing, the pointer still: a program reading the wheel gets a
+    /// report for each row's height swiped, fingers and momentum alike. Typing puts the window in
+    /// keyboard mode, where nothing counts as hovered; a swipe moves no pointer to end it.
+    #[gpui::test]
+    fn a_swipe_after_typing_reports_every_row(cx: &mut TestAppContext) {
+        use gpui::TouchPhase;
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::init(cx);
+        });
+        let core = Arc::new(Core::new(Arc::new(|_| {})));
+        let (one, cx) = cx.add_window_view(|window, cx| {
+            let pane = new_pane(
+                1,
+                core,
+                std::env::temp_dir(),
+                None,
+                None,
+                TerminalConfig::default(),
+                TerminalTheme::dark(),
+                window,
+                cx,
+            );
+            pane.update(cx, |p, _| {
+                p.started = true;
+                p.session.emu.lock().feed(b"\x1b[?1000h\x1b[?1006h");
+            });
+            One(pane)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let pane = one.read_with(cx, |o, _| o.0.clone());
+        let (middle, row_h) = pane.read_with(cx, |p, _| {
+            let m = p.metrics.expect("laid out");
+            (m.bounds.center(), f32::from(m.cell.height))
+        });
+        cx.simulate_mouse_move(middle, None, gpui::Modifiers::none());
+        pane.update_in(cx, |p, window, cx| p.focus(window, cx));
+        cx.simulate_keystrokes("a");
+        let _ = pane.read_with(cx, |p, _| p.session.written());
+
+        // Two fingers down, many small moves, a lift, then the momentum's decaying tail.
+        let mut swipe = vec![(TouchPhase::Started, 0.)];
+        swipe.extend(std::iter::repeat_n((TouchPhase::Moved, -3.5), 60));
+        swipe.push((TouchPhase::Ended, 0.));
+        swipe.extend((1..=20).map(|i| (TouchPhase::Moved, -(21 - i) as f32 * 0.6)));
+        let pixels: f32 = swipe.iter().map(|(_, y)| y).sum();
+        for (touch_phase, y) in swipe {
+            cx.simulate_event(ScrollWheelEvent {
+                position: middle,
+                delta: ScrollDelta::Pixels(gpui::point(px(0.), px(y))),
+                modifiers: gpui::Modifiers::none(),
+                touch_phase,
+            });
+        }
+        let written = pane.read_with(cx, |p, _| p.session.written());
+        let rows = (-pixels / row_h).trunc() as usize;
+        assert!(rows > 10, "{rows}");
+        assert_eq!(written.len(), rows, "{written:?}");
+        assert!(written.iter().all(|r| r.starts_with("\x1b[<65;")));
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+    }
+
     struct Two(Entity<TerminalPane>, Entity<TerminalPane>);
     impl Render for Two {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
