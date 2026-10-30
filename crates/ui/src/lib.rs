@@ -45,4 +45,5 @@ pub fn init(cx: &mut App) {
     theme::init(cx);
     keymap::init(cx);
     workspace::init(cx);
+    widgets::init(cx);
 }

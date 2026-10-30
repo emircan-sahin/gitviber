@@ -6,8 +6,9 @@ use std::time::Duration;
 
 use gitviber_ui::AppTheme;
 use gitviber_ui::keymap::edit::winner;
-use gitviber_ui::keymap::{self, Category, IS_MAC, bindings_for, chord_keys};
+use gitviber_ui::keymap::{self, Category, IS_MAC, bindings_for};
 use gitviber_ui::memory::Live;
+use gitviber_ui::widgets::Keycaps;
 use gitviber_ui::workspace::{Part, Slot, Workspace};
 use gitviber_ui::{ActiveAppTheme, Settings};
 use gpui_kit::component::WindowExt as _;
@@ -327,23 +328,6 @@ fn alone(m: &Modifiers, mac: bool) -> bool {
     held(m, mac) && !m.alt && !m.shift && !other
 }
 
-fn keycap(key: &str, cx: &App) -> AnyElement {
-    let t = cx.app_theme();
-    div()
-        .min_w(px(16.))
-        .px(px(3.))
-        .rounded(px(3.))
-        .border_1()
-        .border_color(t.border_strong)
-        .bg(t.background)
-        .text_color(t.foreground)
-        .text_size(rems(0.625))
-        .line_height(rems(0.875))
-        .text_center()
-        .child(SharedString::from(key.to_string()))
-        .into_any_element()
-}
-
 fn keys(row: &Row, cx: &App) -> AnyElement {
     let t = cx.app_theme();
     let mut out: Vec<AnyElement> = Vec::new();
@@ -362,13 +346,7 @@ fn keys(row: &Row, cx: &App) -> AnyElement {
                     .into_any_element(),
             );
         }
-        out.push(
-            div()
-                .flex()
-                .gap(px(2.))
-                .children(chord_keys(k, IS_MAC).iter().map(|key| keycap(key, cx)))
-                .into_any_element(),
-        );
+        out.push(Keycaps::chord(k).compact().into_any_element());
     }
     div()
         .flex()

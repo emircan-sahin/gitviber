@@ -1,7 +1,7 @@
 use gpui::{
-    Action, AsKeystroke, FocusHandle, Half, InteractiveElement as _, IntoElement, KeyBinding,
-    KeyContext, Keystroke, ParentElement as _, RenderOnce, StyleRefinement, Styled, Window, div,
-    prelude::FluentBuilder as _, relative,
+    Action, AnyElement, App, AsKeystroke, FocusHandle, Global, Half, InteractiveElement as _,
+    IntoElement, KeyBinding, KeyContext, Keystroke, ParentElement as _, RenderOnce,
+    StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _, relative,
 };
 
 use crate::{ActiveTheme, StyledExt};
@@ -13,6 +13,17 @@ pub struct Kbd {
     stroke: Keystroke,
     appearance: bool,
     outline: bool,
+    lit: bool,
+}
+
+/// GitViber: the app's own keycaps for every shortcut a menu or tooltip shows. `lit`: on a
+/// highlighted row.
+struct Renderer(fn(&Keystroke, bool, &App) -> AnyElement);
+impl Global for Renderer {}
+
+/// GitViber: draw every [`Kbd`] with `render` from now on.
+pub fn set_renderer(cx: &mut App, render: fn(&Keystroke, bool, &App) -> AnyElement) {
+    cx.set_global(Renderer(render));
 }
 
 impl From<Keystroke> for Kbd {
@@ -22,6 +33,7 @@ impl From<Keystroke> for Kbd {
             stroke,
             appearance: true,
             outline: false,
+            lit: false,
         }
     }
 }
@@ -34,6 +46,7 @@ impl Kbd {
             stroke,
             appearance: true,
             outline: false,
+            lit: false,
         }
     }
 
@@ -45,6 +58,12 @@ impl Kbd {
     /// Set the appearance of the keybinding, default is `true`.
     pub fn appearance(mut self, appearance: bool) -> Self {
         self.appearance = appearance;
+        self
+    }
+
+    /// GitViber: on a highlighted row, for the app's renderer.
+    pub fn lit(mut self, lit: bool) -> Self {
+        self.lit = lit;
         self
     }
 
@@ -233,6 +252,14 @@ impl RenderOnce for Kbd {
     fn render(self, _: &mut gpui::Window, cx: &mut gpui::App) -> impl gpui::IntoElement {
         if !self.appearance {
             return Self::format(&self.stroke).into_any_element();
+        }
+        if let Some(Renderer(render)) = cx.try_global::<Renderer>() {
+            return div()
+                .debug_selector(|| format!("kbd:{}", self.stroke.unparse()))
+                .flex_shrink_0()
+                .refine_style(&self.style)
+                .child(render(&self.stroke, self.lit, cx))
+                .into_any_element();
         }
 
         div()
