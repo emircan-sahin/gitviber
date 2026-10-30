@@ -247,11 +247,11 @@ impl Scorer {
             row.clear();
             row.resize(n, f64::NEG_INFINITY);
         }
-        for i in 0..m {
+        for (i, &q) in query.iter().enumerate() {
             let mut prev = f64::NEG_INFINITY;
             let gap = if i == m - 1 { GAP_TRAILING } else { GAP_INNER };
             for j in 0..n {
-                if self.lower[j] == query[i] {
+                if self.lower[j] == q {
                     let score = if i == 0 {
                         j as f64 * GAP_LEADING + self.bonuses[j]
                     } else if j > 0 {
@@ -452,7 +452,7 @@ mod tests {
     #[test]
     fn ranking_the_top_few_keeps_the_full_sorts_order() {
         let texts = texts();
-        let recency = |i: usize| (i % 7 == 0).then_some(i % 3);
+        let recency = |i: usize| i.is_multiple_of(7).then_some(i % 3);
         for path in [false, true] {
             for q in QUERIES {
                 let q = prepare_query(q);

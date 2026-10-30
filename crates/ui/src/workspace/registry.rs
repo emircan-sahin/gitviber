@@ -132,8 +132,11 @@ impl BarItem {
 pub struct QuickOpen {
     pub files: Arc<Candidates>,
     /// Opens one of `files`.
-    pub open: Rc<dyn Fn(&str, &mut Window, &mut App)>,
+    pub open: OpenFile,
 }
+
+/// Opens a file of quick open's list by its relative path.
+pub type OpenFile = Rc<dyn Fn(&str, &mut Window, &mut App)>;
 
 /// Quick open's files for a project: all of them; the palette matches and ranks.
 pub type QuickOpenSource = Rc<dyn Fn(&PanelContext, &mut App) -> QuickOpen>;
