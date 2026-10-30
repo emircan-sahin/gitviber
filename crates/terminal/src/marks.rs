@@ -234,6 +234,8 @@ pub const MODES_OFF: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[
 /// Back to the history's buffer, the cursor shown: what a full-screen program sends on its way out.
 pub const ALT_SCREEN_OFF: &[u8] = b"\x1b[?1049l";
 pub const CURSOR_ON: &[u8] = b"\x1b[?25h";
+/// Color scheme reports (mode 2031).
+pub const SCHEME_NOTIFY_OFF: &[u8] = b"\x1b[?2031l";
 
 /// A prompt in the history's buffer while the mouse is still reported: the program that asked
 /// for it died without turning it off (a crash, `kill -9`), and a drag at the prompt would select
