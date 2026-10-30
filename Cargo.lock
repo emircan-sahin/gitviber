@@ -2504,6 +2504,7 @@ name = "gitviber-terminal"
 version = "0.1.20"
 dependencies = [
  "alacritty_terminal",
+ "futures",
  "gitviber-core",
  "gitviber-files",
  "gitviber-refs",
