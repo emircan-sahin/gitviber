@@ -46,7 +46,8 @@ Give every agent its own worktree and switch between them from the top bar.
 ### Terminals per worktree
 
 Every worktree keeps its own terminals, so nothing gets lost when you hop between them. A terminal
-can open in another project or any folder too.
+can open in another project or any folder too. Drag a terminal's tab to reorder them, or use Move
+Left / Move Right in its menu; the order is kept with the rest.
 
 ### Knowing when an agent needs you
 
@@ -56,7 +57,8 @@ can open in another project or any folder too.
 - Other agents get the dot when they ring the terminal bell or send a notification.
 - Desktop notifications are off until you turn them on (Settings → Notifications, one switch per kind).
 - The **Agents menu** in the top bar lists every agent in your terminals, the ones waiting for you
-  first, and the Dock icon counts those.
+  first, and the Dock icon counts those. A badge on its icon pulses while an agent works and stays
+  lit while one waits for you or finished out of sight.
 
 ### Resuming
 

@@ -8,7 +8,7 @@ use gitviber_ui::workspace::{BarItem, BarSlot, PanelContext, Toast, register_bar
 use gpui::{Anchor, AnyWindowHandle, KeyDownEvent, Render, SharedString, rems};
 use gpui_kit::component::popover::Popover;
 
-use super::attention::{AgentNews, all_agents, look_dot, menu_dot};
+use super::attention::{AgentNews, all_agents, badge_look, corner_badge, menu_dot};
 use super::*;
 use crate::agent::{AgentEntry, Look, agents_waiting, by_tab, most_urgent};
 
@@ -204,21 +204,18 @@ impl Render for AgentsButton {
         } else {
             format!("Agents · {sum}").into()
         };
+        // Icon-only, so it keeps its square box and its tooltip as its name; the badge sits beside.
         let trigger = Button::new("terminal-agents")
             .ghost()
             .small()
             .icon(Icon::new(IconName::Bot))
-            .tooltip(tip)
-            .child(
-                div().absolute().top(px(3.)).right(px(3.)).children(
-                    loudest
-                        .filter(|l| *l != Look::Done)
-                        .map(|l| look_dot(l, cx)),
-                ),
-            );
+            .tooltip(tip);
+        // Centered on the 14 px glyph's top-right corner in the 28 px button.
+        let t = cx.app_theme();
+        let badge = badge_look(loudest).map(|l| corner_badge(l, t.chrome(t.sidebar), px(2.5)));
         let weak = cx.weak_entity();
         let (selected, focus, scroll) = (self.selected, self.focus.clone(), self.scroll.clone());
-        Popover::new("terminal-agents-menu")
+        let menu = Popover::new("terminal-agents-menu")
             .anchor(Anchor::TopRight)
             .p_0()
             .track_focus(&self.focus)
@@ -457,7 +454,13 @@ impl Render for AgentsButton {
                     }
                 }
                 col
-            })
+            });
+        div()
+            .relative()
+            .flex()
+            .flex_none()
+            .child(menu)
+            .children(badge)
             .into_any_element()
     }
 }
@@ -565,6 +568,39 @@ mod tests {
         }
         cx.update(|window, _| window.remove_window());
         cx.run_until_parked();
+    }
+
+    /// The button's badge from its agents' states (seen or not): it pulses only while one works,
+    /// and finished agents already looked at leave no badge at all.
+    #[test]
+    fn badge_shows_and_pulses_only_when_it_has_news() {
+        use super::super::attention::pulses;
+        use crate::agent::{Shown, look_of};
+        let badge = |agents: &[(Shown, bool)]| {
+            badge_look(most_urgent(
+                agents.iter().map(|&(s, u)| look_of(Some(s), u)),
+            ))
+        };
+        let pulsing = |agents: &[(Shown, bool)]| badge(agents).is_some_and(pulses);
+        assert_eq!(badge(&[]), None);
+        assert_eq!(badge(&[(Shown::Finished, false)]), None);
+        assert_eq!(badge(&[(Shown::Finished, true)]), Some(Look::Unread));
+        assert!(!pulsing(&[(Shown::Finished, true)]));
+        assert_eq!(badge(&[(Shown::Working, false)]), Some(Look::Working));
+        assert!(pulsing(&[
+            (Shown::Working, false),
+            (Shown::Finished, false)
+        ]));
+        // One asking outranks one at work: the badge says so, still.
+        let both = [(Shown::Working, false), (Shown::Waiting, false)];
+        assert_eq!(badge(&both), Some(Look::Needs));
+        assert!(!pulsing(&both));
+        assert!(
+            Look::ALL
+                .iter()
+                .filter(|l| pulses(**l))
+                .eq([&Look::Working])
+        );
     }
 
     #[test]

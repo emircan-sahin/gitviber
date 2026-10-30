@@ -40,6 +40,7 @@ use gitviber_ui::{ActiveAppTheme as _, AppTheme, Settings};
 
 mod agents_menu;
 mod attention;
+mod reorder;
 mod resume;
 mod saved;
 
@@ -1506,23 +1507,6 @@ impl TerminalPanel {
         cx.stop_propagation();
     }
 
-    /// The open tab a place left (-1) or right (1).
-    fn move_group(&mut self, by: isize, cx: &mut Context<Self>) {
-        let Some(set) = self.sets.get_mut(&self.root) else {
-            return;
-        };
-        let Some(at) = set.groups.iter().position(|g| Some(g.id) == set.active) else {
-            return;
-        };
-        let to = at as isize + by;
-        if to < 0 || to as usize >= set.groups.len() {
-            return;
-        }
-        set.groups.swap(at, to as usize);
-        self.save_soon(cx);
-        cx.notify();
-    }
-
     fn step_group(&mut self, dir: i32, window: &mut Window, cx: &mut Context<Self>) {
         let Some(set) = self.set() else { return };
         let n = set.groups.len();
@@ -1921,7 +1905,6 @@ impl TerminalPanel {
             .map(|s| s.groups.iter().map(|g| (g.id, g.panes.len())).collect())
             .unwrap_or_default();
         let active = self.set().and_then(|s| s.active);
-        let alone = set_groups.len() == 1;
         let listed = self.repo_worktrees(cx);
         self.read_outside_branches(&listed, cx);
         let strip_focused = self.strip_focus.is_focused(window);
@@ -1952,10 +1935,11 @@ impl TerminalPanel {
             .min_w_0()
             .h_full()
             .overflow_x_scroll();
-        for (gid, _) in &set_groups {
+        for (at, (gid, _)) in set_groups.iter().enumerate() {
             let active = Some(*gid) == active;
             let ring = active && strip_focused;
-            tabs = tabs.child(self.render_tab(*gid, active, ring, alone, &listed, cx));
+            let place = (at, set_groups.len());
+            tabs = tabs.child(self.render_tab(*gid, place, active, ring, &listed, cx));
         }
         let group = self.active_group().map(|g| {
             (
@@ -2177,12 +2161,13 @@ impl TerminalPanel {
             .into_any_element()
     }
 
+    /// `place`: the tab's index among the strip's, and their count.
     fn render_tab(
         &self,
         gid: u64,
+        (at, count): (usize, usize),
         active: bool,
         ring: bool,
-        alone: bool,
         listed: &[WorktreeInfo],
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -2262,6 +2247,9 @@ impl TerminalPanel {
         };
         let dots = dots.map(|d| div().flex().items_center().child(d));
         let weak = cx.entity().downgrade();
+        let alone = count == 1;
+        let dragged = reorder::DraggedTerminal::new(gid, at, title.clone());
+        let line = t.primary;
         div()
             .id(("terminal-tab", gid))
             .role(gpui::Role::Tab)
@@ -2336,6 +2324,20 @@ impl TerminalPanel {
                 MouseButton::Middle,
                 cx.listener(move |this, _, window, cx| this.close_group(gid, window, cx)),
             )
+            .when(!alone && renaming.is_none(), |d| {
+                d.on_drag(dragged, |tab, _, _, cx| cx.new(|_| tab.clone()))
+                    .drag_over::<reorder::DraggedTerminal>(move |s, tab, _, _| {
+                        match reorder::drop_edge(tab.from, at) {
+                            Some(right) => reorder::drop_line(s, right, line),
+                            None => s,
+                        }
+                    })
+                    .on_drop(
+                        cx.listener(move |this, tab: &reorder::DraggedTerminal, _, cx| {
+                            this.move_group_to(tab.gid, at, cx);
+                        }),
+                    )
+            })
             .child(
                 Icon::new(IconName::SquareTerminal)
                     .size(px(14.))
@@ -2407,6 +2409,21 @@ impl TerminalPanel {
                         p.update(cx, |p, cx| p.clear(cx));
                     }
                 }))
+                .when(!alone, |m| {
+                    m.separator()
+                        .item(
+                            item("Move Left", |this, gid, _, cx| {
+                                this.nudge_group(gid, -1, cx)
+                            })
+                            .disabled(at == 0),
+                        )
+                        .item(
+                            item("Move Right", |this, gid, _, cx| {
+                                this.nudge_group(gid, 1, cx)
+                            })
+                            .disabled(at + 1 == count),
+                        )
+                })
                 .separator()
                 .item(item("Kill Terminal", |this, gid, w, cx| {
                     this.close_group(gid, w, cx)
@@ -3114,6 +3131,15 @@ mod tests {
         panel.update(cx, |p, cx| p.move_group(-1, cx));
         panel.update(cx, |p, cx| p.move_group(-1, cx));
         assert_eq!(groups(cx).0, vec![ids[2], ids[0], ids[1]]);
+        // A drop and the tab's menu move any tab, not just the open one, which stays open.
+        panel.update(cx, |p, cx| p.move_group_to(ids[1], 0, cx));
+        assert_eq!(groups(cx), (vec![ids[1], ids[2], ids[0]], Some(ids[2])));
+        panel.update(cx, |p, cx| p.nudge_group(ids[1], -1, cx));
+        panel.update(cx, |p, cx| p.nudge_group(ids[0], 1, cx));
+        assert_eq!(groups(cx).0, vec![ids[1], ids[2], ids[0]]);
+        panel.update(cx, |p, cx| p.nudge_group(ids[1], 1, cx));
+        panel.update(cx, |p, cx| p.move_group_to(ids[0], 1, cx));
+        assert_eq!(groups(cx), (vec![ids[2], ids[0], ids[1]], Some(ids[2])));
         cx.simulate_keystrokes("enter");
         let pane = panel.read_with(cx, |p, _| p.active_pane()).expect("a pane");
         assert!(cx.update(|window, cx| pane.read(cx).focus_handle(cx).is_focused(window)));

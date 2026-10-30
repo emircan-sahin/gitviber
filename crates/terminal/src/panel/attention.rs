@@ -354,29 +354,53 @@ impl TerminalPanel {
 }
 
 /// A look as a dot: the app's, with a ring while an agent works, so a turn in progress reads at a
-/// glance beside one that's done.
+/// glance beside one that's done; the working one pulses.
 pub(super) fn look_dot(look: Look, cx: &App) -> AnyElement {
     let dot = gitviber_ui::widgets::StatusDot(ui_look(look));
     if look != Look::Working {
         return dot.into_any_element();
     }
     let ring = cx.app_theme().modified.opacity(0.45);
+    pulsing(
+        look,
+        div()
+            .flex_none()
+            .p(px(1.5))
+            .rounded_full()
+            .border_1()
+            .border_color(ring)
+            .child(dot)
+            .into_any_element(),
+    )
+}
+
+/// What an icon's badge shows of its agents' most urgent look: a finished, seen one is nothing to
+/// tell, so there's no badge.
+pub(super) fn badge_look(loudest: Option<Look>) -> Option<Look> {
+    loudest.filter(|l| *l != Look::Done)
+}
+
+/// A badge on an icon's top-right corner, cut out of `under` (what the icon sits on) so it reads
+/// apart from the glyph. The parent must be the icon's box, `relative`.
+pub(super) fn corner_badge(look: Look, under: Hsla, inset: Pixels) -> AnyElement {
     div()
-        .flex_none()
+        .absolute()
+        .top(inset)
+        .right(inset)
         .p(px(1.5))
         .rounded_full()
-        .border_1()
-        .border_color(ring)
-        .child(dot)
+        .bg(under)
+        .child(pulsing(
+            look,
+            gitviber_ui::widgets::StatusDot(ui_look(look)).into_any_element(),
+        ))
         .into_any_element()
 }
 
-/// The Agents menu's dot: in a highlighted row's `ink`, and a working one pulses. Only in the
-/// menu, open for a moment: a pulse on a tab or the top bar would redraw the window for as long
-/// as an agent works.
+/// The Agents menu's dot: in a highlighted row's `ink`, and a working one pulses.
 pub(super) fn menu_dot(look: Look, ink: Option<Hsla>, cx: &App) -> AnyElement {
     let Some(ink) = ink else {
-        return pulsing(look, look_dot(look, cx));
+        return look_dot(look, cx);
     };
     let dot = div().flex_none().size(px(6.)).rounded_full();
     let dot = match look {
@@ -405,9 +429,17 @@ pub(super) fn menu_dot(look: Look, ink: Option<Hsla>, cx: &App) -> AnyElement {
     pulsing(look, dot)
 }
 
+/// Only a working agent's dot animates: with none at work no animation is laid out, so nothing
+/// asks for frames.
+pub(super) fn pulses(look: Look) -> bool {
+    look == Look::Working
+}
+
 /// A working dot fading to 35% and back over 1.6 s; held still under Reduce Motion (gpui's).
+/// Synced, so every dot in a window shares one frame; 15 fps keeps that window's redraws cheap
+/// for as long as an agent works.
 fn pulsing(look: Look, dot: AnyElement) -> AnyElement {
-    if look != Look::Working {
+    if !pulses(look) {
         return dot;
     }
     div()
@@ -416,8 +448,8 @@ fn pulsing(look: Look, dot: AnyElement) -> AnyElement {
         .with_animation(
             "agent-working",
             gpui::Animation::new(Duration::from_millis(1600))
-                .repeat()
-                .with_max_fps(30.),
+                .repeat_synced()
+                .with_max_fps(15.),
             |d, t| d.opacity(1. - 0.65 * (1. - (t * std::f32::consts::TAU).cos()) / 2.),
         )
         .into_any_element()
