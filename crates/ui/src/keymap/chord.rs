@@ -170,7 +170,7 @@ fn glyph(part: &str) -> Option<&'static str> {
         "left" => "←",
         "right" => "→",
         "enter" => "↵",
-        "escape" => "⎋",
+        "escape" => "Esc",
         "tab" => "⇥",
         "backspace" => "⌫",
         "delete" => "⌦",
