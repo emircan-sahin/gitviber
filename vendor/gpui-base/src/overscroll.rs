@@ -39,6 +39,11 @@ const FRAME: f32 = 1. / 60.;
 /// through a long list, just as it runs into the top.
 const SPEED_SPAN: Duration = Duration::from_millis(50);
 
+/// The most of a packet the text may leave unused and still have taken all
+/// of it. Far from the start an `f32` offset can't hold every fraction, so
+/// `after - before` can come back a hair short with no edge anywhere near.
+const ROUNDING: f32 = 0.01;
+
 #[derive(Default)]
 pub(crate) struct Overscroll {
     physics: Physics,
@@ -157,7 +162,7 @@ impl Overscroll {
             };
             if rest != 0. {
                 let unused = rest - scroll(rest);
-                if unused != 0. {
+                if unused.abs() > ROUNDING {
                     self.physics.pull(unused);
                 }
             }
@@ -165,7 +170,15 @@ impl Overscroll {
                 let moving = self
                     .moved_at
                     .is_some_and(|at| now.saturating_duration_since(at) < STILL);
-                let velocity = if moving { self.velocity } else { 0. };
+                // Only a stretched edge is thrown on release. Let go within
+                // the text, the momentum that follows scrolls it and throws
+                // the edge only if it runs into it; a throw here left a
+                // stretch the next gesture grabbed instead of the text.
+                let velocity = if moving && self.offset() != 0. {
+                    self.velocity
+                } else {
+                    0.
+                };
                 self.physics.let_go(velocity * CARRY);
                 thrown = true;
                 self.spent = self.offset() != 0.;
@@ -179,7 +192,7 @@ impl Overscroll {
             // and when the text runs into the edge it throws the edge as
             // fast as it arrived, once.
             let unused = dy - scroll(dy);
-            if unused != 0. {
+            if unused.abs() > ROUNDING {
                 self.physics.let_go(self.velocity * CARRY);
                 thrown = true;
                 self.spent = true;
