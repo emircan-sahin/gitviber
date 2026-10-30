@@ -2252,6 +2252,71 @@ mod tests {
             assert_eq!(open(cx), [true, false, false]);
         }
 
+        /// A plain folder made a repository, by Initialize Repository or by `git init` in a
+        /// terminal: its left side stays, the git panel's now.
+        #[gpui_kit::test]
+        fn a_folder_made_a_repository_keeps_its_left_side_with_the_changes(
+            cx: &mut TestAppContext,
+        ) {
+            let plain = setup("init", cx).canonicalize().unwrap();
+            let other = plain.with_file_name("other");
+            for d in [&plain, &other] {
+                std::fs::create_dir_all(d).unwrap();
+                std::fs::write(d.join("notes.md"), "# notes\n").unwrap();
+            }
+            if gitviber_core::git::toplevel(&plain).is_ok() {
+                return;
+            }
+            cx.update(|cx| {
+                gitviber_ui::install_core(cx);
+                gitviber_changes::init(cx);
+            });
+            let cx = &mut launch(Some(plain.clone()), START, cx);
+            let ws = workspace(cx);
+            let project = |cx: &mut VisualTestContext| {
+                cx.update(|_, cx| ws.read(cx).project().unwrap().clone())
+            };
+            let changes_shown = |cx: &mut VisualTestContext| {
+                let active = ws.read_with(cx, |ws, cx| ws.active_panel(Slot::Left, cx));
+                assert_eq!(active, Some("changes"));
+                assert!(ws.read_with(cx, |ws, _| ws.built_panel("changes").is_some()));
+                assert!(open(cx)[L]);
+                assert_eq!(drawn(cx)[L], Some(320.), "the left side stays");
+            };
+
+            let p = project(cx);
+            assert!(cx.update(|_, cx| p.read(cx).is_folder()));
+            assert_eq!(drawn(cx)[L], Some(320.), "the folder's git init side");
+            // Initialize Repository: the empty state's last line, under the side's middle.
+            let side = bounds(cx, L).expect("drawn");
+            let mut y = side.center().y;
+            while !cx.update(|_, cx| p.read(cx).is_repo()) && y < side.bottom() {
+                cx.simulate_click(point(side.center().x, y), Modifiers::none());
+                draw(cx);
+                y += px(4.);
+            }
+            assert!(cx.update(|_, cx| p.read(cx).is_repo()));
+            changes_shown(cx);
+
+            cx.update(|window, cx| {
+                ws.update(cx, |ws, cx| ws.open_project(other.clone(), window, cx))
+            });
+            draw(cx);
+            let p = project(cx);
+            assert!(cx.update(|_, cx| p.read(cx).is_folder()));
+            let made = std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&other)
+                .status()
+                .is_ok_and(|s| s.success());
+            assert!(made);
+            // What the watcher's news of the new `.git` does.
+            cx.update(|_, cx| p.update(cx, |p, cx| p.repo_changed(cx)));
+            draw(cx);
+            assert!(cx.update(|_, cx| p.read(cx).is_repo()));
+            changes_shown(cx);
+        }
+
         #[gpui_kit::test]
         fn a_maximized_terminal_stays_maximized_through_resizes(cx: &mut TestAppContext) {
             let project = setup("maximized", cx);
