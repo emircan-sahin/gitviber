@@ -27,7 +27,8 @@ use gpui_kit::{
     WeakEntity, Window, div, prelude::FluentBuilder as _, px, rems,
 };
 
-use crate::ui::{is_menu_key, key_hint, key_hints, open_row_menu};
+use crate::ui::{is_menu_key, open_row_menu};
+use gitviber_ui::widgets::{key_hint, key_hints};
 
 mod chip;
 mod menu;

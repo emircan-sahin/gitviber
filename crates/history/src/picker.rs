@@ -14,7 +14,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, InteractiveElement as _,
-    IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString,
+    IntoElement, KeyDownEvent, ParentElement as _, Render, ScrollHandle, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
     prelude::FluentBuilder as _, px, rems,
 };
@@ -44,6 +44,7 @@ pub struct RefPicker {
     picked: Option<String>,
     rows: Vec<Row>,
     index: usize,
+    scroll: ScrollHandle,
     on_pick: OnPick,
     _tags: Option<Task<()>>,
     _lookup: Option<Task<()>>,
@@ -153,6 +154,7 @@ impl RefPicker {
             typed,
         ) {
             self.index = to;
+            self.scroll.scroll_to_item(self.line(to));
         } else if e.keystroke.key == "enter" {
             return self.pick(self.index, window, cx);
         } else {
@@ -160,6 +162,16 @@ impl RefPicker {
         }
         cx.stop_propagation();
         cx.notify();
+    }
+
+    /// Row `i`'s child in the list, past the group headers above it; the first row's is its
+    /// header, so Home shows that too.
+    fn line(&self, i: usize) -> usize {
+        let headers = 1
+            + (1..=i)
+                .filter(|j| self.rows[*j].group != self.rows[j - 1].group)
+                .count();
+        if i == 0 { 0 } else { i + headers }
     }
 
     fn focus(&self, cx: &App) -> FocusHandle {
@@ -262,6 +274,7 @@ impl Render for RefPicker {
                     .id("points")
                     .max_h(px(320.))
                     .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
                     .children(children)
                     .when(self.rows.is_empty(), |d| {
                         d.child(
@@ -343,6 +356,7 @@ pub fn open_ref_picker(offer: Offer, on_pick: OnPick, window: &mut Window, cx: &
             picked,
             rows: vec![],
             index: 0,
+            scroll: ScrollHandle::new(),
             on_pick,
             _tags: tags,
             _lookup: None,
@@ -408,6 +422,7 @@ mod tests {
                     picked: None,
                     rows: vec![],
                     index: 0,
+                    scroll: ScrollHandle::new(),
                     on_pick: Rc::new(|_, _, _| {}),
                     _tags: None,
                     _lookup: None,
@@ -426,10 +441,18 @@ mod tests {
         let caret =
             |cx: &mut VisualTestContext| picker.read_with(cx, |p, cx| p.input.read(cx).cursor());
 
+        let top = |cx: &mut VisualTestContext| {
+            cx.run_until_parked();
+            picker.read_with(cx, |p, _| p.scroll.offset().y)
+        };
+
+        // The highlight stays in view: End scrolls the list down, Home back up.
         cx.simulate_keystrokes("end");
         assert_eq!(at(cx), 29);
+        assert!(top(cx) < px(0.));
         cx.simulate_keystrokes("home");
         assert_eq!(at(cx), 0);
+        assert_eq!(top(cx), px(0.));
         cx.simulate_keystrokes("pagedown");
         assert_eq!(at(cx), 10);
         cx.simulate_keystrokes("pageup");

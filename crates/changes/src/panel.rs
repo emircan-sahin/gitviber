@@ -934,22 +934,20 @@ impl ChangesPanel {
         cx.notify();
     }
 
-    /// ⌃⌘C: into the commit message, the uncommitted files shown rather than a branch review.
     /// ⌃⌘C: into the commit message, or with focus already there, back where it was.
     pub fn toggle_message_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let ws = Workspace::for_window(window, cx);
-        if self.commit.read(cx).in_message(window, cx) {
-            if let Some(ws) = ws {
-                ws.update(cx, |ws, cx| ws.focus_back(None, window, cx));
-            }
-            return;
+        let inside = self.commit.read(cx).in_message(window, cx);
+        // No part left: the message is one field of this panel, and back may be its file list.
+        let enter = match Workspace::for_window(window, cx) {
+            Some(ws) => ws.update(cx, |ws, cx| ws.toggle_focus(inside, None, window, cx)),
+            None => !inside,
+        };
+        if enter {
+            self.focus_message(window, cx);
         }
-        if let Some(ws) = ws {
-            ws.update(cx, |ws, cx| ws.remember_focus(window, cx));
-        }
-        self.focus_message(window, cx);
     }
 
+    /// Into the commit message, the uncommitted files shown rather than a branch review.
     pub fn focus_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.review.is_some() {
             self.end_review(cx);

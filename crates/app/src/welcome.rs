@@ -48,6 +48,8 @@ pub fn no_project(window: &mut Window, cx: &mut App) -> AnyElement {
     let t = cx.app_theme().clone();
     let recent = (!UiState::get(cx).recent_projects.is_empty())
         .then(|| crate::projects::list("welcome-projects", None, None, false, None, window, cx));
+    let open_keys = Keycaps::command("file.openRepo", cx).compact().lit(true);
+    let tagline = "Review what your agent wrote. Plain git, no workspace.";
     div()
         .debug_selector(|| "welcome".into())
         .size_full()
@@ -80,7 +82,7 @@ pub fn no_project(window: &mut Window, cx: &mut App) -> AnyElement {
                                     div()
                                         .text_size(rems(0.75))
                                         .text_color(t.muted_foreground)
-                                        .child("Review what your agent wrote. Plain git, no workspace."),
+                                        .child(tagline),
                                 ),
                         ),
                 )
@@ -97,13 +99,11 @@ pub fn no_project(window: &mut Window, cx: &mut App) -> AnyElement {
                                 .w_full()
                                 .child(Icon::new(IconName::FolderOpen).small())
                                 .child("Open repository")
-                                .child(
-                                    div()
-                                        .ml_auto()
-                                        .child(Keycaps::command("file.openRepo", cx).compact().lit(true)),
-                                ),
+                                .child(div().ml_auto().child(open_keys)),
                         )
-                        .on_click(|_, window, cx| window.dispatch_action(Box::new(file::OpenRepo), cx)),
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(file::OpenRepo), cx)
+                        }),
                 )
                 .child(
                     Button::new("welcome-clone")
@@ -118,7 +118,9 @@ pub fn no_project(window: &mut Window, cx: &mut App) -> AnyElement {
                                 .child(Icon::new(IconName::FolderDown).small())
                                 .child("Clone repository"),
                         )
-                        .on_click(|_, window, cx| window.dispatch_action(Box::new(file::CloneRepo), cx)),
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(file::CloneRepo), cx)
+                        }),
                 )
                 .when_some(recent, |d, recent| {
                     d.child(

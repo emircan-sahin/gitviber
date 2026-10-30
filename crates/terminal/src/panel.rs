@@ -1465,7 +1465,8 @@ impl TerminalPanel {
     }
 
     /// Keys to the tab strip (terminal.focusTabs): from a pane Tab is the shell's. Again from
-    /// the strip, back into the terminal.
+    /// the strip, back into the terminal. Not `focus_back`: the chord is bound only inside the
+    /// terminal, so the active pane is where focus came from.
     pub fn focus_strip(&self, window: &mut Window, cx: &mut App) {
         if self.strip_focus.is_focused(window) {
             return self.focus_active(window, cx);

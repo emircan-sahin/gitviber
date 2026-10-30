@@ -17,7 +17,9 @@ use gitviber_ui::fuzzy::{Match, fuzzy_match, match_path, prepare_query};
 use gitviber_ui::keymap::{self, Category, IS_MAC, ROOT_CONTEXT, bindings_for};
 use gitviber_ui::memory::Live;
 use gitviber_ui::state::bump;
-use gitviber_ui::widgets::{ChangeKind, FileIcon, Keycaps, PAGE, StatusLetter, key_hints};
+use gitviber_ui::widgets::{
+    ChangeKind, FileIcon, Keycaps, PAGE, StatusLetter, key_hint, key_hints,
+};
 use gitviber_ui::workspace::{
     PanelContext, QuickItem, Registry, RunItem, Selection, Slot, Workspace,
 };
@@ -853,9 +855,9 @@ impl Render for Palette {
         let this_confirm = this.clone();
         let empty = self.empty_text(cx);
         let run = if self.query.starts_with('>') {
-            "Run"
+            "run"
         } else {
-            "Open"
+            "open"
         };
         let mut command = Command::new(&self.state);
         if self.sections.is_empty() {
@@ -920,10 +922,10 @@ impl Render for Palette {
                             .text_size(gpui_kit::rems(0.6875))
                             .text_color(t.muted_foreground)
                             .child(key_hints([
-                                (Keycaps::chord("enter"), run.into()),
-                                (Keycaps::keys(["↑", "↓"]), "Move".into()),
-                                (Keycaps::keys(["PgUp", "PgDn"]), "Page".into()),
-                                (Keycaps::keys(["esc"]), "Close".into()),
+                                key_hint("enter", run),
+                                (Keycaps::keys(["↑", "↓"]), "move".into()),
+                                (Keycaps::keys(["PgUp", "PgDn"]), "page".into()),
+                                key_hint("escape", "close"),
                             ]))
                     })
                     .on_select(move |index, _, _| current.set(flat(&selected, index)))

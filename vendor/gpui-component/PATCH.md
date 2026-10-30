@@ -41,7 +41,8 @@ size table once beats setting a size at ~360 call sites.
 
 - Screen readers (gpui's AccessKit tree; upstream already names and states Switch, Checkbox,
   Radio, Tab, Toggle, List and Tree rows): `button/button.rs` `accessibility_name()`, an
-  icon-only button is named by its tooltip's text (upstream: no name, VoiceOver said "button");
+  icon-only button is named by its tooltip's text and its tooltip keys (upstream: no name,
+  VoiceOver said "button");
   `menu/menu_item.rs` + `menu/popup_menu.rs`, an item with a check mark is a
   `MenuItemCheckBox`, toggled on (upstream: a plain item, the check mark unsaid).
 

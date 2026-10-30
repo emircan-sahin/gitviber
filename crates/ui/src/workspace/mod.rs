@@ -1225,13 +1225,31 @@ impl Workspace {
         })
     }
 
+    /// A focus shortcut that toggles: pressed from `inside` its target, focus goes back
+    /// (`focus_back`, past `leaving`) and false; else focus is remembered and true, for the
+    /// caller to move it in.
+    pub fn toggle_focus(
+        &mut self,
+        inside: bool,
+        leaving: Option<Part>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if inside {
+            self.focus_back(leaving, window, cx);
+        } else {
+            self.remember_focus(window, cx);
+        }
+        !inside
+    }
+
     /// ⇧⌘G, ⇧⌘E: focus into `slot`'s panel, or with focus already there, back where it was.
     pub fn toggle_slot_focus(&mut self, slot: Slot, window: &mut Window, cx: &mut Context<Self>) {
-        if self.focused_part(window, cx) == Some(Part::Slot(slot)) {
-            return self.focus_back(Some(Part::Slot(slot)), window, cx);
+        let part = Part::Slot(slot);
+        let inside = self.focused_part(window, cx) == Some(part);
+        if self.toggle_focus(inside, Some(part), window, cx) {
+            self.focus_slot(slot, window, cx);
         }
-        self.remember_focus(window, cx);
-        self.focus_slot(slot, window, cx);
     }
 
     /// F6 and ⇧F6: the next open part after the focused one, wrapping.

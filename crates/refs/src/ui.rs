@@ -5,7 +5,6 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gitviber_ui::ActiveAppTheme;
-use gitviber_ui::widgets::Keycaps;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
@@ -44,19 +43,6 @@ pub fn cancel() -> Button {
     Button::new("form-cancel")
         .label("Cancel")
         .on_click(|_, window, cx| window.close_dialog(cx))
-}
-
-pub use gitviber_ui::widgets::key_hints;
-
-/// One of a picker's `key_hints`: a chord's keycaps ("enter", "f2"; "" for none), then what it
-/// does.
-pub fn key_hint(chord: &str, label: impl Into<SharedString>) -> (Keycaps, SharedString) {
-    let keys = if chord.is_empty() {
-        Keycaps::default()
-    } else {
-        Keycaps::chord(chord)
-    };
-    (keys, label.into())
 }
 
 /// ⇧F10: a row's right-click menu, asked for from the keyboard. The menus open on a right

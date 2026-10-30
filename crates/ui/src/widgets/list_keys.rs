@@ -1,4 +1,6 @@
-//! The keys that move through a list of rows: one rule for every picker, menu and list.
+//! The keys that move through a list of rows: one rule for every picker and popover list. The
+//! panels' long lists (History, search results) page by their height, and History's ⇧ picks a
+//! range, so they keep their own.
 
 use std::rc::Rc;
 

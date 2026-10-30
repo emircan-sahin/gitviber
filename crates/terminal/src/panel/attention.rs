@@ -436,8 +436,8 @@ pub(super) fn pulses(look: Look) -> bool {
 }
 
 /// A working dot fading to 35% and back over 1.6 s; held still under Reduce Motion (gpui's).
-/// Synced, so every dot in a window shares one frame; 15 fps keeps that window's redraws cheap
-/// for as long as an agent works.
+/// Synced: the dots share one phase, and their timers, armed in the same frame, wake one redraw.
+/// 10 fps steps a 6px dot's opacity by under 13%; a covered window draws none (no display link).
 fn pulsing(look: Look, dot: AnyElement) -> AnyElement {
     if !pulses(look) {
         return dot;
@@ -449,7 +449,7 @@ fn pulsing(look: Look, dot: AnyElement) -> AnyElement {
             "agent-working",
             gpui::Animation::new(Duration::from_millis(1600))
                 .repeat_synced()
-                .with_max_fps(15.),
+                .with_max_fps(10.),
             |d, t| d.opacity(1. - 0.65 * (1. - (t * std::f32::consts::TAU).cos()) / 2.),
         )
         .into_any_element()

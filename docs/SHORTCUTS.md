@@ -2,7 +2,7 @@
 
 Back to the [README](../README.md). Hold `⌘` in the app, or press `⌘/`, to see the ones that work where you are.
 
-Every shortcut below can be rebound in Settings (`⌘,`), except moving around a list or view (arrows, `Home` `End` `PgUp` `PgDn`, `↵`, `Space`, `⎋`), `⌃G`, and `⌘G` `⇧⌘G` in the terminal.
+Every shortcut below can be rebound in Settings (`⌘,`), except moving around a list or view (arrows, `Home` `End` `PgUp` `PgDn`, `↵`, `Space`, `Esc`), `⌃G`, and `⌘G` `⇧⌘G` in the terminal.
 While you type, only shortcuts with `⌘`, `⌃` or an F-key apply. `⌘` with an arrow and `⌃` with a letter edit the text instead, and the git actions on `⌘Z` `⇧⌘Z` `⌘⌫` `⌥⌘S` `⌥⌘N` `⇧⌘⌫` don't run there.
 
 On Linux `⌘` is Ctrl, the views are on Alt+1–4, Ctrl+Tab / Ctrl+Shift+Tab switch tabs, link labels are Ctrl+Shift+Space, and the terminal's

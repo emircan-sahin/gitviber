@@ -148,9 +148,10 @@ server or talk to the agent without leaving the change you're reading.
   `⇧⌘←` / `⇧⌘→` page through them, and `⌘R` names one.
 - A split's tab shows a dot per pane in its agent's state, so an agent at work in another pane
   stays in sight; hover the dots for a count ("2 agents working, 1 waiting for you"), and past
-  six panes they turn into a count per state. Zoomed to one pane (`⇧⌘↵`), the toolbar shows which one it is.
-- In the terminal, `⌃⌘T` puts focus on the tab strip: `←` / `→` switch tabs, `⌥←` / `⌥→` move one, `⌘W` closes it,
-  and `↵`, `Esc` or `⌃⌘T` again goes back to the pane.
+  six panes they turn into a count per state. Zoomed to one pane (`⇧⌘↵`), the toolbar shows
+  which one it is.
+- In the terminal, `⌃⌘T` puts focus on the tab strip: `←` / `→` switch tabs, `⌥←` / `⌥→` move
+  one, `⌘W` closes it, and `↵`, `Esc` or `⌃⌘T` again goes back to the pane.
 - The terminal has its own font, size, line height, cursor and scrollback in Settings. `⌘=` / `⌘−`
   in the terminal, a pinch or Ctrl+scroll over it size its text.
 - `⌘F` finds in the terminal and its scrollback, with match case, whole word and regex.
