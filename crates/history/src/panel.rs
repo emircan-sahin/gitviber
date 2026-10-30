@@ -117,8 +117,13 @@ impl HistoryPanel {
         // The filters are in the ? beside it: written here they were cut off mid-word.
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search commits"));
         let (source, options) = Self::source_for("", &None, all, &refs);
+        let head = source == Source::Head;
         let list =
             cx.new(|cx| CommitList::new(repo.clone(), ctx.workspace.clone(), source, options, cx));
+        let root = project.read(cx).root().to_path_buf();
+        if let Some(log) = crate::warm::take(&root, cx).filter(|_| head) {
+            list.update(cx, |l, cx| l.seed(log, cx));
+        }
         let subs = vec![
             cx.subscribe_in(
                 &search,

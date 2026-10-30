@@ -4,6 +4,7 @@
 //! scrolls like the rest.
 
 use std::collections::HashSet;
+use std::ops::Range;
 use std::rc::Rc;
 
 use gitviber_core::{Res, api, git};
@@ -67,7 +68,12 @@ impl Source {
         matches!(self, Source::Head | Source::All(_) | Source::Rev(_))
     }
 
-    fn read(&self, core: &gitviber_core::Core, skip: u32, limit: u32) -> Res<Vec<git::Commit>> {
+    pub(crate) fn read(
+        &self,
+        core: &gitviber_core::Core,
+        skip: u32,
+        limit: u32,
+    ) -> Res<Vec<git::Commit>> {
         match self {
             Source::Head => api::history::log(core, None, skip, limit, None, None),
             Source::All(refs) => {
@@ -195,6 +201,9 @@ pub struct ListOptions {
 
 pub struct CommitList {
     pub(crate) repo: Entity<RepoState>,
+    /// The repo's remote branches' names, kept from one change to the next: a big org's repo
+    /// has thousands, and each frame's rows ask.
+    remotes: Rc<[String]>,
     pub(crate) workspace: WeakEntity<Workspace>,
     source: Source,
     pub(crate) options: ListOptions,
@@ -285,7 +294,8 @@ impl CommitList {
         options: ListOptions,
         cx: &mut Context<Self>,
     ) -> Self {
-        let state = ListState::new(0, ListAlignment::Top, px(300.));
+        // About a row past each edge: every row laid out beyond the viewport is paid each frame.
+        let state = ListState::new(0, ListAlignment::Top, px(32.));
         let weak = cx.weak_entity();
         state.set_scroll_handler(move |e, _, cx| {
             // Near the end: the next page, before the user gets there.
@@ -297,6 +307,7 @@ impl CommitList {
             &repo,
             |this: &mut Self, _, event: &gitviber_refs::RepoEvent, cx| {
                 if let gitviber_refs::RepoEvent::Changed = event {
+                    this.remotes = remotes_of(&this.repo, cx);
                     this.repo_changed(cx);
                 }
             },
@@ -310,6 +321,7 @@ impl CommitList {
             })
         });
         let mut list = CommitList {
+            remotes: remotes_of(&repo, cx),
             repo,
             workspace,
             source,
@@ -352,6 +364,17 @@ impl CommitList {
             list.reload(cx);
         }
         list
+    }
+
+    /// Shows a first page read ahead (`warm`) until the list's own read comes in.
+    pub(crate) fn seed(&mut self, log: Vec<git::Commit>, cx: &mut Context<Self>) {
+        if self.loaded || !self.commits.is_empty() || self.source != Source::Head {
+            return;
+        }
+        let has_more = log.len() as u32 == PAGE;
+        self.head_sha = log.first().map(|c| c.sha.clone());
+        self.replace(vec![], log, has_more, cx);
+        cx.notify();
     }
 
     /// Reads page after page until the history ends.
@@ -554,7 +577,8 @@ impl CommitList {
         }
         let top = self.state.logical_scroll_top();
         let top_sha = self.item_sha(top.item_ix);
-        self.commits = next;
+        let old_commits = std::mem::replace(&mut self.commits, next);
+        let old_items = std::mem::take(&mut self.items);
         let listed: HashSet<&str> = self.commits.iter().map(|c| c.sha.as_str()).collect();
         // An undo can bring rewritten commits back: their old picks don't come with them.
         self.picked.retain(|s| listed.contains(s.as_str()));
@@ -584,9 +608,16 @@ impl CommitList {
                 .collect();
             self.builder = builder;
         }
-        let old = self.items.len();
         self.rebuild_items();
-        self.state.splice(0..old, self.items.len());
+        // Rows are told apart by their commit, not its index: a new commit on top shifts them.
+        let key = |commits: &[Rc<Commit>], item: &Item| match *item {
+            Item::Commit(c) => Err(commits[c].clone()),
+            other => Ok(other),
+        };
+        let old: Vec<_> = old_items.iter().map(|i| key(&old_commits, i)).collect();
+        let new: Vec<_> = self.items.iter().map(|i| key(&self.commits, i)).collect();
+        let (range, count) = changed_rows(&old, &new);
+        self.state.splice(range, count);
         if let Some(sha) = top_sha
             && let Some(ix) = self
                 .items
@@ -821,9 +852,10 @@ impl CommitList {
     fn relayout(&mut self, cx: &mut Context<Self>) {
         let top = self.state.logical_scroll_top();
         let top_sha = self.item_sha(top.item_ix);
-        let old = self.items.len();
+        let old = std::mem::take(&mut self.items);
         self.rebuild_items();
-        self.state.splice(0..old, self.items.len());
+        let (range, count) = changed_rows(&old, &self.items);
+        self.state.splice(range, count);
         if let Some(sha) = top_sha
             && let Some(ix) = self
                 .items
@@ -1516,14 +1548,8 @@ impl CommitList {
         .into_any_element()
     }
 
-    pub(crate) fn remotes(&self, cx: &App) -> Vec<String> {
-        self.repo
-            .read(cx)
-            .branches
-            .iter()
-            .filter(|b| b.remote)
-            .map(|b| b.name.clone())
-            .collect()
+    pub(crate) fn remotes(&self) -> Rc<[String]> {
+        self.remotes.clone()
     }
 
     fn render_files_header(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -1882,8 +1908,7 @@ impl Render for CommitList {
                 .child(text)
                 .into_any_element();
         }
-        // Once a frame, not for each row: a big org's repo has thousands of remote branches.
-        let remotes: Rc<[String]> = self.remotes(cx).into();
+        let remotes = self.remotes.clone();
         let render = cx.processor(move |this, ix: usize, window, cx| {
             this.render_item(ix, &remotes, window, cx)
         });
@@ -1914,9 +1939,43 @@ impl Render for CommitList {
     }
 }
 
+fn remotes_of(repo: &Entity<RepoState>, cx: &App) -> Rc<[String]> {
+    repo.read(cx)
+        .branches
+        .iter()
+        .filter(|b| b.remote)
+        .map(|b| b.name.clone())
+        .collect()
+}
+
+/// Where `new` differs from `old`, as the range of `old` it replaces and its length in `new`:
+/// the rows around it keep the heights the list measured.
+fn changed_rows<T: PartialEq>(old: &[T], new: &[T]) -> (Range<usize>, usize) {
+    let head = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let tail = old[head..]
+        .iter()
+        .rev()
+        .zip(new[head..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    (head..old.len() - tail, new.len() - head - tail)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_changed_rows_are_spliced() {
+        assert_eq!(changed_rows(&[1, 2, 3], &[1, 2, 3]), (3..3, 0));
+        // A commit on top; a commit's files opening in the middle; the list emptied.
+        assert_eq!(changed_rows(&[1, 2, 3], &[0, 1, 2, 3]), (0..0, 1));
+        assert_eq!(changed_rows(&[1, 2, 3], &[1, 2, 7, 8, 3]), (2..2, 2));
+        assert_eq!(changed_rows(&[1, 2, 7, 3], &[1, 9, 2, 3]), (1..3, 2));
+        assert_eq!(changed_rows(&[1, 2], &[]), (0..2, 0));
+        // A repeated row is counted once, from the front.
+        assert_eq!(changed_rows(&[1, 1], &[1, 1, 1]), (2..2, 1));
+    }
 
     fn row(top: f32) -> Bounds<Pixels> {
         Bounds::new(point(px(0.), px(top)), size(px(300.), px(40.)))

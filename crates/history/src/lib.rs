@@ -24,6 +24,7 @@ mod picker;
 pub mod query;
 mod reflog;
 mod store;
+mod warm;
 
 pub use bisect::BisectBar;
 pub use commit_view::CommitView;
@@ -118,6 +119,7 @@ pub const PANEL: &str = "history";
 /// tabs, and the Compare screen's opener for the pickers. Once at startup.
 pub fn init(cx: &mut App) {
     store::import_legacy(cx);
+    warm::init(cx);
     register_panel(
         cx,
         PanelSpec::new(PANEL, Slot::Left, "History", |ctx, window, cx| {
@@ -187,6 +189,7 @@ mod tests {
     };
 
     use super::HistoryPanel;
+    use crate::list::PAGE;
 
     struct Host(Entity<Workspace>);
     impl Render for Host {
@@ -289,6 +292,58 @@ mod tests {
         cx.update(|_, _| {});
         cx.run_until_parked();
         cx.update(|_, cx| cx.assert_no_new_leaks(&snapshot));
+    }
+
+    /// The commits a new panel's list shows on its first frame, the repository opened (and
+    /// changed in git, when `git_changed`) before; then checks its own read lands.
+    fn first_frame(git_changed: bool, cx: &mut TestAppContext) -> usize {
+        gitviber_ui::test_support::config_dir("history-test");
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            let core = gitviber_ui::install_core(cx);
+            gitviber_diff::init(cx);
+            gitviber_diff::set_core(core, cx);
+            gitviber_refs::init(cx);
+            super::init(cx);
+        });
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        cx.update(|window, cx| {
+            Workspace::register_window(&ws, window, cx);
+            ws.update(cx, |ws, cx| ws.open_project(repo(), window, cx));
+        });
+        cx.run_until_parked();
+        let project = cx
+            .update(|_, cx| ws.read(cx).project().cloned())
+            .expect("the project opened");
+        if git_changed {
+            project.update(cx, |p, cx| p.repo_changed(cx));
+        }
+        let panel = cx.update(|window, cx| {
+            let ctx = PanelContext {
+                workspace: ws.downgrade(),
+                project: Some(project.clone()),
+            };
+            cx.new(|cx| HistoryPanel::new(&ctx, project.clone(), window, cx))
+        });
+        let list = panel.read_with(cx, |p, _| p.list().clone());
+        let shown = list.read_with(cx, |l, _| l.len());
+        cx.run_until_parked();
+        assert!(list.read_with(cx, |l, _| l.is_loaded() && l.len() == PAGE as usize));
+        shown
+    }
+
+    /// HEAD's first page is read when the repository opens: the panel's first frame has its
+    /// commits, not "Loading…".
+    #[gpui_kit::test]
+    fn the_first_page_is_read_when_the_repository_opens(cx: &mut TestAppContext) {
+        assert_eq!(first_frame(false, cx), PAGE as usize);
+    }
+
+    /// A git change before the panel shows drops the page read ahead: it would be stale.
+    #[gpui_kit::test]
+    fn a_git_change_drops_the_page_read_ahead(cx: &mut TestAppContext) {
+        assert_eq!(first_frame(true, cx), 0);
     }
 
     #[gpui_kit::test]
