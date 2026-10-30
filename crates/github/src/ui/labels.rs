@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::{Ends, list_step};
+use gitviber_ui::widgets::{Ends, list_step, on_list_keys};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -181,7 +181,7 @@ impl LabelPicker {
     }
 
     /// ↑/↓ in the search box walk the rows, round from either end; Home/End, PgUp/PgDn too.
-    fn key_down(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
+    fn key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let m = ev.keystroke.modifiers;
         let n = self.shown(cx).len();
         if m.alt || m.platform || m.control || m.shift || n == 0 {
@@ -278,11 +278,12 @@ impl Render for LabelPicker {
             None
         };
         let has = !self.selected.is_empty();
-        div()
+        on_list_keys(div(), cx.listener(Self::key_down))
+            .key_context("ListFilter")
             .flex()
             .flex_col()
             .gap(px(6.))
-            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| this.key_down(ev, cx)))
+            .capture_key_down(cx.listener(Self::key_down))
             .child(Input::new(&self.query).small())
             .child(
                 div()

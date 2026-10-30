@@ -10,7 +10,9 @@ use std::rc::Rc;
 use gitviber_core::{api, git};
 use gitviber_ui::keymap::git as git_actions;
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::{Ends, list_step, now_unix, relative_time, repaint_next_minute};
+use gitviber_ui::widgets::{
+    Ends, list_step, now_unix, on_list_keys, relative_time, repaint_next_minute,
+};
 use gitviber_ui::workspace::PanelContext;
 use gitviber_ui::{ActiveAppTheme, Project};
 use gpui_kit::assets::IconName;
@@ -1120,8 +1122,8 @@ impl Render for BranchPicker {
         let base = current
             .as_ref()
             .map_or("HEAD".to_string(), |c| format!("refs/heads/{c}"));
-        div()
-            .key_context("BranchPicker")
+        on_list_keys(div(), cx.listener(Self::on_key))
+            .key_context("BranchPicker ListFilter")
             .capture_key_down(cx.listener(Self::on_key))
             .on_action(
                 cx.listener(|this, _: &git_actions::RenameBranch, window, cx| {
