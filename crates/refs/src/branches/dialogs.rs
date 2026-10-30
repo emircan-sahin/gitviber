@@ -4,8 +4,8 @@
 use std::rc::Rc;
 
 use gitviber_core::api;
+use gitviber_ui::ActiveAppTheme;
 use gitviber_ui::memory::Live;
-use gitviber_ui::{ActiveAppTheme, Workspace};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -19,12 +19,6 @@ use gpui_kit::{
 use crate::names::{Branch, FOLD_CASE, local_names, ref_name_check, short_ref};
 use crate::repo::{GitAction, RepoState, plain};
 use crate::ui::{cancel, hint, note, open_form, ref_menu};
-
-fn state_of(window: &Window, cx: &mut App) -> Option<Entity<RepoState>> {
-    let ws = Workspace::for_window(window, cx)?;
-    let project = ws.read(cx).project()?.clone();
-    Some(RepoState::get(&project, cx))
-}
 
 /// Closes the dialog once `rx` says the action went through; else `pending` clears.
 fn close_on_ok<V: 'static>(
@@ -64,7 +58,7 @@ pub struct RenameBranch {
 }
 
 pub fn open_rename_branch(branch: Branch, window: &mut Window, cx: &mut App) {
-    let Some(state) = state_of(window, cx) else {
+    let Some(state) = RepoState::for_window(window, cx) else {
         return;
     };
     let form = cx.new(|cx| {
@@ -248,7 +242,7 @@ pub struct NewBranch {
 
 /// A new branch at `base`: a full ref (refs/heads/…, refs/remotes/…), or HEAD.
 pub fn open_new_branch(base: String, window: &mut Window, cx: &mut App) {
-    let Some(state) = state_of(window, cx) else {
+    let Some(state) = RepoState::for_window(window, cx) else {
         return;
     };
     let form = cx.new(|cx| {
@@ -427,7 +421,7 @@ pub struct SetUpstream {
 }
 
 pub fn open_set_upstream(branch: Branch, window: &mut Window, cx: &mut App) {
-    let Some(state) = state_of(window, cx) else {
+    let Some(state) = RepoState::for_window(window, cx) else {
         return;
     };
     let remotes: Vec<String> = state

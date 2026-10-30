@@ -266,19 +266,8 @@ pub fn act(
             list.flow = Some(cx.spawn_in(window, async move |this, cx| {
                 if asked.await.unwrap_or(false) {
                     let _ = this.update_in(cx, |this, window, cx| {
-                        let a = GitAction::new("Checkout")
-                            .net()
-                            .done(format!("Checked out {short}"));
-                        drop(run(
-                            this,
-                            a,
-                            move |core, op| {
-                                let (id, progress) = (op.id.clone(), op.progress());
-                                plain(api::history::checkout_commit(core, sha, id, progress))
-                            },
-                            window,
-                            cx,
-                        ));
+                        let repo = this.repo.clone();
+                        drop(gitviber_refs::ops::checkout_commit(&repo, sha, window, cx));
                     });
                 }
             }));

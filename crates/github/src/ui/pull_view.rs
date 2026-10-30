@@ -11,6 +11,7 @@ use gitviber_core::api;
 use gitviber_core::git::FileChange;
 use gitviber_core::github::{Annotation, CheckFailure, PullDetail, PullFiles};
 use gitviber_markdown::MarkdownView;
+use gitviber_refs::{RepoState, ops};
 use gitviber_ui::AppTheme;
 use gitviber_ui::actions::editor;
 use gitviber_ui::keymap::scroll::{self, Step};
@@ -179,20 +180,8 @@ impl PullView {
         crate::ui::use_workspace_project(&ws, cx);
         let subs = vec![
             cx.observe_global::<ci::Ci>(|_, cx| cx.notify()),
-            cx.observe_global::<Cache>({
-                // The account decides what the page offers, and it lands without a wake.
-                let mut account = Cache::stamp(cx, &[crate::account::KEY]);
-                move |this: &mut Self, cx| {
-                    let now = Cache::stamp(cx, &[crate::account::KEY]);
-                    if Cache::wakes(cx) != this.wakes
-                        || Cache::generation(cx) != this.generation
-                        || now != account
-                    {
-                        account = now;
-                        cx.notify();
-                    }
-                }
-            }),
+            // The account decides what the page offers.
+            super::observe_cache(|this: &Self| this.wakes, cx),
             cx.observe_window_activation(window, |_, window, cx| {
                 if window.is_window_active() {
                     Cache::wake(cx);
@@ -734,7 +723,14 @@ impl PullView {
         crate::account::account(cx)
     }
 
-    fn checkout(&mut self, cx: &mut Context<Self>) {
+    fn checkout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let weak = cx.weak_entity();
+        leaving_head(window, cx, move |_, cx| {
+            weak.update(cx, |this, cx| this.checkout_now(cx)).ok();
+        });
+    }
+
+    fn checkout_now(&mut self, cx: &mut Context<Self>) {
         let Some(p) = self.item() else { return };
         let account = self.account(cx);
         let Some(source) = pull_source(&p, account.as_deref()) else {
@@ -867,53 +863,55 @@ impl PullView {
             "Start",
             window,
             cx,
-            move |_, cx| {
-                let (p, target) = (p.clone(), target.clone());
-                weak.update(cx, |this, cx| {
-                    let message =
-                        format!("Merged {} into {}; review and push", p.base_ref, p.head_ref);
-                    this.act(
-                        "Merge",
-                        message,
-                        move |core| {
-                            let number = p.number;
-                            api::github::pr_checkout(
-                                core,
-                                Some(target.clone()),
-                                number,
-                                p.head_ref.clone(),
-                                same,
-                                format!("pr-checkout-{number}"),
-                                |_| {},
-                            )?;
-                            let base = if in_origin {
-                                api::sync::fetch(core, "pr-resolve-fetch".into(), |_| {})?;
-                                format!("origin/{}", p.base_ref)
-                            } else {
-                                let remote = match api::github::gh_original_remote(
+            move |window, cx| {
+                let (p, target, weak) = (p.clone(), target.clone(), weak.clone());
+                leaving_head(window, cx, move |_, cx| {
+                    weak.update(cx, |this, cx| {
+                        let message =
+                            format!("Merged {} into {}; review and push", p.base_ref, p.head_ref);
+                        this.act(
+                            "Merge",
+                            message,
+                            move |core| {
+                                let number = p.number;
+                                api::github::pr_checkout(
                                     core,
-                                    target.clone(),
-                                    true,
-                                    "pr-resolve-original".into(),
+                                    Some(target.clone()),
+                                    number,
+                                    p.head_ref.clone(),
+                                    same,
+                                    format!("pr-checkout-{number}"),
                                     |_| {},
-                                )? {
-                                    Some(r) => r,
-                                    None => api::github::gh_add_original_remote(
+                                )?;
+                                let base = if in_origin {
+                                    api::sync::fetch(core, "pr-resolve-fetch".into(), |_| {})?;
+                                    format!("origin/{}", p.base_ref)
+                                } else {
+                                    let remote = match api::github::gh_original_remote(
                                         core,
-                                        "pr-resolve-add".into(),
+                                        target.clone(),
+                                        true,
+                                        "pr-resolve-original".into(),
                                         |_| {},
-                                    )?,
+                                    )? {
+                                        Some(r) => r,
+                                        None => api::github::gh_add_original_remote(
+                                            core,
+                                            "pr-resolve-add".into(),
+                                            |_| {},
+                                        )?,
+                                    };
+                                    format!("{remote}/{}", p.base_ref)
                                 };
-                                format!("{remote}/{}", p.base_ref)
-                            };
-                            // True: it stopped on conflicts, which is what this was for.
-                            api::sync::merge(core, base, None, None)
-                        },
-                        |_, _| {},
-                        cx,
-                    );
-                })
-                .ok();
+                                // True: it stopped on conflicts, which is what this was for.
+                                api::sync::merge(core, base, None, None)
+                            },
+                            |_, _| {},
+                            cx,
+                        );
+                    })
+                    .ok();
+                });
             },
         );
     }
@@ -1071,6 +1069,18 @@ impl PullView {
             },
         };
         crate::ui::open_pull_file(&self.ws, range, file.clone(), preview, window, cx);
+    }
+}
+
+/// Runs `go`, which moves this window's HEAD, once leaving a detached HEAD is settled.
+fn leaving_head(
+    window: &mut Window,
+    cx: &mut App,
+    go: impl FnOnce(&mut Window, &mut App) + 'static,
+) {
+    match RepoState::for_window(window, cx) {
+        Some(state) => ops::unless_left_behind(&state, "Check out", window, cx, go),
+        None => go(window, cx),
     }
 }
 
@@ -2061,12 +2071,7 @@ impl PullView {
                 this.click_commit(sha.clone(), ev.modifiers().shift, cx)
             }))
             .context_menu(move |menu, _, _| {
-                let (copy_sha, url, sha, weak) = (
-                    menu_sha.clone(),
-                    url.clone(),
-                    menu_sha.clone(),
-                    weak.clone(),
-                );
+                let (copy_sha, url, sha) = (menu_sha.clone(), url.clone(), menu_sha.clone());
                 let pick_sha = sha.clone();
                 let pick_weak = weak.clone();
                 menu.item(
@@ -2084,7 +2089,7 @@ impl PullView {
                     PopupMenuItem::new("Checkout commit")
                         .icon(IconName::GitCommitHorizontal)
                         .on_click(move |_, window, cx| {
-                            let (sha, weak) = (sha.clone(), weak.clone());
+                            let sha = sha.clone();
                             let short = sha[..sha.len().min(7)].to_string();
                             confirm(
                                 "Checkout commit",
@@ -2096,25 +2101,10 @@ impl PullView {
                                 "Checkout",
                                 window,
                                 cx,
-                                move |_, cx| {
-                                    let sha = sha.clone();
-                                    weak.update(cx, |this, cx| {
-                                        this.act(
-                                            "Checkout",
-                                            format!("Checked out {short}"),
-                                            move |core| {
-                                                done(api::history::checkout_commit(
-                                                    core,
-                                                    sha,
-                                                    "pr-checkout-commit".into(),
-                                                    |_| {},
-                                                ))
-                                            },
-                                            |_, _| {},
-                                            cx,
-                                        )
-                                    })
-                                    .ok();
+                                move |window, cx| {
+                                    if let Some(state) = RepoState::for_window(window, cx) {
+                                        drop(ops::checkout_commit(&state, sha.clone(), window, cx));
+                                    }
                                 },
                             );
                         }),
@@ -2634,7 +2624,7 @@ impl PullView {
                         .icon(IconName::GitBranch)
                         .label("Checkout")
                         .disabled(busy || account.is_none())
-                        .on_click(cx.listener(|this, _, _, cx| this.checkout(cx))),
+                        .on_click(cx.listener(|this, _, window, cx| this.checkout(window, cx))),
                 )
                 .child({
                     let source = source.clone();
