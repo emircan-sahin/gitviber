@@ -68,6 +68,18 @@ mod tests {
             Some("Toggle Terminal")
         );
         assert_eq!(name(icon()), None);
+        // Its keys too, as the tooltip shows them beside the text.
+        let keyed = icon()
+            .tooltip("Match case")
+            .tooltip_key_binding(crate::widgets::find_option_kbd('c'));
+        let keyed = name(keyed).unwrap();
+        assert!(
+            keyed.starts_with("Match case (") && keyed.ends_with("C)"),
+            "{keyed}"
+        );
+        if crate::keymap::IS_MAC {
+            assert_eq!(keyed.as_ref(), "Match case (⌥⌘C)");
+        }
         let labeled = Button::new("b").label("Pull").tooltip("Pull from origin");
         assert_eq!(name(labeled).as_deref(), Some("Pull"));
         let explicit = icon()

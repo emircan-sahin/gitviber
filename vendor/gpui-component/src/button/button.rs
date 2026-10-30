@@ -400,15 +400,19 @@ impl Button {
     }
 
     /// The name a screen reader announces: the [`accessibility_label`](Self::accessibility_label),
-    /// else the label. GitViber: else the tooltip's text, on a button with nothing else to say
-    /// what it does (an icon-only one); children are read as they are.
+    /// else the label. GitViber: else the tooltip's text and its keys ("Match case (⌥⌘C)"), on
+    /// a button with nothing else to say what it does (an icon-only one); children are read as
+    /// they are.
     pub fn accessibility_name(&self) -> Option<SharedString> {
         self.accessibility_label
             .clone()
             .or_else(|| self.label.clone())
             .or_else(|| {
                 let (tooltip, _) = self.tooltip.as_ref().filter(|_| self.children.is_empty())?;
-                Some(tooltip.clone())
+                Some(match &self.tooltip_keys {
+                    Some(keys) => format!("{tooltip} ({})", Kbd::format(keys.keystroke())).into(),
+                    None => tooltip.clone(),
+                })
             })
     }
 
