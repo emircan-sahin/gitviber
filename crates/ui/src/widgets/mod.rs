@@ -1,6 +1,7 @@
 //! Small pieces the feature crates share.
 
 mod badges;
+mod drag;
 pub mod file_icon;
 mod keycaps;
 pub(crate) mod list_keys;
@@ -12,11 +13,12 @@ mod toggle;
 pub use badges::{
     ChangeKind, CountBadge, LineCounts, Look, PathLabel, StatusDot, StatusLetter, StatusPill,
 };
+pub use drag::{drag_chip, drop_edge, drop_line};
 pub use file_icon::{FileIcon, file_icon_path, folder_icon_path};
 pub use keycaps::{Keycaps, chord_kbd, command_kbd, find_option_kbd, key_hints};
 pub use list_keys::{Ends, PAGE, list_step, on_list_keys};
 pub use pressable::Pressable;
-pub use project_tile::{project_tile, swatch_tile};
+pub use project_tile::{DraggedProject, project_tile, swatch_tile};
 pub use relative_time::{RelativeTime, full_date, now_unix, relative_time, repaint_next_minute};
 pub use toggle::{Toggle, segmented};
 
