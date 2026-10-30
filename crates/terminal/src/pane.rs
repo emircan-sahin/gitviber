@@ -2059,6 +2059,7 @@ mod tests {
     fn focus_reports_follow_real_changes_only(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_kit::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
             crate::init(cx);
         });
         let core = Arc::new(Core::new(Arc::new(|_| {})));
@@ -2123,6 +2124,7 @@ mod tests {
     fn a_composed_word_stays_in_its_pane(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_kit::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
             crate::init(cx);
         });
         let core = Arc::new(Core::new(Arc::new(|_| {})));
@@ -2169,6 +2171,7 @@ mod tests {
         let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         cx.update(|cx| {
             gpui_kit::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
             crate::init(cx);
             let reads = reads.clone();
             crate::set_ports_reader(cx, move |_: &[u32]| {
@@ -2222,6 +2225,7 @@ mod tests {
         use gpui::TouchPhase;
         cx.update(|cx| {
             gpui_kit::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
             crate::init(cx);
         });
         let core = Arc::new(Core::new(Arc::new(|_| {})));
@@ -2295,6 +2299,7 @@ mod tests {
     fn a_drag_belongs_to_the_pane_it_began_in(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_kit::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
             crate::init(cx);
         });
         let core = Arc::new(Core::new(Arc::new(|_| {})));

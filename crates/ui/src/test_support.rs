@@ -4,6 +4,10 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use gpui_kit::App;
+
+use crate::Settings;
+
 /// The folders `temp_dir` made in this process, removed when it exits.
 static MADE: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
@@ -31,6 +35,14 @@ pub fn config_dir(name: &str) -> PathBuf {
     // SAFETY: each test runs in its own process (nextest), and sets this before it starts threads.
     unsafe { std::env::set_var("GITVIBER_CONFIG_DIR", &dir) };
     dir
+}
+
+/// The default settings and the theme built from them: globals the app always has, which shared
+/// widgets read as they render (a tooltip's chord, the theme's colors). Without touching the
+/// settings file; call after gpui-kit's init.
+pub fn install_theme(cx: &mut App) {
+    cx.set_global(Settings::default());
+    crate::theme::refresh(cx);
 }
 
 extern "C" fn remove_made() {

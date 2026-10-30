@@ -3065,6 +3065,7 @@ mod tests {
     fn a_pane_anywhere_with_news_calls(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_kit::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
             crate::init(cx);
         });
         let core = Arc::new(Core::new(Arc::new(|_| {})));
@@ -3106,6 +3107,7 @@ mod tests {
         real_shells(cx);
         cx.update(|cx| {
             gpui_kit::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
             crate::init(cx);
         });
         let core = Arc::new(Core::new(Arc::new(|_| {})));
@@ -3177,6 +3179,7 @@ mod tests {
         real_shells(cx);
         cx.update(|cx| {
             gpui_kit::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
             crate::init(cx);
         });
         let core = Arc::new(Core::new(Arc::new(|_| {})));
@@ -3246,6 +3249,9 @@ mod tests {
     #[gpui::test]
     fn the_first_terminal_starts_in_the_project(cx: &mut TestAppContext) {
         let base = std::env::temp_dir().join(format!("gitviber-term-home-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        // Plain folders open as projects under their real path ($TMPDIR is a link on macOS).
+        let base = base.canonicalize().unwrap();
         let (home, a, b) = (base.join("home"), base.join("a"), base.join("b"));
         for d in [&home, &a, &b] {
             std::fs::create_dir_all(d).unwrap();
@@ -3429,6 +3435,7 @@ mod tests {
         real_shells(cx);
         cx.update(|cx| {
             gpui_kit::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
             crate::init(cx);
         });
         let core = Arc::new(Core::new(Arc::new(|_| {})));
@@ -3715,6 +3722,7 @@ mod tests {
         }
         cx.update(|cx| {
             gpui_kit::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
             crate::init(cx);
         });
         let core = Arc::new(Core::new(Arc::new(|_| {})));

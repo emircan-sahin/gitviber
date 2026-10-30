@@ -14,6 +14,7 @@ use std::time::Duration;
 fn zooming_in_draws_the_part_on_screen(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::component::init(cx);
+        gitviber_ui::test_support::install_theme(cx);
         gitviber_diff::set_core(Arc::new(gitviber_core::Core::new(Arc::new(|_| {}))), cx);
         DiffOptions::set(
             DiffOptions {

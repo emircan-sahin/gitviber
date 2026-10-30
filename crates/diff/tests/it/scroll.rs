@@ -23,6 +23,7 @@ const ENDS: (&str, &str) = if cfg!(target_os = "macos") {
 fn setup(cx: &mut TestAppContext, layout: Layout) {
     cx.update(|cx| {
         gpui_kit::component::init(cx);
+        gitviber_ui::test_support::install_theme(cx);
         // The keys as the app binds them.
         gitviber_diff::actions::init_local(cx);
         gitviber_diff::set_core(Arc::new(gitviber_core::Core::new(Arc::new(|_| {}))), cx);

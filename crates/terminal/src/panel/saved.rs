@@ -803,6 +803,7 @@ mod tests {
         cx.executor().forbid_parking();
         cx.update(|cx| {
             gpui_kit::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
             crate::init(cx);
         });
         let core = Arc::new(Core::new(Arc::new(|_| {})));

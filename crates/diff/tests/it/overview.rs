@@ -20,6 +20,7 @@ fn open<'a>(
 ) -> (Entity<DiffView>, &'a mut VisualTestContext) {
     cx.update(|cx| {
         gpui_kit::component::init(cx);
+        gitviber_ui::test_support::install_theme(cx);
         gitviber_diff::set_core(Arc::new(gitviber_core::Core::new(Arc::new(|_| {}))), cx);
     });
     let source = DiffSource::new(Compare::Unstaged, "a.txt");

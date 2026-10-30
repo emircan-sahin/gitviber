@@ -524,6 +524,7 @@ mod tests {
     fn two_windows_agents_stay_apart(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_kit::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
             crate::init(cx);
         });
         let core = Arc::new(Core::new(Arc::new(|_| {})));

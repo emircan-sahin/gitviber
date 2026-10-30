@@ -37,6 +37,7 @@ fn open(cx: &mut TestAppContext, dir: &Path, compare: Compare) -> Entity<DiffVie
     gitviber_core::api::repo::open_repo(&core, dir.to_string_lossy().into_owned()).unwrap();
     cx.update(|cx| {
         gpui_kit::component::init(cx);
+        gitviber_ui::test_support::install_theme(cx);
         gitviber_diff::set_core(core, cx);
     });
     let view = cx.update(|cx| cx.new(|cx| DiffView::new(DiffSource::new(compare, "a.txt"), cx)));

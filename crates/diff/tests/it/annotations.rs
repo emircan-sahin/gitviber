@@ -29,6 +29,7 @@ impl Render for Host {
 fn a_block_opens_its_fold_and_takes_the_room_it_measures(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::component::init(cx);
+        gitviber_ui::test_support::install_theme(cx);
         gitviber_diff::set_core(Arc::new(gitviber_core::Core::new(Arc::new(|_| {}))), cx);
         DiffOptions::update(cx, |o| o.collapse = true);
     });

@@ -73,6 +73,7 @@ fn holds_only_the_files_near_the_screen(cx: &mut TestAppContext) {
     gitviber_core::api::repo::open_repo(&core, dir.to_string_lossy().into_owned()).unwrap();
     cx.update(|cx| {
         gpui_kit::component::init(cx);
+        gitviber_ui::test_support::install_theme(cx);
         gitviber_diff::init(cx);
         gitviber_diff::set_core(core, cx);
     });

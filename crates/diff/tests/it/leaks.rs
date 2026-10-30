@@ -41,6 +41,7 @@ fn texts() -> (String, String) {
 fn closing_a_diff_frees_it(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::component::init(cx);
+        gitviber_ui::test_support::install_theme(cx);
         gitviber_diff::init(cx);
         gitviber_diff::set_core(Arc::new(gitviber_core::Core::new(Arc::new(|_| {}))), cx);
     });
@@ -93,6 +94,7 @@ fn closing_a_diff_frees_it(cx: &mut TestAppContext) {
 fn the_detector_sees_a_view_kept_alive(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::component::init(cx);
+        gitviber_ui::test_support::install_theme(cx);
         gitviber_diff::set_core(Arc::new(gitviber_core::Core::new(Arc::new(|_| {}))), cx);
     });
     let snapshot = cx.update(|cx| cx.leak_detector_snapshot());

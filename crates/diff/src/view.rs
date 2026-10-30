@@ -2744,6 +2744,7 @@ mod tests {
     fn find_keys_step_an_open_find_and_go_on_without_one(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_kit::component::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
             crate::set_core(Arc::new(Core::new(Arc::new(|_| {}))), cx);
         });
         let source = DiffSource::new(Compare::Unstaged, "f.txt");

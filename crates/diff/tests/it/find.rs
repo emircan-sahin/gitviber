@@ -115,6 +115,7 @@ impl Render for Host {
 fn an_svg_preview_draws_both_and_frees_them(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::component::init(cx);
+        gitviber_ui::test_support::install_theme(cx);
         gitviber_diff::set_core(Arc::new(gitviber_core::Core::new(Arc::new(|_| {}))), cx);
     });
     let old = r##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><rect width="24" height="24" fill="#f00"/></svg>"##;
