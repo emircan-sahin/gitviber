@@ -3,11 +3,11 @@
 //! comes back. Progress comes from core's thread over a channel and lands here on the UI thread.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use futures::StreamExt as _;
 use futures::channel::mpsc;
-use gitviber_core::network::Progress;
+use gitviber_core::network::{LOCAL_PHASE, Progress};
 use gpui_kit::{App, AppContext as _, Context, Entity, Global, SharedString, Task};
 
 /// Why a pinned action stopped: core had another worktree open by then.
@@ -23,7 +23,12 @@ pub struct NetOp {
     sink: Arc<dyn Fn(Progress) + Send + Sync>,
     /// The worktree the action started in, when it was pinned to one.
     root: Option<std::path::PathBuf>,
+    /// The kinds of progress reported so far: TRANSFER, LOCAL.
+    seen: Arc<AtomicU8>,
 }
+
+const TRANSFER: u8 = 1;
+const LOCAL: u8 = 2;
 
 impl NetOp {
     /// One that reports nowhere: for a command nothing shows.
@@ -32,6 +37,7 @@ impl NetOp {
             id: format!("net-{}", NEXT_OP.fetch_add(1, Ordering::Relaxed)),
             sink: Arc::new(|_| {}),
             root: None,
+            seen: Arc::default(),
         }
     }
 
@@ -55,8 +61,24 @@ impl NetOp {
 
     /// What core's network commands take as their progress callback.
     pub fn progress(&self) -> impl Fn(Progress) + Send + Sync + 'static {
-        let sink = self.sink.clone();
-        move |p| sink(p)
+        let (sink, seen) = (self.sink.clone(), self.seen.clone());
+        move |p| {
+            let kind = if p.cancellable {
+                TRANSFER
+            } else if p.phase == LOCAL_PHASE {
+                LOCAL
+            } else {
+                0
+            };
+            seen.fetch_or(kind, Ordering::Relaxed);
+            sink(p)
+        }
+    }
+
+    /// It only changed local files: a switch or checkout in a repository without Git LFS, or
+    /// with every file already downloaded.
+    pub fn local_only(&self) -> bool {
+        self.seen.load(Ordering::Relaxed) == LOCAL
     }
 }
 
@@ -127,6 +149,7 @@ impl NetActivity {
             id,
             sink,
             root: None,
+            seen: Arc::default(),
         }
     }
 
@@ -151,5 +174,27 @@ pub fn progress_text(p: &Progress) -> String {
     match p.percent {
         Some(n) => format!("{} {n}%", p.phase),
         None => p.phase.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gitviber_core::network::parse_progress;
+
+    #[test]
+    fn a_checkout_without_a_download_is_local_only() {
+        let local = || parse_progress("Updating files: 40% (4/10)").unwrap();
+        let op = NetOp::quiet();
+        let report = op.progress();
+        assert!(!op.local_only());
+        report(local());
+        assert!(op.local_only());
+
+        let op = NetOp::quiet();
+        let report = op.progress();
+        report(parse_progress("Downloading LFS objects: 5% (1/20), 2 MB").unwrap());
+        report(local());
+        assert!(!op.local_only());
     }
 }

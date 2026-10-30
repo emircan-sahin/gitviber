@@ -346,6 +346,7 @@ impl RepoState {
         .pinned(root);
         let tracked = action.tracked;
         let op_id = op.id.clone();
+        let watched = op.clone();
         let task = cx.background_spawn(async move {
             // Core has one repo open: one switched to meanwhile isn't this action's to touch.
             if let Err(e) = op.still_in(&core) {
@@ -374,7 +375,10 @@ impl RepoState {
                     a.update(cx, |a, cx| a.finish(&op_id, cx));
                 }
                 this.ended(run);
+                // A switch is a network action for its Git LFS download; without one there is
+                // nothing to say "finished" about.
                 if action.net
+                    && !(result.is_ok() && watched.local_only())
                     && let Some((title, body)) = net_note(&action.label, &result)
                 {
                     gitviber_ui::notify_if_away(|s| s.notify_git, title, body, None, cx);
