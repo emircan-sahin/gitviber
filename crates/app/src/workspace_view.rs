@@ -588,7 +588,7 @@ impl WorkspaceView {
             ws.upgrade()
                 .and_then(|ws| ws.read(cx).built_panel(PANEL_ID).cloned())
         };
-        let find = gitviber_ui::keymap::shortcut_label("editor.find", cx);
+        let find = gitviber_ui::widgets::command_kbd("editor.find", cx);
         let t = cx.app_theme();
         div()
             .absolute()
@@ -614,10 +614,8 @@ impl WorkspaceView {
                     .ghost()
                     .xsmall()
                     .icon(gpui_kit::assets::IconName::Search)
-                    .tooltip(match find {
-                        Some(key) => format!("Filter files ({key})"),
-                        None => "Filter files".into(),
-                    })
+                    .tooltip("Filter files")
+                    .tooltip_key_binding(find)
                     .on_click(move |_, window, cx| {
                         if let Some(f) = panel(&filter_ws, cx).and_then(|p| p.focus_handle(cx)) {
                             f.focus(window, cx);

@@ -4,6 +4,7 @@
 use super::*;
 use crate::model::find::{FindOptions, Finder};
 use crate::model::row_pos;
+use gitviber_ui::widgets::{chord_kbd, find_option_kbd};
 use gpui_kit::Hsla;
 use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
 
@@ -218,7 +219,6 @@ impl DiffView {
             (true, n) if n >= MAX_MATCHES => format!("{} of {n}+", f.current + 1).into(),
             (true, n) => format!("{} of {n}", f.current + 1).into(),
         };
-        let mac = cfg!(target_os = "macos");
         Some(
             // Over the lines: a click here mustn't pick the line under it.
             h_flex()
@@ -247,49 +247,28 @@ impl DiffView {
                 }))
                 .child(div().flex_1().child(Input::new(&f.input).xsmall()))
                 .child(
-                    icon_button(
-                        "find-case",
-                        Lucide::CaseSensitive,
-                        if mac {
-                            "Match case (⌥⌘C)"
-                        } else {
-                            "Match case (Alt+C)"
-                        },
-                    )
-                    .toggle(f.options.match_case, cx)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.toggle_find_option(|o| &mut o.match_case, cx)
-                    })),
+                    icon_button("find-case", Lucide::CaseSensitive, "Match case")
+                        .tooltip_key_binding(find_option_kbd('c'))
+                        .toggle(f.options.match_case, cx)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.toggle_find_option(|o| &mut o.match_case, cx)
+                        })),
                 )
                 .child(
-                    icon_button(
-                        "find-word",
-                        Lucide::WholeWord,
-                        if mac {
-                            "Match whole word (⌥⌘W)"
-                        } else {
-                            "Match whole word (Alt+W)"
-                        },
-                    )
-                    .toggle(f.options.whole_word, cx)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.toggle_find_option(|o| &mut o.whole_word, cx)
-                    })),
+                    icon_button("find-word", Lucide::WholeWord, "Match whole word")
+                        .tooltip_key_binding(find_option_kbd('w'))
+                        .toggle(f.options.whole_word, cx)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.toggle_find_option(|o| &mut o.whole_word, cx)
+                        })),
                 )
                 .child(
-                    icon_button(
-                        "find-regex",
-                        Lucide::Regex,
-                        if mac {
-                            "Use regular expression (⌥⌘R)"
-                        } else {
-                            "Use regular expression (Alt+R)"
-                        },
-                    )
-                    .toggle(f.options.regex, cx)
-                    .on_click(
-                        cx.listener(|this, _, _, cx| this.toggle_find_option(|o| &mut o.regex, cx)),
-                    ),
+                    icon_button("find-regex", Lucide::Regex, "Use regular expression")
+                        .tooltip_key_binding(find_option_kbd('r'))
+                        .toggle(f.options.regex, cx)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.toggle_find_option(|o| &mut o.regex, cx)
+                        })),
                 )
                 .child(
                     div()
@@ -301,15 +280,18 @@ impl DiffView {
                         .child(count),
                 )
                 .child(
-                    icon_button("find-prev", Lucide::ArrowUp, "Previous match (⇧↵)")
+                    icon_button("find-prev", Lucide::ArrowUp, "Previous match")
+                        .tooltip_key_binding(chord_kbd("shift+enter"))
                         .on_click(cx.listener(|this, _, _, cx| this.find_step(false, cx))),
                 )
                 .child(
-                    icon_button("find-next", Lucide::ArrowDown, "Next match (↵)")
+                    icon_button("find-next", Lucide::ArrowDown, "Next match")
+                        .tooltip_key_binding(chord_kbd("enter"))
                         .on_click(cx.listener(|this, _, _, cx| this.find_step(true, cx))),
                 )
                 .child(
-                    icon_button("find-close", Lucide::Close, "Close (esc)")
+                    icon_button("find-close", Lucide::Close, "Close")
+                        .tooltip_key_binding(chord_kbd("escape"))
                         .on_click(cx.listener(|this, _, window, cx| this.close_find(window, cx))),
                 )
                 .into_any_element(),

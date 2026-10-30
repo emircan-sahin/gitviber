@@ -556,12 +556,12 @@ impl DiffView {
                             el.child("Click the code to open it")
                         })
                         .child(
-                            icon_button("places-close", Lucide::Close, "Close (esc)").on_click(
-                                cx.listener(|this, _, _, cx| {
+                            icon_button("places-close", Lucide::Close, "Close")
+                                .tooltip_key_binding(gitviber_ui::widgets::chord_kbd("escape"))
+                                .on_click(cx.listener(|this, _, _, cx| {
                                     this.places = None;
                                     cx.notify();
-                                }),
-                            ),
+                                })),
                         ),
                 )
                 .when(list, |el| {

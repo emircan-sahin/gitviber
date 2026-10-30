@@ -7,8 +7,9 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use gitviber_core::{api, git};
-use gitviber_ui::keymap::{file, shortcut_label};
+use gitviber_ui::keymap::file;
 use gitviber_ui::memory::Live;
+use gitviber_ui::widgets::command_kbd;
 use gitviber_ui::workspace::{BarItem, BarSlot, PanelContext, register_bar_item};
 use gitviber_ui::{ActiveAppTheme, Project, Settings};
 use gpui_kit::assets::IconName;
@@ -258,7 +259,8 @@ impl Render for TopPart {
                     .ghost()
                     .small()
                     .icon(IconName::RefreshCw)
-                    .tooltip(tip("Fetch", "git.fetch", cx))
+                    .tooltip("Fetch")
+                    .tooltip_key_binding(command_kbd("git.fetch", cx))
                     .disabled(busy)
                     .on_click(move |_, window, cx| ops::fetch(&state, window, cx))
                     .into_any_element()
@@ -280,13 +282,6 @@ fn then_divider(group: AnyElement, cx: &App) -> AnyElement {
         .child(group)
         .child(div().w(px(1.)).h(px(18.)).mx_1().bg(cx.app_theme().border))
         .into_any_element()
-}
-
-fn tip(title: &str, command: &str, cx: &App) -> String {
-    match shortcut_label(command, cx) {
-        Some(k) => format!("{title}  {k}"),
-        None => title.to_string(),
-    }
 }
 
 /// What runs now: an action's label, or a network command's with git's progress and Cancel. At
@@ -391,8 +386,8 @@ fn undo_controls(state: &Entity<RepoState>, _: &mut Window, cx: &mut App) -> Any
             } else {
                 IconName::Undo2
             })
-            .tooltip(tip(
-                &label,
+            .tooltip(label)
+            .tooltip_key_binding(command_kbd(
                 if forward { "git.redo" } else { "git.undo" },
                 cx,
             ))
@@ -548,7 +543,12 @@ fn pull_button(state: &Entity<RepoState>, cx: &mut App) -> AnyElement {
                     )
                 }),
         )
-        .tooltip(gone.unwrap_or_else(|| tip("Pull (fast-forward only)", "git.pull", cx)))
+        .map(|b| match gone {
+            Some(gone) => b.tooltip(gone),
+            None => b
+                .tooltip("Pull (fast-forward only)")
+                .tooltip_key_binding(command_kbd("git.pull", cx)),
+        })
         .on_click(move |_, window, cx| ops::pull(&st1, git::PullMode::Ff, false, window, cx));
     let st2 = state.clone();
     DropdownButton::new("pull")
@@ -622,7 +622,8 @@ fn push_button(state: &Entity<RepoState>, cx: &mut App) -> AnyElement {
                     )
                 },
             ))
-            .tooltip(tip(&label, "git.push", cx))
+            .tooltip(label)
+            .tooltip_key_binding(command_kbd("git.push", cx))
             .on_click(move |_, window, cx| ops::push(&st1, false, false, window, cx));
         let st2 = state.clone();
         let mut split = DropdownButton::new("push")

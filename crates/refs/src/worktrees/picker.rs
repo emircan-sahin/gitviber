@@ -36,7 +36,7 @@ use crate::names::{folder_name, plural};
 use crate::ops;
 use crate::repo::{RepoEvent, RepoState};
 use crate::requests::{self, Picker};
-use crate::ui::{chip_on, key_hints};
+use crate::ui::{chip_on, key_hint, key_hints};
 
 /// The top bar's worktree chip, kept in the bar's element state per project.
 pub fn worktree_chip(ctx: &PanelContext, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
@@ -959,26 +959,24 @@ impl Render for WorktreePicker {
             .collect();
         let hot = self.hot();
         // ↑↓ goes without saying: left out, the hints of the open row fit on one line.
-        let mut keys = vec!["↵ open here".to_string()];
+        let mut keys = vec![key_hint("enter", "open here")];
         if let Some(h) = &hot {
             if !h.prunable && !h.bare {
-                keys.push("T terminal".into());
+                keys.push(key_hint("t", "terminal"));
             }
             if self.can_merge(h) {
-                keys.push("M merge".into());
+                keys.push(key_hint("m", "merge"));
             }
             if h.branch.is_some() && !h.prunable {
-                keys.push("F2 rename".into());
+                keys.push(key_hint("f2", "rename"));
             }
             if !h.main && !h.current {
-                let key = if h.prunable {
-                    "⌫ prune"
-                } else {
-                    "⌫ remove"
-                };
-                keys.push(key.into());
+                keys.push(key_hint(
+                    "backspace",
+                    if h.prunable { "prune" } else { "remove" },
+                ));
             }
-            keys.push("right-click for more".into());
+            keys.push(key_hint("", "right-click for more"));
         }
         let lock_note = hot.as_ref().filter(|h| h.locked).map(|h| {
             format!(
