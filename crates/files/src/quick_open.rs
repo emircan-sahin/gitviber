@@ -10,7 +10,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gitviber_core::api;
-use gitviber_ui::workspace::{PanelContext, QuickItem, register_quick_open};
+use gitviber_ui::fuzzy::Candidates;
+use gitviber_ui::workspace::{PanelContext, QuickOpen, register_quick_open};
 use gpui_kit::{App, AppContext as _, Global, SharedString, Task};
 
 use crate::{OpenOptions, backend, open_file};
@@ -19,7 +20,7 @@ use crate::{OpenOptions, backend, open_file};
 const KEEP: usize = 4;
 
 struct Listing {
-    files: Arc<Vec<SharedString>>,
+    files: Arc<Candidates>,
     /// git's words when the last read failed; `files` are then the last ones read, if any.
     error: Option<SharedString>,
     /// The project's revision the list was read at.
@@ -64,8 +65,13 @@ fn refresh(root: PathBuf, revision: u64, cx: &mut App) {
     let core = backend::core(cx);
     let key = root.clone();
     let task = cx.spawn(async move |cx| {
+        // Matching's per-file data is worked out here too, once per read, off the UI thread.
         let files = cx
-            .background_spawn(async move { api::files::list_files(&core) })
+            .background_spawn(async move {
+                api::files::list_files(&core).map(|files| {
+                    Candidates::new(files.into_iter().map(SharedString::from).collect())
+                })
+            })
             .await;
         cx.update_global::<QuickOpenFiles, _>(|index, _| {
             let Some(l) = index.lists.get_mut(&key) else {
@@ -73,7 +79,7 @@ fn refresh(root: PathBuf, revision: u64, cx: &mut App) {
             };
             match files {
                 Ok(files) => {
-                    l.files = Arc::new(files.into_iter().map(SharedString::from).collect());
+                    l.files = Arc::new(files);
                     l.error = None;
                 }
                 Err(e) => l.error = Some(e.into()),
@@ -113,7 +119,7 @@ fn prune(index: &mut QuickOpenFiles) {
 
 /// The project's files as last read; a first read, or one after the repo changed, starts in the
 /// background.
-fn files(ctx: &PanelContext, cx: &mut App) -> Arc<Vec<SharedString>> {
+fn files(ctx: &PanelContext, cx: &mut App) -> Arc<Candidates> {
     let Some(project) = &ctx.project else {
         return Arc::default();
     };
@@ -161,31 +167,22 @@ pub(crate) fn register(cx: &mut App) {
     register_quick_open(
         cx,
         Rc::new(|ctx: &PanelContext, cx: &mut App| {
-            let files = files(ctx, cx);
-            files
-                .iter()
-                .map(|path| {
-                    let workspace = ctx.workspace.clone();
-                    let open = path.clone();
-                    QuickItem {
-                        label: path.clone(),
-                        detail: None,
-                        is_path: true,
-                        run: Rc::new(move |window, cx| {
-                            open_file(
-                                &workspace,
-                                &open,
-                                OpenOptions {
-                                    preview: false,
-                                    ..Default::default()
-                                },
-                                window,
-                                cx,
-                            )
-                        }),
-                    }
-                })
-                .collect()
+            let workspace = ctx.workspace.clone();
+            QuickOpen {
+                files: files(ctx, cx),
+                open: Rc::new(move |path, window, cx| {
+                    open_file(
+                        &workspace,
+                        path,
+                        OpenOptions {
+                            preview: false,
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                }),
+            }
         }),
     );
 }

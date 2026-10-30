@@ -5,24 +5,23 @@
 //! the dialog is gone, from where focus was, so it lands where the user was working.
 
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gitviber_core::git::{FileChange, GitInfo};
 use gitviber_core::{Core, api};
 use gitviber_files::quick_open::{self, QuickOpenFiles, QuickOpenStatus};
-use gitviber_ui::fuzzy::{Match, fuzzy_match, match_path, prepare_query};
+use gitviber_ui::fuzzy::{self, Candidate, Candidates, Match, prepare_query};
 use gitviber_ui::keymap::{self, Category, IS_MAC, ROOT_CONTEXT, bindings_for};
 use gitviber_ui::memory::Live;
 use gitviber_ui::state::bump;
 use gitviber_ui::widgets::{
     ChangeKind, FileIcon, Keycaps, PAGE, StatusLetter, key_hint, key_hints,
 };
-use gitviber_ui::workspace::{
-    PanelContext, QuickItem, Registry, RunItem, Selection, Slot, Workspace,
-};
+use gitviber_ui::workspace::{PanelContext, QuickOpen, Registry, Selection, Slot, Workspace};
 use gitviber_ui::{ActiveAppTheme, Settings, UiState, actions::workbench, store};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::WindowExt as _;
@@ -40,6 +39,9 @@ use crate::command_icon::command_icon;
 
 /// Rows shown at most; the best matches are at the top, and a repo can have 100k files.
 const LIMIT: usize = 200;
+/// Files matched on the UI thread at most; past it a query is matched in the background, the
+/// rows shown staying until its answer comes, and the next key cancels it.
+const MATCH_ON_UI_THREAD: usize = 2_000;
 /// Files remembered per repository.
 const RECENT_FILES: usize = 20;
 
@@ -56,11 +58,9 @@ enum Run {
         id: &'static str,
         action: Box<dyn Action>,
     },
-    Quick(RunItem),
     /// A file of quick open's: remembered as recently opened.
     File {
         path: SharedString,
-        run: RunItem,
     },
     Change(Selection),
     Terminal {
@@ -161,7 +161,7 @@ pub struct Palette {
     root: Option<PathBuf>,
     /// The commands that applied where focus was.
     commands: Vec<Listed>,
-    quick: Option<Vec<QuickItem>>,
+    quick: Option<QuickOpen>,
     /// Where quick open's list stood when `quick` was asked for.
     listing: Option<QuickOpenStatus>,
     recent: Vec<String>,
@@ -175,6 +175,9 @@ pub struct Palette {
     current: Rc<Cell<usize>>,
     focus_return: Option<FocusHandle>,
     _load: Option<Task<()>>,
+    /// Set to stop the files' matching in flight.
+    matching: Arc<AtomicBool>,
+    _matching: Option<Task<()>>,
     /// Quick open's lists, observed once files were asked for: a listing landing shows up.
     _listed: Option<Subscription>,
     _live: Live,
@@ -233,29 +236,38 @@ fn rank<T>(
     path: bool,
     recency: impl Fn(&T) -> Option<usize>,
 ) -> Vec<(usize, Match)> {
-    let q = prepare_query(query);
-    let mut out: Vec<(usize, Match, usize)> = list
-        .iter()
-        .enumerate()
-        .filter_map(|(at, item)| {
-            let m = if path {
-                match_path(&q, text(item))
-            } else {
-                fuzzy_match(&q, text(item))
-            }?;
-            Some((at, m, recency(item).unwrap_or(usize::MAX)))
-        })
-        .collect();
-    out.sort_by(|a, b| {
-        let by_score = if q.is_empty() {
-            std::cmp::Ordering::Equal
-        } else {
-            b.1.score.total_cmp(&a.1.score)
-        };
-        by_score.then(a.2.cmp(&b.2)).then(a.0.cmp(&b.0))
+    let candidates = list.iter().map(|item| Candidate {
+        text: text(item),
+        bag: None,
+        recency: recency(item),
     });
-    out.truncate(LIMIT);
-    out.into_iter().map(|(at, m, _)| (at, m)).collect()
+    fuzzy::rank(
+        &prepare_query(query),
+        candidates,
+        path,
+        LIMIT,
+        &AtomicBool::new(false),
+    )
+    .unwrap_or_default()
+}
+
+/// `rank` for quick open's files; None when cancelled.
+fn rank_files(
+    query: &[char],
+    files: &Candidates,
+    recent: &HashMap<String, usize>,
+    cancel: &AtomicBool,
+) -> Option<Vec<(usize, Match)>> {
+    let candidates = files
+        .texts()
+        .iter()
+        .zip(files.bags())
+        .map(|(text, bag)| Candidate {
+            text,
+            bag: Some(*bag),
+            recency: recent.get(text.as_ref()).copied(),
+        });
+    fuzzy::rank(query, candidates, true, LIMIT, cancel)
 }
 
 /// Where each run of rows under one heading starts. A list under one heading or none has no
@@ -377,6 +389,8 @@ impl Palette {
                 current: Rc::default(),
                 focus_return,
                 _load: None,
+                matching: Arc::default(),
+                _matching: None,
                 _listed: None,
                 _live: Live::new("Palette"),
             };
@@ -460,12 +474,14 @@ impl Palette {
         }));
     }
 
-    fn rank(&mut self, cx: &App) {
+    fn rank(&mut self, cx: &mut Context<Self>) {
+        self.matching.store(true, Ordering::Relaxed);
+        self._matching = None;
         self.rank_rows(cx);
         self.sections = sections(&self.rows);
     }
 
-    fn rank_rows(&mut self, cx: &App) {
+    fn rank_rows(&mut self, cx: &mut Context<Self>) {
         let query = self.query.to_string();
         if let Some(q) = query.strip_prefix('>') {
             let recent = &UiState::get(cx).recent_commands;
@@ -508,7 +524,10 @@ impl Palette {
             return;
         }
         self.rows = match self.mode {
-            Mode::Commands | Mode::Files => self.file_rows(&query),
+            Mode::Commands | Mode::Files => {
+                self.rank_files(&query, cx);
+                return;
+            }
             Mode::Changes => {
                 let list = self.changes.as_deref().unwrap_or_default();
                 rank(&query, list, |(_, f, _)| f.path.as_str(), true, |_| None)
@@ -549,43 +568,59 @@ impl Palette {
         };
     }
 
-    fn file_rows(&self, query: &str) -> Vec<Row> {
-        let Some(items) = &self.quick else {
-            return Vec::new();
+    /// Sets the files' rows; a query over many files is matched in the background, the rows
+    /// staying as they are until it's done.
+    fn rank_files(&mut self, query: &str, cx: &mut Context<Self>) {
+        let Some(files) = self.quick.as_ref().map(|q| q.files.clone()) else {
+            self.rows = Vec::new();
+            return;
         };
-        let recent = &self.recent;
-        rank(
-            query,
-            items,
-            |i| i.label.as_ref(),
-            true,
-            |i| recent.iter().position(|r| r.as_str() == i.label.as_ref()),
-        )
-        .into_iter()
-        .map(|(at, m)| {
-            let item = &items[at];
-            let recently =
-                query.trim().is_empty() && recent.iter().any(|r| r.as_str() == item.label.as_ref());
-            Row {
-                label: item.label.clone(),
-                hits: m.hits,
-                hint: item.detail.clone(),
-                keys: None,
-                icon: None,
-                group: Some(if recently { "Recently opened" } else { "Files" }),
-                path: item.is_path,
-                status: None,
-                run: if item.is_path {
-                    Run::File {
-                        path: item.label.clone(),
-                        run: item.run.clone(),
-                    }
-                } else {
-                    Run::Quick(item.run.clone())
-                },
-            }
-        })
-        .collect()
+        let query = prepare_query(query);
+        let mut recent = HashMap::new();
+        for (at, path) in self.recent.iter().enumerate() {
+            recent.entry(path.clone()).or_insert(at);
+        }
+        if query.is_empty() || files.len() <= MATCH_ON_UI_THREAD {
+            let found = rank_files(&query, &files, &recent, &AtomicBool::new(false));
+            self.rows = self.file_rows(&files, found.unwrap_or_default(), query.is_empty());
+            return;
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.matching = cancel.clone();
+        let matched = cx.background_spawn(async move {
+            rank_files(&query, &files, &recent, &cancel).map(|found| (files, found))
+        });
+        self._matching = Some(cx.spawn(async move |this, cx| {
+            let Some((files, found)) = matched.await else {
+                return;
+            };
+            let _ = this.update(cx, |p, cx| {
+                p.rows = p.file_rows(&files, found, false);
+                p.sections = sections(&p.rows);
+                cx.notify();
+            });
+        }));
+    }
+
+    fn file_rows(&self, files: &Candidates, found: Vec<(usize, Match)>, empty: bool) -> Vec<Row> {
+        found
+            .into_iter()
+            .map(|(at, m)| {
+                let label = files.texts()[at].clone();
+                let recently = empty && self.recent.iter().any(|r| r.as_str() == label.as_ref());
+                Row {
+                    label: label.clone(),
+                    hits: m.hits,
+                    hint: None,
+                    keys: None,
+                    icon: None,
+                    group: Some(if recently { "Recently opened" } else { "Files" }),
+                    path: true,
+                    status: None,
+                    run: Run::File { path: label },
+                }
+            })
+            .collect()
     }
 
     fn confirm(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -607,17 +642,16 @@ impl Palette {
                     None => window.dispatch_action(action, cx),
                 });
             }
-            Run::Quick(run) => {
-                let run = run.clone();
-                window.defer(cx, move |window, cx| run(window, cx));
-            }
-            Run::File { path, run } => {
+            Run::File { path } => {
                 if let Some(root) = &self.root {
                     remember_file(&root.to_string_lossy(), path, cx);
                 }
-                let (run, ws) = (run.clone(), self.workspace.clone());
+                let Some(open) = self.quick.as_ref().map(|q| q.open.clone()) else {
+                    return;
+                };
+                let (path, ws) = (path.clone(), self.workspace.clone());
                 window.defer(cx, move |window, cx| {
-                    run(window, cx);
+                    open(&path, window, cx);
                     if let Some(ws) = ws.upgrade() {
                         ws.update(cx, |ws, cx| ws.focus_center(window, cx));
                     }
@@ -795,10 +829,13 @@ impl Render for Palette {
                 );
                 let (mono, current) = (t.fonts.code.clone(), self.current.clone());
                 CommandItem::new().label(label.clone()).child(move |_, cx| {
+                    #[cfg(test)]
+                    tests::ROWS_BUILT.with(|n| n.set(n.get() + 1));
                     let t = cx.app_theme();
                     let lit = current.get() == i;
                     // Over the list's own row padding and its gray highlight: 28px at 12.5px,
-                    // lit solid in the primary color.
+                    // lit solid in the primary color. One height for every row, keycaps or
+                    // not: the list measures one row for all (`uniform_rows`).
                     div()
                         .flex()
                         .flex_1()
@@ -809,6 +846,7 @@ impl Render for Palette {
                         .my(px(-6.))
                         .px_2()
                         .py(px(6.))
+                        .h(px(28.))
                         .rounded(px(4.))
                         .text_size(gpui_kit::rems(0.78125))
                         .line_height(px(16.))
@@ -894,6 +932,7 @@ impl Render for Palette {
             .child(
                 command
                     .filterable(false)
+                    .uniform_rows(true)
                     .bordered(false)
                     .max_h(px(420.))
                     .placeholder(self.placeholder())
@@ -946,6 +985,11 @@ mod tests {
     use gitviber_ui::workspace::{TabHandle, TabItem, register_opener, register_quick_open};
     use gpui_kit::{TestAppContext, VisualTestContext};
 
+    thread_local! {
+        /// Palette rows built into elements: measured or drawn.
+        pub(super) static ROWS_BUILT: Cell<usize> = const { Cell::new(0) };
+    }
+
     #[test]
     fn the_old_apps_recent_files_keep_their_roots_and_paths() {
         let old = serde_json::json!({
@@ -966,7 +1010,7 @@ mod tests {
         let push = Listed::new(by_id("git.push"), None);
         assert_eq!(push.label.as_ref(), "Push");
         assert_eq!(push.search, "Git Push");
-        let m = fuzzy_match(&prepare_query("git push"), &push.search).unwrap();
+        let m = fuzzy::fuzzy_match(&prepare_query("git push"), &push.search).unwrap();
         assert_eq!(push.label_hits(m.hits), [0, 1, 2, 3]);
         let open = Listed::new(by_id("workbench.quickOpen"), None);
         assert_eq!(open.label.as_ref(), open.search);
@@ -1128,20 +1172,15 @@ mod tests {
                 cx,
                 Rc::new(|ctx: &PanelContext, _: &mut App| {
                     let ws = ctx.workspace.clone();
-                    let run: RunItem = Rc::new(move |window, cx| {
-                        let file = Selection::File {
-                            path: "src/a.rs".into(),
-                        };
-                        if let Some(ws) = ws.upgrade() {
-                            ws.update(cx, |ws, cx| ws.open(file, false, window, cx));
-                        }
-                    });
-                    vec![QuickItem {
-                        label: "src/a.rs".into(),
-                        detail: None,
-                        is_path: true,
-                        run,
-                    }]
+                    QuickOpen {
+                        files: Arc::new(Candidates::new(vec!["src/a.rs".into()])),
+                        open: Rc::new(move |path, window, cx| {
+                            let file = Selection::File { path: path.into() };
+                            if let Some(ws) = ws.upgrade() {
+                                ws.update(cx, |ws, cx| ws.open(file, false, window, cx));
+                            }
+                        }),
+                    }
                 }),
             );
         });
@@ -1387,5 +1426,175 @@ mod tests {
         assert!(shown.starts_with("Could not list files: "), "{shown}");
         assert!(shown.contains("index"), "{shown}");
         _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// Made-up repository paths, deterministic, `n` of them.
+    fn fake_files(n: usize) -> Vec<String> {
+        const DIRS: [&str; 8] = [
+            "src",
+            "crates/core",
+            "crates/ui/src",
+            "docs",
+            "tests/fixtures",
+            "vendor/lib",
+            "assets/icons",
+            "scripts",
+        ];
+        const WORDS: [&str; 10] = [
+            "model", "view", "render", "state", "list", "commit", "branch", "panel", "terminal",
+            "search",
+        ];
+        (0..n)
+            .map(|i| {
+                format!(
+                    "{}/{}_{}/{}{}.rs",
+                    DIRS[i % DIRS.len()],
+                    WORDS[(i / 7) % WORDS.len()],
+                    i % 53,
+                    WORDS[(i / 3) % WORDS.len()],
+                    i
+                )
+            })
+            .collect()
+    }
+
+    /// Quick open over `files`, as the files crate registers it.
+    fn register_files(files: &[String], cx: &mut VisualTestContext) {
+        let files = Arc::new(Candidates::new(
+            files.iter().map(|f| f.clone().into()).collect(),
+        ));
+        cx.update(|_, cx| {
+            register_quick_open(
+                cx,
+                Rc::new(move |_: &PanelContext, _: &mut App| QuickOpen {
+                    files: files.clone(),
+                    open: Rc::new(|_, _, _| {}),
+                }),
+            )
+        });
+    }
+
+    fn settle(cx: &mut VisualTestContext) {
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.update(|window, cx| _ = window.draw(cx));
+        }
+    }
+
+    fn labels(palette: &Entity<Palette>, cx: &mut VisualTestContext) -> Vec<String> {
+        cx.update(|_, cx| {
+            let p = palette.read(cx);
+            p.rows.iter().map(|r| r.label.to_string()).collect()
+        })
+    }
+
+    /// The list sizes itself from one row: opening on a full page of files and typing build
+    /// about the rows on screen, not every row listed.
+    #[gpui_kit::test]
+    fn only_the_rows_on_screen_are_built(cx: &mut TestAppContext) {
+        let (host, cx) = window("uniform", cx);
+        register_files(&fake_files(500), cx);
+        let ws = cx.update(|_, cx| host.read(cx).ws.clone());
+        ROWS_BUILT.with(|n| n.set(0));
+        let palette = cx
+            .update(|window, cx| Palette::show(Mode::Files, &ws, window, cx))
+            .unwrap();
+        settle(cx);
+        assert_eq!(labels(&palette, cx).len(), LIMIT);
+        // A few frames' worth of the ~15 rows on screen; measuring every row was 2 × 200.
+        let built = ROWS_BUILT.with(|n| n.replace(0));
+        assert!(built < LIMIT, "{built} rows built on open");
+        cx.simulate_keystrokes("m");
+        settle(cx);
+        let built = ROWS_BUILT.with(|n| n.replace(0));
+        assert!(built < LIMIT, "{built} rows built for a key");
+    }
+
+    /// Many files are matched off the UI thread: the rows stay until the answer comes, a newer
+    /// query drops an older one's, and the ranking is the one matching on the UI thread gives.
+    #[gpui_kit::test]
+    fn many_files_are_matched_in_the_background(cx: &mut TestAppContext) {
+        let (host, cx) = window("background", cx);
+        let files = fake_files(MATCH_ON_UI_THREAD * 3);
+        register_files(&files, cx);
+        let ws = cx.update(|_, cx| host.read(cx).ws.clone());
+        let palette = cx
+            .update(|window, cx| Palette::show(Mode::Files, &ws, window, cx))
+            .unwrap();
+        settle(cx);
+        let unfiltered = labels(&palette, cx);
+        let query = |q: &str, cx: &mut VisualTestContext| {
+            let q = SharedString::from(q.to_string());
+            cx.update(|_, cx| {
+                palette.update(cx, |p, cx| {
+                    p.query = q;
+                    p.rank(cx);
+                })
+            })
+        };
+        query("zzz", cx);
+        query("listmod", cx);
+        assert_eq!(
+            labels(&palette, cx),
+            unfiltered,
+            "kept until the answer comes"
+        );
+        settle(cx);
+        let expected: Vec<String> = rank("listmod", &files, |f| f.as_str(), true, |_| None)
+            .into_iter()
+            .map(|(at, _)| files[at].clone())
+            .collect();
+        assert!(!expected.is_empty());
+        assert_eq!(labels(&palette, cx), expected);
+    }
+
+    /// Opening quick open over 20k files and typing into it, timed; run with --ignored
+    /// --nocapture. Measures matching plus the list's layout, without a real window.
+    #[gpui_kit::test]
+    #[ignore]
+    fn bench_quick_open_over_many_files(cx: &mut TestAppContext) {
+        use std::time::Instant;
+        let (host, cx) = window("bench", cx);
+        let files = fake_files(20_000);
+        register_files(&files, cx);
+        let ws = cx.update(|_, cx| host.read(cx).ws.clone());
+        let mut open = Vec::new();
+        for _ in 0..3 {
+            let t = Instant::now();
+            let palette = cx.update(|window, cx| Palette::show(Mode::Files, &ws, window, cx));
+            settle(cx);
+            open.push(t.elapsed());
+            assert!(palette.is_some());
+            let mut keys = Vec::new();
+            for key in ["s", "r", "c", "m", "o"] {
+                let t = Instant::now();
+                cx.simulate_keystrokes(key);
+                settle(cx);
+                keys.push(t.elapsed());
+            }
+            eprintln!("keys: {keys:?}");
+            cx.simulate_keystrokes("escape escape");
+            settle(cx);
+        }
+        eprintln!("open: {open:?}");
+        let q = prepare_query("srcmo");
+        let t = Instant::now();
+        let n = files
+            .iter()
+            .filter_map(|f| fuzzy::match_path(&q, f))
+            .count();
+        eprintln!(
+            "match_path over {}: {:?} ({n} hits)",
+            files.len(),
+            t.elapsed()
+        );
+        let candidates = Candidates::new(files.iter().map(|f| f.clone().into()).collect());
+        let t = Instant::now();
+        let top = rank_files(&q, &candidates, &HashMap::new(), &AtomicBool::new(false));
+        eprintln!(
+            "rank_files: {:?} ({} rows)",
+            t.elapsed(),
+            top.unwrap().len()
+        );
     }
 }
