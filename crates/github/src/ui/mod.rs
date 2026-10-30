@@ -230,6 +230,11 @@ fn follow_projects(cx: &mut App) {
                 }
                 ProjectEvent::Failed(_) => return,
             }
+            // A plain folder has no remote to ask GitHub about; the last repository's lists go.
+            if project.is_folder() {
+                Cache::use_repo(cx, &root);
+                return;
+            }
             let main = project
                 .main_worktree()
                 .unwrap_or(&root)

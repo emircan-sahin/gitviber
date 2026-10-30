@@ -165,7 +165,7 @@ impl RepoState {
             _project: Some(sub),
             _live: Live::new("RepoState"),
         };
-        if project.read(cx).is_open() {
+        if project.read(cx).is_repo() {
             state.refresh(cx);
         }
         state
@@ -250,6 +250,14 @@ impl RepoState {
     /// `git`: HEAD, refs or the index moved, so branches, worktrees and the journal may have too;
     /// else only the working tree changed, and status says all of it.
     fn refresh_parts(&mut self, git: bool, cx: &mut Context<Self>) {
+        // A plain folder has no git to read: its file changes would only fail here.
+        if self
+            .project
+            .upgrade()
+            .is_some_and(|p| p.read(cx).is_folder())
+        {
+            return;
+        }
         if self.reading.is_some() {
             self.again = Some(self.again.unwrap_or(false) || git);
             return;

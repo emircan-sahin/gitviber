@@ -21,6 +21,10 @@ fn in_front(cx: &mut App, f: impl FnOnce(&Entity<RepoState>, &mut Window, &mut A
             else {
                 return;
             };
+            if project.read(cx).is_folder() {
+                crate::folder::not_a_repo(&project, window, cx);
+                return;
+            }
             let state = RepoState::get(&project, cx);
             f(&state, window, cx);
         });

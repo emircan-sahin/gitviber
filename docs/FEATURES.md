@@ -318,6 +318,14 @@ writes a skill for them while agent control is on:
   and `=` `−` `0` zoom in, out and back to fit. On macOS PDFs, audio and video play in the tab; on
   Linux they open in their default app.
 
+### Folders without git
+
+A folder that isn't a git repository opens as a project of its own (`gitviber .`, File → Open
+Repository…) and stays in the projects list. The terminal, the explorer and file editing, the
+Obsidian vault and agents work there as usual; quick open and search follow its `.gitignore`. The git
+panel and the top bar offer Initialize Repository instead, and once `git init` has run (there, or in
+a terminal) the project turns into a repository in place.
+
 ### Markdown
 
 Markdown renders the way GitHub shows it, in files, pull requests and issues alike: Mermaid

@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use gitviber_core::{Event, watch};
-use gpui_kit::{Context, EventEmitter, SharedString, Subscription, Task};
+use gpui_kit::{AppContext as _, Context, EventEmitter, SharedString, Subscription, Task};
 
 use crate::backend::{self, CoreEvents, has_core};
 use crate::memory::Live;
@@ -17,7 +17,11 @@ pub enum RepoState {
     Opening,
     /// Open: `main` is the main worktree, which the projects list is keyed by.
     Open { main: PathBuf },
-    /// Not a repository, or git failed: what it said.
+    /// Open, but outside any git repository: files, terminals and agents work, git's views
+    /// offer `git init`. A `.git` appearing (Initialize, or `git init` in a terminal) opens it
+    /// again as a repository.
+    Folder,
+    /// git failed (a refusal for the folder's owner, a broken config): what it said.
     Failed(String),
 }
 
@@ -39,6 +43,8 @@ pub struct Project {
     state: RepoState,
     revision: u64,
     _open: Option<Task<()>>,
+    /// A plain folder looking for the `.git` that would make it a repository.
+    _recheck: Option<Task<()>>,
     _events: Option<Subscription>,
     _live: Live,
 }
@@ -63,6 +69,9 @@ impl Project {
                     if let Event::RepoChanged(change) = event
                         && Path::new(&change.root) == this.root
                     {
+                        if change.git {
+                            this.recheck_folder(cx);
+                        }
                         this.revision += 1;
                         cx.emit(ProjectEvent::RepoChanged(change.clone()));
                         cx.notify();
@@ -76,6 +85,7 @@ impl Project {
             state: RepoState::Opening,
             revision: 0,
             _open: None,
+            _recheck: None,
             _events: events,
             _live: Live::new("Project"),
         };
@@ -89,7 +99,9 @@ impl Project {
         if !has_core(cx) {
             return;
         }
-        if from.is_none() {
+        // A folder becoming a repository stays usable as a folder until it is one.
+        let upgrading = self.state == RepoState::Folder;
+        if from.is_none() && !upgrading {
             self.state = RepoState::Opening;
         }
         let answer = backend::open_repo(cx, root);
@@ -100,11 +112,17 @@ impl Project {
             };
             let _ = this.update(cx, |this, cx| {
                 match opened {
+                    // Still no repository: nothing changed for what shows it.
+                    Ok(repo) if upgrading && !repo.git => {}
                     Ok(repo) => {
                         this.root = PathBuf::from(&repo.root);
                         this.name = folder_name(&this.root);
-                        this.state = RepoState::Open {
-                            main: PathBuf::from(repo.main),
+                        this.state = if repo.git {
+                            RepoState::Open {
+                                main: PathBuf::from(repo.main),
+                            }
+                        } else {
+                            RepoState::Folder
                         };
                         cx.emit(match from {
                             Some(from) => ProjectEvent::Switched {
@@ -115,8 +133,9 @@ impl Project {
                         });
                     }
                     Err(err) => {
-                        // A failed switch leaves core on the worktree it had.
-                        if from.is_none() {
+                        // A failed switch leaves core on the worktree it had; a failed
+                        // upgrade, on the folder.
+                        if from.is_none() && !upgrading {
                             this.state = RepoState::Failed(err.clone());
                         }
                         cx.emit(ProjectEvent::Failed(err));
@@ -150,14 +169,38 @@ impl Project {
         &self.state
     }
 
+    /// Open, as a repository or as a plain folder: its files can be read.
     pub fn is_open(&self) -> bool {
+        matches!(self.state, RepoState::Open { .. } | RepoState::Folder)
+    }
+
+    /// Open as a git repository: git's views have something to show.
+    pub fn is_repo(&self) -> bool {
         matches!(self.state, RepoState::Open { .. })
     }
 
-    /// The main worktree, once open.
+    /// Open as a plain folder, outside any repository.
+    pub fn is_folder(&self) -> bool {
+        self.state == RepoState::Folder
+    }
+
+    /// Runs `git init` in the folder, then opens it as the repository it is now. The answer is
+    /// git's error, for the caller to show.
+    pub fn init_repository(&mut self, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        let root = self.root.clone();
+        let made = cx.background_spawn(async move { gitviber_core::git::init(&root) });
+        cx.spawn(async move |this, cx| {
+            made.await?;
+            let _ = this.update(cx, |this, cx| this.recheck_folder(cx));
+            Ok(())
+        })
+    }
+
+    /// The main worktree, once open, which keys the project; a plain folder is its own.
     pub fn main_worktree(&self) -> Option<&Path> {
         match &self.state {
             RepoState::Open { main } => Some(main),
+            RepoState::Folder => Some(&self.root),
             _ => None,
         }
     }
@@ -167,8 +210,30 @@ impl Project {
         self.revision
     }
 
+    /// A plain folder that has a `.git` now (`git init` in a terminal) is opened again, as the
+    /// repository it is. Only then: each open restarts core's watcher, whose first news would
+    /// ask again. Off the UI thread: a stalled network volume answers the stat in seconds.
+    fn recheck_folder(&mut self, cx: &mut Context<Self>) {
+        if !self.is_folder() || self._open.is_some() || self._recheck.is_some() {
+            return;
+        }
+        let root = self.root.clone();
+        let probe = root.clone();
+        let made = cx.background_spawn(async move { probe.join(".git").exists() });
+        self._recheck = Some(cx.spawn(async move |this, cx| {
+            let made = made.await;
+            let _ = this.update(cx, |this, cx| {
+                this._recheck = None;
+                if made && this.is_folder() && this._open.is_none() {
+                    this.open(root, None, cx);
+                }
+            });
+        }));
+    }
+
     /// Refresh (a git action finished, or the user asked): as if the watcher had seen a change.
     pub fn repo_changed(&mut self, cx: &mut Context<Self>) {
+        self.recheck_folder(cx);
         self.revision += 1;
         let change = watch::RepoChanged {
             root: self.root.to_string_lossy().into_owned(),
