@@ -5,7 +5,8 @@
 //! default, as the old app kept them.
 
 use gitviber_ui::keymap::edit::{clash_note, recorded, with_binding};
-use gitviber_ui::keymap::{self, IS_MAC, bindings_for, chord_keys, format_chord};
+use gitviber_ui::keymap::{self, IS_MAC, bindings_for, format_chord};
+use gitviber_ui::widgets::Keycaps;
 use gitviber_ui::{ActiveAppTheme, Settings};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -31,28 +32,6 @@ pub fn categories() -> Vec<keymap::Category> {
         }
     }
     out
-}
-
-fn keycaps(chord: &str, cx: &App) -> AnyElement {
-    let t = cx.app_theme();
-    div()
-        .flex()
-        .gap(px(2.))
-        .children(chord_keys(chord, IS_MAC).into_iter().map(|k| {
-            div()
-                .min_w(px(18.))
-                .px(px(4.))
-                .rounded(px(3.))
-                .border_1()
-                .border_color(t.border_strong)
-                .bg(t.elevated)
-                .text_color(t.foreground)
-                .text_size(rems(0.6875))
-                .line_height(rems(1.))
-                .text_center()
-                .child(SharedString::from(k))
-        }))
-        .into_any_element()
 }
 
 /// One key of a command (or the + after them): a click records over it.
@@ -85,7 +64,7 @@ fn recorder(
             .into_any_element()
     } else {
         match label {
-            Some(chord) => keycaps(chord, cx),
+            Some(chord) => Keycaps::chord(chord).into_any_element(),
             None => Icon::new(IconName::Plus)
                 .xsmall()
                 .text_color(t.subtle)

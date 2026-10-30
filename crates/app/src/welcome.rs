@@ -3,7 +3,7 @@
 
 use gitviber_ui::actions::file;
 use gitviber_ui::assets::LOGO;
-use gitviber_ui::widgets::KeyHint;
+use gitviber_ui::widgets::Keycaps;
 use gitviber_ui::{ActiveAppTheme, UiState};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -22,7 +22,7 @@ fn hint_row(label: &'static str, id: &'static str, cx: &App) -> AnyElement {
         .gap_6()
         .w(px(260.))
         .child(div().text_color(t.muted_foreground).child(label))
-        .child(KeyHint::command(id, cx))
+        .child(Keycaps::command(id, cx))
         .into_any_element()
 }
 
@@ -48,7 +48,6 @@ pub fn no_project(window: &mut Window, cx: &mut App) -> AnyElement {
     let t = cx.app_theme().clone();
     let recent = (!UiState::get(cx).recent_projects.is_empty())
         .then(|| crate::projects::list("welcome-projects", None, None, false, None, window, cx));
-    let open_key = gitviber_ui::keymap::shortcut_label("file.openRepo", cx);
     div()
         .debug_selector(|| "welcome".into())
         .size_full()
@@ -101,10 +100,7 @@ pub fn no_project(window: &mut Window, cx: &mut App) -> AnyElement {
                                 .child(
                                     div()
                                         .ml_auto()
-                                        .font_family(t.fonts.code.clone())
-                                        .text_size(rems(0.6875))
-                                        .opacity(0.7)
-                                        .child(open_key.unwrap_or_default()),
+                                        .child(Keycaps::command("file.openRepo", cx).compact().lit(true)),
                                 ),
                         )
                         .on_click(|_, window, cx| window.dispatch_action(Box::new(file::OpenRepo), cx)),

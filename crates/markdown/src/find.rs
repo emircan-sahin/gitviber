@@ -6,7 +6,7 @@ use std::ops::Range;
 
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::keymap::find;
-use gitviber_ui::widgets::Toggle as _;
+use gitviber_ui::widgets::{Toggle as _, chord_kbd, find_option_kbd};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Enter, Escape, Input, InputEvent, InputState};
@@ -197,20 +197,14 @@ impl Render for FindBar {
             }
         };
         let steps = matches!(self.found, Ok((_, n)) if n > 0);
-        let mac = cfg!(target_os = "macos");
-        let key = |k: &str| {
-            if mac {
-                format!("⌥⌘{k}")
-            } else {
-                format!("Alt+{k}")
-            }
-        };
-        let toggle = |id: &'static str, icon: IconName, tip: String, on: bool, which: u8| {
+        let toggle = |id: &'static str, icon: IconName, tip: &'static str, on: bool, which: u8| {
+            let letter = ['c', 'w', 'r'][which as usize];
             Button::new(id)
                 .ghost()
                 .xsmall()
                 .icon(Icon::new(icon))
                 .tooltip(tip)
+                .tooltip_key_binding(find_option_kbd(letter))
                 .toggle(on, cx)
                 .on_click(cx.listener(move |this, _, _, cx| this.flip(which, cx)))
         };
@@ -220,6 +214,7 @@ impl Render for FindBar {
                 .xsmall()
                 .icon(Icon::new(icon))
                 .tooltip(tip)
+                .tooltip_key_binding(chord_kbd(if dir < 0 { "shift+enter" } else { "enter" }))
                 .disabled(!steps)
                 .on_click(cx.listener(move |_, _, _, cx| cx.emit(FindBarEvent::Step(dir))))
         };
@@ -253,21 +248,21 @@ impl Render for FindBar {
             .child(toggle(
                 "find-case",
                 IconName::CaseSensitive,
-                format!("Match Case ({})", key("C")),
+                "Match Case",
                 self.query.match_case,
                 0,
             ))
             .child(toggle(
                 "find-word",
                 IconName::WholeWord,
-                format!("Match Whole Word ({})", key("W")),
+                "Match Whole Word",
                 self.query.whole_word,
                 1,
             ))
             .child(toggle(
                 "find-regex",
                 IconName::Regex,
-                format!("Use Regular Expression ({})", key("R")),
+                "Use Regular Expression",
                 self.query.regex,
                 2,
             ))
@@ -279,19 +274,15 @@ impl Render for FindBar {
                     .text_color(if bad { t.destructive } else { t.subtle })
                     .child(count),
             )
-            .child(arrow(
-                "find-prev",
-                IconName::ArrowUp,
-                "Previous Match (⇧↵)",
-                -1,
-            ))
-            .child(arrow("find-next", IconName::ArrowDown, "Next Match (↵)", 1))
+            .child(arrow("find-prev", IconName::ArrowUp, "Previous Match", -1))
+            .child(arrow("find-next", IconName::ArrowDown, "Next Match", 1))
             .child(
                 Button::new("find-close")
                     .ghost()
                     .xsmall()
                     .icon(Icon::new(IconName::Close))
-                    .tooltip("Close (Esc)")
+                    .tooltip("Close")
+                    .tooltip_key_binding(chord_kbd("escape"))
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(FindBarEvent::Close))),
             )
     }

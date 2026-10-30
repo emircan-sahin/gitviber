@@ -58,6 +58,13 @@ size table once beats setting a size at ~360 call sites.
   upstream a 10% foreground hairline. `popover.rs`: no `p_3` of its own, as the old app's
   popover had none; each content pads itself.
 
+- Shortcuts drawn as the app's keycaps (gitviber_ui `widgets::Keycaps`), one look everywhere.
+  `kbd.rs`: `set_renderer` installs a function every `Kbd` with an appearance draws itself with,
+  and `Kbd::lit` tells it the row is highlighted; without one, upstream's look. `menu/popup_menu.rs`:
+  a menu row's shortcut passes `lit`. `tooltip.rs`: a tooltip's keys are that `Kbd` (upstream:
+  plain muted text). `button/button.rs`: `tooltip_key_binding`, the keys a text tooltip shows
+  beside it (upstream only looked them up from an action).
+
 - Scrolling the code editor (`highlighter/input_adapter.rs`): the editor asks for the
   visible lines' styles every frame and upstream ran the tree-sitter query each time. Styles are
   now cached per 32 lines (at most 128 chunks; a chunk over 32 KB isn't cached), keyed by the

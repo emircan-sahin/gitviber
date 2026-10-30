@@ -3,12 +3,12 @@
 //! top, ↑/↓ Home/End PgUp/PgDn ↵ and ⇧F10 on the rows, drags to reorder or file, and a right-click menu for the
 //! pin, the color and the folder.
 
-use gitviber_ui::keymap::{file, shortcut_label};
+use gitviber_ui::keymap::file;
 use gitviber_ui::memory::Live;
 use gitviber_ui::projects::{
     DropOn, Line, Place, ProjectOrg, ProjectSort, SWATCHES, Section, home_relative, project_name,
 };
-use gitviber_ui::widgets::{Ends, list_step, on_list_keys, project_tile, swatch_tile};
+use gitviber_ui::widgets::{Ends, Keycaps, list_step, on_list_keys, project_tile, swatch_tile};
 use gitviber_ui::workspace::PanelContext;
 use gitviber_ui::{ActiveAppTheme, Project, UiState, Workspace};
 use gpui_kit::assets::IconName;
@@ -24,7 +24,7 @@ use gpui_kit::{
     WeakEntity, Window, div, prelude::FluentBuilder as _, px, rems,
 };
 
-use crate::ui::{is_menu_key, key_hints, open_row_menu};
+use crate::ui::{is_menu_key, key_hint, key_hints, open_row_menu};
 
 /// Each window's project chip as last drawn, for Switch Project to open; a closed window's or an
 /// old project's goes with it (weak).
@@ -875,11 +875,10 @@ impl Render for ProjectPicker {
             .icon(IconName::FolderPlus)
             .tooltip("New folder")
             .on_click(cx.listener(|this, _, window, cx| this.new_folder(None, window, cx)));
-        let open_key = shortcut_label("file.openRepo", cx);
         let action = |id: &'static str,
                       icon: IconName,
                       label: &'static str,
-                      key: Option<SharedString>,
+                      keys: Keycaps,
                       act: Box<dyn gpui_kit::Action>| {
             let weak = weak.clone();
             div()
@@ -895,7 +894,7 @@ impl Render for ProjectPicker {
                 .text_size(rems(0.75))
                 .child(Icon::new(icon).small().text_color(t.muted_foreground))
                 .child(div().flex_1().child(label))
-                .children(key.map(|k| div().text_size(rems(0.6875)).text_color(t.subtle).child(k)))
+                .child(keys.compact())
                 .on_click(move |_, window, cx| {
                     let _ = weak.update(cx, |p, cx| p.close(cx));
                     window.dispatch_action(act.boxed_clone(), cx);
@@ -960,14 +959,14 @@ impl Render for ProjectPicker {
                         "project-open",
                         IconName::Plus,
                         "Open repository…",
-                        open_key.map(Into::into),
+                        Keycaps::command("file.openRepo", cx),
                         Box::new(file::OpenRepo),
                     ))
                     .child(action(
                         "project-clone",
                         IconName::FolderDown,
                         "Clone repository…",
-                        None,
+                        Keycaps::command("file.cloneRepo", cx),
                         Box::new(file::CloneRepo),
                     )),
             )
@@ -980,9 +979,9 @@ impl Render for ProjectPicker {
                     .text_size(rems(0.65625))
                     .text_color(t.subtle)
                     .child(key_hints([
-                        "↵ open".into(),
-                        "drag to arrange".into(),
-                        "right-click for more".into(),
+                        key_hint("enter", "open"),
+                        key_hint("", "drag to arrange"),
+                        key_hint("", "right-click for more"),
                     ])),
             )
     }

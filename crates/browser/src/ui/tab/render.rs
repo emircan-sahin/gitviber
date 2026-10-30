@@ -2,6 +2,7 @@
 //! the area the page's view lies over (or its picture, a placeholder, a device's frame).
 
 use super::*;
+use gitviber_ui::widgets::{chord_kbd, command_kbd, find_option_kbd};
 use gitviber_ui::Settings;
 use gpui::{MouseButton, ObjectFit, StyledImage as _};
 use gpui_kit::component::checkbox::Checkbox;
@@ -34,12 +35,6 @@ struct Mark {
     w: f32,
     h: f32,
 }
-
-const OPTION_CASE: &str = if cfg!(target_os = "macos") {
-    "Match Case (⌥⌘C)"
-} else {
-    "Match Case (Alt+C)"
-};
 
 /// A find box's option key (⌥⌘C, ⌥⌘W, ⌥⌘R; Alt+ elsewhere): its letter.
 fn option_key(k: &gpui::Keystroke) -> Option<char> {
@@ -436,11 +431,16 @@ impl BrowserTab {
                     "pick",
                     IconName::Crosshair,
                     if self.picking {
-                        "Stop picking (Esc)"
+                        "Stop picking"
                     } else {
-                        "Pick an element for the agent (⇧⌘C)"
+                        "Pick an element for the agent"
                     },
                 )
+                .tooltip_key_binding(if self.picking {
+                    chord_kbd("escape")
+                } else {
+                    command_kbd("browser.pick", cx)
+                })
                 .selected(self.picking)
                 .on_click(cx.listener(|this, _, window, cx| {
                     let on = !this.picking;
@@ -459,11 +459,12 @@ impl BrowserTab {
                     "device",
                     IconName::TabletSmartphone,
                     if self.saved.device.is_some() {
-                        "Leave device mode (⇧⌘M)"
+                        "Leave device mode"
                     } else {
-                        "Device mode (⇧⌘M)"
+                        "Device mode"
                     },
                 )
+                .tooltip_key_binding(command_kbd("browser.toggleDevice", cx))
                 .selected(self.saved.device.is_some())
                 .on_click(cx.listener(|this, _, window, cx| this.toggle_device(window, cx))),
             )
@@ -647,16 +648,19 @@ impl BrowserTab {
                     )
                 })
                 .child(
-                    icon_button("find-case", IconName::CaseSensitive, OPTION_CASE)
+                    icon_button("find-case", IconName::CaseSensitive, "Match Case")
+                        .tooltip_key_binding(find_option_kbd('c'))
                         .selected(f.match_case)
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_match_case(cx))),
                 )
                 .child(
-                    icon_button("find-prev", IconName::ChevronUp, "Previous (⇧⌘G)")
+                    icon_button("find-prev", IconName::ChevronUp, "Previous")
+                        .tooltip_key_binding(command_kbd("browser.findPrev", cx))
                         .on_click(cx.listener(|this, _, _, cx| this.run_find(true, cx))),
                 )
                 .child(
-                    icon_button("find-next", IconName::ChevronDown, "Next (⌘G)")
+                    icon_button("find-next", IconName::ChevronDown, "Next")
+                        .tooltip_key_binding(command_kbd("browser.findNext", cx))
                         .on_click(cx.listener(|this, _, _, cx| this.run_find(false, cx))),
                 )
                 .child(

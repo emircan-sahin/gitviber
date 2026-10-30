@@ -138,15 +138,8 @@ impl Render for Tooltip {
                         TooltipContext::Element(ref builder) => this.child(builder(window, cx)),
                     }))
                 })
-                .when_some(key_binding, |this, kbd| {
-                    this.child(
-                        div()
-                            .text_xs()
-                            .flex_shrink_0()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(kbd.appearance(false)),
-                    )
-                }),
+                // GitViber: keycaps, as everywhere a shortcut shows (upstream: plain text).
+                .when_some(key_binding, |this, kbd| this.items_center().child(kbd)),
         )
     }
 }

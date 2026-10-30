@@ -35,7 +35,7 @@ use crate::ops;
 use crate::points::branch_point;
 use crate::repo::RepoState;
 use crate::requests::{self, Picker};
-use crate::ui::key_hints;
+use crate::ui::{key_hint, key_hints};
 use crate::worktrees::{Worktree, list as wt_list, main_back_offer};
 
 /// The top bar's branch chip, kept in the bar's element state per project.
@@ -1212,9 +1212,9 @@ impl Render for BranchPicker {
                             }),
                     )
                     .child(key_hints([
-                        format!("↵ {enter}"),
-                        "F2 rename".into(),
-                        "right-click for more".into(),
+                        key_hint("enter", enter),
+                        key_hint("f2", "rename"),
+                        key_hint("", "right-click for more"),
                     ])),
             )
     }

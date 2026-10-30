@@ -2,7 +2,7 @@
 
 use gitviber_ui::ActiveAppTheme;
 use gitviber_ui::widgets::{
-    ChangeKind, CountBadge, FileIcon, KeyHint, LineCounts, Look, PathLabel, RelativeTime,
+    ChangeKind, CountBadge, FileIcon, Keycaps, LineCounts, Look, PathLabel, RelativeTime,
     StatusDot, StatusLetter, StatusPill, now_unix,
 };
 use gpui_kit::{
@@ -75,8 +75,8 @@ impl Render for Widgets {
             )
             .child(
                 row()
-                    .child(KeyHint::command("workbench.showCommands", cx))
-                    .child(KeyHint::chord("alt+cmd+b")),
+                    .child(Keycaps::command("workbench.showCommands", cx))
+                    .child(Keycaps::chord("alt+cmd+b")),
             )
             .child(
                 row()

@@ -5,8 +5,8 @@
 
 use gitviber_ui::actions::{terminal, view, workbench};
 use gitviber_ui::assets::LOGO;
-use gitviber_ui::keymap::{self, shortcut_label};
-use gitviber_ui::widgets::{Look, StatusDot};
+use gitviber_ui::keymap;
+use gitviber_ui::widgets::{Look, StatusDot, command_kbd};
 use gitviber_ui::workspace::{BarSlot, PanelContext, Registry, Slot};
 use gitviber_ui::{ActiveAppTheme, windows};
 use gpui_kit::assets::IconName;
@@ -25,13 +25,9 @@ struct Bar<'a> {
 }
 
 impl Bar<'_> {
-    /// The command's title with its keys, for a tooltip.
-    fn tip(&self, id: &str) -> String {
-        let title = keymap::command(id).map(|c| c.title).unwrap_or_default();
-        match shortcut_label(id, self.cx) {
-            Some(keys) => format!("{title}  {keys}"),
-            None => title.to_string(),
-        }
+    /// The command's title, for a tooltip that shows its keys beside it.
+    fn title(&self, id: &str) -> &'static str {
+        keymap::command(id).map(|c| c.title).unwrap_or_default()
     }
 
     /// Handled along focus's path or by a global listener (a feature's `cx.on_action`).
@@ -52,7 +48,8 @@ impl Bar<'_> {
             .ghost()
             .small()
             .icon(icon)
-            .tooltip(self.tip(command))
+            .tooltip(self.title(command))
+            .tooltip_key_binding(command_kbd(command, self.cx))
             .disabled(!self.enabled(&action))
             .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
     }
@@ -104,7 +101,7 @@ fn terminal_button(bar: &Bar, shown: bool, news: Option<Look>) -> AnyElement {
     if let Some(what) = what {
         button = button.tooltip(format!(
             "{} · a terminal: {what}",
-            bar.tip("terminal.toggle")
+            bar.title("terminal.toggle")
         ));
     }
     div()

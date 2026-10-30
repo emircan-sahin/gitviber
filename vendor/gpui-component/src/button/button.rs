@@ -5,6 +5,7 @@ use crate::{
     Size, StyleSized, StyledExt,
     button::ButtonIcon,
     h_flex,
+    kbd::Kbd,
     select::Caret,
     styled::{FocusLine, focus_style},
     tooltip::{ManagedTooltipExt as _, Tooltip},
@@ -219,6 +220,8 @@ pub struct Button {
         SharedString,
         Option<(Rc<Box<dyn gpui::Action>>, Option<SharedString>)>,
     )>,
+    /// GitViber: the keys a text tooltip shows beside it.
+    tooltip_keys: Option<Kbd>,
     tooltip_placement: Option<Placement>,
     tooltip_show_delay: Option<Duration>,
     tooltip_builder: Option<Rc<dyn Fn(&mut Window, &mut App) -> gpui::AnyView>>,
@@ -267,6 +270,7 @@ impl Button {
             content_style: StyleRefinement::default(),
             icon_size: None,
             tooltip: None,
+            tooltip_keys: None,
             tooltip_placement: None,
             tooltip_show_delay: None,
             tooltip_builder: None,
@@ -417,6 +421,12 @@ impl Button {
     /// Set the tooltip of the button.
     pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
         self.tooltip = Some((tooltip.into(), None));
+        self
+    }
+
+    /// GitViber: the keys a [`Self::tooltip`] shows beside its text.
+    pub fn tooltip_key_binding(mut self, keys: Option<Kbd>) -> Self {
+        self.tooltip_keys = keys;
         self
     }
 
@@ -628,6 +638,7 @@ impl RenderOnce for Button {
         let loading = self.loading;
         let tooltip_placement = self.tooltip_placement;
         let tooltip_show_delay = self.tooltip_show_delay;
+        let tooltip_keys = self.tooltip_keys.clone();
         // The explicit name wins: it exists precisely for the cases where the
         // visible content is not what a listener needs to hear.
         let accessibility_label = self.accessibility_name();
@@ -904,6 +915,7 @@ impl RenderOnce for Button {
                     tooltip_show_delay,
                     move |window, cx| {
                         Tooltip::new(tooltip.clone())
+                            .key_binding(tooltip_keys.clone())
                             .when_some(action.clone(), |this, (action, context)| {
                                 this.action(
                                     action.boxed_clone().as_ref(),

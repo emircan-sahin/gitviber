@@ -143,12 +143,10 @@ impl Render for OpenInButton {
             .as_ref()
             .map_or("Open in…".into(), |a| a.name.clone().into());
         let icon = last.as_ref().and_then(|a| open_in::icon(a, cx));
-        let tip = gitviber_ui::keymap::shortcut_label("file.openIn", cx);
-        let tip: SharedString = match (&last, tip) {
-            (Some(a), Some(k)) => format!("Open in {}  {k}", a.name).into(),
-            (Some(a), None) => format!("Open in {}", a.name).into(),
-            (None, Some(k)) => format!("Open in…  {k}").into(),
-            (None, None) => "Open in…".into(),
+        let keys = gitviber_ui::widgets::command_kbd("file.openIn", cx);
+        let tip: SharedString = match &last {
+            Some(a) => format!("Open in {}", a.name).into(),
+            None => "Open in…".into(),
         };
         let apps = open_in::apps(cx);
         let picked = last.map(|a| a.id);
@@ -270,7 +268,9 @@ impl Render for OpenInButton {
                     })
                     .child(label)
                     .tooltip(move |window, cx| {
-                        gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                        gpui_kit::component::tooltip::Tooltip::new(tip.clone())
+                            .key_binding(keys.clone())
+                            .build(window, cx)
                     })
                     .on_click(move |_, _, cx| {
                         let _ = click.update(cx, |b, cx| b.run(cx));

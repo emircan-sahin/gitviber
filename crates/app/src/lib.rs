@@ -1,5 +1,6 @@
 //! The GitViber app as a library: the binary's `main` and the examples run it.
 
+mod command_icon;
 mod crash;
 mod dialogs;
 mod help;

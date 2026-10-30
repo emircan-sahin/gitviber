@@ -127,16 +127,13 @@ fn in_front(cx: &mut App, f: impl FnOnce(&mut Window, &mut App) + 'static) {
 
 /// The top bar's globe: a new browser tab beside the code.
 fn globe(_: &PanelContext, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    let tip = match gitviber_ui::keymap::shortcut_label("browser.open", cx) {
-        Some(keys) => format!("Open browser  {keys}"),
-        None => "Open browser".into(),
-    };
     Some(
         Button::new("open-browser")
             .ghost()
             .small()
             .icon(IconName::Globe)
-            .tooltip(tip)
+            .tooltip("Open browser")
+            .tooltip_key_binding(gitviber_ui::widgets::command_kbd("browser.open", cx))
             .on_click(|_, window, cx| open_new_tab(window, cx))
             .into_any_element(),
     )

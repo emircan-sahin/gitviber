@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use gitviber_ui::ActiveAppTheme;
 use gitviber_ui::keymap::shortcut_label;
-use gitviber_ui::widgets::KeyHint;
+use gitviber_ui::widgets::Keycaps;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -163,7 +163,7 @@ impl Row {
             .hint
             .keys
             .iter()
-            .map(|id| KeyHint::command(id, cx).into_any_element())
+            .map(|id| Keycaps::command(id, cx).into_any_element())
             .collect();
         row.flex()
             .flex_wrap()

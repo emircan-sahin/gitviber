@@ -1164,7 +1164,8 @@ impl PopupMenu {
         .find_map(|handle| Kbd::binding_for_action_in(action.as_ref(), handle, window))
         .or_else(|| Kbd::global_binding_for_action(action.as_ref(), window))
         .map(|this| {
-            this.p_0()
+            this.lit(lit)
+                .p_0()
                 .flex_nowrap()
                 .border_0()
                 .bg(gpui::transparent_white())

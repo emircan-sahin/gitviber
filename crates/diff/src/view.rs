@@ -21,7 +21,7 @@ use crate::style::{DiffOptions, DiffStyle, ImageMode, Layout, Whitespace};
 use gitviber_core::Core;
 use gitviber_ui::keymap::scroll::{self, Step};
 use gitviber_ui::keymap::{editor, find as find_keys};
-use gitviber_ui::widgets::{Toggle as _, segmented};
+use gitviber_ui::widgets::{Toggle as _, command_kbd, segmented};
 use gitviber_ui::workspace::Toast;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::input::Rope;
@@ -2046,7 +2046,8 @@ impl DiffView {
                         .icon(Lucide::Columns2)
                         .label("Split")
                         .toggle(o.layout == Layout::Split, cx)
-                        .tooltip("Unified / split (⌥S)")
+                        .tooltip("Unified / split")
+                        .tooltip_key_binding(command_kbd("diff.toggleSplit", cx))
                         .on_click(cx.listener(|_, _, _, cx| {
                             DiffOptions::update(cx, |o| o.layout = Layout::Split)
                         })),
@@ -2116,24 +2117,23 @@ impl DiffView {
             )
             .when(text_diff, |el| {
                 el.child(
-                    icon_button("prev-change", Lucide::ArrowUp, "Previous change (⇧F7)")
+                    icon_button("prev-change", Lucide::ArrowUp, "Previous change")
+                        .tooltip_key_binding(command_kbd("diff.prevChange", cx))
                         .on_click(cx.listener(|this, _, _, cx| this.prev_change(cx))),
                 )
                 .child(
-                    icon_button("next-change", Lucide::ArrowDown, "Next change (F7)")
+                    icon_button("next-change", Lucide::ArrowDown, "Next change")
+                        .tooltip_key_binding(command_kbd("diff.nextChange", cx))
                         .on_click(cx.listener(|this, _, _, cx| this.next_change(cx))),
                 )
                 .child(layout_toggle(cx))
                 .child(
-                    icon_button(
-                        "collapse",
-                        Lucide::FoldVertical,
-                        "Collapse unchanged lines (⌥C)",
-                    )
-                    .toggle(o.collapse, cx)
-                    .on_click(cx.listener(|_, _, _, cx| {
-                        DiffOptions::update(cx, |o| o.collapse = !o.collapse)
-                    })),
+                    icon_button("collapse", Lucide::FoldVertical, "Collapse unchanged lines")
+                        .tooltip_key_binding(command_kbd("diff.toggleCollapse", cx))
+                        .toggle(o.collapse, cx)
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            DiffOptions::update(cx, |o| o.collapse = !o.collapse)
+                        })),
                 )
                 .child(
                     icon_button(
@@ -2146,6 +2146,7 @@ impl DiffView {
                         },
                     )
                     .toggle(o.whitespace != Whitespace::Exact, cx)
+                    .tooltip_key_binding(command_kbd("diff.toggleWhitespace", cx))
                     .on_click(cx.listener(|_, _, _, cx| toggle_whitespace(cx))),
                 )
             })
