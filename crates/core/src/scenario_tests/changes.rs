@@ -402,3 +402,30 @@ fn untracked_files_follow_the_users_setting() {
     run(&r, &["config", "--unset", "status.showUntrackedFiles"]).unwrap();
     assert_eq!(untracked(&r), [".claude/notes.md", "data/sub/one.csv"]);
 }
+
+/// A file rewritten with the same content stays "stat-dirty" in the index until something
+/// writes the index; our lock-free reads never do, so the refresh has to.
+#[test]
+fn the_stat_cache_refresh_saves_what_status_learns() {
+    let sb = Sandbox::new("stat-cache");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+    let file = fs::File::options()
+        .write(true)
+        .open(r.join("a.txt"))
+        .unwrap();
+    file.set_modified(later).unwrap();
+    // diff-files trusts the index's stat data and reads no content.
+    let stat_dirty = |r: &Path| run_text(r, &["diff-files", "--name-only"]).unwrap();
+    assert_eq!(stat_dirty(&r).trim(), "a.txt");
+    assert!(status(&r).unwrap().unstaged.is_empty());
+    assert_eq!(
+        stat_dirty(&r).trim(),
+        "a.txt",
+        "status took no lock to save it"
+    );
+    refresh_stat_cache(&r);
+    assert_eq!(stat_dirty(&r), "");
+}

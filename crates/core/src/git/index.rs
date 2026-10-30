@@ -140,6 +140,14 @@ pub fn discard(repo: &Path, paths: &[String]) -> Result<(), String> {
     run_on(repo, &["restore", "--worktree"], paths)
 }
 
+/// Writes fresh stat data to the index. Our reads take no lock (cmd.rs), so git never saves
+/// what a status learns: files written in the same second as the index (a new worktree's whole
+/// checkout) were hashed again on every status, 0.2 s instead of 0.03 s for 20k files. Best
+/// effort: another git holding index.lock makes it give up at once.
+pub fn refresh_stat_cache(repo: &Path) {
+    let _ = run_with(repo, &["update-index", "-q", "--refresh"], &[], None);
+}
+
 /// Puts `path` in the working tree as commit `sha` has it; the index stays as it is.
 pub fn restore_from(repo: &Path, sha: &str, path: &str) -> Result<(), String> {
     validate_rev(sha)?;
