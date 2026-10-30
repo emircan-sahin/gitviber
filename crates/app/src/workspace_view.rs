@@ -6,6 +6,7 @@ use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use gitviber_browser::ui::BrowserTab;
 use gitviber_ui::actions::{diff, editor, file, repo, review, tab, terminal, view, workbench};
 use gitviber_ui::keymap::ROOT_CONTEXT;
 use gitviber_ui::memory::{self, Live};
@@ -22,11 +23,11 @@ use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::resizable::HandleEdge;
 use gpui_kit::component::resize_handle;
 use gpui_kit::{
-    AnyElement, AnyWindowHandle, App, AppContext as _, Axis, Context, DragMoveEvent, Empty, Entity,
-    ExternalPaths, FocusHandle, Global, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ModifiersChangedEvent, MouseButton, ParentElement as _, PathPromptOptions, Render,
-    ScrollHandle, StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity,
-    Window, div, prelude::*, px, size,
+    AnyElement, AnyView, AnyWindowHandle, App, AppContext as _, Axis, Context, DragMoveEvent,
+    Empty, Entity, ExternalPaths, FocusHandle, Global, InteractiveElement as _, IntoElement,
+    KeyDownEvent, ModifiersChangedEvent, MouseButton, ParentElement as _, PathPromptOptions,
+    Render, ScrollHandle, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
+    Subscription, Task, WeakEntity, Window, div, prelude::*, px, size,
 };
 
 use crate::layout::{self, LEFT, RIGHT};
@@ -171,7 +172,9 @@ impl WorkspaceView {
     fn new(workspace: Entity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subs = theme::attach(window, cx);
         subs.push(cx.observe(&workspace, |_, _, cx| cx.notify()));
-        subs.push(cx.observe_global::<Settings>(|_, cx| cx.notify()));
+        // Panels and tabs are cached, and many read a setting or two without observing them;
+        // settings change by hand, so a full redraw then costs nothing.
+        subs.push(cx.observe_global_in::<Settings>(window, |_, window, _| window.refresh()));
         subs.push(cx.observe_window_bounds(window, |_, window, cx| {
             let geometry = windows::geometry(window.window_bounds());
             UiState::update_later(cx, |s| s.window = Some(geometry));
@@ -754,7 +757,7 @@ impl WorkspaceView {
                     .relative()
                     .flex_1()
                     .min_h_0()
-                    .children(panel.map(|p| p.view()))
+                    .children(panel.map(|p| cached(p.view())))
                     .children(folder.map(|p| gitviber_refs::folder::empty_state(&p, cx)))
                     .when(explorer, |d| d.child(self.explorer_buttons(cx))),
             )
@@ -791,7 +794,12 @@ impl WorkspaceView {
                 None => d.flex_1().min_h_0(),
             })
             .bg(t.terminal_background())
-            .child(div().flex_1().min_h_0().children(panel.map(|p| p.view())))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .children(panel.map(|p| cached(p.view()))),
+            )
             .children(focus_line(&focus, window, cx))
             .when(height.is_some(), |d| {
                 // A double click puts it back to its share of the column (the next frame sizes it).
@@ -831,7 +839,11 @@ impl WorkspaceView {
         let has_tabs = !visible.is_empty();
         let content = match (shows, view) {
             (CenterShows::Empty, _) => welcome::empty_center(cx),
-            (_, Some(view)) => view.into_any_element(),
+            // A browser page is a native view placed from its paint, which a cached frame skips.
+            (_, Some(view)) if view.entity_type() == std::any::TypeId::of::<BrowserTab>() => {
+                view.into_any_element()
+            }
+            (_, Some(view)) => cached(view).into_any_element(),
             (_, None) => div().into_any_element(),
         };
         let line = focus_line(&focus, window, cx);
@@ -853,6 +865,12 @@ impl WorkspaceView {
             .children(line)
             .into_any_element()
     }
+}
+
+/// A panel's or the open tab's view, drawn again only when it changed. Uncached, one caret blink
+/// rendered every panel and the open tab again, twice a second.
+fn cached(view: AnyView) -> impl IntoElement {
+    view.cached(StyleRefinement::default().size_full())
 }
 
 /// ⌘B, ⌥⌘B, ⌘J: a hidden panel shows with focus in it, a shown one hides.
@@ -2250,6 +2268,64 @@ mod tests {
             resize(cx, (2400., 1350.));
             assert_eq!(drawn(cx), [None, None, None]);
             assert_eq!(open(cx), [true, false, false]);
+        }
+
+        /// A tab that counts its renders.
+        struct Counted(FocusHandle, Rc<Cell<usize>>);
+        impl Render for Counted {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.1.set(self.1.get() + 1);
+                div().size_full().track_focus(&self.0)
+            }
+        }
+        impl gitviber_ui::workspace::TabItem for Counted {
+            fn tab_title(&self, _: &App) -> gpui_kit::SharedString {
+                "counted".into()
+            }
+        }
+
+        /// A caret blinking in a panel, twice a second for ten seconds, leaves the open tab as
+        /// drawn; a change in the tab still draws it.
+        #[gpui_kit::test]
+        fn a_blink_in_a_panel_does_not_draw_the_open_tab_again(cx: &mut TestAppContext) {
+            let project = setup("blink", cx);
+            let cx = &mut launch(Some(project), START, cx);
+            let ws = workspace(cx);
+            let renders = Rc::new(Cell::new(0));
+            let r = renders.clone();
+            let tab = cx.update(|window, cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.open_tab(
+                        "counted",
+                        false,
+                        move |_, cx| cx.new(|cx| Counted(cx.focus_handle(), r)),
+                        window,
+                        cx,
+                    );
+                });
+                ws.update(cx, |ws, cx| ws.active_view(window, cx)).unwrap()
+            });
+            draw(cx);
+            let panel = cx.update(|window, cx| {
+                let id = ws.read(cx).active_panel(Slot::Left, cx).unwrap();
+                Workspace::ensure_panel(&ws, id, window, cx).unwrap().view()
+            });
+            draw(cx);
+            let settled = renders.get();
+            for _ in 0..20 {
+                cx.update(|_, cx| cx.notify(panel.entity_id()));
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(500));
+                draw(cx);
+            }
+            assert_eq!(
+                renders.get(),
+                settled,
+                "the tab was drawn again for a panel's blink"
+            );
+            cx.update(|_, cx| cx.notify(tab.entity_id()));
+            draw(cx);
+            assert_eq!(renders.get(), settled + 1, "the tab's own change draws it");
         }
 
         /// A plain folder made a repository, by Initialize Repository or by `git init` in a
