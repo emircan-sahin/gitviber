@@ -151,10 +151,12 @@ impl Core {
         Ok(out)
     }
 
-    /// git::refresh_stat_cache, never while one of our own commands writes the index.
-    pub fn refresh_stat_cache(&self, repo: &Path) {
-        let _held = self.index.lock().unwrap_or_else(|e| e.into_inner());
-        git::refresh_stat_cache(repo);
+    /// git::refresh_stat_cache, skipped while one of our own commands writes the index: a
+    /// commit's hooks may hold it for minutes, and this is only a speed-up.
+    fn refresh_stat_cache(&self, repo: &Path) {
+        if let Ok(_held) = self.index.try_lock() {
+            git::refresh_stat_cache(repo);
+        }
     }
 
     /// Registers a network command under the page's id, streaming its progress to `progress`.
