@@ -516,15 +516,15 @@ impl ChangesPanel {
     }
 
     /// Whether git can read the repo yet: until the project opens it says "No repository is
-    /// open". Only the app's core opens a project; without one (a test), or without a project,
-    /// the core the panel reads is open already.
+    /// open", and a plain folder has none. Only the app's core opens a project; without one (a
+    /// test), or without a project, the core the panel reads is open already.
     fn repo_open(&self, cx: &App) -> bool {
         !gitviber_ui::has_core(cx)
             || self
                 .ctx
                 .project
                 .as_ref()
-                .is_none_or(|p| p.read(cx).is_open())
+                .is_none_or(|p| p.read(cx).is_repo())
     }
 
     fn workspace(&self) -> Option<Entity<Workspace>> {

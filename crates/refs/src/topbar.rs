@@ -39,15 +39,27 @@ pub fn register(cx: &mut App) {
     );
     register_bar_item(
         cx,
-        BarItem::new("branch", BarSlot::TopChips, crate::branches::branch_chip).order(1),
+        BarItem::new("branch", BarSlot::TopChips, |ctx, window, cx| {
+            match ctx.project.as_ref().filter(|p| p.read(cx).is_folder()) {
+                Some(project) => Some(crate::folder::init_chip(project, cx)),
+                None => crate::branches::branch_chip(ctx, window, cx),
+            }
+        })
+        .order(1),
     );
     register_bar_item(
         cx,
-        BarItem::new("worktree", BarSlot::TopChips, worktree_chip).order(2),
+        BarItem::new("worktree", BarSlot::TopChips, |ctx, window, cx| {
+            in_repo(ctx, cx).then(|| worktree_chip(ctx, window, cx))?
+        })
+        .order(2),
     );
     register_bar_item(
         cx,
-        BarItem::new("pull-request", BarSlot::TopChips, pull_request_chip).order(3),
+        BarItem::new("pull-request", BarSlot::TopChips, |ctx, window, cx| {
+            in_repo(ctx, cx).then(|| pull_request_chip(ctx, window, cx))?
+        })
+        .order(3),
     );
     for (id, part, order) in [
         ("activity", Part::Activity, 0),
@@ -59,11 +71,16 @@ pub fn register(cx: &mut App) {
         register_bar_item(
             cx,
             BarItem::new(id, BarSlot::TopActions, move |ctx, window, cx| {
-                top_part(part, ctx, window, cx)
+                in_repo(ctx, cx).then(|| top_part(part, ctx, window, cx))?
             })
             .order(order),
         );
     }
+}
+
+/// Not a plain folder: git's parts of the bar have a repository to show.
+fn in_repo(ctx: &PanelContext, cx: &App) -> bool {
+    ctx.project.as_ref().is_none_or(|p| !p.read(cx).is_folder())
 }
 
 // MARK: Chips

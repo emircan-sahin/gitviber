@@ -1,14 +1,14 @@
-//! Opening a folder as the main window's repository: File → Open Repository…, Open Recent, a
-//! project's row, a drop, `gitviber <path>`. git is asked first, off the UI thread, so a folder
-//! that isn't one leaves the open repository as it was: a folder offers Initialize, a file's
-//! folder says so, and one git refuses for its owner offers Trust this folder. A file shows once
-//! its repository is open, after any unsaved edits the switch would drop were settled.
+//! Opening a folder as the main window's project: File → Open Repository…, Open Recent, a
+//! project's row, a drop, `gitviber <path>`. git is asked first, off the UI thread: a folder in
+//! no repository opens as a plain project (git's views offer Initialize there), a file outside
+//! any repository opens only in the plain project it's in, and a folder git refuses for its
+//! owner offers Trust this folder. A file shows once its project is open, after any unsaved
+//! edits the switch would drop were settled.
 
 use std::path::{Path, PathBuf};
 
 use gitviber_core::git;
 use gitviber_files::{OpenOptions, Reveal};
-use gitviber_refs::ask::{Ask, ask};
 use gitviber_refs::errors::GitFix;
 use gitviber_refs::toast::{Action, git_failed};
 use gitviber_ui::Workspace;
@@ -78,13 +78,38 @@ pub fn act(found: Found, request: Request, cx: &mut App) {
                 .title("No such file or folder"),
             cx,
         ),
-        // A file's folder isn't one to make a repository of: one dropped from the desktop would ask.
-        Found::NotARepo if request.file.is_some() => {
-            toast(Toast::info(format!("{name} isn't in a git repository")), cx)
+        // A file's folder isn't one to make a project of (a file dropped from the desktop would
+        // open the desktop), unless the plain project open is where it is.
+        Found::NotARepo if request.file.is_some() => match in_open_folder(&request, cx) {
+            Some((root, file)) => show(root, Some(file), cx),
+            None => toast(Toast::info(format!("{name} isn't in a git repository")), cx),
+        },
+        Found::NotARepo => {
+            let folder = request.folder.canonicalize().unwrap_or(request.folder);
+            show(folder, None, cx)
         }
-        Found::NotARepo => offer_init(request.folder, name, cx),
         Found::Failed(err) => failed(&err, request, cx),
     }
+}
+
+/// The main window's plain project, when `request`'s file is in it, and the file's path from
+/// its folder.
+fn in_open_folder(request: &Request, cx: &mut App) -> Option<(PathBuf, (String, Option<Reveal>))> {
+    let (name, reveal) = request.file.clone()?;
+    let handle = crate::workspace_view::main_window(cx)?;
+    let root = handle
+        .update(cx, |_, window, cx| {
+            let project = Workspace::for_window(window, cx)?
+                .read(cx)
+                .project()?
+                .clone();
+            let p = project.read(cx);
+            p.is_folder().then(|| p.root().to_path_buf())
+        })
+        .ok()??;
+    let folder = request.folder.canonicalize().ok()?;
+    let rel = folder.strip_prefix(&root).ok()?.join(name);
+    Some((root, (rel.to_string_lossy().into_owned(), reveal)))
 }
 
 /// `root` in the main window, brought forward, and `file` in it. Another repository drops the
@@ -143,39 +168,6 @@ fn show(root: PathBuf, file: Option<(String, Option<Reveal>)>, cx: &mut App) {
     if !gitviber_ui::windows::background_launch() {
         cx.activate(true);
     }
-}
-
-fn offer_init(folder: PathBuf, name: String, cx: &mut App) {
-    let Some(handle) = crate::workspace_view::main_window(cx) else {
-        return;
-    };
-    let _ = handle.update(cx, |_, window, cx| {
-        window.activate_window();
-        let answer = ask(
-            Ask::new(
-                "Open Repository",
-                format!("{name} isn't a git repository yet. Initialize one here?"),
-                "Initialize Repository",
-            ),
-            window,
-            cx,
-        );
-        cx.spawn(async move |cx| {
-            if answer.await != Ok(true) {
-                return;
-            }
-            let at = folder.clone();
-            let made = cx.background_spawn(async move { git::init(&at) }).await;
-            cx.update(|cx| match made {
-                Ok(()) => open(Request::folder(folder), cx),
-                Err(err) => toast(
-                    Toast::error(err).title("Couldn't initialize the repository"),
-                    cx,
-                ),
-            });
-        })
-        .detach();
-    });
 }
 
 /// git's words, explained when it knows them; a refusal for the folder's owner offers Trust
@@ -343,16 +335,78 @@ mod tests {
         assert_eq!(asked.get(), 1);
         assert!(has("sub/y.rs", cx) && has("x.rs", cx));
 
-        // Not a repository: the open one stays; a file's folder only says so, a folder offers
-        // Initialize.
+        // Not a repository: a file's folder only says so, the open repository stays.
         app(cx).update(|cx| act(look(&plain), file(&plain, "z.txt"), cx));
         cx.run_until_parked();
-        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+        assert_eq!(asked.get(), 1);
+        assert_eq!(root(cx), Some(b.clone()));
+        // A folder opens as a plain project, once the unsaved edits are settled.
         app(cx).update(|cx| act(look(&plain), Request::folder(&plain), cx));
         cx.run_until_parked();
-        assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+        assert_eq!(asked.get(), 2);
         assert_eq!(root(cx), Some(b.clone()));
+        dirty.set(false);
+        let then = pending.borrow_mut().take().unwrap();
+        app(cx).update(|cx| then(true, cx));
+        cx.run_until_parked();
+        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+        assert_eq!(root(cx), Some(plain.canonicalize().unwrap()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `gitviber notes/idea.md` in the plain project open: the file opens in it, by its path
+    /// from the project's folder.
+    #[gpui_kit::test]
+    fn a_file_in_the_open_plain_project_opens_there(cx: &mut TestAppContext) {
+        let dir = gitviber_ui::test_support::temp_dir("open-plain");
+        let plain = dir.join("hobby");
+        std::fs::create_dir_all(plain.join("notes")).unwrap();
+        std::fs::write(plain.join("notes/idea.md"), "# idea\n").unwrap();
+        let plain = plain.canonicalize().unwrap();
+        if git::toplevel(&plain).is_ok() {
+            return;
+        }
+        gitviber_ui::test_support::config_dir("open-plain-config");
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            gitviber_ui::install_core(cx);
+            crate::placeholders::register(cx);
+            register_opener(cx, "file", |_, _, cx| {
+                Some(TabHandle::new(cx.new(|_| Typed(Rc::default()))))
+            });
+        });
+        let window: AnyWindowHandle = cx
+            .add_window(|window, cx| {
+                let view = crate::workspace_view::main_view(Some(plain.clone()), window, cx);
+                gpui_kit::base::Root::new(view, window, cx)
+            })
+            .into();
+        let cx = &mut VisualTestContext::from_window(window, cx);
+        cx.run_until_parked();
+        let ws = cx.update(|window, cx| Workspace::for_window(window, cx).unwrap());
+        let folder = |cx: &mut VisualTestContext| {
+            ws.read_with(cx, |ws, cx| {
+                ws.project().is_some_and(|p| p.read(cx).is_folder())
+            })
+        };
+        assert!(
+            folder(cx),
+            "a folder in no repository opens as a plain project"
+        );
+        let request = Request {
+            folder: plain.join("notes"),
+            file: Some(("idea.md".into(), None)),
+        };
+        app(cx).update(|cx| act(look(&request.folder), request, cx));
+        cx.run_until_parked();
+        let file = Selection::File {
+            path: "notes/idea.md".into(),
+        };
+        assert!(ws.read_with(cx, |ws, _| ws.tab_for(&file).is_some()));
+        let root = ws.read_with(cx, |ws, cx| {
+            ws.project().map(|p| p.read(cx).root().to_path_buf())
+        });
+        assert_eq!(root, Some(plain));
     }
 
     #[test]

@@ -269,8 +269,15 @@ impl WorkspaceView {
             cx.subscribe_in(
                 &p,
                 window,
-                |this, _, e: &ProjectEvent, window, cx| match e {
-                    ProjectEvent::Opened => crate::dialogs::identity::check(window, cx),
+                |this, p, e: &ProjectEvent, window, cx| match e {
+                    // A plain folder commits nothing; once `git init` made it a repository, the
+                    // git panel and the bar's git parts come in.
+                    ProjectEvent::Opened => {
+                        if p.read(cx).is_repo() {
+                            crate::dialogs::identity::check(window, cx);
+                        }
+                        cx.notify();
+                    }
                     ProjectEvent::RepoChanged(_) => this.check_gone(window, cx),
                     _ => {}
                 },
@@ -304,6 +311,7 @@ impl WorkspaceView {
                 .into_iter()
                 .find_map(|p| match open_repo::look(&p) {
                     Found::Repo(top) => Some(top),
+                    Found::NotARepo => Some(p),
                     _ => None,
                 });
             Some((root, next))
@@ -634,7 +642,14 @@ impl WorkspaceView {
         let header = self.side_header(slot, window, cx);
         let active = self.workspace.read(cx).active_panel(slot, cx);
         let explorer = active == Some(gitviber_files::explorer::PANEL_ID);
-        let panel = active.and_then(|id| Workspace::ensure_panel(&self.workspace, id, window, cx));
+        // The left side is git's: a plain folder gets `git init` there, and no panel reading git.
+        let folder = (slot == Slot::Left)
+            .then(|| self.workspace.read(cx).project().cloned())
+            .flatten()
+            .filter(|p| p.read(cx).is_folder());
+        let panel = active
+            .filter(|_| folder.is_none())
+            .and_then(|id| Workspace::ensure_panel(&self.workspace, id, window, cx));
         reachable(panel.as_ref().and_then(|p| p.focus_handle(cx)));
         let t = cx.app_theme().clone();
         let focus = self.workspace.read(cx).slot_focus(slot).clone();
@@ -731,6 +746,7 @@ impl WorkspaceView {
                     .flex_1()
                     .min_h_0()
                     .children(panel.map(|p| p.view()))
+                    .children(folder.map(|p| gitviber_refs::folder::empty_state(&p, cx)))
                     .when(explorer, |d| d.child(self.explorer_buttons(cx))),
             )
             .child(handle)

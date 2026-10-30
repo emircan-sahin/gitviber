@@ -190,7 +190,7 @@ pub(crate) fn run(root: &Path, q: &Query, id: u64, pcre: bool) -> Result<Found, 
     args.extend(pathspecs(&q.include, "glob"));
     args.extend(pathspecs(&q.exclude, "exclude,glob"));
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let mut cmd = git::command(root, &args);
+    let mut cmd = git::files_command(root, &args);
     // Globs here are globs.
     cmd.env_remove("GIT_LITERAL_PATHSPECS");
     let mut child =

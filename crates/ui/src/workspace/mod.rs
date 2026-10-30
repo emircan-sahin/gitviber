@@ -1721,6 +1721,94 @@ mod tests {
         });
     }
 
+    /// A folder outside any repository opens as a plain project and is listed; `git init` (here,
+    /// or in a terminal, which a refresh stands in for) makes it a repository in place.
+    #[gpui_kit::test]
+    fn a_plain_folder_opens_and_becomes_a_repo_in_place(cx: &mut TestAppContext) {
+        let dir = crate::test_support::temp_dir("ws-plain");
+        let (plain, other) = (dir.join("plain"), dir.join("other"));
+        for d in [&plain, &other] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let (plain, other) = (plain.canonicalize().unwrap(), other.canonicalize().unwrap());
+        if gitviber_core::git::toplevel(&plain).is_ok() {
+            return;
+        }
+        setup(cx);
+        cx.update(crate::install_core);
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        let opened = Rc::new(std::cell::Cell::new(0));
+        let count = opened.clone();
+        let open = |root: &std::path::Path, cx: &mut VisualTestContext| {
+            let root = root.to_path_buf();
+            cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(root, window, cx)));
+            let project = cx.update(|_, cx| ws.read(cx).project().unwrap().clone());
+            let count = count.clone();
+            cx.update(|_, cx| {
+                cx.subscribe(&project, move |_, e: &ProjectEvent, _| {
+                    if matches!(e, ProjectEvent::Opened) {
+                        count.set(count.get() + 1);
+                    }
+                })
+                .detach()
+            });
+            cx.run_until_parked();
+            project
+        };
+        let state = |p: &Entity<Project>, cx: &mut VisualTestContext| {
+            cx.update(|_, cx| p.read(cx).state().clone())
+        };
+
+        let project = open(&plain, cx);
+        assert_eq!(state(&project, cx), RepoState::Folder);
+        cx.update(|_, cx| {
+            let p = project.read(cx);
+            assert!(p.is_open() && p.is_folder() && !p.is_repo());
+            assert_eq!(p.main_worktree(), Some(plain.as_path()));
+            let key = plain.to_string_lossy().into_owned();
+            assert_eq!(UiState::get(cx).recent_projects.first(), Some(&key));
+        });
+        // A refresh with nothing new leaves it a folder.
+        cx.update(|_, cx| project.update(cx, |p, cx| p.repo_changed(cx)));
+        cx.run_until_parked();
+        assert_eq!(state(&project, cx), RepoState::Folder);
+
+        // Initialize Repository: the same project, a repository now, and Opened again.
+        let made = cx.update(|_, cx| project.update(cx, |p, cx| p.init_repository(cx)));
+        cx.run_until_parked();
+        assert_eq!(futures::FutureExt::now_or_never(made), Some(Ok(())));
+        assert_eq!(
+            state(&project, cx),
+            RepoState::Open {
+                main: plain.clone()
+            }
+        );
+        assert_eq!(opened.get(), 2, "opened as a folder, then as a repository");
+        cx.update(|_, cx| {
+            assert_eq!(ws.read(cx).project(), Some(&project));
+            assert_eq!(project.read(cx).root(), plain.as_path());
+        });
+
+        // `git init` in a terminal: the next git change on disk finds it.
+        let project = open(&other, cx);
+        assert_eq!(state(&project, cx), RepoState::Folder);
+        let ok = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&other)
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(ok);
+        cx.update(|_, cx| project.update(cx, |p, cx| p.repo_changed(cx)));
+        cx.run_until_parked();
+        assert!(cx.update(|_, cx| project.read(cx).is_repo()));
+        cx.update(|_, cx| {
+            let list = &UiState::get(cx).recent_projects;
+            assert!(list.contains(&plain.to_string_lossy().into_owned()));
+            assert_eq!(list.first(), Some(&other.to_string_lossy().into_owned()));
+        });
+    }
+
     struct Edited;
     impl Render for Edited {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {

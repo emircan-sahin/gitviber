@@ -220,12 +220,14 @@ impl From<&UiState> for Reopen {
 }
 
 impl Reopen {
-    /// The first that's still a repository: the last worktree while it's one of the first
-    /// project's, else a project, the first project when it's there. Asks git: off the UI thread.
+    /// The first that's still there: the last worktree while it's one of the first project's,
+    /// else a project (a plain folder too), the first project when it's there. Asks git: off
+    /// the UI thread.
     fn find(self) -> Option<PathBuf> {
         let project = self.projects.first()?;
         let repo = |p: &Path| match open_repo::look(p) {
             Found::Repo(top) => Some(top),
+            Found::NotARepo => Some(p.to_path_buf()),
             _ => None,
         };
         if let Some(top) = self.last.as_deref().filter(|l| l != project).and_then(repo) {

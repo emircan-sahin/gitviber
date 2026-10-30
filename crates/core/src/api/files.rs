@@ -11,9 +11,15 @@ pub fn diff_pair(
     whitespace: Option<String>,
 ) -> Res<git::DiffPair> {
     core.in_repo(move |r| {
+        // A plain folder has no HEAD: the file against itself, so no line shows as added.
+        let pair_kind = if kind == "worktree" && git::outside_repo(r) {
+            "files"
+        } else {
+            kind.as_str()
+        };
         git::diff_pair(
             r,
-            &kind,
+            pair_kind,
             &path,
             old_path.as_deref(),
             sha.as_deref(),

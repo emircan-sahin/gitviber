@@ -14,6 +14,7 @@ pub mod ask;
 pub mod askpass;
 pub mod branches;
 pub mod errors;
+pub mod folder;
 pub mod hooks;
 #[cfg(test)]
 mod leaks;
