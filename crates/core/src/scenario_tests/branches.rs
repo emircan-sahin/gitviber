@@ -639,3 +639,24 @@ fn recent_branches_on_a_huge_reflog() {
     assert_eq!(recent_branches(&r, 12).unwrap(), ["main", "new", "old"]);
     assert!(t0.elapsed().as_secs() < 5, "{:?}", t0.elapsed());
 }
+
+/// Commits made on a detached HEAD count until a branch, tag or remote branch holds them.
+#[test]
+fn left_behind_counts_commits_only_a_detached_head_holds() {
+    let sb = Sandbox::new("left-behind");
+    let c = sb.remote_with_clones(1);
+    let r = &c[0];
+    assert_eq!(left_behind(r).unwrap(), 0, "on a branch");
+    let tip = run_text(r, &["rev-parse", "HEAD"]).unwrap();
+    checkout_commit(r, tip.trim()).unwrap();
+    assert_eq!(left_behind(r).unwrap(), 0, "main holds it");
+    write_commit(r, "a.txt", "detached 1\n", "d1");
+    write_commit(r, "a.txt", "detached 2\n", "d2");
+    assert_eq!(left_behind(r).unwrap(), 2);
+    run(r, &["tag", "keep"]).unwrap();
+    assert_eq!(left_behind(r).unwrap(), 0, "a tag holds them");
+    write_commit(r, "a.txt", "detached 3\n", "d3");
+    run(r, &["push", "-q", "origin", "HEAD:refs/heads/pushed"]).unwrap();
+    run(r, &["fetch", "-q"]).unwrap();
+    assert_eq!(left_behind(r).unwrap(), 0, "a remote branch holds them");
+}

@@ -42,6 +42,11 @@ pub fn switch_branch(core: &Core, name: String, create: bool) -> Res<()> {
     })
 }
 
+/// Asked before switching away from a detached HEAD.
+pub fn left_behind(core: &Core) -> Res<usize> {
+    core.read_repo(git::left_behind)
+}
+
 pub fn delete_branches(core: &Core, names: Vec<String>, force: bool) -> Res<()> {
     let label = match names.as_slice() {
         [one] => format!("Delete branch {one}"),

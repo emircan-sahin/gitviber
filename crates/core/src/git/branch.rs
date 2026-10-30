@@ -1,7 +1,9 @@
 //! Local and remote branches: listing, creating, switching, renaming, deleting, upstreams.
 
 use super::cmd::{command, PINS};
-use super::{run, run_network, run_text, run_with, validate_base, validate_branch, worktrees};
+use super::{
+    has_head, run, run_network, run_text, run_with, validate_base, validate_branch, worktrees,
+};
 use crate::network::{self, Net};
 use crate::process::{exec, spawn, spawning};
 use serde::Serialize;
@@ -544,6 +546,29 @@ pub fn switch_branch(repo: &Path, name: &str, create: bool) -> Result<(), String
         vec!["switch", name]
     };
     run(repo, &args).map(|_| ())
+}
+
+/// Past this many the count reads "100+": the walk stops there.
+pub const LEFT_BEHIND_MAX: usize = 100;
+
+/// Commits only a detached HEAD holds (no branch, tag or remote branch has them), which a
+/// switch away would leave to the reflog. 0 on a branch.
+pub fn left_behind(repo: &Path) -> Result<usize, String> {
+    if run(repo, &["symbolic-ref", "-q", "HEAD"]).is_ok() || !has_head(repo) {
+        return Ok(0);
+    }
+    let max = LEFT_BEHIND_MAX.to_string();
+    let args = [
+        "rev-list",
+        "-n",
+        &max,
+        "HEAD",
+        "--not",
+        "--branches",
+        "--tags",
+        "--remotes",
+    ];
+    Ok(run_text(repo, &args)?.lines().count())
 }
 
 /// A new branch at `base`: HEAD, or a full ref to a local or remote branch or a tag. It doesn't

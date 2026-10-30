@@ -84,6 +84,58 @@ pub fn ask(ask: Ask, window: &mut Window, cx: &mut App) -> oneshot::Receiver<boo
     rx
 }
 
+/// `ask` with a second way forward beside its button: Some(true) for the button, Some(false)
+/// for `other`, None when cancelled or closed.
+pub fn ask_or(
+    ask: Ask,
+    other: impl Into<SharedString>,
+    window: &mut Window,
+    cx: &mut App,
+) -> oneshot::Receiver<Option<bool>> {
+    let (tx, rx) = oneshot::channel();
+    let slot: Reply<Option<bool>> = Rc::new(RefCell::new(Some(tx)));
+    let other = other.into();
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let t = cx.app_theme();
+        let (yes, alt, cancel, closed) = (slot.clone(), slot.clone(), slot.clone(), slot.clone());
+        let ok = Button::new("ask-ok").label(ask.ok.clone());
+        let ok = if ask.danger {
+            ok.danger()
+        } else {
+            ok.primary()
+        };
+        dialog
+            .title(ask.title.clone())
+            .w(px(448.))
+            .child(
+                div()
+                    .text_color(t.muted_foreground)
+                    .child(ask.message.clone()),
+            )
+            .footer(
+                DialogFooter::new()
+                    .child(Button::new("ask-cancel").label("Cancel").on_click(
+                        move |_, window, cx| {
+                            reply(&cancel, None);
+                            window.close_dialog(cx);
+                        },
+                    ))
+                    .child(Button::new("ask-other").label(other.clone()).on_click(
+                        move |_, window, cx| {
+                            reply(&alt, Some(false));
+                            window.close_dialog(cx);
+                        },
+                    ))
+                    .child(ok.on_click(move |_, window, cx| {
+                        reply(&yes, Some(true));
+                        window.close_dialog(cx);
+                    })),
+            )
+            .on_close(move |_, _, _| reply(&closed, None))
+    });
+    rx
+}
+
 /// What a rewrite or rebase asks before it runs: `branches` are the local ones on the commits it
 /// replays. Some(move them along) when it goes ahead; None when cancelled.
 pub fn ask_stacked(
