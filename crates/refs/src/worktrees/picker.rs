@@ -28,7 +28,7 @@ use gpui_kit::{
 
 use super::{
     Cleanable, HUES, MergedPull, State, Worktree, WorktreeEvent, WorktreeEvents, cleanable,
-    hue_color, hue_name, list as wt_list, main_back_offer, short_path, worktree_hues,
+    hue_color, hue_label, hue_name, list as wt_list, main_back_offer, short_path, worktree_hues,
     worktree_name,
 };
 use crate::hooks::{self, BranchPull, PullState};
@@ -708,11 +708,10 @@ impl WorktreePicker {
                 if !w.bare {
                     let path = w.path.clone();
                     menu = menu.separator().label("Color");
-                    for (h, (name, _)) in HUES.iter().enumerate() {
+                    for h in 0..HUES.len() {
                         let path = path.clone();
-                        let label = format!("{}{}", name[..1].to_uppercase(), &name[1..]);
                         menu = menu.item(
-                            PopupMenuItem::new(label)
+                            PopupMenuItem::new(hue_label(h))
                                 .checked(menu_hue == Some(h))
                                 .on_click(move |_, _, cx| {
                                     crate::store::set_color(&path, Some(hue_name(h)), cx);
