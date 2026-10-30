@@ -1025,6 +1025,7 @@ pub fn updates(cx: &App) -> Page {
     let status = crate::updates::status_line(cx);
     let available = crate::updates::available(cx);
     let enabled = crate::updates::enabled(cx);
+    let checking = crate::updates::checking(cx);
     Page::new().group(
         Group::new().items([
             switch(
@@ -1048,8 +1049,8 @@ pub fn updates(cx: &App) -> Page {
                         Button::new("check-now")
                             .small()
                             .outline()
-                            .label("Check Now")
-                            .disabled(!enabled)
+                            .label(if checking { "Checking…" } else { "Check Now" })
+                            .disabled(!enabled || checking)
                             .on_click(|_, _, cx| crate::updates::check(true, cx))
                     };
                     button.into_any_element()

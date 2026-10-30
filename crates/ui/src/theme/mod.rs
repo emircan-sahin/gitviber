@@ -1429,6 +1429,9 @@ mod tests {
                 let c = contrast(over(t.on_status, rgb(fill)), rgb(fill));
                 assert!(c >= 4.5, "{name} {status} pill {c:.2}:1");
             }
+            // Primary buttons and the update badge.
+            let c = contrast(rgb(t.primary_foreground), rgb(t.primary));
+            assert!(c >= 4.5, "{name} primary button {c:.2}:1");
         }
     }
 }

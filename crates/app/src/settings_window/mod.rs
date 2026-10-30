@@ -492,6 +492,7 @@ impl SettingsWindow {
         }
         this.show_skill(cx);
         this.load_sample(cx);
+        this.check_updates(cx);
         this
     }
 
@@ -502,7 +503,15 @@ impl SettingsWindow {
         }
         self.section = section;
         self.load_sample(cx);
+        self.check_updates(cx);
         cx.notify();
+    }
+
+    /// The Updates page asks GitHub as it opens, so what it says is fresh.
+    fn check_updates(&self, cx: &mut Context<Self>) {
+        if self.section == Section::Updates {
+            crate::updates::page_opened(cx);
+        }
     }
 
     /// Parses the Editor preview's code off the UI thread, the first time Editor shows.

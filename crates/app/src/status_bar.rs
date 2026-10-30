@@ -252,18 +252,13 @@ pub fn status_bar(
                             }),
                     )
                 })
-                .map(|d| match crate::updates::status_button(cx) {
-                    // Once a newer release is out, the version turns into its button.
-                    Some(button) => d.child(button),
-                    None => d.child(
-                        item("status-version", cx)
-                            .pressable(cx)
-                            .child(format!("v{} · {os}", env!("CARGO_PKG_VERSION")))
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(app::About), cx)
-                            }),
-                    ),
-                })
+                // A newer release shows in the top bar's badge; the version stays here.
+                .child(
+                    item("status-version", cx)
+                        .pressable(cx)
+                        .child(format!("v{} · {os}", env!("CARGO_PKG_VERSION")))
+                        .on_click(|_, window, cx| window.dispatch_action(Box::new(app::About), cx)),
+                )
                 .when(repo, |d| d.child(open_in.clone())),
         )
         .into_any_element()
