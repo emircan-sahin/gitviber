@@ -1569,7 +1569,10 @@ impl Paragraph {
                 }
                 node_highlights.push((inner_range, highlight));
             }
-            highlights = combine_highlights(highlights, node_highlights);
+            // A node's marks lie within its own text, after every earlier node's,
+            // so they only need combining among themselves: combining them into
+            // the whole run so far made a long paragraph quadratic in its spans.
+            highlights.extend(combine_highlights(node_highlights, []));
             offset += text_len;
         }
         let text = SharedString::from(text);
@@ -2696,7 +2699,7 @@ impl Paragraph {
                     )
                 })
                 .collect::<Vec<_>>();
-            highlights = combine_highlights(highlights, node_highlights);
+            highlights.extend(combine_highlights(node_highlights, []));
             offset += inline_node.text.len();
         }
         highlights
@@ -2864,7 +2867,7 @@ impl Paragraph {
                     node_highlights.push((inner_range, highlight));
                 }
 
-                highlights = combine_highlights(highlights, node_highlights);
+                highlights.extend(combine_highlights(node_highlights, []));
                 offset += text_len;
             }
         }
@@ -3056,7 +3059,7 @@ impl Paragraph {
                     node_highlights.push((inner_range, highlight));
                 }
 
-                highlights = combine_highlights(highlights, node_highlights);
+                highlights.extend(combine_highlights(node_highlights, []));
                 offset += text_len;
             }
         }
