@@ -15,6 +15,11 @@ on GitHub are its section below.
 - **Drag terminal tabs to reorder them,** with a line where the tab will land, or use Move Left and Move Right in the tab's menu. Editor tabs show the same line when dragged.
 - **An update shows as a badge in the top bar.** It walks you through Update Available, the download's progress and Restart to Update, and offers Retry Update after a failed download. It replaces the easy-to-miss button in the status bar, where the version stays.
 - **The command palette shows an icon for each command,** puts recent commands and files under their own headings, and lists its keys at the bottom.
+- **Git LFS files download before a checkout.** Switching branches, checking out a commit or creating a worktree fetches its LFS files first, with progress in the top bar, a Cancel button and the login prompt git-lfs may need. A repository set to skip LFS downloads (`GIT_LFS_SKIP_SMUDGE`, `git lfs install --skip-smudge`) keeps its pointers, and a switch that downloaded nothing sends no "finished" notification.
+- **Leaving a detached HEAD asks first** when its commits are on no branch, and offers to create a branch for them. Every checkout that moves HEAD asks: the branch picker, History, the reflog and a pull request's checkout.
+- **New worktrees get the submodules their source has,** copied from your clone rather than downloaded again.
+- **Claude Code tells the terminal its state as it changes,** so its tab's ring and dot follow it the moment it starts, stops or asks for permission. Switch the app between light and dark and a running Claude Code on its "auto" theme switches too.
+- **Right ⌥ as Meta.** Settings → Terminal → Option as Meta offers Right next to Left and Both, so the other side keeps typing @, { and [.
 
 ### Changed
 
@@ -25,6 +30,12 @@ on GitHub are its section below.
 - **The open tab joins the content below it,** in the editor and in the terminal, and an editor tab's title is set in medium weight.
 - **A terminal's split dots summarize the panes in a tooltip** and turn into a count past six.
 - **The Agents button's badge sits on the icon's corner,** shows only when there's news, and pulses while an agent works.
+- **Smoother frames on macOS 14 and later.** Each window draws when the display hands it a frame instead of waiting on the main thread for one, which on macOS 26 held animations to about 30 frames a second and delayed input.
+- **The command palette and the file finder are faster.** They size the list from one row instead of laying out every row, match a big project's files off the main thread, and Enter opens the best match for what you typed even while matching runs.
+- **History opens with its first page ready,** read in the background when the repository opens, and a reload redraws only the rows that changed. A big repository without a commit-graph gets one written in the background, so its history pages come up at once.
+- **Less work while idle.** Panels and the open tab redraw only when what they show changes, instead of on every caret blink; a terminal you aren't in draws at most about 30 frames a second, so several agents streaming in splits use less CPU; and paragraphs with a lot of inline code render faster.
+- **The Changes list honors `status.showUntrackedFiles`.** With `normal`, a new folder is one row that stages whole (an agent's worktree inside it stays out); with `no`, untracked files are left out and the list says so.
+- **Status in a new worktree is fast from the first refresh,** since git now keeps what it learned about the worktree's files.
 
 ### Fixed
 
@@ -38,6 +49,17 @@ on GitHub are its section below.
 - **Screen readers hear an icon button's shortcut** along with its name.
 - **The Edit tooltip in a diff shows the Save key as you bound it.**
 - **Esc shows as the word "Esc"** in shortcut hints, instead of a glyph that read as a refresh icon.
+- **Lists no longer freeze after a fast trackpad fling.** Putting your fingers back down while a long list still moved left it sliding with its edge stretched, and the next swipe pulled the edge instead of scrolling.
+- **`log.showSignature` stays out of your commits.** With it set, gpg's verdict no longer ends up in squash-merge and split-commit messages, and History no longer checks every signed commit's signature on each page.
+- **A worktree with `core.fsmonitor` on no longer refreshes in a loop.**
+- **A commit whose message holds control characters,** such as pasted terminal output, no longer splits in two and drops out of History.
+- **A bisect or a multi-commit pick started in a terminal shows in the banner at once.**
+- **Git LFS files in a conflict are chosen whole:** you keep one side and the real file comes back, instead of merging the pointer text.
+- **Commits signed with an SSH key ask for the key's passphrase** when it needs one.
+- **Renaming a file or folder by letter case only reaches git,** as a rename to commit.
+- **A full-screen program that crashed or was killed leaves no mess.** The next prompt is back in the scrollback with the cursor shown and the shell's "killed" or "segmentation fault" line above it, moving the mouse or switching light and dark doesn't type into it, and the next full-screen program gets plain keys.
+- **A program reading the clipboard through the terminal gets an answer at once,** an empty one so nothing you copied leaves the app, instead of waiting out its timeout.
+- **⌘C copies a full-screen program's own selection,** such as one made in Claude Code's fullscreen view, and an input method's candidate window follows the cursor as the program redraws.
 
 ## [0.1.19] - 2026-10-30
 
