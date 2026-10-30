@@ -58,6 +58,8 @@ const BLINK_IDLE: Duration = Duration::from_secs(30);
 const QUICK_EXIT: Duration = Duration::from_secs(1);
 /// How long a command waits for the first prompt: past it, typing ahead is no worse.
 const RUN_WAIT: Duration = Duration::from_secs(5);
+/// How often a pane without the keys redraws while output streams: about 30 frames a second.
+const BACKGROUND_FRAME: Duration = Duration::from_millis(33);
 /// Find refreshes its matches at most this often while output arrives.
 const FIND_REFRESH: Duration = Duration::from_millis(250);
 /// Pinch zoom per font step.
@@ -258,8 +260,17 @@ impl TerminalPane {
         let outbox = session.outbox.clone();
         let wake = cx.spawn(async move |this, cx| {
             while outbox.signal.wait().await {
-                if this.update(cx, |pane, cx| pane.on_wake(cx)).is_err() {
+                let Ok(looked_at) = this.update(cx, |pane, cx| {
+                    pane.on_wake(cx);
+                    pane.looked_at()
+                }) else {
                     break;
+                };
+                // A pane the user isn't on draws at most this often: several agents streaming
+                // kept the window repainting at the display's rate. Output in between waits in
+                // the session and shows in the next frame.
+                if !looked_at {
+                    cx.background_executor().timer(BACKGROUND_FRAME).await;
                 }
             }
         });

@@ -26,6 +26,7 @@ use crate::layout::Dir;
 use crate::{TerminalConfig, TerminalPane, TerminalPanel, TerminalTheme};
 
 mod agent;
+mod pacing;
 
 use agent::now_ms;
 
