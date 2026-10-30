@@ -2151,6 +2151,7 @@ impl DiffView {
                 )
             })
             .when(self.is_editable() && !self.previewing(), |el| {
+                let save = command_kbd("file.save", cx);
                 el.child(
                     Button::new("edit")
                         .ghost()
@@ -2158,7 +2159,12 @@ impl DiffView {
                         .icon(Lucide::Pencil)
                         .label("Edit")
                         .toggle(self.edit.is_some(), cx)
-                        .tooltip("Edit the new side; ⌘S saves")
+                        .tooltip(if save.is_some() {
+                            "Edit the new side; save with"
+                        } else {
+                            "Edit the new side"
+                        })
+                        .tooltip_key_binding(save)
                         .on_click(cx.listener(|this, _, window, cx| this.toggle_edit(window, cx))),
                 )
             })
