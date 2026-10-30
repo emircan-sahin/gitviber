@@ -106,7 +106,7 @@ fn command_chord(id: &str, cx: &App) -> Option<String> {
 }
 
 /// A chord as gpui-kit's `Kbd`, for a tooltip's keys (`Tooltip::key_binding`,
-/// `Button::tooltip_keys`): drawn as these keycaps.
+/// `Button::tooltip_key_binding`): drawn as these keycaps.
 pub fn chord_kbd(chord: &str) -> Option<Kbd> {
     Keystroke::parse(&to_keystroke(chord, IS_MAC))
         .ok()
@@ -122,6 +122,16 @@ pub fn command_kbd(id: &str, cx: &App) -> Option<Kbd> {
 pub fn find_option_kbd(letter: char) -> Option<Kbd> {
     let m = if IS_MAC { "alt+cmd+" } else { "alt+" };
     chord_kbd(&format!("{m}{letter}"))
+}
+
+/// One of `key_hints`: a chord's keycaps ("enter", "f2"; "" for none), then what it does.
+pub fn key_hint(chord: &str, label: impl Into<SharedString>) -> (Keycaps, SharedString) {
+    let keys = if chord.is_empty() {
+        Keycaps::default()
+    } else {
+        Keycaps::chord(chord)
+    };
+    (keys, label.into())
 }
 
 /// Hints in a row, each its keys then what they do ("↵ open"), or text alone ("drag to

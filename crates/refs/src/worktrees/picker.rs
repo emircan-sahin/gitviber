@@ -9,7 +9,7 @@ use gitviber_core::api;
 use gitviber_ui::keymap::worktree as wt_actions;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{
-    Ends, StatusDot, list_step, now_unix, relative_time, repaint_next_minute,
+    Ends, StatusDot, key_hint, key_hints, list_step, now_unix, relative_time, repaint_next_minute,
 };
 use gitviber_ui::workspace::PanelContext;
 use gitviber_ui::{ActiveAppTheme, Project};
@@ -36,7 +36,7 @@ use crate::names::{folder_name, plural};
 use crate::ops;
 use crate::repo::{RepoEvent, RepoState};
 use crate::requests::{self, Picker};
-use crate::ui::{chip_on, key_hint, key_hints};
+use crate::ui::chip_on;
 
 /// The top bar's worktree chip, kept in the bar's element state per project.
 pub fn worktree_chip(ctx: &PanelContext, window: &mut Window, cx: &mut App) -> Option<AnyElement> {

@@ -11,7 +11,8 @@ use gitviber_core::{api, git};
 use gitviber_ui::keymap::git as git_actions;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{
-    Ends, list_step, now_unix, on_list_keys, relative_time, repaint_next_minute,
+    Ends, key_hint, key_hints, list_step, now_unix, on_list_keys, relative_time,
+    repaint_next_minute,
 };
 use gitviber_ui::workspace::PanelContext;
 use gitviber_ui::{ActiveAppTheme, Project};
@@ -35,7 +36,6 @@ use crate::ops;
 use crate::points::branch_point;
 use crate::repo::RepoState;
 use crate::requests::{self, Picker};
-use crate::ui::{key_hint, key_hints};
 use crate::worktrees::{Worktree, list as wt_list, main_back_offer};
 
 /// The top bar's branch chip, kept in the bar's element state per project.
