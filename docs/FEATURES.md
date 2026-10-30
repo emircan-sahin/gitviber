@@ -434,6 +434,9 @@ worktree.
   shows the ones that work where you are. See [Shortcuts](SHORTCUTS.md).
 - **Keyboard all the way.** A focus shortcut pressed again gives focus back where it was, and every
   picker opened by a key or the palette takes the keys: arrows, Home/End, `↵` to pick, `Esc` to close.
+- **Updates.** GitViber checks at launch, every few hours and when Settings → Updates opens. A newer
+  version shows as a badge in the top bar: click it for the release notes and the download, then
+  again to restart into it. Nothing downloads until you choose to.
 
 ---
 

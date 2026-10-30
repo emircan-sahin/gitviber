@@ -1,6 +1,7 @@
 //! The top bar: the traffic lights' room, the wordmark, the chips and git actions features put
-//! there (project, branch, worktree, pull request; undo, refresh, pull, push), and the panel
-//! toggles. A button whose command nothing handles yet shows disabled.
+//! there (project, branch, worktree, pull request; undo, refresh, pull, push), a newer
+//! release's badge, and the panel toggles. A button whose command nothing handles yet shows
+//! disabled.
 
 use gitviber_ui::actions::{terminal, view, workbench};
 use gitviber_ui::assets::LOGO;
@@ -175,6 +176,9 @@ pub fn top_bar(
         .items_center()
         .gap_1()
         .pr_2()
+        .when_some(crate::updates::badge_button(cx), |d, badge| {
+            d.child(badge).child(divider(cx))
+        })
         .children(actions)
         .child(divider(cx))
         .child(terminal_button(&bar, shown(Slot::Bottom), terminal_news))
