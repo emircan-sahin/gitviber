@@ -1,6 +1,7 @@
 //! Opening a folder as the main window's project: File → Open Repository…, Open Recent, a
 //! project's row, a drop, `gitviber <path>`. git is asked first, off the UI thread: a folder in
-//! no repository opens as a plain project (git's views offer Initialize there), a file outside
+//! no repository opens as a plain project (git's views offer Initialize there) unless it's a
+//! home, volume or system folder, too big to watch and list as one, a file outside
 //! any repository opens only in the plain project it's in, and a folder git refuses for its
 //! owner offers Trust this folder. A file shows once its project is open, after any unsaved
 //! edits the switch would drop were settled.
@@ -25,6 +26,8 @@ pub enum Found {
     Repo(PathBuf),
     Gone,
     NotARepo,
+    /// In no repository, and too big to be a plain project: see `too_wide`.
+    TooWide,
     /// git's own words: a refusal for the folder's owner, a broken config.
     Failed(String),
 }
@@ -36,9 +39,37 @@ pub fn look(folder: &Path) -> Found {
     }
     match git::toplevel(folder) {
         Ok(top) => Found::Repo(PathBuf::from(top)),
-        Err(e) if e == git::NOT_A_REPO => Found::NotARepo,
+        Err(e) if e == git::NOT_A_REPO => {
+            let home = std::env::var_os("HOME").and_then(|h| PathBuf::from(h).canonicalize().ok());
+            let folder = folder
+                .canonicalize()
+                .unwrap_or_else(|_| folder.to_path_buf());
+            if too_wide(&folder, home.as_deref()) {
+                Found::TooWide
+            } else {
+                Found::NotARepo
+            }
+        }
         Err(e) => Found::Failed(e),
     }
+}
+
+/// A folder no plain project is made of: `/` and the folders right in it, a home folder and the
+/// one holding the homes, a volume's root. Its watcher and file list would take in every file
+/// on the disk. `folder` and `home` are canonical.
+fn too_wide(folder: &Path, home: Option<&Path>) -> bool {
+    if folder.components().count() <= 2 {
+        return true;
+    }
+    let parent = folder.parent();
+    let grandparent = parent.and_then(Path::parent);
+    let volume = ["/Volumes", "/System/Volumes", "/private", "/mnt"]
+        .iter()
+        .any(|d| parent == Some(Path::new(d)))
+        || ["/media", "/run/media"]
+            .iter()
+            .any(|d| grandparent == Some(Path::new(d)));
+    volume || home.is_some_and(|h| h == folder || h.parent() == Some(folder))
 }
 
 /// A folder to open, and a file in it: its path from the repository's root, and where in it.
@@ -80,14 +111,21 @@ pub fn act(found: Found, request: Request, cx: &mut App) {
         ),
         // A file's folder isn't one to make a project of (a file dropped from the desktop would
         // open the desktop), unless the plain project open is where it is.
-        Found::NotARepo if request.file.is_some() => match in_open_folder(&request, cx) {
-            Some((root, file)) => show(root, Some(file), cx),
-            None => toast(Toast::info(format!("{name} isn't in a git repository")), cx),
-        },
+        Found::NotARepo | Found::TooWide if request.file.is_some() => {
+            match in_open_folder(&request, cx) {
+                Some((root, file)) => show(root, Some(file), cx),
+                None => toast(Toast::info(format!("{name} isn't in a git repository")), cx),
+            }
+        }
         Found::NotARepo => {
             let folder = request.folder.canonicalize().unwrap_or(request.folder);
             show(folder, None, cx)
         }
+        Found::TooWide => toast(
+            Toast::info("Open a project folder inside it instead.")
+                .title(format!("{name} is too big to open as a project")),
+            cx,
+        ),
         Found::Failed(err) => failed(&err, request, cx),
     }
 }
@@ -423,5 +461,39 @@ mod tests {
         assert_eq!(look(&plain), Found::NotARepo);
         assert_eq!(look(&dir.join("gone")), Found::Gone);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn homes_volumes_and_the_disk_s_root_are_too_wide_for_a_plain_project() {
+        let home = Some(Path::new("/Users/sam"));
+        let wide = |p: &str| too_wide(Path::new(p), home);
+        for p in [
+            "/",
+            "/Users",
+            "/Applications",
+            "/Users/sam",
+            "/Volumes/Backup",
+            "/System/Volumes/Data",
+            "/private/tmp",
+            "/mnt/disk",
+            "/media/sam/stick",
+            "/run/media/sam/stick",
+        ] {
+            assert!(wide(p), "{p}");
+        }
+        for p in [
+            "/Users/sam/code",
+            "/Users/sam/code/app",
+            "/Volumes/Backup/work",
+            "/private/tmp/scratch",
+            "/home/sam/code",
+        ] {
+            assert!(!wide(p), "{p}");
+        }
+        assert!(too_wide(
+            Path::new("/home/sam"),
+            Some(Path::new("/home/sam"))
+        ));
+        assert!(!too_wide(Path::new("/home/sam/code"), None));
     }
 }
