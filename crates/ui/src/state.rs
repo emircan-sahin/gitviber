@@ -156,6 +156,9 @@ impl UiState {
 
     /// `old` was moved to `new`, which takes its place in the list and keeps its arrangement.
     pub fn relocate_project(&mut self, old: &str, new: &str) {
+        if old == new {
+            return;
+        }
         self.recent_projects.retain(|p| p != new);
         if let Some(p) = self.recent_projects.iter_mut().find(|p| *p == old) {
             *p = new.to_string();
@@ -354,6 +357,9 @@ mod tests {
         assert!(s.project_org.colors.contains_key("/p/29"));
         s.relocate_project("/p/pinned", "/q/pinned");
         assert_eq!(s.project_org.pinned, ["/q/pinned"]);
+        // Located where it already was: it stays in the list.
+        s.relocate_project("/q/pinned", "/q/pinned");
+        assert!(s.recent_projects.contains(&"/q/pinned".to_string()));
         s.clear_recent_projects();
         assert_eq!(s.recent_projects, ["/p/filed", "/q/pinned"]);
         s.forget_project("/q/pinned");
