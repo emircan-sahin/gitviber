@@ -395,14 +395,7 @@ pub struct HeadMessage {
 /// HEAD's message from one `git log`; `find_commit` takes nine git calls for what the commit
 /// box doesn't show. None before the first commit.
 pub fn head_message(repo: &Path) -> Result<Option<HeadMessage>, String> {
-    let args = [
-        "log",
-        "-1",
-        "--no-show-signature",
-        "--format=%H%x1f%s%x1f%b",
-        "HEAD",
-        "--",
-    ];
+    let args = ["log", "-1", "--format=%H%x1f%s%x1f%b", "HEAD", "--"];
     let out = match run_text(repo, &args) {
         Ok(out) => out,
         Err(_) if !has_head(repo) => return Ok(None),
