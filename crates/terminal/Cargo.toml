@@ -18,6 +18,8 @@ gitviber-refs = { path = "../refs" }
 # Links open files and folders (the explorer) through it.
 gitviber-files = { path = "../files" }
 gpui-kit.workspace = true
+# A background pane's frame wait, raced against its being looked at.
+futures.workspace = true
 # The session save (terminals.json) and its agents.
 serde.workspace = true
 serde_json.workspace = true

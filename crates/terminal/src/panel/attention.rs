@@ -14,6 +14,9 @@ use gpui::{AnimationExt as _, Hsla};
 use super::*;
 use crate::agent::{self, AgentEntry, Look, Note, PaneAgent, next_agent, pane_look};
 
+/// An in-band report from a pane with no known agent asks which one runs there at most this often.
+const AGENT_ASK_GAP: Duration = Duration::from_secs(2);
+
 /// Which switch in Settings → Notifications a notification goes by.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum NotifyEvent {
@@ -590,6 +593,9 @@ impl TerminalPanel {
         {
             slot.since = now_secs();
         }
+        if next.agent.as_ref().map(|a| &a.name) != prev.as_ref().map(|a| &a.name) {
+            slot.in_band = false;
+        }
         slot.agent = next.agent.clone();
         // Woken (its background shell exited) before its finish was seen: that news is old, and
         // its next finish must be told again.
@@ -684,26 +690,61 @@ impl TerminalPanel {
         }
     }
 
-    /// The program in `id` reported its state in-band: taken as a change of its state file is, so
-    /// the newer of the two stands. One not found yet is looked up; the lookup brings its state.
+    /// The program in `id` reported its state in-band: from then on that stands over its state
+    /// file. One not found yet is looked up, once a while; the lookup brings its state.
     pub(super) fn agent_reported(
         &mut self,
         id: PaneId,
         state: agent::AgentState,
         cx: &mut Context<Self>,
     ) {
-        match self.panes.get(&id).and_then(|s| s.agent.clone()) {
-            Some(agent) => self.apply_agent(
-                id,
-                Some(PaneAgent {
-                    state: Some(state),
-                    ..agent
-                }),
-                true,
-                cx,
-            ),
-            None => self.refresh_agents(Some(vec![id]), cx),
+        let Some(slot) = self.panes.get_mut(&id) else {
+            return;
+        };
+        match slot.agent.clone() {
+            Some(agent) => {
+                slot.in_band = true;
+                self.apply_agent(
+                    id,
+                    Some(PaneAgent {
+                        state: Some(state),
+                        ..agent
+                    }),
+                    true,
+                    cx,
+                )
+            }
+            None if slot.asked.is_none_or(|t| t.elapsed() >= AGENT_ASK_GAP) => {
+                slot.asked = Some(std::time::Instant::now());
+                self.refresh_agents(Some(vec![id]), cx)
+            }
+            None => {}
         }
+    }
+
+    /// `id`'s agent's state file changed to `state`; None: it's gone, and the agent with it.
+    pub(super) fn agent_file_changed(
+        &mut self,
+        id: PaneId,
+        state: Option<&'static str>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(slot) = self.panes.get(&id) else {
+            return;
+        };
+        let Some(agent) = slot.agent.clone() else {
+            return;
+        };
+        // Read on another thread, a change from before an in-band report can come after it: it
+        // would undo it, and its finish would be told twice.
+        if slot.in_band && state.is_some() {
+            return;
+        }
+        let read = state.map(|st| PaneAgent {
+            state: agent::AgentState::parse(st),
+            ..agent
+        });
+        self.apply_agent(id, read, true, cx);
     }
 
     /// The shell prompts again: the agent there exited, and isn't one to resume.
@@ -724,23 +765,14 @@ impl TerminalPanel {
     ) {
         match event {
             Event::AgentState(s) => {
-                let Some(id) = self
+                if let Some(id) = self
                     .panes
                     .iter()
                     .find(|(_, p)| p.view.read(cx).pty_id() == Some(s.id))
                     .map(|(id, _)| *id)
-                else {
-                    return;
-                };
-                let Some(agent) = self.panes.get(&id).and_then(|p| p.agent.clone()) else {
-                    return;
-                };
-                // Its state file gone: the agent with it.
-                let read = s.state.map(|st| PaneAgent {
-                    state: agent::AgentState::parse(st),
-                    ..agent
-                });
-                self.apply_agent(id, read, true, cx);
+                {
+                    self.agent_file_changed(id, s.state, cx);
+                }
             }
             Event::NotificationClick(Some(target)) => {
                 let mut parts = target.split(':');

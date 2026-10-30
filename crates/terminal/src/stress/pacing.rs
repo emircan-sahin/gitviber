@@ -1,14 +1,19 @@
 //! A measurement, run by hand: four panes in a split stream as agents do (about 50 writes a
-//! second each) with the window in the background. Prints how often each pane asked for a frame and the
-//! app's CPU time, to compare a pacing change against.
+//! second each) with the window in the background. Prints how often each pane asked for a frame,
+//! how many frames the window drew on a 60 Hz display, and the app's CPU time, to compare a
+//! pacing change against.
 //! `cargo nextest run -p gitviber-terminal background_panes_frame_rate --run-ignored only --no-capture`
 
-use std::sync::Arc;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use gitviber_core::Core;
-use gpui::{AnyView, AnyWindowHandle, AppContext as _, Entity, HeadlessAppContext, px, size};
+use gpui::{
+    AnyView, AnyWindowHandle, AppContext as _, Context, Entity, HeadlessAppContext, IntoElement,
+    Render, Window, px, size,
+};
 
 use super::{FRAME, Host};
 use crate::layout::Dir;
@@ -26,6 +31,35 @@ fn cpu_secs() -> f64 {
     let secs = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 / 1e6;
     secs(usage.ru_utime) + secs(usage.ru_stime)
 }
+
+/// The window's root, noting the display frames it was drawn in: the test platform draws a
+/// dirty window at once, so draws in one frame's time would have been one frame.
+struct Counted {
+    inner: AnyView,
+    frames: Frames,
+}
+
+#[derive(Clone, Default)]
+struct Frames(Arc<Mutex<HashSet<u128>>>);
+
+impl Frames {
+    fn count(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+}
+
+impl Render for Counted {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The app's clock, which advance_clock moves timer by timer.
+        let at = cx.background_executor().now();
+        let epoch = *EPOCH.get_or_init(|| at);
+        let frame = at.duration_since(epoch).as_nanos() / FRAME.as_nanos();
+        self.frames.0.lock().unwrap().insert(frame);
+        self.inner.clone()
+    }
+}
+
+static EPOCH: OnceLock<Instant> = OnceLock::new();
 
 /// Like the stress run's pump, but a frame's tasks are run one at a time for at most a frame:
 /// with output streaming the scheduler never parks.
@@ -84,6 +118,8 @@ fn background_panes_frame_rate() {
     let made: std::rc::Rc<std::cell::RefCell<Option<Entity<TerminalPanel>>>> = Default::default();
     let slot = made.clone();
     let root = work.clone();
+    let frames = Frames::default();
+    let drawn = frames.clone();
     let window: AnyWindowHandle = cx
         .open_window(size(px(1100.), px(760.)), move |window, cx| {
             let panel = cx.new(|cx| {
@@ -94,7 +130,11 @@ fn background_panes_frame_rate() {
                 shown: true,
             });
             *slot.borrow_mut() = Some(panel);
-            cx.new(|cx| gpui_kit::base::Root::new(AnyView::from(host), window, cx))
+            let counted = cx.new(|_| Counted {
+                inner: AnyView::from(host),
+                frames: drawn,
+            });
+            cx.new(|cx| gpui_kit::base::Root::new(AnyView::from(counted), window, cx))
         })
         .unwrap()
         .into();
@@ -138,9 +178,11 @@ fn background_panes_frame_rate() {
         .iter()
         .map(|p| cx.update(|cx| p.read(cx).looked_at()))
         .collect();
-    let (cpu0, t0) = (cpu_secs(), Instant::now());
+    let (cpu0, t0, drawn0) = (cpu_secs(), Instant::now(), frames.count());
+    let app0 = cx.background_executor().now();
     pump(&mut cx, &mut clock, SECS * 1000);
     let (cpu, wall) = (cpu_secs() - cpu0, t0.elapsed().as_secs_f64());
+    let app_secs = (cx.background_executor().now() - app0).as_secs_f64();
     for (i, n) in counts.iter().enumerate() {
         eprintln!(
             "pane {i} (keys: {}): {:.0} notifies/s",
@@ -148,6 +190,10 @@ fn background_panes_frame_rate() {
             n.load(Ordering::Relaxed) as f64 / wall
         );
     }
+    eprintln!(
+        "window: {:.0} frames/s (of a 60 Hz display's, by the app's clock)",
+        (frames.count() - drawn0) as f64 / app_secs
+    );
     eprintln!(
         "app CPU: {:.0}% of a core over {wall:.1} s",
         cpu / wall * 100.

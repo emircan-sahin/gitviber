@@ -102,6 +102,12 @@ struct PaneSlot {
     told: bool,
     /// The coding agent running in it, until the shell prompts again.
     agent: Option<crate::agent::PaneAgent>,
+    /// Its agent reports its state in-band, in order with its output: its state file's changes,
+    /// read on another thread, can arrive out of turn and only say it's gone.
+    in_band: bool,
+    /// When an in-band report last asked which agent runs here: ssh or an agent not in the table
+    /// reports on and on, and a lookup is a process walk.
+    asked: Option<std::time::Instant>,
     /// When its agent was first seen or last changed state (Unix seconds).
     since: f64,
     /// Its history's file in the session save, and whether it's been written.
@@ -1052,6 +1058,8 @@ impl TerminalPanel {
                 rang: false,
                 told: false,
                 agent: None,
+                in_band: false,
+                asked: None,
                 since: 0.,
                 history_file: None,
                 history_saved: false,
@@ -3834,5 +3842,68 @@ mod tests {
             cx.run_until_parked();
         }
         cx.update(|cx| cx.assert_no_new_leaks(&before));
+    }
+
+    /// Once its agent reports in-band, a state file change read before a report can't undo it;
+    /// the file going still ends the agent. A pane with no agent known asks which runs there
+    /// once a while, not at every report.
+    #[gpui::test]
+    fn in_band_reports_stand_over_the_state_file(cx: &mut TestAppContext) {
+        use crate::agent::{AgentState, PaneAgent};
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
+            crate::init(cx);
+        });
+        let core = Arc::new(Core::new(Arc::new(|_| {})));
+        let dir = std::env::temp_dir();
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            TerminalPanel::new(
+                core.clone(),
+                dir.clone(),
+                TerminalConfig::default(),
+                TerminalTheme::dark(),
+                window,
+                cx,
+            )
+        });
+        panel.update_in(cx, |p, window, cx| {
+            p.open_terminal(dir.clone(), None, window, cx)
+        });
+        let state = |cx: &mut VisualTestContext| {
+            panel.read_with(cx, |p, _| {
+                let slot = p.panes.values().next().expect("a pane");
+                slot.agent.as_ref().map(|a| a.state)
+            })
+        };
+        panel.update(cx, |p, cx| {
+            let id = *p.panes.keys().next().expect("a pane");
+            p.agent_reported(id, AgentState::Working, cx);
+            let asked = p.panes[&id].asked.expect("asked which agent runs");
+            p.agent_reported(id, AgentState::Idle, cx);
+            assert_eq!(p.panes[&id].asked, Some(asked));
+
+            p.agent_file_changed(id, Some("working"), cx);
+            assert!(p.panes[&id].agent.is_none(), "no agent known to change");
+            p.panes.get_mut(&id).expect("a pane").agent = Some(PaneAgent {
+                name: "Agent".into(),
+                command: None,
+                session: None,
+                cwd: None,
+                state: Some(AgentState::Working),
+            });
+            p.agent_file_changed(id, Some("idle"), cx);
+            p.agent_reported(id, AgentState::Working, cx);
+            p.agent_reported(id, AgentState::Idle, cx);
+            p.agent_file_changed(id, Some("working"), cx);
+        });
+        assert_eq!(state(cx), Some(Some(AgentState::Idle)));
+        panel.update(cx, |p, cx| {
+            let id = *p.panes.keys().next().expect("a pane");
+            p.agent_file_changed(id, None, cx);
+        });
+        assert_eq!(state(cx), None);
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
     }
 }

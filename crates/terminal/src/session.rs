@@ -291,6 +291,9 @@ pub(crate) struct Emu {
     pub scrolled: u64,
     /// A command started since the last prompt.
     command_ran: bool,
+    /// The last command ended on a signal the shell reports (a crash, `kill -9`; not ⌃C or a
+    /// closed pipe, which it passes over in silence).
+    signaled: bool,
     /// The shell is the pty's foreground job: nothing alive owns the other buffer.
     shell_in_front: Box<dyn Fn() -> bool + Send>,
     outbox: Arc<Outbox>,
@@ -303,7 +306,10 @@ impl Emu {
         let size = alacritty_terminal::term::test::TermSize::new(columns.max(2), lines.max(1));
         Emu {
             term: Term::new(config, &size, Listener(outbox.clone())),
-            parser: crate::vt::Parser::new(),
+            parser: {
+                let outbox = outbox.clone();
+                crate::vt::Parser::answering(move |reply| outbox.write(reply, false))
+            },
             scanner: Scanner::default(),
             marks: Marks::default(),
             found: Vec::new(),
@@ -312,6 +318,7 @@ impl Emu {
             kitty_notes: Default::default(),
             scrolled: 0,
             command_ran: false,
+            signaled: false,
             shell_in_front: Box::new(|| false),
             outbox,
             _live: gitviber_ui::memory::Live::new("Terminal"),
@@ -438,7 +445,15 @@ impl Emu {
             && self.mode().contains(TermMode::ALT_SCREEN)
             && (self.shell_in_front)()
         {
+            let why = self.signaled.then(|| self.shell_line()).flatten();
+            // Its kitty keys first: left on this buffer's stack, the next program to enter it
+            // would read keys as CSI u.
+            self.parser.advance(&mut self.term, marks::KEYS_OFF);
             self.parser.advance(&mut self.term, marks::ALT_SCREEN_OFF);
+            if let Some(why) = why {
+                self.parser
+                    .advance(&mut self.term, format!("{why}\r\n").as_bytes());
+            }
         }
         // As if the program had turned them off itself.
         if marks::mouse_left_on(mark.kind, *self.term.mode()) {
@@ -446,10 +461,22 @@ impl Emu {
         }
         match mark.kind {
             MarkKind::C => self.command_ran = true,
+            MarkKind::D => {
+                self.signaled = mark
+                    .exit
+                    .is_some_and(|code| code > 128 && code != 130 && code != 141)
+            }
             MarkKind::A => {
                 let ran = std::mem::take(&mut self.command_ran);
+                self.signaled = false;
                 if marks::keys_left_on(*self.term.mode(), ran) {
                     self.parser.advance(&mut self.term, marks::KEYS_OFF);
+                }
+                // Left on, a light/dark switch would type its report at the shell's prompt.
+                if ran && self.parser.scheme_notify() && !self.mode().contains(TermMode::ALT_SCREEN)
+                {
+                    self.parser
+                        .advance(&mut self.term, marks::SCHEME_NOTIFY_OFF);
                 }
                 // A program that hid the cursor and died: the shell draws its prompt with it shown.
                 let mode = self.mode();
@@ -474,6 +501,36 @@ impl Emu {
 
     pub fn mode(&self) -> TermMode {
         *self.term.mode()
+    }
+
+    /// The line the shell printed on reaping the program ("zsh: killed  htop"): the cursor's row,
+    /// or the one above once the shell ended it.
+    fn shell_line(&self) -> Option<String> {
+        use alacritty_terminal::grid::Dimensions as _;
+        use alacritty_terminal::index::{Column, Line};
+        let grid = self.term.grid();
+        let at = grid.cursor.point;
+        let line = if at.column.0 == 0 {
+            at.line - 1
+        } else {
+            at.line
+        };
+        if line < Line(0) {
+            return None;
+        }
+        let row = &grid[line];
+        let text: String = (0..grid.columns())
+            .map(|c| &row[Column(c)])
+            .filter(|cell| {
+                !cell
+                    .flags
+                    .contains(alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER)
+            })
+            .map(|cell| cell.c)
+            .filter(|&c| !marks::is_mark_char(c))
+            .collect();
+        let text = text.trim_end();
+        (!text.is_empty()).then(|| text.to_owned())
     }
 }
 
@@ -958,6 +1015,65 @@ mod tests {
             })
             .collect();
         assert_eq!(row, "$ $");
+    }
+
+    fn row_text(emu: &Emu, line: i32) -> String {
+        use alacritty_terminal::grid::Dimensions as _;
+        let row = &emu.term.grid()[alacritty_terminal::index::Line(line)];
+        (0..emu.term.grid().columns())
+            .map(|c| row[alacritty_terminal::index::Column(c)].c)
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+    }
+
+    /// Killed full screen with the kitty keys pushed: the next program in that buffer that doesn't
+    /// use them (less, htop) still reads Esc and ⌃C as plain keys.
+    #[test]
+    fn a_program_killed_full_screen_leaves_no_keys_to_the_next_one() {
+        let outbox = Arc::new(Outbox::default());
+        let mut emu = Emu::new(20, 5, test_config(), outbox);
+        emu.shell_in_front = Box::new(|| true);
+        emu.feed(b"\x1b]133;A\x07$ \x1b]133;C\x07\x1b[?1049h\x1b[>1u");
+        emu.feed(b"\x1b]133;D;137\x07\x1b]133;A\x07$ \x1b]133;C\x07\x1b[?1049h");
+        assert!(
+            !emu.mode().intersects(TermMode::KITTY_KEYBOARD_PROTOCOL),
+            "{:?}",
+            emu.mode()
+        );
+    }
+
+    /// The shell's word on why the program ended, printed in the other buffer, stays in view.
+    /// Nothing is carried over for a program that ended on ⌃C, which the shell doesn't report.
+    #[test]
+    fn the_shells_crash_line_survives_the_way_back_from_full_screen() {
+        for (code, kept) in [(137, true), (130, false)] {
+            let outbox = Arc::new(Outbox::default());
+            let mut emu = Emu::new(30, 6, test_config(), outbox);
+            emu.shell_in_front = Box::new(|| true);
+            emu.feed(b"\x1b]133;A\x07$ htop\r\n\x1b]133;C\x07\x1b[?1049h\x1b[3;1Hprogram row");
+            emu.feed(b"\r\nzsh: killed     htop\r\n");
+            emu.feed(format!("\x1b]133;D;{code}\x07\x1b]133;A\x07$ ").as_bytes());
+            assert!(!emu.mode().contains(TermMode::ALT_SCREEN));
+            let rows: Vec<String> = (0..3).map(|l| row_text(&emu, l)).collect();
+            if kept {
+                assert_eq!(rows, ["$ htop", "zsh: killed     htop", "$"]);
+            } else {
+                assert_eq!(rows, ["$ htop", "$", ""]);
+            }
+        }
+    }
+
+    /// A program that asked for color scheme reports and died leaves the shell's prompt without
+    /// them; a prompt drawn again without a command keeps the shell's own.
+    #[test]
+    fn a_prompt_after_a_command_turns_off_scheme_reports() {
+        let outbox = Arc::new(Outbox::default());
+        let mut emu = Emu::new(20, 5, test_config(), outbox);
+        emu.feed(b"\x1b[?2031h\x1b]133;A\x07$ ");
+        assert!(emu.parser.scheme_notify());
+        emu.feed(b"\x1b]133;C\x07\x1b[?2031h\x1b]133;D;139\x07\x1b]133;A\x07$ ");
+        assert!(!emu.parser.scheme_notify());
     }
 
     /// A prompt that isn't after a command (a redraw) leaves a shell's own hidden cursor alone.

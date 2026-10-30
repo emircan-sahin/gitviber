@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::pin::pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -33,7 +34,7 @@ use crate::keys;
 use crate::layout::PaneId;
 use crate::marks::{CommandEnd, end_title, strip_marks};
 use crate::mouse::{self, Button, Kind, Mods};
-use crate::session::{Note, Session, Spawn, term_config};
+use crate::session::{Note, Session, Signal, Spawn, term_config};
 use crate::{
     Copy, CopyLastOutput, Paste as PasteAction, ScrollPageDown, ScrollPageUp, ScrollToBottom,
     ScrollToTop, SelectAll, SelectLastOutput,
@@ -66,6 +67,16 @@ const COPY_KEY: &str = if cfg!(target_os = "macos") {
 };
 /// How often a pane without the keys redraws while output streams: about 30 frames a second.
 const BACKGROUND_FRAME: Duration = Duration::from_millis(33);
+
+/// The wait for the next tick of one clock all background panes share: apart, each pane's frame
+/// fell in a window frame of its own, and N streaming panes redrew the window N times as often.
+fn until_background_frame(now: Instant) -> Duration {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let epoch = *EPOCH.get_or_init(|| now);
+    let frame = BACKGROUND_FRAME.as_nanos();
+    let into = now.saturating_duration_since(epoch).as_nanos() % frame;
+    Duration::from_nanos((frame - into) as u64)
+}
 /// Find refreshes its matches at most this often while output arrives.
 const FIND_REFRESH: Duration = Duration::from_millis(250);
 /// Pinch zoom per font step.
@@ -214,6 +225,8 @@ pub struct TerminalPane {
     dirty: bool,
     pub(crate) last_output: Instant,
     _wake: Task<()>,
+    /// Ends a background pane's wait for its frame: it's looked at now.
+    looked: Arc<Signal>,
     sync_task: Option<Task<()>>,
     run_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -268,24 +281,32 @@ impl TerminalPane {
             term_config(config.scrollback, config.cursor, config.cursor_blink),
         );
         let outbox = session.outbox.clone();
-        let wake = cx.spawn_in(window, async move |this, cx| {
-            while outbox.signal.wait().await {
-                let Ok(looked_at) = this.update_in(cx, |pane, window, cx| {
-                    pane.on_wake(cx);
-                    // The program may have moved the cursor under a word being composed: the input
-                    // method's candidate window follows it.
-                    if pane.ime.is_some() {
-                        window.invalidate_character_coordinates();
+        let looked = Arc::new(Signal::default());
+        let wake = cx.spawn_in(window, {
+            let looked = looked.clone();
+            async move |this, cx| {
+                while outbox.signal.wait().await {
+                    let Ok(behind) = this.update(cx, |pane, _| !pane.looked_at()) else {
+                        break;
+                    };
+                    // A pane the user isn't on draws on the shared background clock: several
+                    // agents streaming kept the window repainting at the display's rate. Output in
+                    // between waits in the session; being looked at ends the wait.
+                    if behind {
+                        let executor = cx.background_executor();
+                        let timer = executor.timer(until_background_frame(executor.now()));
+                        futures::future::select(pin!(timer), pin!(looked.wait())).await;
                     }
-                    pane.looked_at()
-                }) else {
-                    break;
-                };
-                // A pane the user isn't on draws at most this often: several agents streaming
-                // kept the window repainting at the display's rate. Output in between waits in
-                // the session and shows in the next frame.
-                if !looked_at {
-                    cx.background_executor().timer(BACKGROUND_FRAME).await;
+                    let Ok(()) = this.update_in(cx, |pane, window, cx| {
+                        pane.on_wake(cx);
+                        // The program may have moved the cursor under a word being composed: the
+                        // input method's candidate window follows it.
+                        if pane.ime.is_some() {
+                            window.invalidate_character_coordinates();
+                        }
+                    }) else {
+                        break;
+                    };
                 }
             }
         });
@@ -348,6 +369,7 @@ impl TerminalPane {
             dirty: false,
             last_output: Instant::now(),
             _wake: wake,
+            looked,
             sync_task: None,
             run_task: None,
             _subscriptions: subscriptions,
@@ -524,6 +546,9 @@ impl TerminalPane {
 
     fn on_focus_change(&mut self, focused: bool, _: &mut Window, cx: &mut Context<Self>) {
         self.focused = focused;
+        if self.looked_at() {
+            self.looked.notify();
+        }
         if focused {
             cx.emit(PaneEvent::Focused);
         } else {
@@ -547,6 +572,7 @@ impl TerminalPane {
         self.restart_blink(cx);
         // Back in the window, the pane with the keys is looked at again.
         if self.looked_at() {
+            self.looked.notify();
             cx.emit(PaneEvent::Focused);
         }
         if !self.window_active {
@@ -622,7 +648,10 @@ impl TerminalPane {
     }
 
     fn on_wake(&mut self, cx: &mut Context<Self>) {
-        for note in self.session.outbox.take_notes() {
+        let notes = self.session.outbox.take_notes();
+        // A program's state as it stands: a `cat` of a log of reports would go through each.
+        let status = notes.iter().rposition(|n| matches!(n, Note::Status(_)));
+        for (i, note) in notes.into_iter().enumerate() {
             match note {
                 Note::Started { integrated } => {
                     self.integrated = integrated;
@@ -650,7 +679,8 @@ impl TerminalPane {
                 }
                 Note::Ended(end) => cx.emit(PaneEvent::CommandEnded(end)),
                 Note::Attention(note) => cx.emit(PaneEvent::Attention(note)),
-                Note::Status(state) => cx.emit(PaneEvent::AgentStatus(state)),
+                Note::Status(state) if Some(i) == status => cx.emit(PaneEvent::AgentStatus(state)),
+                Note::Status(_) => {}
                 Note::Cwd(dir) => self.dir = dir.into(),
                 Note::Exited { exit, lived } => {
                     self.exited = true;
@@ -2092,6 +2122,21 @@ mod tests {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div()
         }
+    }
+
+    /// Panes woken at different moments wait for the same tick, never longer than a frame.
+    #[test]
+    fn background_panes_share_one_frame_clock() {
+        let now = Instant::now();
+        let first = until_background_frame(now);
+        for later in [now + first / 3, now + first * 2 / 3] {
+            assert_eq!(later + until_background_frame(later), now + first);
+        }
+        let wait = until_background_frame(now + first);
+        assert!(
+            wait > Duration::ZERO && wait <= BACKGROUND_FRAME,
+            "{wait:?}"
+        );
     }
 
     /// Focus reports go out on real changes only. GPUI tells a pane of its window going to the

@@ -564,8 +564,7 @@ pub fn terminal(cx: &App) -> Page {
             "Option as Meta",
             "Off, ⌥ types characters like @ or œ. As Meta, ⌥ keys go to the shell and agents \
              instead (Claude Code's ⌥P, readline's ⌥B and ⌥F). One side as Meta keeps the other \
-             for the characters your layout needs: on many European layouts left ⌥ types @ { [, \
-             so pick Right ⌥.",
+             for typing characters: pick the side you don't use for @ { [ and the like.",
             vec![
                 ("off".into(), "Off".into()),
                 ("left".into(), "Left ⌥".into()),

@@ -27,13 +27,16 @@ const MAX_ZEROWIDTH: usize = 30;
 #[derive(Default)]
 pub struct Parser {
     processor: Processor<StdSyncHandler>,
-    depths: Depths,
+    tracked: Tracked,
+    /// Where replies alacritty can't give go: written in order with its own.
+    reply: Option<Box<dyn Fn(String) + Send>>,
 }
 
-/// alacritty's stack depths, followed call by call: the keyboard modes' per screen. Also mode
-/// 2031, which alacritty doesn't keep: the program asked to hear of color scheme changes.
+/// What alacritty keeps out of reach, followed call by call: its stack depths (the keyboard
+/// modes' per screen), and mode 2031, which it doesn't keep at all: the program asked to hear
+/// of color scheme changes.
 #[derive(Default)]
-struct Depths {
+struct Tracked {
     keys: [usize; 2],
     titles: usize,
     scheme_notify: bool,
@@ -46,10 +49,19 @@ impl Parser {
         Self::default()
     }
 
+    /// A parser that also answers what alacritty doesn't, through `reply`.
+    pub fn answering(reply: impl Fn(String) + Send + 'static) -> Self {
+        Parser {
+            reply: Some(Box::new(reply)),
+            ..Self::default()
+        }
+    }
+
     pub fn advance<T: EventListener>(&mut self, term: &mut Term<T>, bytes: &[u8]) {
         let mut bounded = Bounded {
             term,
-            depths: &mut self.depths,
+            tracked: &mut self.tracked,
+            reply: self.reply.as_deref(),
         };
         self.processor.advance(&mut bounded, bytes);
     }
@@ -58,14 +70,15 @@ impl Parser {
     pub fn stop_sync<T: EventListener>(&mut self, term: &mut Term<T>) {
         let mut bounded = Bounded {
             term,
-            depths: &mut self.depths,
+            tracked: &mut self.tracked,
+            reply: self.reply.as_deref(),
         };
         self.processor.stop_sync(&mut bounded);
     }
 
     /// The program set mode 2031: tell it when the background turns dark or light.
     pub fn scheme_notify(&self) -> bool {
-        self.depths.scheme_notify
+        self.tracked.scheme_notify
     }
 
     pub fn sync_timeout(&self) -> &StdSyncHandler {
@@ -80,7 +93,8 @@ impl Parser {
 
 struct Bounded<'a, T> {
     term: &'a mut Term<T>,
-    depths: &'a mut Depths,
+    tracked: &'a mut Tracked,
+    reply: Option<&'a (dyn Fn(String) + Send)>,
 }
 
 impl<T: EventListener> Bounded<'_, T> {
@@ -142,20 +156,20 @@ impl<T: EventListener> Handler for Bounded<'_, T> {
     }
 
     fn push_title(&mut self) {
-        if self.depths.titles < MAX_DEPTH {
-            self.depths.titles += 1;
+        if self.tracked.titles < MAX_DEPTH {
+            self.tracked.titles += 1;
             Handler::push_title(self.term)
         }
     }
 
     fn pop_title(&mut self) {
-        self.depths.titles = self.depths.titles.saturating_sub(1);
+        self.tracked.titles = self.tracked.titles.saturating_sub(1);
         Handler::pop_title(self.term)
     }
 
     /// Past the cap the push takes the top's place: the modes it sets are the ones in force.
     fn push_keyboard_mode(&mut self, mode: KeyboardModes) {
-        let depth = &mut self.depths.keys[self.screen()];
+        let depth = &mut self.tracked.keys[self.screen()];
         if *depth >= MAX_DEPTH {
             Handler::pop_keyboard_modes(self.term, 1);
         } else {
@@ -165,28 +179,40 @@ impl<T: EventListener> Handler for Bounded<'_, T> {
     }
 
     fn pop_keyboard_modes(&mut self, to_pop: u16) {
-        let depth = &mut self.depths.keys[self.screen()];
+        let depth = &mut self.tracked.keys[self.screen()];
         *depth = depth.saturating_sub(to_pop.into());
         Handler::pop_keyboard_modes(self.term, to_pop)
     }
 
     fn reset_state(&mut self) {
-        *self.depths = Depths::default();
+        *self.tracked = Tracked::default();
         Handler::reset_state(self.term)
     }
 
     fn set_private_mode(&mut self, mode: PrivateMode) {
         if mode == SCHEME_NOTIFY {
-            self.depths.scheme_notify = true;
+            self.tracked.scheme_notify = true;
         }
         Handler::set_private_mode(self.term, mode)
     }
 
     fn unset_private_mode(&mut self, mode: PrivateMode) {
         if mode == SCHEME_NOTIFY {
-            self.depths.scheme_notify = false;
+            self.tracked.scheme_notify = false;
         }
         Handler::unset_private_mode(self.term, mode)
+    }
+
+    /// DECRQM for 2031 says it's honored (alacritty answers "not recognized"): a program that asks
+    /// first turns it on only then.
+    fn report_private_mode(&mut self, mode: PrivateMode) {
+        match self.reply {
+            Some(reply) if mode == SCHEME_NOTIFY => {
+                let state = if self.tracked.scheme_notify { 1 } else { 2 };
+                reply(format!("\x1b[?2031;{state}$y"))
+            }
+            _ => Handler::report_private_mode(self.term, mode),
+        }
     }
 
     forward! {
@@ -231,7 +257,6 @@ impl<T: EventListener> Handler for Bounded<'_, T> {
         set_mode(mode: Mode);
         unset_mode(mode: Mode);
         report_mode(mode: Mode);
-        report_private_mode(mode: PrivateMode);
         set_scrolling_region(top: usize, bottom: Option<usize>);
         set_keypad_application_mode();
         unset_keypad_application_mode();
@@ -341,6 +366,33 @@ mod tests {
         assert!(!p.scheme_notify());
         p.advance(&mut t, b"\x1b[?2031h\x1bc");
         assert!(!p.scheme_notify());
+    }
+
+    #[derive(Clone, Default)]
+    struct Writes(Arc<Mutex<Vec<String>>>);
+    impl EventListener for Writes {
+        fn send_event(&self, event: Event) {
+            if let Event::PtyWrite(text) = event {
+                self.0.lock().unwrap().push(text);
+            }
+        }
+    }
+
+    /// Asked with the DA1 after it, as a program checks for support: answered in order.
+    #[test]
+    fn decrqm_says_2031_is_honored() {
+        let writes = Writes::default();
+        let mut t = term(writes.clone());
+        let replies = writes.0.clone();
+        let mut p = Parser::answering(move |r| replies.lock().unwrap().push(r));
+        p.advance(
+            &mut t,
+            b"\x1b[?2031$p\x1b[c\x1b[?2031h\x1b[?2031$p\x1b[?1049$p",
+        );
+        let got = std::mem::take(&mut *writes.0.lock().unwrap());
+        assert_eq!(got[0], "\x1b[?2031;2$y");
+        assert!(got[1].starts_with("\x1b[?"), "{got:?}");
+        assert_eq!(got[2..], ["\x1b[?2031;1$y", "\x1b[?1049;2$y"]);
     }
 
     #[test]
