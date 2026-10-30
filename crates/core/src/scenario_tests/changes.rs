@@ -340,3 +340,92 @@ fn a_moved_submodule_names_its_commit() {
     write_commit(&sub, "l.txt", "3\n", "three");
     assert_eq!(oid(&r), Some(rev(&sub, "HEAD")));
 }
+
+/// status.showUntrackedFiles is the user's: `normal` lists a new folder as one entry, which
+/// stages whole; `no` lists none and says so. An agent's worktree stays out either way.
+#[test]
+fn untracked_files_follow_the_users_setting() {
+    let sb = Sandbox::new("untracked-mode");
+    let r = repo_with_worktrees(&sb);
+    fs::create_dir_all(r.join("data/sub")).unwrap();
+    fs::write(r.join("data/sub/one.csv"), "1\n").unwrap();
+    fs::write(r.join(".claude/notes.md"), "n\n").unwrap();
+    let untracked = |r: &Path| -> Vec<String> {
+        let st = status(r).unwrap();
+        let mut out: Vec<String> = st
+            .unstaged
+            .iter()
+            .filter(|f| f.status == "?")
+            .map(|f| f.path.clone())
+            .collect();
+        out.sort();
+        out
+    };
+
+    // Unset: every file, the worktree left out.
+    assert_eq!(untracked(&r), [".claude/notes.md", "data/sub/one.csv"]);
+    assert!(!status(&r).unwrap().untracked_hidden);
+
+    // `.claude/` holds the worktree, so it is listed file by file; `data/` is one entry.
+    run(&r, &["config", "status.showUntrackedFiles", "normal"]).unwrap();
+    assert_eq!(untracked(&r), [".claude/notes.md", "data/"]);
+    assert!(is_untracked_folder(&r, "data/"));
+    stage(&r, &["data/".into()]).unwrap();
+    let staged: Vec<String> = status(&r)
+        .unwrap()
+        .staged
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    assert_eq!(staged, ["data/sub/one.csv"]);
+    unstage(&r, &staged).unwrap();
+    // Holding nothing but the worktree, it isn't listed at all.
+    fs::remove_file(r.join(".claude/notes.md")).unwrap();
+    assert_eq!(untracked(&r), ["data/"]);
+    // A folder git lists whole with a worktree inside stages without it.
+    fs::write(r.join(".claude/notes.md"), "n\n").unwrap();
+    stage(&r, &[".claude/".into()]).unwrap();
+    let staged: Vec<String> = status(&r)
+        .unwrap()
+        .staged
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    assert_eq!(staged, [".claude/notes.md"]);
+    unstage(&r, &staged).unwrap();
+
+    run(&r, &["config", "status.showUntrackedFiles", "no"]).unwrap();
+    assert!(untracked(&r).is_empty());
+    assert!(status(&r).unwrap().untracked_hidden);
+
+    // Unset again, the file-by-file list is back on the first status.
+    run(&r, &["config", "--unset", "status.showUntrackedFiles"]).unwrap();
+    assert_eq!(untracked(&r), [".claude/notes.md", "data/sub/one.csv"]);
+}
+
+/// A file rewritten with the same content stays "stat-dirty" in the index until something
+/// writes the index; our lock-free reads never do, so the refresh has to.
+#[test]
+fn the_stat_cache_refresh_saves_what_status_learns() {
+    let sb = Sandbox::new("stat-cache");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+    let file = fs::File::options()
+        .write(true)
+        .open(r.join("a.txt"))
+        .unwrap();
+    file.set_modified(later).unwrap();
+    // diff-files trusts the index's stat data and reads no content.
+    let stat_dirty = |r: &Path| run_text(r, &["diff-files", "--name-only"]).unwrap();
+    assert_eq!(stat_dirty(&r).trim(), "a.txt");
+    assert!(status(&r).unwrap().unstaged.is_empty());
+    assert_eq!(
+        stat_dirty(&r).trim(),
+        "a.txt",
+        "status took no lock to save it"
+    );
+    refresh_stat_cache(&r);
+    assert_eq!(stat_dirty(&r), "");
+}

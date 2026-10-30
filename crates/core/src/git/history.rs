@@ -395,20 +395,13 @@ pub struct HeadMessage {
 /// HEAD's message from one `git log`; `find_commit` takes nine git calls for what the commit
 /// box doesn't show. None before the first commit.
 pub fn head_message(repo: &Path) -> Result<Option<HeadMessage>, String> {
-    let args = [
-        "log",
-        "-1",
-        "--no-show-signature",
-        "--format=%H%x1f%s%x1f%b",
-        "HEAD",
-        "--",
-    ];
+    let args = ["log", "-1", "--format=%H%x00%s%x00%b", "HEAD", "--"];
     let out = match run_text(repo, &args) {
         Ok(out) => out,
         Err(_) if !has_head(repo) => return Ok(None),
         Err(e) => return Err(e),
     };
-    let mut fields = out.splitn(3, '\x1f');
+    let mut fields = out.splitn(3, '\0');
     let (Some(sha), Some(subject), Some(body)) = (fields.next(), fields.next(), fields.next())
     else {
         return Err(format!("git log printed no commit: {out}"));
@@ -541,12 +534,14 @@ fn commits(
     };
     let skip_arg = format!("--skip={}", skip as usize - skip_here);
     let limit = format!("-n{}", limit as usize + skip_here);
-    // Records start with \x1e so that `--name-only`'s file list (after the format) stays in its own.
+    // Fields end in NUL, which git keeps out of messages; a pasted \x1e or \x1f split a commit
+    // in two. Records start with NUL \x1e so `--name-only`'s file list (after the format)
+    // stays in its own.
     let mut args = vec![
         "log",
         &skip_arg,
         &limit,
-        "--format=%x1e%H%x1f%h%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ct%x1f%P%x1f%D%x1f%s%x1f%b%x1f",
+        "--format=%x00%x1e%H%x00%h%x00%an%x00%ae%x00%at%x00%cn%x00%ct%x00%P%x00%D%x00%s%x00%b%x00",
     ];
     if filter.follows() {
         args.push("--name-only");
@@ -592,9 +587,9 @@ fn commits(
     );
     let (off_origin, not_in_head, raw) = (off_origin?, not_in_head?, raw?);
     Ok(raw
-        .split('\x1e')
+        .split("\0\x1e")
         .filter_map(|rec| {
-            let f: Vec<&str> = rec.split('\x1f').collect();
+            let f: Vec<&str> = rec.split('\0').collect();
             if f.len() < 12 {
                 return None;
             }

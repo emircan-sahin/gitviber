@@ -47,6 +47,9 @@ pub fn open_repo(core: &Core, path: String) -> Res<OpenedRepo> {
     if let Some(w) = &*core.watcher.lock().unwrap_or_else(|e| e.into_inner()) {
         w.opened();
     }
+    if git {
+        git::ensure_commit_graph(Path::new(&root));
+    }
     Ok(OpenedRepo { root, main, git })
 }
 

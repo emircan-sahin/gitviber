@@ -126,16 +126,17 @@ pub fn blame(repo: &Path, path: &str) -> Result<Blame, String> {
                 "log",
                 "--no-walk=unsorted",
                 "--stdin",
-                "--format=%H%x1f%B%x1e",
+                "--format=%H%x00%B%x00",
             ],
             &[],
             Some(shas.as_bytes()),
         )?;
-        for rec in String::from_utf8_lossy(&out).split('\x1e') {
-            if let Some((sha, message)) = rec.trim_start().split_once('\x1f') {
-                if let Some(&i) = index.get(sha) {
-                    blame.commits[i as usize].message = message.trim_end().to_string();
-                }
+        // NUL, which git keeps out of messages, so a \x1e or \x1f in one splits nothing.
+        let out = String::from_utf8_lossy(&out);
+        let mut fields = out.split('\0');
+        while let (Some(sha), Some(message)) = (fields.next(), fields.next()) {
+            if let Some(&i) = index.get(sha.trim_start()) {
+                blame.commits[i as usize].message = message.trim_end().to_string();
             }
         }
     }

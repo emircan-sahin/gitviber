@@ -276,6 +276,12 @@ pub fn stageable(files: &[Arc<FileChange>]) -> (Vec<String>, usize) {
     (paths, skipped)
 }
 
+/// A folder status listed as one entry (status.showUntrackedFiles=normal): it has no diff of
+/// its own and stages whole. Shown as a row of its own, like a nested repository.
+pub fn untracked_folder(f: &FileChange) -> bool {
+    f.status == "?" && f.nested.is_none() && f.path.ends_with('/')
+}
+
 pub const NESTED_EXPLAINED: &str = "It's a separate git repository. git add would record only a pointer to its current commit, not its files. Commit inside it instead.";
 
 /// What Unstage passes git: a staged rename's old path too, or its deletion would stay staged.
@@ -569,6 +575,20 @@ mod tests {
             None
         );
         assert_eq!(row_in_place(&before, gone(&[]), "x"), None);
+    }
+
+    #[test]
+    fn an_untracked_folder_is_one_row_that_stages_whole() {
+        let mut folder = (*file("data/")).clone();
+        folder.status = "?".into();
+        let mut repo = folder.clone();
+        repo.nested = Some(gitviber_core::git::Nested {
+            path: "/made/up/data".into(),
+        });
+        assert!(untracked_folder(&folder));
+        assert!(!untracked_folder(&repo) && !untracked_folder(&file("data/")));
+        let (paths, skipped) = stageable(&[Arc::new(folder), Arc::new(repo)]);
+        assert_eq!((paths, skipped), (vec!["data/".to_string()], 1));
     }
 
     // As pick.test.ts.

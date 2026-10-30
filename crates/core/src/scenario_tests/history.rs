@@ -769,3 +769,44 @@ fn bisect_finds_the_first_bad_commit_and_stops() {
     assert_eq!(run_text(&r, &["branch", "--show-current"]).unwrap(), branch);
     assert!(bisect_mark(&r, "good").is_err());
 }
+
+/// Pasted terminal output can carry the record and unit separators; a commit with them still
+/// reads as one commit with its own message.
+#[test]
+fn separator_bytes_in_a_message_split_nothing() {
+    let sb = Sandbox::new("separators");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "f.txt", "a\n", "First");
+    fs::create_dir_all(r.join("lib")).unwrap();
+    run(&r, &["mv", "f.txt", "lib/g.txt"]).unwrap();
+    fs::write(r.join("lib/g.txt"), "a\nb\n").unwrap();
+    stage(&r, &["lib/g.txt".into()]).unwrap();
+    let message = "Odd \u{1f}subject\u{1e} here\n\nbody \u{1e}one\u{1f} two";
+    commit(&r, message, &CommitOptions::default(), &Net::default()).unwrap();
+
+    let log = log(&r, None, 0, 10).unwrap();
+    assert_eq!(log.len(), 2);
+    assert_eq!(log[0].subject, "Odd \u{1f}subject\u{1e} here");
+    assert_eq!(log[0].body, "body \u{1e}one\u{1f} two");
+    assert_eq!(log[1].subject, "First");
+    let head = head_message(&r).unwrap().unwrap();
+    assert_eq!(
+        (head.subject.as_str(), head.sha.as_str()),
+        (log[0].subject.as_str(), log[0].sha.as_str())
+    );
+
+    // Followed through the rename, each commit still carries the path it had.
+    let filter = LogFilter {
+        paths: vec!["lib/g.txt".into()],
+        follow: true,
+        ..Default::default()
+    };
+    let followed = log_filtered(&r, None, 0, 10, &filter).unwrap();
+    let files: Vec<_> = followed.iter().map(|c| c.file.as_deref()).collect();
+    assert_eq!(files, [Some("lib/g.txt"), Some("f.txt")]);
+
+    let b = blame(&r, "lib/g.txt").unwrap();
+    assert_eq!(b.commits[b.lines[0] as usize].message, "First");
+    assert_eq!(b.commits[b.lines[1] as usize].message, message);
+}

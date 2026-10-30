@@ -389,6 +389,52 @@ fn merge_kinds_fast_forward_no_ff_and_squash() {
 }
 
 #[test]
+fn signature_display_stays_out_of_messages_and_history() {
+    let sb = Sandbox::new("show-signature");
+    let r = sb.path("r");
+    init(&r);
+    let key = sb.path("signer");
+    let made = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", "t@example.com", "-f"])
+        .arg(&key)
+        .status();
+    if !made.is_ok_and(|s| s.success()) {
+        eprintln!("no ssh-keygen; skipped");
+        return;
+    }
+    let public = fs::read_to_string(sb.path("signer.pub")).unwrap();
+    fs::write(sb.path("allowed"), format!("t@example.com {public}")).unwrap();
+    let signer = sb.path("signer.pub");
+    let allowed = sb.path("allowed");
+    for (k, v) in [
+        ("gpg.format", "ssh"),
+        ("user.signingkey", signer.to_str().unwrap()),
+        ("gpg.ssh.allowedSignersFile", allowed.to_str().unwrap()),
+        ("log.showSignature", "true"),
+    ] {
+        run(&r, &["config", k, v]).unwrap();
+    }
+    write_commit(&r, "a.txt", "a\n", "base");
+    run(&r, &["switch", "-q", "-c", "feature"]).unwrap();
+    fs::write(r.join("b.txt"), "b\n").unwrap();
+    run(&r, &["add", "b.txt"]).unwrap();
+    run(&r, &["commit", "-q", "-S", "-m", "add b"]).unwrap();
+    run(&r, &["switch", "-q", "main"]).unwrap();
+
+    assert!(!merge(&r, "feature", MergeKind::Squash, false).unwrap());
+    assert_eq!(
+        run_text(&r, &["log", "-1", "--format=%B"]).unwrap().trim(),
+        "Squash merge feature\n\n- add b"
+    );
+    // Asked for by name, the verdict still comes.
+    let shown = run_text(
+        &r,
+        &["log", "-1", "--show-signature", "--format=%s", "feature"],
+    );
+    assert!(shown.unwrap().contains("Good"));
+}
+
+#[test]
 fn a_full_ref_is_worded_by_its_short_name() {
     assert_eq!(short_ref("refs/heads/feat/x"), "feat/x");
     assert_eq!(short_ref("refs/remotes/origin/main"), "origin/main");

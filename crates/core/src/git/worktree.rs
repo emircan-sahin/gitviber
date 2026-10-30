@@ -1,8 +1,8 @@
 //! Linked worktrees: listing, adding, renaming, locking and removing them.
 
 use super::{
-    default_branch, delete_branch_at, include_source, is_nested_repo, landed, run, run_text,
-    validate_base, validate_branch, worktree_includes,
+    default_branch, delete_branch_at, include_source, is_nested_repo, landed, refresh_stat_cache,
+    run, run_text, validate_base, validate_branch, worktree_includes,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -139,6 +139,8 @@ pub fn add_worktree(
     if let Ok(files) = worktree_includes(&from) {
         crate::fs::copy_into(&from, Path::new(&target), &files);
     }
+    // Nobody works in it yet, so nothing to race.
+    refresh_stat_cache(Path::new(&target));
     // As `worktree list` spells it, which callers compare with: git resolves a folder picked
     // through a symlink, yet keeps the letter case typed (canonicalize would take the disk's).
     let listed = worktrees(repo)

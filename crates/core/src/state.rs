@@ -142,8 +142,19 @@ impl Core {
     }
 
     /// Runs a command that may move HEAD or local branches, recording what it moved for undo.
+    /// A switch or pull rewrites files as fast as git writes the index, so the stat cache is
+    /// refreshed after it (git::refresh_stat_cache).
     pub fn journaled<T>(&self, action: Action, f: impl FnOnce(&Path) -> Res<T>) -> Res<T> {
-        self.journal.record(&self.repo()?, action, f)
+        let repo = self.repo()?;
+        let out = self.journal.record(&repo, action, f)?;
+        self.refresh_stat_cache(&repo);
+        Ok(out)
+    }
+
+    /// git::refresh_stat_cache, never while one of our own commands writes the index.
+    pub fn refresh_stat_cache(&self, repo: &Path) {
+        let _held = self.index.lock().unwrap_or_else(|e| e.into_inner());
+        git::refresh_stat_cache(repo);
     }
 
     /// Registers a network command under the page's id, streaming its progress to `progress`.

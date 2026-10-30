@@ -162,18 +162,7 @@ fn made(repo: &Path, head: Option<&str>, message: &str, amend: bool) -> bool {
 
 /// `rev`'s first parent (None for a root commit) and its message.
 fn parent_and_message(repo: &Path, rev: &str) -> Option<(Option<String>, String)> {
-    let out = run_text(
-        repo,
-        &[
-            "log",
-            "-1",
-            "--no-show-signature",
-            "--format=%P%n%B",
-            rev,
-            "--",
-        ],
-    )
-    .ok()?;
+    let out = run_text(repo, &["log", "-1", "--format=%P%n%B", rev, "--"]).ok()?;
     let (parents, message) = out.split_once('\n')?;
     let parent = parents.split(' ').next().filter(|p| !p.is_empty());
     Some((parent.map(String::from), message.to_string()))
