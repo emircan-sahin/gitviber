@@ -6,6 +6,39 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.20] - 2026-10-30
+
+### Added
+
+- **Arrange your projects.** The top bar's project picker has pins, folders, a color per project and a filter, sorts by last opened or by hand, and its rows drag into folders and order. The projects list in the sidebar follows the same arrangement and colors, the project chip wears its project's color, and Pin replaces Move to Top.
+- **Folders without git open as projects.** Files, terminals, the vault and agents work in them; the git panel, the branch chip and git commands offer Initialize Repository. Running `git init`, from the app or a terminal, turns the project into a repository without leaving it. A home folder, `/` or a volume's root doesn't open as a plain folder; a toast suggests a folder inside it.
+- **Drag terminal tabs to reorder them,** with a line where the tab will land, or use Move Left and Move Right in the tab's menu. Editor tabs show the same line when dragged.
+- **An update shows as a badge in the top bar.** It walks you through Update Available, the download's progress and Restart to Update, and offers Retry Update after a failed download. It replaces the easy-to-miss button in the status bar, where the version stays.
+- **The command palette shows an icon for each command,** puts recent commands and files under their own headings, and lists its keys at the bottom.
+
+### Changed
+
+- **A focus shortcut pressed again gives focus back where it was.** ⇧⌘E, ⇧⌘G, ⌃1–⌃4, ⌃⌘C and ⌃⌘T toggle, and hiding a panel with ⌘J, ⌘B or ⌥⌘B returns focus to where it came from instead of always to the code view.
+- **Every picker and list takes the same keys:** arrows, Home/End and Page Up/Page Down, in the branch, ref, worktree, co-author, label and compare pickers, the agents menu and the projects list. In the pickers with a filter field, the field no longer swallows Home, End and the page keys.
+- **Every shortcut has the same keycap look,** in menus, tooltips, Settings, the ⌘ overlay, the welcome screen and the pickers' hints. Tooltips show the keys as you bound them.
+- **Opening the Updates page checks for updates** right away, unless it checked within the last minute or automatic checks are off.
+- **The open tab joins the content below it,** in the editor and in the terminal, and an editor tab's title is set in medium weight.
+- **A terminal's split dots summarize the panes in a tooltip** and turn into a count past six.
+- **The Agents button's badge sits on the icon's corner,** shows only when there's news, and pulses while an agent works.
+
+### Fixed
+
+- **A trackpad swipe right after typing scrolls the terminal.** It was ignored until the pointer moved.
+- **The project picker and the Open in list take the keys.** Opened from Switch Project in the palette, ⇧⌘O or a click, they start on a useful row and answer arrows, Home/End, ↵ and Esc.
+- **Restart to Update no longer sticks at Restarting…** when the install fails or you cancel the quit.
+- **Open Recent on a folder that's gone keeps it,** with its pin, folder and color: the projects list shows it missing and offers Locate…, so an unplugged drive doesn't lose its place.
+- **Locate… no longer makes a duplicate entry** when you pick a subfolder, a symlinked path or a linked worktree of a project already listed.
+- **A folder with an empty or broken `.git` stops reopening** every time its file watcher starts, and reads its files correctly.
+- **The history ref picker scrolls the highlighted row into view.**
+- **Screen readers hear an icon button's shortcut** along with its name.
+- **The Edit tooltip in a diff shows the Save key as you bound it.**
+- **Esc shows as the word "Esc"** in shortcut hints, instead of a glyph that read as a refresh icon.
+
 ## [0.1.19] - 2026-10-30
 
 ### Added
@@ -720,7 +753,9 @@ with `.deb`, `.rpm` and AppImage builds for Linux.
   repository from the welcome screen.
 - Help → Show Logs and Copy Diagnostics for bug reports. No telemetry.
 
-[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.18...HEAD
+[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.20...HEAD
+[0.1.20]: https://github.com/emircan-sahin/gitviber/compare/v0.1.19...v0.1.20
+[0.1.19]: https://github.com/emircan-sahin/gitviber/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/emircan-sahin/gitviber/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/emircan-sahin/gitviber/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/emircan-sahin/gitviber/compare/v0.1.15...v0.1.16
