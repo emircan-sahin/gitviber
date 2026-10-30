@@ -1,7 +1,7 @@
-//! The top bar's items: the project chip (project_picker.rs), the branch, worktree and pull request chips, and the git
-//! actions on the right: what's running (with Cancel), undo and redo with their history, Fetch,
-//! Pull and Push (or Publish) with their menus. Each keeps its state in the bar's element state
-//! per project, so it goes with the project.
+//! The top bar's items: the project chip (project_picker.rs), the branch, worktree and pull
+//! request chips, and the git actions on the right: what's running (with Cancel), undo and redo
+//! with their history, Fetch, Pull and Push (or Publish) with their menus. Each keeps its state
+//! in the bar's element state per project, so it goes with the project.
 
 use std::collections::HashSet;
 use std::time::Duration;

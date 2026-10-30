@@ -182,11 +182,7 @@ impl LabelPicker {
 
     /// ↑/↓ in the search box walk the rows, round from either end; Home/End, PgUp/PgDn too.
     fn key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let m = ev.keystroke.modifiers;
         let n = self.shown(cx).len();
-        if m.alt || m.platform || m.control || m.shift || n == 0 {
-            return;
-        }
         let typed = !self.query.read(cx).value().is_empty();
         let Some(to) = list_step(&ev.keystroke, Some(self.index), n, Ends::Wrap, typed) else {
             return;

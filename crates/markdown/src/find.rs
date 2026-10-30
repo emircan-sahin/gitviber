@@ -37,10 +37,19 @@ impl FindQuery {
         if !m.alt || m.shift || m.control || m.platform != cfg!(target_os = "macos") {
             return false;
         }
-        let flag = match key.key.as_str() {
-            "c" => &mut self.match_case,
-            "w" => &mut self.whole_word,
-            "r" => &mut self.regex,
+        let mut letter = key.key.chars();
+        match (letter.next(), letter.next()) {
+            (Some(c), None) => self.flip(c),
+            _ => false,
+        }
+    }
+
+    /// Flips the toggle on `letter`'s key ('c', 'w' or 'r'); false for any other letter.
+    pub fn flip(&mut self, letter: char) -> bool {
+        let flag = match letter {
+            'c' => &mut self.match_case,
+            'w' => &mut self.whole_word,
+            'r' => &mut self.regex,
             _ => return false,
         };
         *flag = !*flag;
@@ -170,13 +179,8 @@ impl FindBar {
         }
     }
 
-    fn flip(&mut self, which: u8, cx: &mut Context<Self>) {
-        let flag = match which {
-            0 => &mut self.query.match_case,
-            1 => &mut self.query.whole_word,
-            _ => &mut self.query.regex,
-        };
-        *flag = !*flag;
+    fn flip(&mut self, letter: char, cx: &mut Context<Self>) {
+        self.query.flip(letter);
         cx.emit(FindBarEvent::Changed);
         cx.notify();
     }
@@ -197,17 +201,17 @@ impl Render for FindBar {
             }
         };
         let steps = matches!(self.found, Ok((_, n)) if n > 0);
-        let toggle = |id: &'static str, icon: IconName, tip: &'static str, on: bool, which: u8| {
-            let letter = ['c', 'w', 'r'][which as usize];
-            Button::new(id)
-                .ghost()
-                .xsmall()
-                .icon(Icon::new(icon))
-                .tooltip(tip)
-                .tooltip_key_binding(find_option_kbd(letter))
-                .toggle(on, cx)
-                .on_click(cx.listener(move |this, _, _, cx| this.flip(which, cx)))
-        };
+        let toggle =
+            |id: &'static str, icon: IconName, tip: &'static str, on: bool, letter: char| {
+                Button::new(id)
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::new(icon))
+                    .tooltip(tip)
+                    .tooltip_key_binding(find_option_kbd(letter))
+                    .toggle(on, cx)
+                    .on_click(cx.listener(move |this, _, _, cx| this.flip(letter, cx)))
+            };
         let arrow = |id: &'static str, icon: IconName, tip: &'static str, dir: isize| {
             Button::new(id)
                 .ghost()
@@ -250,21 +254,21 @@ impl Render for FindBar {
                 IconName::CaseSensitive,
                 "Match Case",
                 self.query.match_case,
-                0,
+                'c',
             ))
             .child(toggle(
                 "find-word",
                 IconName::WholeWord,
                 "Match Whole Word",
                 self.query.whole_word,
-                1,
+                'w',
             ))
             .child(toggle(
                 "find-regex",
                 IconName::Regex,
                 "Use Regular Expression",
                 self.query.regex,
-                2,
+                'r',
             ))
             .child(
                 div()
