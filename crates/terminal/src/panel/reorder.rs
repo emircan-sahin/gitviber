@@ -3,6 +3,8 @@
 
 use super::*;
 
+pub(super) use gitviber_ui::widgets::{drop_edge, drop_line};
+
 /// A tab on the move: its id, and its place when the drag began, for the drop line's side.
 #[derive(Clone)]
 pub(super) struct DraggedTerminal {
@@ -23,24 +25,10 @@ impl DraggedTerminal {
 
 impl Render for DraggedTerminal {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.app_theme();
-        h_flex()
-            .gap_1p5()
-            .px_3()
-            .py_1()
-            .rounded(px(4.))
-            .bg(t.elevated)
-            .border_1()
-            .border_color(t.border_strong)
-            .shadow_md()
-            .text_color(t.foreground)
-            .text_size(px(12.))
-            .child(
-                Icon::new(IconName::SquareTerminal)
-                    .size(px(14.))
-                    .text_color(t.muted_foreground),
-            )
-            .child(self.title.clone())
+        let icon = Icon::new(IconName::SquareTerminal)
+            .size(px(14.))
+            .text_color(cx.app_theme().muted_foreground);
+        gitviber_ui::widgets::drag_chip(Some(icon.into_any_element()), self.title.clone(), cx)
     }
 }
 
@@ -52,25 +40,6 @@ pub(super) fn move_to<T>(items: &mut Vec<T>, from: usize, to: usize) -> bool {
     let item = items.remove(from);
     items.insert(to, item);
     true
-}
-
-/// Where a tab dropped on the one at `to` lands: on its left from the right, on its right from
-/// the left; that edge takes the drop line. None over itself.
-pub(super) fn drop_edge(from: usize, to: usize) -> Option<bool> {
-    (from != to).then_some(from < to)
-}
-
-/// The drop line on a tab's left (`right` false) or right edge: an inset shadow, as the tab's own
-/// border already has its color.
-pub(super) fn drop_line(style: StyleRefinement, right: bool, color: gpui::Hsla) -> StyleRefinement {
-    let x = if right { px(-2.) } else { px(2.) };
-    style.shadow(vec![gpui::BoxShadow {
-        color,
-        offset: gpui::point(x, px(0.)),
-        blur_radius: px(0.),
-        spread_radius: px(0.),
-        inset: true,
-    }])
 }
 
 impl TerminalPanel {

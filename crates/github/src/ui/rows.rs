@@ -7,10 +7,8 @@ use gpui_kit::{
     UniformListScrollHandle, Window, point, px, size,
 };
 
-use crate::logic::keys::move_target;
+use gitviber_ui::widgets::{Ends, list_step};
 
-/// Rows a PgUp/PgDn moves.
-const PAGE: usize = 10;
 /// A PR's or issue's row, every one as tall.
 pub const ROW: f32 = 44.;
 
@@ -107,7 +105,7 @@ pub fn row_key(ev: &KeyDownEvent, at: Option<usize>, n: usize, more: bool) -> Op
     if key == "down" && at + 1 == n && more {
         return Some(RowKey::More);
     }
-    if let Some(to) = move_target(key, at, n, PAGE) {
+    if let Some(to) = list_step(&ev.keystroke, Some(at), n, Ends::Stop, false) {
         return Some(RowKey::Move(to));
     }
     match key {

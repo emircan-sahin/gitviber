@@ -49,6 +49,19 @@ pub fn open_repo(core: &Core, path: String) -> Res<OpenedRepo> {
     Ok(OpenedRepo { root, main, git })
 }
 
+/// The path the projects list keys `path` by once it's opened, as open_repo finds it: its
+/// repository's main worktree, else the folder itself, canonical. None when it's gone or git
+/// refuses it. Blocks on git.
+pub fn project_key(path: &Path) -> Option<String> {
+    match git::toplevel(path) {
+        Ok(top) => Some(git::main_worktree(Path::new(&top)).unwrap_or(top)),
+        Err(e) if e == git::NOT_A_REPO => {
+            Some(path.canonicalize().ok()?.to_string_lossy().into_owned())
+        }
+        Err(_) => None,
+    }
+}
+
 /// Starts the watcher of the repo at `root` again, after Event::RepoWatchFailed. Once it's up,
 /// one refresh catches up what changed meanwhile. A repo opened or closed since keeps its own.
 pub fn watch_again(core: &Core, root: String) {
@@ -349,6 +362,55 @@ mod open_tests {
             .status();
         init.is_ok_and(|s| s.success())
             .then(|| dir.canonicalize().unwrap())
+    }
+
+    /// Locate… picking a subfolder, a symlinked path or a linked worktree keys the project as
+    /// opening it would, so it doesn't turn up twice.
+    #[cfg(unix)]
+    #[test]
+    fn a_located_folder_is_keyed_as_its_open_would_be() {
+        let Some(dir) = repo("project-key") else {
+            return;
+        };
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-C"])
+                .arg(&dir)
+                .args(args)
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        let key = Some(dir.to_string_lossy().into_owned());
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        assert_eq!(project_key(&dir.join("src")), key);
+        let link = dir.with_extension("link");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+        assert_eq!(project_key(&link), key);
+        let linked = dir.with_extension("wt");
+        let _ = std::fs::remove_dir_all(&linked);
+        assert!(git(&["commit", "-q", "--allow-empty", "-m", "first"]));
+        assert!(git(&[
+            "worktree",
+            "add",
+            "-q",
+            &linked.to_string_lossy(),
+            "-b",
+            "side"
+        ]));
+        assert_eq!(project_key(&linked), key);
+        // Outside any repository: the folder itself, canonical.
+        let plain = dir.with_extension("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_eq!(
+            project_key(&plain),
+            Some(plain.canonicalize().unwrap().to_string_lossy().into_owned())
+        );
+        assert_eq!(project_key(&dir.join("nowhere")), None);
+        for d in [&linked, &plain, &dir] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+        let _ = std::fs::remove_file(&link);
     }
 
     /// A core whose RepoChanged events come out of the receiver.

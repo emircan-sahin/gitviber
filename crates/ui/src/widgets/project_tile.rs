@@ -1,6 +1,9 @@
 //! A project's tile: its folder's first letter on the project's color (projects.rs).
 
-use gpui_kit::{App, Div, FontWeight, ParentElement as _, Styled as _, div, px, rems, rgb};
+use gpui_kit::{
+    App, Context, Div, FontWeight, IntoElement, ParentElement as _, Render, Styled as _, Window,
+    div, px, rems, rgb,
+};
 
 use crate::UiState;
 use crate::projects::{Swatch, project_name};
@@ -31,4 +34,17 @@ pub fn swatch_tile(swatch: &Swatch, name: &str, size: f32, cx: &App) -> Div {
         .text_size(rems(if size >= 18. { 0.6875 } else { 0.59375 }))
         .font_weight(FontWeight::BOLD)
         .child(letter)
+}
+
+/// A project on the move, from the top bar picker or the projects list: either takes it.
+#[derive(Clone)]
+pub struct DraggedProject {
+    pub path: String,
+}
+
+impl Render for DraggedProject {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let tile = project_tile(&self.path, 16., cx).into_any_element();
+        super::drag_chip(Some(tile), project_name(&self.path).to_string(), cx)
+    }
 }

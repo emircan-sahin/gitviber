@@ -17,6 +17,7 @@ use gitviber_core::{api, git};
 use gpui_kit::{App, AppContext as _, Entity, EventEmitter, Global, Hsla, Rgba, Window};
 
 use crate::names::{Branch, folder_name};
+use gitviber_ui::colors::{spread, stable_hash, swatch};
 
 /// What the terminal crate follows: subscribe to `WorktreeEvents::global(cx)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -340,11 +341,12 @@ pub fn cleanable(
         .collect()
 }
 
-/// The worktree colors: OKLCH hues spread around the wheel, drawn at the theme's tint.
+/// The worktree colors: named as the project colors are, at OKLCH hues spread around the wheel
+/// and drawn at the theme's tint.
 pub const HUES: [(&str, f32); 8] = [
     ("red", 25.),
     ("orange", 60.),
-    ("yellow", 100.),
+    ("amber", 100.),
     ("green", 150.),
     ("teal", 190.),
     ("blue", 245.),
@@ -358,11 +360,18 @@ pub fn hue_name(h: Hue) -> &'static str {
     HUES[h].0
 }
 
-/// A stored color: one of the hues, or "none" (Some(None)); anything else is dropped.
+/// The name a person reads, as the project colors have it.
+pub fn hue_label(h: Hue) -> &'static str {
+    swatch(HUES[h].0).map_or(HUES[h].0, |s| s.name)
+}
+
+/// A stored color: one of the hues, or "none" (Some(None)); anything else is dropped. "yellow"
+/// is amber's name from before the two palettes were one.
 pub fn parse_choice(v: &str) -> Option<Option<Hue>> {
     if v == "none" {
         return Some(None);
     }
+    let v = if v == "yellow" { "amber" } else { v };
     HUES.iter().position(|(n, _)| *n == v).map(Some)
 }
 
@@ -379,14 +388,7 @@ pub fn worktree_hue(path: &str, main: bool, picked: &BTreeMap<String, String>) -
     if main {
         return None;
     }
-    // FNV-1a over the name's UTF-16 units, as the old app hashed it: the same name, the same color.
-    let mut h: u32 = 0x811c_9dc5;
-    for ch in folder_name(path).chars() {
-        let mut buf = [0u16; 2];
-        let unit = ch.encode_utf16(&mut buf)[0];
-        h = (h ^ unit as u32).wrapping_mul(0x0100_0193);
-    }
-    Some(h as usize % HUES.len())
+    Some(stable_hash(folder_name(path)) as usize % HUES.len())
 }
 
 /// The colors of one repo's worktrees, by path. A picked one stands; each other linked one takes
@@ -409,13 +411,7 @@ pub fn worktree_hues(
             out.insert(path.clone(), named);
             continue;
         };
-        let mut best = named;
-        for k in 1..HUES.len() {
-            let h = (named + k) % HUES.len();
-            if used[h] < used[best] {
-                best = h;
-            }
-        }
+        let best = spread(named, HUES.len(), |h| used[h]);
         used[best] += 1;
         out.insert(path.clone(), Some(best));
     }
@@ -650,8 +646,14 @@ mod tests {
         }
         for (n, _) in HUES {
             assert!(parse_choice(n).is_some());
+            // One palette: a worktree's color is one of the project colors.
+            assert!(gitviber_ui::colors::swatch(n).is_some(), "{n}");
         }
         assert_eq!(parse_choice("none"), Some(None));
+        assert_eq!(
+            parse_choice("yellow").flatten().map(hue_name),
+            Some("amber")
+        );
     }
 
     #[test]

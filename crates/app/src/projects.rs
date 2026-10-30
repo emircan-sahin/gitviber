@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use gitviber_core::api;
 use gitviber_ui::actions::{project as project_cmds, terminal as term_cmds};
-use gitviber_ui::projects::{DropOn, Place, home_relative};
-use gitviber_ui::widgets::project_tile;
+use gitviber_ui::projects::{DropOn, Place, home_dir, home_relative, project_name};
+use gitviber_ui::widgets::{DraggedProject, Ends, list_step, project_tile};
 use gitviber_ui::workspace::{Slot, Toast};
 use gitviber_ui::{ActiveAppTheme, UiState, Workspace};
 use gpui_kit::assets::IconName;
@@ -20,8 +20,8 @@ use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Global,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, PathPromptOptions,
-    Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Task, Window,
-    div, prelude::FluentBuilder as _, px, rems,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Task, Window, div,
+    prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::help::{open_url, toast};
@@ -96,13 +96,6 @@ fn info(path: &str, cx: &App) -> Option<Info> {
     cx.try_global::<Infos>()?.by_path.get(path).cloned()
 }
 
-pub fn folder_name(path: &str) -> &str {
-    path.trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or(path)
-}
-
 /// The order shown: folders that are gone sink below the rest, each group in the user's order.
 pub fn shown_order(list: &[String], gone: impl Fn(&str) -> bool) -> Vec<String> {
     let (here, away): (Vec<&String>, Vec<&String>) = list.iter().partition(|p| !gone(p));
@@ -169,7 +162,13 @@ fn locate(path: &str, cx: &mut App) {
         let Some(new) = paths.into_iter().next() else {
             return;
         };
-        let new = new.to_string_lossy().into_owned();
+        // Keyed as opening it keys it, so a subfolder or a linked worktree doesn't leave the
+        // old entry beside a new one for the real root.
+        let new = cx
+            .background_spawn(async move {
+                api::repo::project_key(&new).unwrap_or_else(|| new.to_string_lossy().into_owned())
+            })
+            .await;
         cx.update(|cx| {
             let (old, put) = (old.clone(), new.clone());
             UiState::update(cx, move |s| s.relocate_project(&old, &put));
@@ -194,7 +193,7 @@ pub struct Away {
 pub fn away_of(root: &str, main: &str, worktrees: &[gitviber_core::git::Worktree]) -> Option<Away> {
     (root != main).then(|| Away {
         root: root.to_string(),
-        folder: folder_name(root).to_string(),
+        folder: project_name(root).to_string(),
         main_branch: worktrees
             .iter()
             .find(|w| w.main)
@@ -267,13 +266,12 @@ fn key_down(
     if m.platform || m.control || m.alt || m.shift {
         return;
     }
-    let step = |to: usize, cx: &mut App| {
+    if let Some(to) = list_step(k, Some(at), shown.len(), Ends::Stop, false) {
         keys.update(cx, |k, cx| k.go(shown.get(to), cx));
         keys.read(cx).scroll.scroll_to_item(to);
-    };
+        return cx.stop_propagation();
+    }
     match k.key.as_str() {
-        "down" => step((at + 1).min(shown.len() - 1), cx),
-        "up" => step(at.saturating_sub(1), cx),
         "enter" | "space" => {
             if info(path, cx).is_some_and(|i| !i.exists) {
                 locate(path, cx)
@@ -297,29 +295,6 @@ fn forget_key_row(keys: &Entity<Keys>, shown: &[String], current: Option<&str>, 
         .or_else(|| at.checked_sub(1).and_then(|i| shown.get(i)));
     keys.update(cx, |k, cx| k.go(next, cx));
     forget(path, cx);
-}
-
-#[derive(Clone)]
-struct DraggedProject {
-    path: String,
-}
-
-impl Render for DraggedProject {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.app_theme();
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .px_2()
-            .py_1()
-            .rounded(px(4.))
-            .bg(t.elevated)
-            .border_1()
-            .border_color(t.border_strong)
-            .child(project_tile(&self.path, 16., cx))
-            .child(folder_name(&self.path).to_string())
-    }
 }
 
 /// The list. `current`: the open project's main folder, which can't be removed and doesn't open
@@ -354,11 +329,11 @@ pub fn list(
     let shown = shown_order(&org.flat(&recent), gone);
     let key_at = focused.then(|| key_row(&shown, keys.read(cx).row.as_deref(), current.as_deref()));
     let ring = keys.read(cx).by_key;
-    let home = std::env::var("HOME").ok().filter(|h| !h.is_empty());
+    let home = home_dir();
     let t = cx.app_theme().clone();
     let rows = shown.clone().into_iter().enumerate().map(|(i, path)| {
         let keyed = key_at == Some(i);
-        let name = folder_name(&path).to_string();
+        let name = project_name(&path).to_string();
         let i_info = info(&path, cx);
         // Unknown until project_info answers: taken as there rather than flash every row dimmed.
         let missing = i_info.as_ref().is_some_and(|i| !i.exists);
@@ -574,7 +549,7 @@ pub fn list(
                     .item(
                         PopupMenuItem::new("Copy Name")
                             .icon(IconName::Copy)
-                            .on_click(move |_, _, cx| copy(folder_name(&cn), "Name copied", cx)),
+                            .on_click(move |_, _, cx| copy(project_name(&cn), "Name copied", cx)),
                     )
                     .separator()
                     .item(
@@ -631,7 +606,6 @@ mod tests {
     fn gone_folders_sink() {
         let list: Vec<String> = ["/a", "/b", "/c"].map(String::from).into();
         assert_eq!(shown_order(&list, |p| p == "/a"), ["/b", "/c", "/a"]);
-        assert_eq!(folder_name("/Users/me/repo/"), "repo");
     }
 
     #[test]

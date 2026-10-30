@@ -84,10 +84,7 @@ pub fn short_ref(r: &str) -> &str {
 }
 
 /// The last part of a path: a worktree's folder name.
-pub fn folder_name(path: &str) -> &str {
-    let p = path.trim_end_matches('/');
-    p.rsplit('/').next().unwrap_or(p)
-}
+pub use gitviber_ui::projects::project_name as folder_name;
 
 /// "1 commit", "3 commits".
 pub fn plural(n: usize, word: &str) -> String {

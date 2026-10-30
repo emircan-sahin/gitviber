@@ -3,7 +3,7 @@
 //! one tab stop, the active tab its focused one.
 
 use gitviber_ui::actions::{browser, file, tab};
-use gitviber_ui::widgets::FileIcon;
+use gitviber_ui::widgets::{FileIcon, drag_chip, drop_edge, drop_line};
 use gitviber_ui::workspace::{Selection, TabIcon, Workspace, page_host, selection_path};
 use gitviber_ui::{ActiveAppTheme, AppTheme};
 use gpui_kit::assets::IconName;
@@ -28,17 +28,7 @@ struct DraggedTab {
 
 impl Render for DraggedTab {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.app_theme();
-        div()
-            .px_3()
-            .py_1()
-            .rounded(px(4.))
-            .bg(t.elevated)
-            .border_1()
-            .border_color(t.border_strong)
-            .text_color(t.foreground)
-            .text_size(t.ui_text())
-            .child(self.title.clone())
+        drag_chip(None, self.title.clone(), cx)
     }
 }
 
@@ -443,7 +433,11 @@ pub fn tab_strip(
                 .on_drag(DraggedTab { index: i, title }, |tab, _, _, cx| {
                     cx.new(|_| tab.clone())
                 })
-                .drag_over::<DraggedTab>(move |s, _, _, cx| s.bg(cx.app_theme().active))
+                // A line on the edge it lands beside: a tint would read as "onto this tab".
+                .drag_over::<DraggedTab>(move |s, tab, _, cx| match drop_edge(tab.index, i) {
+                    Some(right) => drop_line(s, right, cx.app_theme().primary),
+                    None => s,
+                })
                 .on_drop(move |dragged: &DraggedTab, _, cx| {
                     ws_drop.update(cx, |ws, cx| ws.move_tab(dragged.index, i, cx));
                 })

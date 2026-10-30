@@ -387,7 +387,7 @@ fn to_hex(color: Hsla) -> SharedString {
 }
 
 /// WCAG's contrast ratio of two sRGB colors.
-fn contrast(a: [f32; 3], b: [f32; 3]) -> f32 {
+pub(crate) fn contrast(a: [f32; 3], b: [f32; 3]) -> f32 {
     let lum = |c: [f32; 3]| {
         let ch = |v: f32| {
             if v <= 0.04045 {

@@ -12,11 +12,11 @@ use gitviber_files::{OpenOptions, Reveal};
 use gitviber_refs::errors::GitFix;
 use gitviber_refs::toast::{Action, git_failed};
 use gitviber_ui::Workspace;
+use gitviber_ui::projects::project_name;
 use gitviber_ui::workspace::{Toast, settle_edits};
 use gpui_kit::{App, AppContext as _};
 
 use crate::help::toast;
-use crate::projects::folder_name;
 
 /// What git says a folder is in.
 #[derive(Clone, Debug, PartialEq)]
@@ -70,7 +70,7 @@ pub fn open(request: Request, cx: &mut App) {
 
 /// What git said, acted on in the main window.
 pub fn act(found: Found, request: Request, cx: &mut App) {
-    let name = folder_name(&request.folder.to_string_lossy()).to_string();
+    let name = project_name(&request.folder.to_string_lossy()).to_string();
     match found {
         Found::Repo(root) => show(root, request.file, cx),
         Found::Gone => toast(

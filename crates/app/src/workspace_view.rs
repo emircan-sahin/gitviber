@@ -326,11 +326,11 @@ impl WorkspaceView {
                 if ws.read(cx).project().map(|p| p.read(cx).root()) != Some(gone.as_path()) {
                     return;
                 }
-                let name = crate::projects::folder_name(&gone.to_string_lossy()).to_string();
+                let name = gitviber_ui::projects::project_name(&gone.to_string_lossy()).to_string();
                 let toast = match next {
                     Some(next) => {
-                        let opened =
-                            crate::projects::folder_name(&next.to_string_lossy()).to_string();
+                        let opened = gitviber_ui::projects::project_name(&next.to_string_lossy())
+                            .to_string();
                         ws.update(cx, |ws, cx| ws.open_project(next, window, cx));
                         Toast::info(format!("Opened {opened} in its place."))
                             .title(format!("{name} no longer exists"))
@@ -445,12 +445,16 @@ impl WorkspaceView {
                 if found != Found::Gone {
                     return open_repo::act(found, Request::folder(folder), cx);
                 }
+                // It stays, pin, folder and color too: the drive may only be unplugged. The
+                // projects list shows it missing and offers Locate….
+                crate::projects::mark_stale(cx);
                 let path = folder.to_string_lossy().into_owned();
-                UiState::update(cx, |s| s.forget_project(&path));
                 if let Some(workspace) = workspace.upgrade() {
                     workspace.update(cx, |ws, cx| {
                         ws.toast(
-                            Toast::warning(format!("{path} is gone; it's off the list.")),
+                            Toast::warning(format!(
+                                "{path} is gone. Locate it from the projects list, or remove it there."
+                            )),
                             cx,
                         )
                     });
@@ -1151,7 +1155,7 @@ fn window_title(root: Option<&Path>, branch: Option<&str>, head: Option<&str>) -
         return "GitViber".into();
     };
     let root = root.to_string_lossy();
-    let name = crate::projects::folder_name(&root);
+    let name = gitviber_ui::projects::project_name(&root);
     match branch.or_else(|| head.map(|h| h.get(..7).unwrap_or(h))) {
         Some(at) => format!("{name} — {at}"),
         None => name.to_string(),

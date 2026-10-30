@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::colors::{SWATCHES, Swatch, swatch};
+use crate::colors::{spread, stable_hash};
 use crate::state::{lenient, lenient_list};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,11 +100,17 @@ impl Line {
     }
 }
 
+/// The last part of a path: the folder's name.
 pub fn project_name(path: &str) -> &str {
     path.trim_end_matches('/')
         .rsplit('/')
         .next()
         .unwrap_or(path)
+}
+
+/// The home folder, for `home_relative`; unset or empty is none.
+pub fn home_dir() -> Option<String> {
+    std::env::var("HOME").ok().filter(|h| !h.is_empty())
 }
 
 /// `path` with the home folder written as ~, as a shell shows it.
@@ -256,10 +264,14 @@ impl ProjectOrg {
         self.colors.remove(path);
     }
 
-    /// A folder found elsewhere keeps its place, pin and color.
+    /// A folder found elsewhere keeps its place, pin and color. Found where another entry
+    /// already is, the two merge: the arranged one's arrangement wins, `old`'s on a tie.
     pub fn relocate(&mut self, old: &str, new: &str) {
         if old == new {
             return;
+        }
+        if self.organized(new) && !self.organized(old) {
+            return self.forget(old);
         }
         self.forget(new);
         let swap = |p: &mut String| {
@@ -299,11 +311,7 @@ impl ProjectOrg {
                     .filter(|p| self.colors.get(*p).map(String::as_str) == Some(s.key))
                     .count()
             };
-            let start = preferred(path);
-            let pick = (0..auto.len())
-                .map(|i| auto[(start + i) % auto.len()])
-                .min_by_key(|s| uses(s))
-                .unwrap_or(auto[0]);
+            let pick = auto[spread(preferred(path), auto.len(), |i| uses(auto[i]))];
             self.colors.insert(path.clone(), pick.key.to_string());
         }
     }
@@ -380,100 +388,13 @@ impl ProjectOrg {
     }
 }
 
-/// A tile color, in a shade for each theme; the letter on it is whichever of near-black and
-/// white reads better.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Swatch {
-    pub key: &'static str,
-    pub name: &'static str,
-    dark: u32,
-    light: u32,
-    /// Given out unasked; gray is only picked by hand, since a dimmed tile means a missing folder.
-    auto: bool,
-}
-
-const fn sw(key: &'static str, name: &'static str, dark: u32, light: u32) -> Swatch {
-    Swatch {
-        key,
-        name,
-        dark,
-        light,
-        auto: true,
-    }
-}
-
-/// Bright enough to stand out on the dark themes, deep enough on the light ones.
-pub static SWATCHES: [Swatch; 13] = [
-    sw("red", "Red", 0xF87171, 0xDC2626),
-    sw("orange", "Orange", 0xFB923C, 0xEA580C),
-    sw("amber", "Amber", 0xFBBF24, 0xD97706),
-    sw("lime", "Lime", 0xA3E635, 0x65A30D),
-    sw("green", "Green", 0x4ADE80, 0x16A34A),
-    sw("teal", "Teal", 0x2DD4BF, 0x0D9488),
-    sw("cyan", "Cyan", 0x22D3EE, 0x0891B2),
-    sw("blue", "Blue", 0x60A5FA, 0x2563EB),
-    sw("indigo", "Indigo", 0x818CF8, 0x4F46E5),
-    sw("violet", "Violet", 0xA78BFA, 0x7C3AED),
-    sw("fuchsia", "Fuchsia", 0xE879F9, 0xC026D3),
-    sw("pink", "Pink", 0xF472B6, 0xDB2777),
-    Swatch {
-        auto: false,
-        ..sw("gray", "Gray", 0x94A3B8, 0x64748B)
-    },
-];
-
-const NEAR_BLACK: u32 = 0x111111;
-const WHITE: u32 = 0xFFFFFF;
-
-impl Swatch {
-    pub fn fill(&self, dark: bool) -> u32 {
-        if dark { self.dark } else { self.light }
-    }
-
-    pub fn letter(&self, dark: bool) -> u32 {
-        let fill = self.fill(dark);
-        if contrast(fill, NEAR_BLACK) >= contrast(fill, WHITE) {
-            NEAR_BLACK
-        } else {
-            WHITE
-        }
-    }
-}
-
-pub fn swatch(key: &str) -> Option<&'static Swatch> {
-    SWATCHES.iter().find(|s| s.key == key)
-}
-
 fn auto_swatches() -> impl Iterator<Item = &'static Swatch> {
     SWATCHES.iter().filter(|s| s.auto)
 }
 
-/// The auto swatch `path` hashes to. FNV-1a: std's hasher may change between Rust releases,
-/// and a project's color must not.
+/// The auto swatch `path` hashes to.
 fn preferred(path: &str) -> usize {
-    let mut h: u32 = 0x811c_9dc5;
-    for b in path.as_bytes() {
-        h = (h ^ u32::from(*b)).wrapping_mul(0x0100_0193);
-    }
-    h as usize % auto_swatches().count()
-}
-
-/// WCAG relative luminance of an 0xRRGGBB color.
-fn luminance(rgb: u32) -> f32 {
-    let channel = |shift: u32| {
-        let c = ((rgb >> shift) & 0xff) as f32 / 255.;
-        if c <= 0.04045 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
-}
-
-fn contrast(a: u32, b: u32) -> f32 {
-    let (a, b) = (luminance(a), luminance(b));
-    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    stable_hash(path) as usize % auto_swatches().count()
 }
 
 #[cfg(test)]
@@ -510,6 +431,8 @@ mod tests {
         );
         assert_eq!(home_relative("/tmp/app", home), "/tmp/app");
         assert_eq!(home_relative("/tmp/app", None), "/tmp/app");
+        assert_eq!(project_name("/Users/me/repo/"), "repo");
+        assert_eq!(project_name("repo"), "repo");
     }
 
     #[test]
@@ -628,10 +551,16 @@ mod tests {
         assert_eq!(org.swatch_of("/new").key, "teal");
         org.forget("/new");
         assert!(org.pinned.is_empty() && org.colors.is_empty());
+        // A loose one located where a pinned entry already is: the pin stays.
+        org.toggle_pin("/pinned");
+        org.set_color("/loose", Some("red"));
+        org.relocate("/loose", "/pinned");
+        assert_eq!(org.pinned, ["/pinned"]);
+        assert!(!org.colors.contains_key("/loose"));
     }
 
     #[test]
-    fn colors_are_stable_distinct_and_readable() {
+    fn colors_are_stable_and_distinct() {
         // The hash never changes between builds: a project keeps its color.
         assert_eq!(preferred("/r/app"), preferred("/r/app"));
         assert_eq!(preferred(""), 0x811c_9dc5usize % 12);
@@ -654,12 +583,6 @@ mod tests {
         // An unknown key from a newer build falls back to the hashed one.
         org.set_color("/r/new", Some("chartreuse"));
         assert!(org.swatch_of("/r/new").auto);
-        for s in &SWATCHES {
-            for dark in [true, false] {
-                let c = contrast(s.fill(dark), s.letter(dark));
-                assert!(c >= 4.5, "{} ({dark}): {c}", s.key);
-            }
-        }
     }
 
     #[test]
