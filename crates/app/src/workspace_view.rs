@@ -6,7 +6,6 @@ use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use gitviber_browser::ui::BrowserTab;
 use gitviber_ui::actions::{diff, editor, file, repo, review, tab, terminal, view, workbench};
 use gitviber_ui::keymap::ROOT_CONTEXT;
 use gitviber_ui::memory::{self, Live};
@@ -837,13 +836,11 @@ impl WorkspaceView {
         let t = cx.app_theme().clone();
         let focus = ws.center_focus().clone();
         let has_tabs = !visible.is_empty();
+        let cacheable = ws.tabs().active().is_none_or(|t| t.item.cacheable(cx));
         let content = match (shows, view) {
             (CenterShows::Empty, _) => welcome::empty_center(cx),
-            // A browser page is a native view placed from its paint, which a cached frame skips.
-            (_, Some(view)) if view.entity_type() == std::any::TypeId::of::<BrowserTab>() => {
-                view.into_any_element()
-            }
-            (_, Some(view)) => cached(view).into_any_element(),
+            (_, Some(view)) if cacheable => cached(view).into_any_element(),
+            (_, Some(view)) => view.into_any_element(),
             (_, None) => div().into_any_element(),
         };
         let line = focus_line(&focus, window, cx);

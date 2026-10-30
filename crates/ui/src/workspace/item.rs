@@ -79,6 +79,12 @@ pub trait TabItem: Render {
     fn keeps_edits(&self, _cx: &App) -> bool {
         false
     }
+
+    /// Whether the center may draw it from a cached frame while nothing in it changed; false for
+    /// a view that does work in its own paint each frame.
+    fn cacheable(&self, _cx: &App) -> bool {
+        true
+    }
 }
 
 /// A save's answer for `TabItem::save`: answered once with `done`; dropped unanswered, it's false.
@@ -132,6 +138,7 @@ trait AnyTab {
     fn can_save(&self, cx: &App) -> bool;
     fn discard(&self, cx: &mut App);
     fn keeps_edits(&self, cx: &App) -> bool;
+    fn cacheable(&self, cx: &App) -> bool;
     fn view(&self) -> AnyView;
     fn id(&self) -> EntityId;
 }
@@ -175,6 +182,9 @@ impl<V: TabItem> AnyTab for Entity<V> {
     }
     fn keeps_edits(&self, cx: &App) -> bool {
         self.read(cx).keeps_edits(cx)
+    }
+    fn cacheable(&self, cx: &App) -> bool {
+        self.read(cx).cacheable(cx)
     }
     fn view(&self) -> AnyView {
         self.clone().into()
@@ -231,6 +241,9 @@ impl TabHandle {
     }
     pub fn keeps_edits(&self, cx: &App) -> bool {
         self.0.keeps_edits(cx)
+    }
+    pub fn cacheable(&self, cx: &App) -> bool {
+        self.0.cacheable(cx)
     }
     pub fn view(&self) -> AnyView {
         self.0.view()
@@ -362,6 +375,11 @@ impl Tab {
 
     pub fn is_dirty(&self, cx: &App) -> bool {
         self.handle.as_ref().is_some_and(|h| h.is_dirty(cx))
+    }
+
+    /// Drawn from a cached frame while unchanged (`TabItem::cacheable`).
+    pub fn cacheable(&self, cx: &App) -> bool {
+        self.handle.as_ref().is_none_or(|h| h.cacheable(cx))
     }
 
     pub fn focus_handle(&self, cx: &App) -> Option<FocusHandle> {
