@@ -9,8 +9,8 @@ use gpui_kit::{Action, App, Context, Window};
 type Act = fn(&mut ChangesPanel, &mut Window, &mut Context<ChangesPanel>);
 
 pub fn install(cx: &mut App) {
-    // ⌃⌘C: the panel shows and its commit message takes the focus.
-    on::<changes::FocusMessage>(cx, true, |p, window, cx| p.focus_message(window, cx));
+    // ⌃⌘C: the panel shows and its commit message takes the focus; again, focus goes back.
+    on::<changes::FocusMessage>(cx, true, |p, window, cx| p.toggle_message_focus(window, cx));
     on::<git::ApplyPatch>(cx, false, |p, window, cx| p.apply_patch(window, cx));
     on::<review::OpenAll>(cx, false, |p, window, cx| {
         p.open_all(ChangesOf::Unstaged, window, cx)

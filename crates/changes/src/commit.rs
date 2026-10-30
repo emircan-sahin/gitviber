@@ -810,6 +810,20 @@ impl CommitBox {
         self.summary.read(cx).focus_handle(cx).is_focused(window)
     }
 
+    /// Focus in the summary or the description.
+    pub fn in_message(&self, window: &Window, cx: &App) -> bool {
+        use gpui_kit::Focusable as _;
+        self.summary
+            .read(cx)
+            .focus_handle(cx)
+            .contains_focused(window, cx)
+            || self
+                .body
+                .read(cx)
+                .focus_handle(cx)
+                .contains_focused(window, cx)
+    }
+
     pub fn focus_message(&self, window: &mut Window, cx: &mut App) {
         self.summary.update(cx, |s, cx| s.focus(window, cx));
     }
