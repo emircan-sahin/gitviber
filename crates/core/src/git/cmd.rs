@@ -74,10 +74,24 @@ pub(crate) fn command(repo: &Path, args: &[&str]) -> Command {
         .ok()
         .and_then(|c| c.parse::<usize>().ok())
         .unwrap_or(0);
-    cmd.env("GIT_CONFIG_COUNT", (n + 1).to_string())
-        .env(format!("GIT_CONFIG_KEY_{n}"), "log.showSignature")
-        .env(format!("GIT_CONFIG_VALUE_{n}"), "false");
+    #[cfg_attr(not(test), allow(unused_mut, clippy::useless_vec))]
+    let mut config = vec![("log.showSignature", "false")];
+    #[cfg(test)]
+    TEST_CONFIG.with(|t| config.extend(t.borrow().iter().copied()));
+    for (i, (key, value)) in config.iter().enumerate() {
+        cmd.env(format!("GIT_CONFIG_KEY_{}", n + i), key)
+            .env(format!("GIT_CONFIG_VALUE_{}", n + i), value);
+    }
+    cmd.env("GIT_CONFIG_COUNT", (n + config.len()).to_string());
     cmd
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Config for every git command a test's thread runs. Not set in the process env: that
+    /// would reach the tests running beside it.
+    pub(crate) static TEST_CONFIG: std::cell::RefCell<Vec<(&'static str, &'static str)>> =
+        Default::default();
 }
 
 /// `command` for reading a project's files: a folder outside any repository (a plain project)
