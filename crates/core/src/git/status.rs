@@ -120,8 +120,8 @@ fn untracked_modes() -> &'static std::sync::Mutex<HashMap<PathBuf, &'static str>
     MODES.get_or_init(Default::default)
 }
 
-/// status.showUntrackedFiles, for monorepos that set it to skip the walk. Unset, every file
-/// (git's default lists a new folder as one entry); a value git refuses also falls back to it.
+/// status.showUntrackedFiles, which monorepos set to skip the walk. Unset (git's own default
+/// would be `normal`) or a value git refuses: every file, one by one.
 fn untracked_mode(config: &ConfigList) -> &'static str {
     match config
         .value("status.showuntrackedfiles")
