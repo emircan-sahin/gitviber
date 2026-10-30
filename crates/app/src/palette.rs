@@ -14,23 +14,27 @@ use gitviber_core::git::{FileChange, GitInfo};
 use gitviber_core::{Core, api};
 use gitviber_files::quick_open::{self, QuickOpenFiles, QuickOpenStatus};
 use gitviber_ui::fuzzy::{Match, fuzzy_match, match_path, prepare_query};
-use gitviber_ui::keymap::{self, Category, IS_MAC, ROOT_CONTEXT, bindings_for, format_chord};
+use gitviber_ui::keymap::{self, Category, IS_MAC, ROOT_CONTEXT, bindings_for};
 use gitviber_ui::memory::Live;
 use gitviber_ui::state::bump;
-use gitviber_ui::widgets::{ChangeKind, FileIcon, StatusLetter};
+use gitviber_ui::widgets::{ChangeKind, FileIcon, Keycaps, StatusLetter, key_hints};
 use gitviber_ui::workspace::{
     PanelContext, QuickItem, Registry, RunItem, Selection, Slot, Workspace,
 };
 use gitviber_ui::{ActiveAppTheme, Settings, UiState, actions::workbench, store};
+use gpui_kit::assets::IconName;
 use gpui_kit::component::WindowExt as _;
-use gpui_kit::component::command::{Command, CommandItem, CommandState};
+use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::component::dialog::DialogEntrance;
+use gpui_kit::component::{Icon, IndexPath, Sizable as _};
 use gpui_kit::{
     Action, App, AppContext as _, Context, Entity, FocusHandle, FontWeight, Global, HighlightStyle,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString,
     Styled as _, StyledText, Subscription, Task, WeakEntity, Window, div, prelude::*, px,
 };
 use serde_json::Value;
+
+use crate::command_icon::command_icon;
 
 /// Rows shown at most; the best matches are at the top, and a repo can have 100k files.
 const LIMIT: usize = 200;
@@ -66,6 +70,11 @@ struct Row {
     label: SharedString,
     hits: Vec<usize>,
     hint: Option<SharedString>,
+    /// A command's chord, drawn as keycaps.
+    keys: Option<SharedString>,
+    icon: Option<IconName>,
+    /// The section it's listed under; None when the list has no sections.
+    group: Option<&'static str>,
     path: bool,
     /// A change's status letter.
     status: Option<SharedString>,
@@ -158,6 +167,8 @@ pub struct Palette {
     projects: Vec<String>,
     error: Option<SharedString>,
     rows: Vec<Row>,
+    /// Where each section of `rows` starts, when the list has sections.
+    sections: Vec<usize>,
     /// The row lit, as the list last said: drawn by the row itself, in the primary color.
     current: Rc<Cell<usize>>,
     focus_return: Option<FocusHandle>,
@@ -243,6 +254,34 @@ fn rank<T>(
     });
     out.truncate(LIMIT);
     out.into_iter().map(|(at, m, _)| (at, m)).collect()
+}
+
+/// Where each run of rows under one heading starts. A list under one heading or none has no
+/// sections: its headers would say nothing.
+fn sections(rows: &[Row]) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut last = None;
+    for (i, row) in rows.iter().enumerate() {
+        if i == 0 || row.group != last {
+            out.push(i);
+            last = row.group;
+        }
+    }
+    if out.len() < 2 {
+        out.clear();
+    }
+    out
+}
+
+/// A row's place in `rows` from the list's path to it (section, row in it).
+fn flat(sections: &[usize], at: IndexPath) -> usize {
+    sections.get(at.section).copied().unwrap_or(0) + at.row
+}
+
+/// `flat` undone.
+fn path(sections: &[usize], flat: usize) -> IndexPath {
+    let section = sections.iter().rposition(|s| *s <= flat).unwrap_or(0);
+    IndexPath::new(flat - sections.get(section).copied().unwrap_or(0)).section(section)
 }
 
 /// A worktree's changed files as the changes panel opens them, with their kind's label.
@@ -332,6 +371,7 @@ impl Palette {
                 projects,
                 error: None,
                 rows: Vec::new(),
+                sections: Vec::new(),
                 current: Rc::default(),
                 focus_return,
                 _load: None,
@@ -419,6 +459,11 @@ impl Palette {
     }
 
     fn rank(&mut self, cx: &App) {
+        self.rank_rows(cx);
+        self.sections = sections(&self.rows);
+    }
+
+    fn rank_rows(&mut self, cx: &App) {
         let query = self.query.to_string();
         if let Some(q) = query.strip_prefix('>') {
             let recent = &UiState::get(cx).recent_commands;
@@ -434,14 +479,21 @@ impl Palette {
             .map(|(at, m)| {
                 let listed = &self.commands[at];
                 let (c, label) = (listed.command, &listed.label);
-                let chord = bindings_for(c, overrides, IS_MAC).into_iter().next();
                 let recent_tag = q.trim().is_empty() && recent.iter().any(|r| r == c.id);
                 Row {
                     label: label.clone(),
                     hits: listed.label_hits(m.hits),
-                    hint: chord
-                        .map(|k| format_chord(&k, IS_MAC).into())
-                        .or(recent_tag.then(|| "recently used".into())),
+                    hint: None,
+                    keys: bindings_for(c, overrides, IS_MAC)
+                        .into_iter()
+                        .next()
+                        .map(Into::into),
+                    icon: Some(command_icon(c)),
+                    group: Some(if recent_tag {
+                        "Recently used"
+                    } else {
+                        "Commands"
+                    }),
                     path: false,
                     status: None,
                     run: Run::Command {
@@ -465,6 +517,9 @@ impl Palette {
                             label: f.path.clone().into(),
                             hits: m.hits,
                             hint: (!kind.is_empty()).then(|| SharedString::from(*kind)),
+                            keys: None,
+                            icon: None,
+                            group: None,
                             path: true,
                             status: Some(f.status.clone().into()),
                             run: Run::Change(sel.clone()),
@@ -480,6 +535,9 @@ impl Palette {
                         label: path.clone().into(),
                         hits: m.hits,
                         hint: None,
+                        keys: None,
+                        icon: Some(IconName::FolderGit2),
+                        group: None,
                         path: false,
                         status: None,
                         run: Run::Terminal { cwd: path.into() },
@@ -509,10 +567,10 @@ impl Palette {
             Row {
                 label: item.label.clone(),
                 hits: m.hits,
-                hint: item
-                    .detail
-                    .clone()
-                    .or(recently.then(|| "recently opened".into())),
+                hint: item.detail.clone(),
+                keys: None,
+                icon: None,
+                group: Some(if recently { "Recently opened" } else { "Files" }),
                 path: item.is_path,
                 status: None,
                 run: if item.is_path {
@@ -602,11 +660,13 @@ impl Palette {
         let Some(last) = state.matched_count().checked_sub(1) else {
             return;
         };
-        let at = state.selected_index().map_or(0, |i| i.row);
+        let at = state
+            .selected_index()
+            .map_or(0, |i| flat(&self.sections, i));
         let to = (at as isize + dir).clamp(0, last as isize) as usize;
-        self.state.update(cx, |s, cx| {
-            s.set_selected_index(Some(gpui_kit::component::IndexPath::new(to)), window, cx)
-        });
+        let to = path(&self.sections, to);
+        self.state
+            .update(cx, |s, cx| s.set_selected_index(Some(to), window, cx));
     }
 
     fn switch(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
@@ -722,10 +782,12 @@ impl Render for Palette {
             .iter()
             .enumerate()
             .map(|(i, row)| {
-                let (label, hits, hint, path, status) = (
+                let (label, hits, hint, keys, icon, path, status) = (
                     row.label.clone(),
                     row.hits.clone(),
                     row.hint.clone(),
+                    row.keys.clone(),
+                    row.icon,
                     row.path,
                     row.status.clone(),
                 );
@@ -750,6 +812,13 @@ impl Render for Palette {
                         .line_height(px(16.))
                         .when(lit, |d| d.bg(t.primary).text_color(t.primary_foreground))
                         .when(path, |d| d.child(FileIcon::file(&label)))
+                        .when_some(icon, |d, icon| {
+                            d.child(Icon::new(icon).small().text_color(if lit {
+                                t.primary_foreground
+                            } else {
+                                t.muted_foreground
+                            }))
+                        })
                         .child(div().flex_1().min_w_0().truncate().child(highlighted(
                             &label,
                             &hits,
@@ -769,6 +838,9 @@ impl Render for Palette {
                                     .child(hint),
                             )
                         })
+                        .when_some(keys.as_deref(), |d, k| {
+                            d.child(Keycaps::chord(k).compact().lit(lit))
+                        })
                         .when_some(status.clone(), |d, s| {
                             let letter = s.chars().next().unwrap_or('M');
                             d.child(StatusLetter(ChangeKind::from_letter(letter)))
@@ -776,10 +848,33 @@ impl Render for Palette {
                 })
             })
             .collect();
-        let current = self.current.clone();
-        let this = cx.entity().downgrade();
+        let (current, this) = (self.current.clone(), cx.entity().downgrade());
+        let (selected, confirmed) = (self.sections.clone(), self.sections.clone());
         let this_confirm = this.clone();
         let empty = self.empty_text(cx);
+        let run = if self.query.starts_with('>') {
+            "Run"
+        } else {
+            "Open"
+        };
+        let mut command = Command::new(&self.state);
+        if self.sections.is_empty() {
+            command = command.items(items);
+        } else {
+            let mut items = items.into_iter();
+            let ends = self
+                .sections
+                .iter()
+                .skip(1)
+                .copied()
+                .chain([self.rows.len()]);
+            for (&start, end) in self.sections.iter().zip(ends) {
+                let group = CommandGroup::new()
+                    .label(self.rows[start].group.unwrap_or_default())
+                    .items(items.by_ref().take(end - start));
+                command = command.group(group);
+            }
+        }
         div()
             // The palette's own keys switch it over, and the app's other keys stay out.
             .key_context(ROOT_CONTEXT)
@@ -795,12 +890,11 @@ impl Render for Palette {
                 }
             }))
             .child(
-                Command::new(&self.state)
+                command
                     .filterable(false)
                     .bordered(false)
                     .max_h(px(420.))
                     .placeholder(self.placeholder())
-                    .items(items)
                     .empty(move |_, _, cx| {
                         div()
                             .py_3()
@@ -816,9 +910,26 @@ impl Render for Palette {
                             cx.notify();
                         });
                     })
-                    .on_select(move |index, _, _| current.set(index.row))
+                    .footer(move |_, _, cx| {
+                        let t = cx.app_theme();
+                        div()
+                            .border_t_1()
+                            .border_color(t.border)
+                            .px_3()
+                            .py(px(6.))
+                            .text_size(gpui_kit::rems(0.6875))
+                            .text_color(t.muted_foreground)
+                            .child(key_hints([
+                                (Keycaps::chord("enter"), run.into()),
+                                (Keycaps::keys(["↑", "↓"]), "Move".into()),
+                                (Keycaps::keys(["PgUp", "PgDn"]), "Page".into()),
+                                (Keycaps::keys(["esc"]), "Close".into()),
+                            ]))
+                    })
+                    .on_select(move |index, _, _| current.set(flat(&selected, index)))
                     .on_confirm(move |index, window, cx| {
-                        let _ = this_confirm.update(cx, |p, cx| p.confirm(index.row, window, cx));
+                        let row = flat(&confirmed, index);
+                        let _ = this_confirm.update(cx, |p, cx| p.confirm(row, window, cx));
                     }),
             )
     }
@@ -884,6 +995,39 @@ mod tests {
             .map(|(at, _)| at)
             .collect();
         assert_eq!(order[0], 0);
+    }
+
+    #[test]
+    fn sections_head_only_a_mixed_list_and_map_back_to_rows() {
+        let row = |group| Row {
+            label: "x".into(),
+            hits: Vec::new(),
+            hint: None,
+            keys: None,
+            icon: None,
+            group,
+            path: false,
+            status: None,
+            run: Run::Terminal { cwd: "/r".into() },
+        };
+        let one = [row(Some("Commands")), row(Some("Commands"))];
+        assert!(sections(&one).is_empty());
+        assert!(sections(&[row(None), row(None)]).is_empty());
+        let mixed = [
+            row(Some("Recently used")),
+            row(Some("Commands")),
+            row(Some("Commands")),
+            row(Some("Commands")),
+        ];
+        let s = sections(&mixed);
+        assert_eq!(s, [0, 1]);
+        for i in 0..mixed.len() {
+            assert_eq!(flat(&s, path(&s, i)), i);
+        }
+        assert_eq!(path(&s, 2), IndexPath::new(1).section(1));
+        // No sections: the list's rows are the palette's.
+        assert_eq!(path(&[], 3), IndexPath::new(3));
+        assert_eq!(flat(&[], IndexPath::new(3)), 3);
     }
 
     #[test]

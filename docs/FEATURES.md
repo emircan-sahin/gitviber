@@ -431,7 +431,10 @@ worktree.
   for it unless you choose one; drag a row onto a folder or header to move it, or right-click it.
 - **Settings** (`⌘,`) has one search over every setting.
 - **Shortcuts.** Most actions have one, every one can be rebound in Settings (`⌘,`), and holding `⌘`
-  shows the ones that work where you are. See [Shortcuts](SHORTCUTS.md).
+  shows the ones that work where you are. A shortcut looks the same wherever it shows: keycaps in
+  menus, tooltips, the palette and pickers. See [Shortcuts](SHORTCUTS.md).
+- **Command palette** (`⇧⌘P`). Each command has an icon of what it does, recently used ones are
+  listed under their own heading, and the foot says the keys it takes.
 - **Keyboard all the way.** A focus shortcut pressed again gives focus back where it was, and every
   picker opened by a key or the palette takes the keys: arrows, Home/End, `↵` to pick, `Esc` to close.
 
