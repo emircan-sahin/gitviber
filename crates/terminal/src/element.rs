@@ -977,14 +977,16 @@ impl Element for TerminalElement {
         window.on_mouse_event({
             let pane = pane.clone();
             let hitbox = hitbox.clone();
+            // Not `is_hovered`: that's false from a keypress until the pointer moves, and a
+            // swipe or pinch moves none, so a swipe after typing was lost.
             move |e: &ScrollWheelEvent, phase, window, cx| {
-                if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
+                if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
                     pane.update(cx, |p, cx| p.scroll_wheel(e, window, cx));
                 }
             }
         });
         window.on_mouse_event(move |e: &PinchEvent, phase, window, cx| {
-            if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
+            if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
                 pane.update(cx, |p, cx| p.pinched(e, window, cx));
             }
         });
