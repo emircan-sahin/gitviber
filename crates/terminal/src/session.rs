@@ -256,6 +256,9 @@ impl EventListener for Listener {
             Event::ResetTitle => out.note(Note::Title(None)),
             Event::Bell => out.note(Note::Bell),
             Event::ClipboardStore(_, text) if osc52_accepts(&text) => out.note(Note::Copy(text)),
+            // A program never reads the clipboard; it's told it's empty at once rather than left
+            // waiting out its timeout (neovim's OSC 52 paste).
+            Event::ClipboardLoad(_, format) => out.write(format(""), false),
             Event::ColorRequest(index, format) => {
                 let color = out
                     .answers
@@ -505,6 +508,8 @@ pub(crate) fn term_config(
     Config {
         scrolling_history: scrollback,
         kitty_keyboard: true,
+        // Reads reach the listener only to be answered empty.
+        osc52: alacritty_terminal::term::Osc52::CopyPaste,
         default_cursor_style: CursorStyle {
             shape,
             blinking: blink,
@@ -1044,10 +1049,10 @@ mod tests {
         assert_eq!(emu.marks.last_output(&emu.term).as_deref(), Some("out"));
     }
 
-    /// OSC 52 copies text whichever clipboard it names; a read (`?`) is never answered: what the
-    /// user copied elsewhere isn't the program's.
+    /// OSC 52 copies text whichever clipboard it names; a read (`?`) is answered empty, at once:
+    /// what the user copied elsewhere isn't the program's.
     #[test]
-    fn osc_52_copies_text_and_never_answers_a_read() {
+    fn osc_52_copies_text_and_answers_a_read_empty() {
         let outbox = Arc::new(Outbox::default());
         let (tx, rx) = channel();
         *outbox.io.lock().unwrap() = Some(tx);
@@ -1069,7 +1074,7 @@ mod tests {
         for nothing in ["c;?", "c;", "c", "c;not base64!", "c;//4="] {
             assert!(copied(&mut emu, nothing).is_empty(), "{nothing}");
         }
-        assert!(rx.try_recv().is_err());
+        assert_eq!(writes(&rx), ["\x1b]52;c;\x07"]);
     }
 
     fn screen(emu: &Emu) -> String {
