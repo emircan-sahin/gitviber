@@ -15,7 +15,7 @@ use gitviber_ui::AppTheme;
 use gitviber_ui::actions::editor;
 use gitviber_ui::keymap::scroll::{self, Step};
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::{FileIcon, LineCounts, PathLabel, StatusLetter};
+use gitviber_ui::widgets::{Ends, FileIcon, LineCounts, PathLabel, StatusLetter, list_step};
 use gitviber_ui::workspace::{PullRange, TabIcon, TabItem, Toast, Workspace};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
@@ -37,7 +37,6 @@ use crate::logic::actions::{
     MergeMethod, PullRights, ReviewEvent, allowed_methods, pull_rights, pull_source, review_badge,
 };
 use crate::logic::checks::{check_note, checks_summary, failure_report, is_failing, sort_checks};
-use crate::logic::keys::move_target;
 use crate::logic::pull_commits::{
     CommitRun, by_day, is_whole_pr, pick_label, picked_commits, run_to,
 };
@@ -54,8 +53,6 @@ use crate::ui::page_find::{FindHost, Key, Marks, PageFind, Parts};
 
 /// The files only change with the two commits: rarely worth reading again.
 const FILES_AGE: Duration = Duration::from_secs(600);
-/// Commits a PgUp/PgDn moves in the commits list.
-const COMMIT_PAGE: usize = 10;
 /// What a merge or cherry-pick that stopped on conflicts says.
 const CONFLICTS: &str = "Stopped on conflicts: resolve them in Changes, then push.";
 /// How far past the page's view its list measures what it hasn't yet.
@@ -649,8 +646,8 @@ impl PullView {
         match key {
             "escape" if self.pick.is_some() => self.set_pick(None, cx),
             "space" => self.click_commit(sha(self, at), false, cx),
-            key => {
-                let Some(to) = move_target(key, at, n, COMMIT_PAGE) else {
+            _ => {
+                let Some(to) = list_step(&ev.keystroke, Some(at), n, Ends::Stop, false) else {
                     return;
                 };
                 if to != at || self.pick.is_none() {
