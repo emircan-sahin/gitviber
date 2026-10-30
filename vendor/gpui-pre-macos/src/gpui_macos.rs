@@ -8,6 +8,7 @@ mod display;
 mod display_link;
 mod events;
 mod keyboard;
+mod metal_frames;
 mod pasteboard;
 mod system_notifications;
 
@@ -42,6 +43,7 @@ pub(crate) use display::*;
 pub(crate) use display_link::*;
 pub(crate) use gpui_apple::{AppleActivity, AppleDispatcher};
 pub(crate) use keyboard::*;
+pub(crate) use metal_frames::MetalFrames;
 pub(crate) use platform::*;
 pub(crate) use window::*;
 

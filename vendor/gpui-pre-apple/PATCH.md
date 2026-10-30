@@ -4,7 +4,8 @@ The crates.io release of gpui-pre-apple 0.3.9 (Zed's `gpui_apple`), byte for byt
 changes below and this file. Wired in through `[patch.crates-io]` in the workspace Cargo.toml
 (`vendor/` is excluded from the workspace). The whole patch: `diff -ru
 ~/.cargo/registry/src/index.crates.io-*/gpui-pre-apple-0.3.9 vendor/gpui-pre-apple`.
-gpui-pre-macos is patched with it (its PATCH.md): the window calls `trim` and `restore`.
+gpui-pre-macos is patched with it (its PATCH.md): the window calls `trim` and `restore`, and
+drives the display link of change 5.
 
 On a gpui-pre bump, re-apply each change to the new version, or drop it once upstream does
 the same. Measured 2026-10-25, M2 Pro, profiling build, 1480x920 pt window at 2x:
@@ -71,6 +72,36 @@ Checked: `apple_named_faces_match_their_css_weight` (400/500/600 apart in SF, SF
 Helvetica Neue; SF's 800 and 900 apart). Off-screen, Settings → Editor's preview in SF Mono at
 400/500/600 gives three faces (500 drew as 400 before); Geist Mono, JetBrains Mono and Menlo
 are byte-identical to before.
+
+## 5. Frames drawn into a `CAMetalDisplayLink`'s drawable (`src/display_link.rs`, `src/metal_renderer.rs`, `Cargo.toml`)
+
+Why: on macOS 26, `-[CAMetalLayer nextDrawable]` called after a `CVDisplayLink` tick blocks the
+main thread about a refresh (33 ms at 60 Hz) on some Macs: the compositor deadline moved close to
+vsync, so a frame started at the tick slips one. Animations ran at 30 fps and input waited.
+Upstream fixed it after 0.3.9 (zed #65472, 0373366); this is our own version of that design.
+
+The change:
+- `display_link::MetalFrameSource` (new): a `CAMetalDisplayLink` on the layer, on the main run
+  loop in common modes, with a main-thread delegate that calls back with each update's drawable
+  (as a metal-rs `MetalDrawable`). `new` is `None` where the class is missing (before macOS 14);
+  drop invalidates the link. The link keeps the system's default frame rate range and latency.
+- `MetalRenderer::drawable_source`: `Layer` (`nextDrawable`, as before) or `DisplayLink(slot)`.
+  While attached, `draw` uses only the drawable `set_frame_drawable` put in the slot and skips a
+  frame without one (logged): `nextDrawable` must not be called on a layer a link drives.
+  `set_frame_drawable(None)` after the frame returns a drawable the frame did not use.
+- The frame's viewport is the drawable's texture size, not the layer's: a link's drawable was
+  sized when handed out, possibly before a resize. Path textures (change 1) follow the viewport,
+  so they always match.
+- objc2-quartz-core gains the `CAMetalDisplayLink` and `objc2-metal` features.
+
+With change 2: the window detaches (invalidates) the link before it trims, and restores before
+it attaches one, so a link never hands out 1x1 drawables; a frame drawn while trimmed is drawn
+detached, through `nextDrawable`, as before.
+
+Checked: `metal_renderer::tests::gitviber_*` (drawables used once or handed back; a frame
+outside an update is skipped; the layer vends drawables again once its link is invalidated; a
+trimmed window draws at its real size). The frame-rate effect needs a display (gpui-pre-macos
+PATCH.md, change 4).
 
 ## Not changed
 

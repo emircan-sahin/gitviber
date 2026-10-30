@@ -1,5 +1,5 @@
 use crate::{
-    BoolExt, MacDisplay, NSRange, NSStringExt, TISCopyCurrentKeyboardInputSource,
+    BoolExt, MacDisplay, MetalFrames, NSRange, NSStringExt, TISCopyCurrentKeyboardInputSource,
     TISGetInputSourceProperty, WindowFrameSource, events::platform_input_from_native,
     kTISPropertyInputSourceIsASCIICapable, kTISPropertyInputSourceType, kTISTypeKeyboardInputMode,
     ns_string, renderer,
@@ -42,6 +42,7 @@ use core_foundation_sys::number::{CFBooleanGetValue, CFBooleanRef};
 use core_graphics::display::{CGDirectDisplayID, CGRect};
 use ctor::ctor;
 use futures::channel::oneshot;
+use gpui_apple::display_link::{MetalDrawable, MetalFrameSource};
 use gpui_util::ResultExt;
 use objc::{
     class,
@@ -655,6 +656,14 @@ unsafe fn apply_simple_fullscreen_plan(
     }
 }
 
+/// GitViber: what paces a window's frames; fixed per window, as it depends only on the OS.
+enum FrameSource {
+    /// macOS 14+: a `CAMetalDisplayLink` that hands out each frame's drawable.
+    Metal(Rc<MetalFrames>),
+    /// Earlier systems: the shared `CVDisplayLink` registry, joined on first start.
+    DisplayLink(Option<WindowFrameSource>),
+}
+
 struct MacWindowState {
     handle: AnyWindowHandle,
     foreground_executor: ForegroundExecutor,
@@ -665,7 +674,7 @@ struct MacWindowState {
     background_appearance: WindowBackgroundAppearance,
     cursor_style: CursorStyle,
     cursor_visible: Arc<AtomicBool>,
-    frame_source: Option<WindowFrameSource>,
+    frame_source: FrameSource,
     renderer: renderer::Renderer,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     event_callback: Option<Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>>,
@@ -833,7 +842,8 @@ impl MacWindowState {
         }
     }
 
-    fn start_display_link(&mut self) {
+    /// `window_state` is the handle this state lives in; a Metal link holds it weakly.
+    fn start_display_link(&mut self, window_state: &Arc<Mutex<MacWindowState>>) {
         self.stop_display_link();
         unsafe {
             if !self
@@ -844,20 +854,54 @@ impl MacWindowState {
                 return;
             }
         }
-        let Some(display_id) = display_id_for_screen(unsafe { self.native_window.screen() }) else {
-            // AppKit can temporarily report no screen while displays are being reconfigured.
-            return;
-        };
-        let data = self.native_view.as_ptr() as *mut c_void;
-        self.frame_source
-            .get_or_insert_with(|| WindowFrameSource::new(data, step))
-            .start(display_id)
-            .log_err();
+        match &mut self.frame_source {
+            FrameSource::Metal(metal_frames) => {
+                // A link hands out drawables at the layer's size, so never at the 1x1 of a
+                // trimmed window; a visible window isn't trimmed anyway.
+                self.renderer.restore();
+                let (Some(layer), Some(mtm)) = (self.renderer.layer(), MainThreadMarker::new())
+                else {
+                    return;
+                };
+                let window_state = Arc::downgrade(window_state);
+                let source = MetalFrameSource::new(layer, mtm, move |drawable| {
+                    if let Some(window_state) = window_state.upgrade() {
+                        metal_frame(&window_state, drawable);
+                    }
+                });
+                if let Some(source) = source {
+                    metal_frames.replace(Some(source));
+                    self.renderer.set_display_link_attached(true);
+                }
+            }
+            FrameSource::DisplayLink(frame_source) => {
+                let Some(display_id) =
+                    display_id_for_screen(unsafe { self.native_window.screen() })
+                else {
+                    // AppKit can temporarily report no screen while displays are being reconfigured.
+                    return;
+                };
+                let data = self.native_view.as_ptr() as *mut c_void;
+                frame_source
+                    .get_or_insert_with(|| WindowFrameSource::new(data, step))
+                    .start(display_id)
+                    .log_err();
+            }
+        }
     }
 
     fn stop_display_link(&mut self) {
-        if let Some(frame_source) = self.frame_source.as_mut() {
-            frame_source.stop();
+        match &mut self.frame_source {
+            FrameSource::Metal(metal_frames) => {
+                if metal_frames.is_attached() {
+                    // Invalidated rather than paused, so a synchronous draw (activation, live
+                    // resize, a hidden window resized) can use the layer's `nextDrawable`.
+                    metal_frames.replace(None);
+                    self.renderer.set_display_link_attached(false);
+                }
+            }
+            FrameSource::DisplayLink(Some(frame_source)) => frame_source.stop(),
+            FrameSource::DisplayLink(None) => {}
         }
     }
 
@@ -955,7 +999,13 @@ impl MacWindowState {
 
 unsafe impl Send for MacWindowState {}
 
-pub(crate) struct MacWindow(Arc<Mutex<MacWindowState>>, MainThreadMarker);
+pub(crate) struct MacWindow(
+    Arc<Mutex<MacWindowState>>,
+    MainThreadMarker,
+    /// GitViber: the Metal link's waker, outside the lock so waking never waits on it. `None`
+    /// when a `CVDisplayLink` paces frames.
+    Option<Rc<MetalFrames>>,
+);
 
 impl MacWindow {
     pub fn open(
@@ -1089,6 +1139,7 @@ impl MacWindow {
             let native_view = NSView::initWithFrame_(native_view, NSView::bounds(content_view));
             assert!(!native_view.is_null());
 
+            let metal_frames = MetalFrameSource::is_available().then(Rc::<MetalFrames>::default);
             let state = Arc::new(Mutex::new(MacWindowState {
                 handle,
                 foreground_executor,
@@ -1099,7 +1150,10 @@ impl MacWindow {
                 background_appearance: WindowBackgroundAppearance::Opaque,
                 cursor_style: CursorStyle::Arrow,
                 cursor_visible,
-                frame_source: None,
+                frame_source: match &metal_frames {
+                    Some(metal_frames) => FrameSource::Metal(metal_frames.clone()),
+                    None => FrameSource::DisplayLink(None),
+                },
                 renderer: renderer::new_renderer(
                     renderer_context,
                     native_window as *mut _,
@@ -1149,7 +1203,7 @@ impl MacWindow {
                 accesskit_adapter: None,
                 sheet_parent: None,
             }));
-            let mut window = Self(state, marker);
+            let mut window = Self(state, marker, metal_frames);
 
             (*native_window).set_ivar(
                 WINDOW_STATE_IVAR,
@@ -1390,7 +1444,10 @@ impl Drop for MacWindow {
         this.renderer.destroy();
         let window = this.native_window;
         let sheet_parent = this.sheet_parent.take();
-        this.frame_source.take();
+        match &mut this.frame_source {
+            FrameSource::Metal(metal_frames) => metal_frames.replace(None),
+            FrameSource::DisplayLink(frame_source) => drop(frame_source.take()),
+        }
         unsafe {
             this.native_window.setDelegate_(nil);
         }
@@ -2124,6 +2181,23 @@ impl PlatformWindow for MacWindow {
     fn draw(&self, scene: &gpui::Scene) {
         let mut this = self.0.lock();
         this.renderer.draw(scene);
+    }
+
+    // GitViber: GPUI calls this without the frame waker when a window only needs a present, so
+    // a paused Metal link resumes here too. The `CVDisplayLink` never pauses.
+    fn schedule_frame(&self) {
+        if let Some(metal_frames) = &self.2 {
+            metal_frames.wake();
+        }
+    }
+
+    fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
+        let metal_frames = Rc::downgrade(self.2.as_ref()?);
+        Some(Rc::new(move || {
+            if let Some(metal_frames) = metal_frames.upgrade() {
+                metal_frames.wake();
+            }
+        }))
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
@@ -3002,7 +3076,7 @@ extern "C" fn window_did_change_occlusion_state(this: &Object, _: Sel, _: id) {
             // GitViber: the drawables come back before the display link can draw a frame.
             lock.renderer.restore();
             lock.move_traffic_light();
-            lock.start_display_link();
+            lock.start_display_link(&window_state);
         } else {
             lock.stop_display_link();
             // GitViber: a hidden window (minimized, covered, on another Space, display asleep)
@@ -3126,7 +3200,7 @@ fn update_window_scale_factor(window_state: &Arc<Mutex<MacWindowState>>) {
 extern "C" fn window_did_change_screen(this: &Object, _: Sel, _: id) {
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.as_ref().lock();
-    lock.start_display_link();
+    lock.start_display_link(&window_state);
     drop(lock);
     update_window_scale_factor(&window_state);
     report_display_change(&window_state);
@@ -3214,7 +3288,7 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
                 let mut lock = window_state.lock();
                 lock.request_frame_callback = Some(callback);
                 lock.renderer.set_presents_with_transaction(false);
-                lock.start_display_link();
+                lock.start_display_link(&window_state);
             }
         } else {
             lock.activated_least_once = true;
@@ -3340,7 +3414,7 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
         let mut lock = window_state.lock();
         lock.request_frame_callback = Some(callback);
         lock.renderer.set_presents_with_transaction(false);
-        lock.start_display_link();
+        lock.start_display_link(&window_state);
     }
 }
 
@@ -3350,14 +3424,14 @@ extern "C" fn step(view: *mut c_void) {
     let mut lock = window_state.lock();
 
     if let Some(mut callback) = lock.request_frame_callback.take() {
-        let (signal_at, signal_source) = lock
-            .frame_source
-            .as_ref()
-            .and_then(WindowFrameSource::take_signal)
-            .map_or(
-                (None, FrameRequestSource::NativeCallback),
-                |(at, source)| (Some(at), source),
-            );
+        let signal = match &lock.frame_source {
+            FrameSource::DisplayLink(Some(frame_source)) => frame_source.take_signal(),
+            _ => None,
+        };
+        let (signal_at, signal_source) = signal.map_or(
+            (None, FrameRequestSource::NativeCallback),
+            |(at, source)| (Some(at), source),
+        );
         drop(lock);
         callback(RequestFrameOptions {
             signal_at,
@@ -3366,6 +3440,33 @@ extern "C" fn step(view: *mut c_void) {
         });
         window_state.lock().request_frame_callback = Some(callback);
     }
+}
+
+/// GitViber: one `CAMetalDisplayLink` update: GPUI's frame draws into the link's drawable.
+fn metal_frame(window_state: &Arc<Mutex<MacWindowState>>, drawable: MetalDrawable) {
+    let signal_at = PlatformFrameSignal::capture(scheduler::Instant::now);
+    let mut lock = window_state.lock();
+    let FrameSource::Metal(metal_frames) = &lock.frame_source else {
+        return;
+    };
+    let metal_frames = metal_frames.clone();
+    let Some(mut callback) = lock.request_frame_callback.take() else {
+        return;
+    };
+    lock.renderer.set_frame_drawable(Some(drawable));
+    drop(lock);
+    metal_frames.begin_frame();
+    callback(RequestFrameOptions {
+        signal_at,
+        signal_source: FrameRequestSource::NativeCallback,
+        ..Default::default()
+    });
+    let mut lock = window_state.lock();
+    lock.request_frame_callback = Some(callback);
+    // A frame with nothing to draw hands its drawable back, so the link can reuse it.
+    let used_drawable = lock.renderer.set_frame_drawable(None).is_none();
+    drop(lock);
+    metal_frames.end_frame(used_drawable);
 }
 
 extern "C" fn valid_attributes_for_marked_text(_: &Object, _: Sel) -> id {
