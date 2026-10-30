@@ -415,6 +415,9 @@ worktree.
 - **Type and scale.** Your own interface font, code font, terminal font and interface scale.
 - **Transparency.** On macOS a see-through window, with its opacity yours to set and the desktop
   blurred behind it if you like; Terminal too lets it show through the terminal.
+- **Projects.** The top bar's project list has a filter, pins, folders you name, and last opened or
+  your own drag order on top of them. Each project wears a color of its own on its tile, picked
+  for it unless you choose one; drag a row onto a folder or header to move it, or right-click it.
 - **Settings** (`⌘,`) has one search over every setting.
 - **Shortcuts.** Most actions have one, every one can be rebound in Settings (`⌘,`), and holding `⌘`
   shows the ones that work where you are. See [Shortcuts](SHORTCUTS.md).

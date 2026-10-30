@@ -41,6 +41,7 @@ Reopening a closed tab, closing the other tabs, focusing the commit message or t
 | `F2` | Rename the file, branch or worktree (in the explorer, branch picker or worktree picker) |
 | `T` `M` `⌫` | Open a terminal in the worktree, merge its branch, remove it (in the worktree picker) |
 | `⌫` | Remove a project from the list (in the project list) |
+| `←` `→` | Collapse, expand a folder (in the project picker, with nothing typed) |
 | `⇧⌘O` | Open in the external app you last picked |
 | `⌘B` `⌥⌘B` | Toggle the git panel, the file explorer |
 | `⇧⌘G` `⌘E` `⇧⌘E` | Focus the git panel, the code view, the file explorer |
