@@ -275,9 +275,9 @@ fn log_all_lists_other_branches_and_marks_what_head_lacks() {
     let sb = Sandbox::new("logall");
     let c = sb.remote_with_clones(1);
     let a = &c[0];
-    switch_branch(a, "feat", true).unwrap();
+    switch_branch(a, "feat", true, &Net::default()).unwrap();
     write_commit(a, "f.txt", "f\n", "on feat");
-    switch_branch(a, "main", false).unwrap();
+    switch_branch(a, "main", false, &Net::default()).unwrap();
     write_commit(a, "m.txt", "m\n", "on main");
 
     assert!(log(a, None, 0, 10)
@@ -310,11 +310,11 @@ fn every_commit_is_marked_as_rev_list_says() {
     let c = sb.remote_with_clones(1);
     let a = &c[0];
     write_commit(a, "p.txt", "p\n", "pushed");
-    switch_branch(a, "feat", true).unwrap();
+    switch_branch(a, "feat", true, &Net::default()).unwrap();
     write_commit(a, "f.txt", "f\n", "feat pushed");
     run(a, &["push", "-q", "origin", "main", "feat"]).unwrap();
     write_commit(a, "f.txt", "g\n", "feat local");
-    switch_branch(a, "main", false).unwrap();
+    switch_branch(a, "main", false, &Net::default()).unwrap();
     write_commit(a, "m.txt", "m\n", "main local");
     write_commit(a, "m.txt", "n\n", "main local 2");
 
@@ -383,8 +383,8 @@ fn log_all_shows_only_the_refs_asked_for() {
     let a = &c[0];
     // Each off main: a local branch, a branch only on the remote, and a tag nothing else reaches.
     let side = |name: &str, file: &str, subject: &str| {
-        switch_branch(a, "main", false).unwrap();
-        switch_branch(a, name, true).unwrap();
+        switch_branch(a, "main", false, &Net::default()).unwrap();
+        switch_branch(a, name, true, &Net::default()).unwrap();
         write_commit(a, file, "x\n", subject);
     };
     side("feat", "f.txt", "on feat");
@@ -392,7 +392,7 @@ fn log_all_shows_only_the_refs_asked_for() {
     run(a, &["push", "-q", "origin", "rem"]).unwrap();
     side("tagged", "t.txt", "tagged");
     run(a, &["tag", "v1"]).unwrap();
-    switch_branch(a, "main", false).unwrap();
+    switch_branch(a, "main", false, &Net::default()).unwrap();
     run(a, &["branch", "-q", "-D", "rem", "tagged"]).unwrap();
 
     let subjects = |refs: &GraphRefs| -> Vec<String> {
@@ -477,10 +477,10 @@ fn compare_lists_both_sides_and_counts_them() {
     let sb = Sandbox::new("compare");
     let c = sb.remote_with_clones(1);
     let a = &c[0];
-    switch_branch(a, "feat", true).unwrap();
+    switch_branch(a, "feat", true, &Net::default()).unwrap();
     write_commit(a, "f.txt", "f\n", "on feat");
     write_commit(a, "g.txt", "g\n", "more on feat");
-    switch_branch(a, "main", false).unwrap();
+    switch_branch(a, "main", false, &Net::default()).unwrap();
     write_commit(a, "m.txt", "m\n", "on main");
 
     let with = "refs/heads/feat";
@@ -533,9 +533,9 @@ fn log_all_follows_a_file_on_head_only() {
     let c = sb.remote_with_clones(1);
     let a = &c[0];
     write_commit(a, "old.txt", "one\ntwo\nthree\nfour\n", "add old");
-    switch_branch(a, "side", true).unwrap();
+    switch_branch(a, "side", true, &Net::default()).unwrap();
     write_commit(a, "old.txt", "one\ntwo\nthree\nfour\nfive\n", "on side");
-    switch_branch(a, "main", false).unwrap();
+    switch_branch(a, "main", false, &Net::default()).unwrap();
     run(a, &["mv", "old.txt", "new.txt"]).unwrap();
     run(a, &["commit", "-q", "-m", "rename"]).unwrap();
 

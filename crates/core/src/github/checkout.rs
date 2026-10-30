@@ -42,16 +42,18 @@ pub fn checkout(
         let refspec = format!("+refs/heads/{local}:refs/remotes/{tracked}");
         git::fetch_objects(repo, "origin", &[refspec], net)?;
         // What the checkout below ends on, its Git LFS files downloaded while it can be stopped.
-        crate::lfs::prefetch(repo, &format!("refs/remotes/{tracked}"), net)?;
+        let tip = format!("refs/remotes/{tracked}");
+        crate::lfs::prefetch(repo, &tip, crate::lfs::Checkout::Here, net)?;
+        net.updating_files()?;
         if exists {
-            git::switch_branch_with(repo, &local, false, net)?;
+            // Not git::switch_branch: that would download the files of the old tip as well.
+            git::run(repo, &["switch", &local])?;
             return git::run(repo, &["merge", "--ff-only", "--quiet", &tracked])
                 .map(|_| ())
                 .map_err(|_| diverged(&local));
         }
         // Not `git switch <head_ref>`: in a fork, upstream often has a same-named branch and
         // git's guess then refuses ("matched multiple remote tracking branches").
-        net.updating_files()?;
         return git::run(repo, &["switch", "-c", &local, "--track", &tracked]).map(|_| ());
     }
     let source = format!("refs/pull/{number}/head");
@@ -77,7 +79,7 @@ pub fn checkout(
     }
     fetch_pr_into(repo, remote, number, &branch, net)
         .map_err(|e| e.unwrap_or_else(|| diverged(&local)))?;
-    git::switch_branch_with(repo, &local, false, net)?;
+    git::switch_branch(repo, &local, false, net)?;
     if !exists {
         follow_pr(repo, &local, remote, number)?;
     }
@@ -179,5 +181,5 @@ pub fn checkout_worktree(
             follow_pr(repo, &local, remote, number)?;
         }
     }
-    git::add_worktree_with(repo, &local, None, false, dir, net)
+    git::add_worktree(repo, &local, None, false, dir, net)
 }

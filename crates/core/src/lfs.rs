@@ -47,21 +47,35 @@ pub fn pointer(bytes: &[u8]) -> Option<Pointer> {
 
 /// The downloaded object, if it is. Worktrees share the main repository's store.
 pub fn object(repo: &Path, p: &Pointer) -> Option<PathBuf> {
-    let common = git::run_text(repo, &["rev-parse", "--git-common-dir"]).ok()?;
-    let path = repo
-        .join(common.trim())
-        .join("lfs/objects")
+    let path = objects(repo)?
         .join(&p.oid[..2])
         .join(&p.oid[2..4])
         .join(&p.oid);
     path.is_file().then_some(path)
 }
 
+fn objects(repo: &Path) -> Option<PathBuf> {
+    git::git_dirs(repo).map(|d| d.common.join("lfs/objects"))
+}
+
+/// Where the checkout that follows a prefetch writes its files.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Checkout {
+    /// This worktree, over its uncommitted changes.
+    Here,
+    NewWorktree,
+}
+
 /// Downloads the LFS objects commit `rev` (a full ref or a sha) needs before a checkout of it.
 /// Inside the checkout git-lfs downloads them file by file, with no progress, no askpass for
 /// its ssh or https login, and no safe point to stop; here it is a fetch like any other. Does
-/// nothing for a repository without LFS, or without git-lfs installed.
-pub fn prefetch(repo: &Path, rev: &str, net: &Net) -> Result<(), String> {
+/// nothing for a repository without LFS, or without git-lfs installed, or set to skip LFS
+/// downloads; and nothing when git is about to refuse the checkout anyway, which then goes
+/// ahead without it and fails at once.
+pub fn prefetch(repo: &Path, rev: &str, into: Checkout, net: &Net) -> Result<(), String> {
+    if std::env::var("GIT_LFS_SKIP_SMUDGE").is_ok_and(|v| truthy(&v)) {
+        return Ok(());
+    }
     let Ok(sha) = git::run_text(
         repo,
         &[
@@ -74,7 +88,7 @@ pub fn prefetch(repo: &Path, rev: &str, net: &Net) -> Result<(), String> {
         return Ok(());
     };
     let sha = sha.trim();
-    if !in_use(repo, sha) {
+    if !in_use(repo, sha) || skips_smudge(repo) || refused(repo, rev, sha, into) {
         return Ok(());
     }
     let Some(remote) = remote_for(repo, rev) else {
@@ -93,8 +107,56 @@ pub fn prefetch(repo: &Path, rev: &str, net: &Net) -> Result<(), String> {
 fn in_use(repo: &Path, sha: &str) -> bool {
     let attrs = format!("{sha}:.gitattributes");
     git::run_text(repo, &["cat-file", "-p", &attrs]).is_ok_and(|a| a.contains("filter=lfs"))
-        || git::run_text(repo, &["rev-parse", "--git-common-dir"])
-            .is_ok_and(|c| repo.join(c.trim()).join("lfs/objects").is_dir())
+        || objects(repo).is_some_and(|d| d.is_dir())
+}
+
+/// As git-lfs reads GIT_LFS_SKIP_SMUDGE.
+fn truthy(v: &str) -> bool {
+    matches!(
+        v.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// `git lfs install --skip-smudge` (or by hand): checkouts keep the pointers, and so does this.
+fn skips_smudge(repo: &Path) -> bool {
+    git::ConfigList::read(repo).is_ok_and(|c| {
+        ["filter.lfs.smudge", "filter.lfs.process"].iter().any(|k| {
+            c.value(k)
+                .is_some_and(|v| v.split_whitespace().any(|w| w == "--skip"))
+        })
+    })
+}
+
+/// git will refuse the checkout of `rev` (at `sha`) for a reason seen cheaply: its branch is
+/// out in a worktree already, or an uncommitted change here is in a file the checkout changes.
+/// Untracked files in the way aren't looked for.
+fn refused(repo: &Path, rev: &str, sha: &str, into: Checkout) -> bool {
+    let held = |branch| {
+        git::worktrees(repo)
+            .is_ok_and(|all| all.iter().any(|w| w.branch.as_deref() == Some(branch)))
+    };
+    if rev.strip_prefix("refs/heads/").is_some_and(held) {
+        return true;
+    }
+    if into == Checkout::NewWorktree {
+        return false;
+    }
+    let names = |args: &[&str]| {
+        git::run(repo, args).map(|out| {
+            out.split(|b| *b == 0)
+                .filter(|p| !p.is_empty())
+                .map(<[u8]>::to_vec)
+                .collect::<std::collections::HashSet<_>>()
+        })
+    };
+    let (Ok(changes), Ok(dirty)) = (
+        names(&["diff", "--name-only", "-z", "--no-renames", "HEAD", sha]),
+        names(&["diff", "--name-only", "-z", "--no-renames", "HEAD"]),
+    ) else {
+        return false;
+    };
+    !changes.is_disjoint(&dirty)
 }
 
 /// Where `rev`'s objects are: its remote for a remote branch, a local branch's upstream, else
@@ -104,13 +166,10 @@ fn remote_for(repo: &Path, rev: &str) -> Option<String> {
     let remotes: Vec<&str> = listed.lines().collect();
     let tracked = match rev.strip_prefix("refs/heads/") {
         Some(b) => git::config_value(repo, None, &format!("branch.{b}.remote")),
-        None => rev.strip_prefix("refs/remotes/").and_then(|r| {
-            remotes
-                .iter()
-                .filter(|name| r.starts_with(&format!("{name}/")))
-                .max_by_key(|name| name.len())
-                .map(|name| name.to_string())
-        }),
+        None => rev
+            .strip_prefix("refs/remotes/")
+            .and_then(|r| git::split_remote(remotes.iter().copied(), r))
+            .map(|(remote, _)| remote.to_string()),
     };
     tracked
         .filter(|r| remotes.contains(&r.as_str()))

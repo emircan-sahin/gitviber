@@ -131,7 +131,7 @@ fn undo_create_and_switch_branch() {
     write_commit(&r, "a.txt", "a\n", "base");
     let j = Journal::default();
     j.record(&r, Action::new("Create branch feat", Mode::Keep), |r| {
-        switch_branch(r, "feat", true)
+        switch_branch(r, "feat", true, &Net::default())
     })
     .unwrap();
     // Undo and redo name the branch they check out, so ⌘Z never switches silently.

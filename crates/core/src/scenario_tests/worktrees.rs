@@ -12,8 +12,8 @@ fn removing_the_last_worktree_removes_its_folder() {
     write_commit(&r, "a.txt", "a\n", "base");
     run(&r, &["branch", "one"]).unwrap();
     run(&r, &["branch", "two"]).unwrap();
-    let one = add_worktree(&r, "one", None, false, None).unwrap();
-    let two = add_worktree(&r, "two", None, false, None).unwrap();
+    let one = add_worktree(&r, "one", None, false, None, &Net::default()).unwrap();
+    let two = add_worktree(&r, "two", None, false, None, &Net::default()).unwrap();
     let dir = sb.path("r.worktrees");
     assert!(dir.is_dir());
 
@@ -99,7 +99,7 @@ fn worktree_list_detached_prunable_and_counts() {
     let wt = |n: &str| br.iter().find(|b| b.name == n).unwrap().worktree.clone();
     assert!(same_dir(&wt("agent").unwrap(), &agent));
     assert_eq!(wt("main"), None, "the current branch is not 'elsewhere'");
-    assert!(switch_branch(&r, "agent", false).is_err());
+    assert!(switch_branch(&r, "agent", false, &Net::default()).is_err());
 
     // Removing: never the main or the open one; a dirty one only when forced; a missing
     // folder just drops the entry. The branch stays.
@@ -261,7 +261,7 @@ fn a_new_worktree_gets_the_ignored_files_worktreeinclude_lists() {
     write_commit(&r, "sub/a.txt", "a\n", "sub");
     run(&r, &["branch", "one"]).unwrap();
     run(&r, &["branch", "two"]).unwrap();
-    let bare = add_worktree(&r, "one", None, false, None).unwrap();
+    let bare = add_worktree(&r, "one", None, false, None, &Net::default()).unwrap();
     assert!(
         !Path::new(&bare).join(".env").exists(),
         "no .worktreeinclude yet"
@@ -302,7 +302,9 @@ fn a_new_worktree_gets_the_ignored_files_worktreeinclude_lists() {
     assert_eq!(include_count(&r).unwrap(), want.len());
 
     // Made from the linked worktree: the files still come from the main one.
-    let two = PathBuf::from(add_worktree(Path::new(&bare), "two", None, false, None).unwrap());
+    let two = PathBuf::from(
+        add_worktree(Path::new(&bare), "two", None, false, None, &Net::default()).unwrap(),
+    );
     for path in want {
         assert_eq!(
             fs::read(two.join(path)).unwrap(),
@@ -335,7 +337,7 @@ fn clean_up_removes_merged_worktrees_and_branches_known_merged() {
     write_commit(&r, ".gitignore", ".env\nnode_modules/\n", "ignore");
     let made = |name: &str| {
         run(&r, &["branch", name]).unwrap();
-        let path = add_worktree(&r, name, None, false, None).unwrap();
+        let path = add_worktree(&r, name, None, false, None, &Net::default()).unwrap();
         write_commit(Path::new(&path), &format!("{name}.txt"), "x\n", name);
         path
     };
@@ -424,7 +426,7 @@ fn a_new_worktree_checks_out_an_existing_branch() {
     let tip = rev(&r, "feat");
     run(&r, &["switch", "-q", "main"]).unwrap();
 
-    let wt = PathBuf::from(add_worktree(&r, "feat", None, false, None).unwrap());
+    let wt = PathBuf::from(add_worktree(&r, "feat", None, false, None, &Net::default()).unwrap());
     assert_eq!(on_branch(&wt), "feat");
     assert_eq!(rev(&wt, "HEAD"), tip);
     assert!(wt.join("b.txt").is_file());
@@ -432,7 +434,15 @@ fn a_new_worktree_checks_out_an_existing_branch() {
 
     let elsewhere = sb.path("elsewhere");
     for held in ["main", "feat"] {
-        assert!(add_worktree(&r, held, None, false, Some(elsewhere.to_str().unwrap())).is_err());
+        assert!(add_worktree(
+            &r,
+            held,
+            None,
+            false,
+            Some(elsewhere.to_str().unwrap()),
+            &Net::default()
+        )
+        .is_err());
         assert!(!elsewhere.join(held).exists());
     }
 }
@@ -450,7 +460,15 @@ fn a_new_worktree_through_a_symlink_has_its_real_path() {
     std::os::unix::fs::symlink(sb.path("real"), sb.path("link")).unwrap();
 
     let link = sb.path("link");
-    let wt = add_worktree(&r, "feat", Some("refs/heads/main"), false, link.to_str()).unwrap();
+    let wt = add_worktree(
+        &r,
+        "feat",
+        Some("refs/heads/main"),
+        false,
+        link.to_str(),
+        &Net::default(),
+    )
+    .unwrap();
     assert_eq!(
         Path::new(&wt),
         sb.path("real").canonicalize().unwrap().join("feat")
@@ -461,7 +479,15 @@ fn a_new_worktree_through_a_symlink_has_its_real_path() {
     fs::create_dir_all(sb.path("Cased")).unwrap();
     let typed = sb.path("cased");
     if typed.exists() {
-        let wt = add_worktree(&r, "other", Some("refs/heads/main"), false, typed.to_str()).unwrap();
+        let wt = add_worktree(
+            &r,
+            "other",
+            Some("refs/heads/main"),
+            false,
+            typed.to_str(),
+            &Net::default(),
+        )
+        .unwrap();
         assert!(worktrees(&r).unwrap().iter().any(|w| w.path == wt), "{wt}");
     }
 }
@@ -474,7 +500,7 @@ fn a_new_worktree_from_a_remote_only_branch_tracks_it() {
     let sb = Sandbox::new("wtremote");
     let c = sb.remote_with_clones(2);
     let (a, b) = (&c[0], &c[1]);
-    switch_branch(a, "feat", true).unwrap();
+    switch_branch(a, "feat", true, &Net::default()).unwrap();
     write_commit(a, "f.txt", "f\n", "feat");
     run(a, &["push", "-q", "-u", "origin", "feat"]).unwrap();
     run(a, &["push", "-q", "origin", "feat:feature/login"]).unwrap();
@@ -488,7 +514,15 @@ fn a_new_worktree_from_a_remote_only_branch_tracks_it() {
 
     let dir = sb.path("wts");
     let d = dir.to_str();
-    let wt = add_worktree(b, "feat", Some("refs/remotes/upstream/feat"), true, d).unwrap();
+    let wt = add_worktree(
+        b,
+        "feat",
+        Some("refs/remotes/upstream/feat"),
+        true,
+        d,
+        &Net::default(),
+    )
+    .unwrap();
     assert_eq!(on_branch(Path::new(&wt)), "feat");
     assert_eq!(rev(Path::new(&wt), "HEAD"), rev(a, "feat"));
     assert_eq!(upstream(&wt).unwrap(), "upstream/feat");
@@ -499,6 +533,7 @@ fn a_new_worktree_from_a_remote_only_branch_tracks_it() {
         Some("refs/remotes/origin/feature/login"),
         false,
         d,
+        &Net::default(),
     )
     .unwrap();
     assert!(upstream(&login).is_err(), "a new branch tracks nothing");
@@ -759,12 +794,18 @@ fn worktree_time_over_thousands_of_untracked_files() {
 #[test]
 fn new_worktrees_get_the_submodules_their_source_has() {
     // The local-path clones are refused otherwise; a clone reads no repository's config.
-    std::env::set_var("GIT_CONFIG_COUNT", "1");
-    std::env::set_var("GIT_CONFIG_KEY_0", "protocol.file.allow");
-    std::env::set_var("GIT_CONFIG_VALUE_0", "always");
+    crate::git::TEST_CONFIG.with(|t| t.borrow_mut().push(("protocol.file.allow", "always")));
     let sb = Sandbox::new("wt-submodules");
     let r = repo_with_submodule(&sb);
-    let wt = add_worktree(&r, "feat", Some("refs/heads/main"), false, None).unwrap();
+    let wt = add_worktree(
+        &r,
+        "feat",
+        Some("refs/heads/main"),
+        false,
+        None,
+        &Net::default(),
+    )
+    .unwrap();
     let wt = Path::new(&wt);
     assert!(wt.join("sub/l.txt").exists());
     assert_eq!(submodules(wt).unwrap()[0].state, "ok");
@@ -777,7 +818,15 @@ fn new_worktrees_get_the_submodules_their_source_has() {
 
     // Not set up where it came from: left alone.
     run(&r, &["submodule", "deinit", "-q", "-f", "sub"]).unwrap();
-    let bare = add_worktree(&r, "bare", Some("refs/heads/main"), false, None).unwrap();
+    let bare = add_worktree(
+        &r,
+        "bare",
+        Some("refs/heads/main"),
+        false,
+        None,
+        &Net::default(),
+    )
+    .unwrap();
     let bare = Path::new(&bare);
     assert_eq!(submodules(bare).unwrap()[0].state, "missing");
     // Update there, once the main worktree has it again, borrows it the same way.

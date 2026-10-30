@@ -357,5 +357,5 @@ fn live_resolve_locally() {
     );
     assert!(stopped && st.conflicted.len() == 1);
     git::op_abort(repo).unwrap();
-    git::switch_branch(repo, "main", false).unwrap();
+    git::switch_branch(repo, "main", false, &Net::default()).unwrap();
 }

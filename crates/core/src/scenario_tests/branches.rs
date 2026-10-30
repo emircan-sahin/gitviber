@@ -430,7 +430,7 @@ fn rename_a_branch_here_and_on_the_remote() {
     let sb = Sandbox::new("rename");
     let c = sb.remote_with_clones(1);
     let a = &c[0];
-    switch_branch(a, "feat", true).unwrap();
+    switch_branch(a, "feat", true, &Net::default()).unwrap();
     write_commit(a, "f.txt", "f\n", "feat");
     push(a, false, None, &Net::default()).unwrap();
     assert!(rename_branch(a, "feat", "--evil", false, &Net::default()).is_err());
@@ -458,8 +458,8 @@ fn rename_a_branch_here_and_on_the_remote() {
     assert_eq!(upstream_of(a, "feature").as_deref(), Some("origin/feature"));
 
     // A local-only rename of a branch that isn't checked out.
-    switch_branch(a, "side", true).unwrap();
-    switch_branch(a, "feature", false).unwrap();
+    switch_branch(a, "side", true, &Net::default()).unwrap();
+    switch_branch(a, "feature", false, &Net::default()).unwrap();
     rename_branch(a, "side", "aside", false, &Net::default()).unwrap();
     assert!(exists(a, "aside") && !exists(a, "side"));
     assert!(
@@ -648,7 +648,7 @@ fn left_behind_counts_commits_only_a_detached_head_holds() {
     let r = &c[0];
     assert_eq!(left_behind(r).unwrap(), 0, "on a branch");
     let tip = run_text(r, &["rev-parse", "HEAD"]).unwrap();
-    checkout_commit(r, tip.trim()).unwrap();
+    checkout_commit(r, tip.trim(), &Net::default()).unwrap();
     assert_eq!(left_behind(r).unwrap(), 0, "main holds it");
     write_commit(r, "a.txt", "detached 1\n", "d1");
     write_commit(r, "a.txt", "detached 2\n", "d2");

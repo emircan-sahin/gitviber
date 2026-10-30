@@ -131,7 +131,7 @@ fn switching_with_conflicting_changes_works_after_a_stash() {
     run(&r, &["switch", "-q", "main"]).unwrap();
     fs::write(r.join("a.txt"), "mine\n").unwrap();
     // The UI looks for this to offer Stash and Switch.
-    let e = switch_branch(&r, "other", false).unwrap_err();
+    let e = switch_branch(&r, "other", false, &Net::default()).unwrap_err();
     assert!(e.contains("would be overwritten by checkout"), "{e}");
     stash_push(
         &r,
@@ -143,7 +143,7 @@ fn switching_with_conflicting_changes_works_after_a_stash() {
         },
     )
     .unwrap();
-    switch_branch(&r, "other", false).unwrap();
+    switch_branch(&r, "other", false, &Net::default()).unwrap();
     assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "other\n");
     assert_eq!(stashes(&r).unwrap().len(), 1);
 }

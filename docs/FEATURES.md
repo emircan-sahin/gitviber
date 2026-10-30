@@ -47,6 +47,8 @@ Give every agent its own worktree and switch between them from the top bar.
   to create a branch for them.
 - **Git LFS.** Switching branches, checking out a commit or creating a worktree downloads its LFS
   files first, with progress in the top bar, a Cancel button and the login prompt git-lfs may need.
+  A repository set to skip LFS downloads (`GIT_LFS_SKIP_SMUDGE`, `git lfs install --skip-smudge`)
+  keeps its pointers, and a checkout git would refuse anyway downloads nothing first.
 
 ### Terminals per worktree
 
