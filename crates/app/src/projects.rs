@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use gitviber_core::api;
 use gitviber_ui::actions::{project as project_cmds, terminal as term_cmds};
+use gitviber_ui::widgets::{Ends, list_step};
 use gitviber_ui::workspace::{Slot, Toast};
 use gitviber_ui::{ActiveAppTheme, UiState, Workspace};
 use gpui_kit::assets::IconName;
@@ -300,7 +301,7 @@ impl Keys {
     }
 }
 
-/// ↑/↓, ↵/Space and ⇧F10 on the row the keys act on.
+/// ↑/↓, Home/End, PgUp/PgDn, ↵/Space and ⇧F10 on the row the keys act on.
 fn key_down(
     keys: &Entity<Keys>,
     shown: &[String],
@@ -326,13 +327,12 @@ fn key_down(
     if m.platform || m.control || m.alt || m.shift {
         return;
     }
-    let step = |to: usize, cx: &mut App| {
+    if let Some(to) = list_step(k, Some(at), shown.len(), Ends::Stop, false) {
         keys.update(cx, |k, cx| k.go(shown.get(to), cx));
         keys.read(cx).scroll.scroll_to_item(to);
-    };
+        return cx.stop_propagation();
+    }
     match k.key.as_str() {
-        "down" => step((at + 1).min(shown.len() - 1), cx),
-        "up" => step(at.saturating_sub(1), cx),
         "enter" | "space" => {
             if info(path, cx).is_some_and(|i| !i.exists) {
                 locate(path, cx)

@@ -3,6 +3,7 @@
 //! pane. Shown once there's an agent. Its rows take the arrows, Enter and Escape, as a menu's do.
 
 use gitviber_ui::memory::Live;
+use gitviber_ui::widgets::Ends;
 use gitviber_ui::windows::TOP_BAR_HEIGHT;
 use gitviber_ui::workspace::{BarItem, BarSlot, PanelContext, Toast, register_bar_item};
 use gpui::{Anchor, AnyWindowHandle, KeyDownEvent, Render, SharedString, rems};
@@ -130,14 +131,9 @@ fn rows(
 }
 
 /// The row an arrow moves to: from none, the first (down) or the last (up); no wrapping.
-fn step(order: &[PaneId], from: Option<PaneId>, down: bool) -> Option<PaneId> {
+fn step(order: &[PaneId], from: Option<PaneId>, k: &gpui::Keystroke) -> Option<PaneId> {
     let at = from.and_then(|p| order.iter().position(|o| *o == p));
-    let to = match (at, down) {
-        (None, true) => 0,
-        (None, false) => order.len().checked_sub(1)?,
-        (Some(i), true) => (i + 1).min(order.len() - 1),
-        (Some(i), false) => i.saturating_sub(1),
-    };
+    let to = gitviber_ui::widgets::list_step(k, at, order.len(), Ends::Stop, false)?;
     order.get(to).copied()
 }
 
@@ -266,9 +262,12 @@ impl Render for AgentsButton {
                     move |e: &KeyDownEvent, window: &mut Window, cx: &mut App| {
                         let panes: Vec<PaneId> = order.iter().map(|(p, _)| *p).collect();
                         match e.keystroke.key.as_str() {
-                            k @ ("up" | "down") => {
+                            "up" | "down" | "home" | "end" | "pageup" | "pagedown" => {
                                 let _ = weak.update(cx, |b, cx| {
-                                    b.selected = step(&panes, b.selected, k == "down");
+                                    let Some(to) = step(&panes, b.selected, &e.keystroke) else {
+                                        return;
+                                    };
+                                    b.selected = Some(to);
                                     if let Some(&child) = b
                                         .selected
                                         .and_then(|s| panes.iter().position(|p| *p == s))
@@ -506,12 +505,14 @@ mod tests {
     #[test]
     fn arrows_step_through_the_rows_without_wrapping() {
         let order = [7, 3, 9];
-        assert_eq!(step(&order, None, true), Some(7));
-        assert_eq!(step(&order, None, false), Some(9));
-        assert_eq!(step(&order, Some(3), true), Some(9));
-        assert_eq!(step(&order, Some(9), true), Some(9));
-        assert_eq!(step(&order, Some(7), false), Some(7));
-        assert_eq!(step(&[], None, true), None);
+        let key = |k: &str| gpui::Keystroke::parse(k).unwrap();
+        assert_eq!(step(&order, None, &key("down")), Some(7));
+        assert_eq!(step(&order, None, &key("up")), Some(9));
+        assert_eq!(step(&order, Some(3), &key("down")), Some(9));
+        assert_eq!(step(&order, Some(9), &key("down")), Some(9));
+        assert_eq!(step(&order, Some(7), &key("up")), Some(7));
+        assert_eq!(step(&order, Some(9), &key("home")), Some(7));
+        assert_eq!(step(&[], None, &key("down")), None);
     }
 
     /// Two windows' panels, each with an agent in its first tab: two tabs in the menu, each row

@@ -8,6 +8,7 @@ use gitviber_refs::Branch;
 use gitviber_refs::points::{ComparePoint, branch_point, commit_point, head_point, tag_point};
 use gitviber_ui::ActiveAppTheme;
 use gitviber_ui::memory::Live;
+use gitviber_ui::widgets::{Ends, list_step};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
@@ -143,11 +144,19 @@ impl RefPicker {
     }
 
     fn key(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        match e.keystroke.key.as_str() {
-            "down" => self.index = (self.index + 1).min(self.rows.len().saturating_sub(1)),
-            "up" => self.index = self.index.saturating_sub(1),
-            "enter" => return self.pick(self.index, window, cx),
-            _ => return,
+        let typed = !self.input.read(cx).value().is_empty();
+        if let Some(to) = list_step(
+            &e.keystroke,
+            Some(self.index),
+            self.rows.len(),
+            Ends::Stop,
+            typed,
+        ) {
+            self.index = to;
+        } else if e.keystroke.key == "enter" {
+            return self.pick(self.index, window, cx);
+        } else {
+            return;
         }
         cx.stop_propagation();
         cx.notify();
