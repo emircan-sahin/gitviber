@@ -195,6 +195,31 @@ pub fn whole_file(code: &str, lossy: bool, unterminated: bool, rebase: bool) -> 
     }
 }
 
+/// Git LFS files on both sides: git merged their pointer text, which is no file to keep. One
+/// side is checked out whole, which brings the real file back. `sizes`: ours, then theirs.
+pub fn lfs_file(sizes: [Option<u64>; 2], rebase: bool) -> WholeFile {
+    let size =
+        |s: Option<u64>| s.map_or("not in Git LFS".to_string(), gitviber_core::lfs::size_label);
+    WholeFile {
+        title: "Git LFS files can't be merged line by line",
+        note: format!(
+            "Both sides changed this Git LFS file. Keep one side whole: current {}, incoming {}{}.",
+            size(sizes[0]),
+            size(sizes[1]),
+            if rebase {
+                " (in a rebase, \u{201c}incoming\u{201d} is your own commit)"
+            } else {
+                ""
+            }
+        ),
+        as_is: false,
+        sides: [
+            ("Keep current", "Current version"),
+            ("Keep incoming", "Incoming version"),
+        ],
+    }
+}
+
 fn same_line(a: &str, b: &str) -> bool {
     a.strip_suffix('\r').unwrap_or(a) == b.strip_suffix('\r').unwrap_or(b)
 }
@@ -653,6 +678,13 @@ mod tests {
         assert_eq!(
             side_names(true),
             ("Current (base)", "Incoming (your commit)")
+        );
+        let lfs = lfs_file([Some(13_002_342), None], false);
+        assert!(!lfs.as_is);
+        assert_eq!(lfs.sides[1].0, "Keep incoming");
+        assert!(
+            lfs.note
+                .contains("current 12.4 MB, incoming not in Git LFS.")
         );
     }
 

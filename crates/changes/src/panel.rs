@@ -4403,6 +4403,57 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn lfs_pointers_in_conflict_are_chosen_whole(cx: &mut TestAppContext) {
+        use crate::conflict::TestAct;
+        // Pointers committed as plain text: git merges them line by line, as it does when
+        // `merge=lfs` names no driver.
+        let pointer = |oid: char, size: u32| {
+            format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {size}\n",
+                oid.to_string().repeat(64)
+            )
+        };
+        let dir = gitviber_ui::test_support::temp_dir("changes-lfs");
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["config", "user.name", "Test"]);
+        git(&dir, &["config", "user.email", "test@example.com"]);
+        std::fs::write(dir.join("clip.mov"), pointer('a', 100)).unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-q", "-m", "base"]);
+        git(&dir, &["checkout", "-q", "-b", "other"]);
+        std::fs::write(dir.join("clip.mov"), pointer('b', 2048)).unwrap();
+        git(&dir, &["commit", "-q", "-am", "theirs"]);
+        git(&dir, &["checkout", "-q", "main"]);
+        std::fs::write(dir.join("clip.mov"), pointer('c', 300)).unwrap();
+        git(&dir, &["commit", "-q", "-am", "ours"]);
+        let _ = Command::new("git")
+            .args(["merge", "-q", "other"])
+            .current_dir(&dir)
+            .output();
+        let dir = dir.canonicalize().unwrap();
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let view = conflict_view_at(&host, "clip.mov", "UU", cx);
+        let whole = cx
+            .update(|_, cx| view.read(cx).whole_file_for_test())
+            .expect("no blocks for pointer text");
+        assert_eq!(whole.title, "Git LFS files can't be merged line by line");
+        assert!(whole.note.contains("current 300 B, incoming 2.0 KB"));
+        cx.update(|window, cx| {
+            view.update(cx, |v, cx| {
+                v.act_for_test(TestAct::Whole(Some(GitSide::Theirs)), window, cx)
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("clip.mov")).unwrap(),
+            pointer('b', 2048)
+        );
+        assert_eq!(git(&dir, &["status", "--porcelain"]).trim(), "M  clip.mov");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
     fn focus_message_works_from_outside_the_panel(cx: &mut TestAppContext) {
         let dir = repo("focus");
         setup(cx);

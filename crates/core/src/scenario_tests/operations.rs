@@ -956,3 +956,32 @@ fn rebase_moves_stacked_branches_when_asked() {
     assert_eq!(rev(&r, "stack"), rev(&r, "HEAD~1"));
     assert_ne!(rev(&r, "stack"), "");
 }
+
+/// git merges two LFS pointers as text; their sizes come back instead, and taking a side checks
+/// out the real file, not pointer lines.
+#[test]
+fn lfs_conflict_is_chosen_whole() {
+    let sb = Sandbox::new("lfs-conflict");
+    let r = sb.path("r");
+    init(&r);
+    if run(&r, &["lfs", "install", "--local"]).is_err() {
+        eprintln!("git-lfs is not installed; skipping");
+        return;
+    }
+    let attrs = "*.psd filter=lfs diff=lfs merge=lfs -text\n";
+    write_commit(&r, ".gitattributes", attrs, "lfs");
+    write_commit(&r, "art.psd", "base art", "base");
+    switch_branch(&r, "feature", true).unwrap();
+    write_commit(&r, "art.psd", "feature art, longer", "f");
+    switch_branch(&r, "main", false).unwrap();
+    write_commit(&r, "art.psd", "main art", "m");
+    assert!(merge(&r, "feature", MergeKind::Ff, false).unwrap());
+    let sides = conflict_sides(&r, "art.psd").unwrap().unwrap();
+    assert_eq!(sides.lfs, Some([Some(8), Some(19)]));
+    assert_eq!(sides.merged, None);
+    resolve_side(&r, "art.psd", Side::Theirs).unwrap();
+    assert_eq!(
+        fs::read_to_string(r.join("art.psd")).unwrap(),
+        "feature art, longer"
+    );
+}
