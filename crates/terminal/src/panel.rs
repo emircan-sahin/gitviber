@@ -43,6 +43,7 @@ mod attention;
 mod reorder;
 mod resume;
 mod saved;
+mod tab_dots;
 
 pub use attention::{agents_in, calling, paste_to_agent, stopped_by_quit, worktree_agent};
 pub(crate) use saved::import_legacy;
@@ -2004,18 +2005,20 @@ impl TerminalPanel {
                 )
                 .children(dots)
         });
+        // The strip's bottom line is drawn by everything but the open tab, which it would cut.
+        let tabs = tabs.child(div().flex_1().h_full().border_b_1().border_color(t.border));
         h_flex()
             .h(px(TOOLBAR_HEIGHT))
             .flex_none()
             .items_stretch()
-            .border_b_1()
-            .border_color(t.border)
             .bg(t.panel)
             .child(tabs)
             .child(
                 h_flex()
                     .flex_none()
                     .items_center()
+                    .border_b_1()
+                    .border_color(t.border)
                     .gap_0p5()
                     .px_1p5()
                     .child(
@@ -2225,23 +2228,11 @@ impl TerminalPanel {
         let focused = g.focused;
         // A split's panes by number, each in its agent's look; else the tab's one dot.
         let dots = if order.len() > 1 {
-            Some(
-                h_flex()
-                    .gap_1()
-                    .items_center()
-                    .children(order.iter().map(|&id| {
-                        let big = id == focused;
-                        match self.look_of_pane(id) {
-                            Some(l) => attention::look_dot(l, cx),
-                            None => div()
-                                .rounded_full()
-                                .bg(if big { t.muted_foreground } else { t.subtle })
-                                .size(px(if big { 6. } else { 4. }))
-                                .into_any_element(),
-                        }
-                    }))
-                    .into_any_element(),
-            )
+            let panes: Vec<_> = order
+                .iter()
+                .map(|&id| (self.look_of_pane(id), id == focused))
+                .collect();
+            Some(tab_dots::split_dots(gid, &panes, cx))
         } else {
             look.map(|l| attention::look_dot(l, cx))
         };
@@ -2250,6 +2241,10 @@ impl TerminalPanel {
         let alone = count == 1;
         let dragged = reorder::DraggedTerminal::new(gid, at, title.clone());
         let line = t.primary;
+        let (focus_ring, medium) = {
+            let app = cx.app_theme();
+            (app.ring, app.medium())
+        };
         div()
             .id(("terminal-tab", gid))
             .role(gpui::Role::Tab)
@@ -2273,11 +2268,14 @@ impl TerminalPanel {
             .border_color(t.border)
             .text_size(px(12.))
             .cursor_pointer()
+            // The open tab is the panes' own surface with no line under it, so it reads as part
+            // of them; the others sit back on the strip, over its bottom line.
             .when(active, |d| d.bg(t.background).text_color(t.foreground))
             .when(!active, |d| {
                 d.bg(t.panel)
+                    .border_b_1()
                     .text_color(t.muted_foreground)
-                    .hover(|s| s.bg(t.hover))
+                    .hover(|s| s.bg(t.hover).text_color(t.foreground))
             })
             .when(active, |d| {
                 d.child(
@@ -2296,8 +2294,8 @@ impl TerminalPanel {
                     div()
                         .absolute()
                         .inset_0()
-                        .border_1()
-                        .border_color(t.primary.opacity(0.6)),
+                        .border_2()
+                        .border_color(focus_ring),
                 )
             })
             // Its worktree's color, as the worktree picker shows it.
@@ -2345,7 +2343,11 @@ impl TerminalPanel {
             )
             .child(match renaming {
                 Some(input) => Self::rename_field(&input, 140.),
-                None => div().truncate().child(title).into_any_element(),
+                None => div()
+                    .truncate()
+                    .when(active, |d| d.font_weight(medium))
+                    .child(title)
+                    .into_any_element(),
             })
             .when_some(branch, |d, b| {
                 d.child(

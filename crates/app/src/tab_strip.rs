@@ -335,8 +335,13 @@ pub fn tab_strip(
                 } else {
                     t.muted_foreground
                 })
+                // The open tab is the content's own surface with no line under it, so it reads as
+                // part of it; the others sit back on the strip, over its bottom line.
                 .when(is_active, |d| d.bg(t.code(t.background)))
-                .when(!is_active, |d| d.hover(|s| s.bg(t.hover)))
+                .when(!is_active, |d| {
+                    d.border_b_1()
+                        .hover(|s| s.bg(t.hover).text_color(t.foreground))
+                })
                 .when(is_active, |d| {
                     d.child(
                         div()
@@ -349,7 +354,7 @@ pub fn tab_strip(
                     )
                 })
                 .when(is_active && ring, |d| {
-                    d.child(div().absolute().inset_0().border_1().border_color(t.ring))
+                    d.child(div().absolute().inset_0().border_2().border_color(t.ring))
                 })
                 .children(icon(tab_icon, &t))
                 // The detail gives way first ("Compare main...feature/search"), the title only
@@ -360,6 +365,7 @@ pub fn tab_strip(
                         .max_w(px(TITLE_MAX))
                         .truncate()
                         .text_size(rems(0.8125))
+                        .when(is_active, |d| d.font_weight(t.medium()))
                         .when(preview, |d| d.italic())
                         .child(title.clone()),
                 )
@@ -466,10 +472,10 @@ pub fn tab_strip(
         .h(px(TAB_STRIP_HEIGHT))
         .w_full()
         .bg(t.chrome(t.panel))
-        .border_b_1()
-        .border_color(t.border)
         .overflow_x_scroll()
         .children(tabs)
+        // The strip's bottom line, past the tabs: the open tab's would cut it.
+        .child(div().flex_1().h_full().border_b_1().border_color(t.border))
         .into_any_element()
 }
 
