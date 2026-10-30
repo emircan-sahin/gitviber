@@ -189,6 +189,8 @@ arguments, if you turned those on.
   moment it starts, stops or asks.
 - Switch the app between light and dark and a running Claude Code on its "auto" theme switches too.
 - On a Mac a trackpad swipe scrolls Claude Code's fullscreen view row by row, as it does vim and htop.
+- `⌘C` copies what you selected in Claude Code's fullscreen view, and a Japanese or Chinese input
+  method's candidate window stays at Claude Code's input as it redraws.
 - Pasting several lines into a program that would run each one as it arrives asks first.
 - A program that crashed or was killed in full screen leaves no mess: the next prompt is back in
   the scrollback with the cursor shown, and moving the mouse doesn't type into it.

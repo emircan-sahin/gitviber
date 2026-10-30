@@ -58,6 +58,12 @@ const BLINK_IDLE: Duration = Duration::from_secs(30);
 const QUICK_EXIT: Duration = Duration::from_secs(1);
 /// How long a command waits for the first prompt: past it, typing ahead is no worse.
 const RUN_WAIT: Duration = Duration::from_secs(5);
+/// The copy key in the kitty protocol: ⌘C (super is 8, so 9) on a Mac, Ctrl+Shift+C elsewhere.
+const COPY_KEY: &str = if cfg!(target_os = "macos") {
+    "\x1b[99;9u"
+} else {
+    "\x1b[99;6u"
+};
 /// How often a pane without the keys redraws while output streams: about 30 frames a second.
 const BACKGROUND_FRAME: Duration = Duration::from_millis(33);
 /// Find refreshes its matches at most this often while output arrives.
@@ -262,10 +268,15 @@ impl TerminalPane {
             term_config(config.scrollback, config.cursor, config.cursor_blink),
         );
         let outbox = session.outbox.clone();
-        let wake = cx.spawn(async move |this, cx| {
+        let wake = cx.spawn_in(window, async move |this, cx| {
             while outbox.signal.wait().await {
-                let Ok(looked_at) = this.update(cx, |pane, cx| {
+                let Ok(looked_at) = this.update_in(cx, |pane, window, cx| {
                     pane.on_wake(cx);
+                    // The program may have moved the cursor under a word being composed: the input
+                    // method's candidate window follows it.
+                    if pane.ime.is_some() {
+                        window.invalidate_character_coordinates();
+                    }
                     pane.looked_at()
                 }) else {
                     break;
@@ -930,6 +941,14 @@ impl TerminalPane {
                 if stop {
                     cx.stop_propagation();
                 }
+            }
+            // A full-screen program with its own selection (it reads the mouse) and the kitty keys
+            // gets the copy key, as it binds it.
+            None if self.mode().contains(TermMode::DISAMBIGUATE_ESC_CODES)
+                && self.mode().intersects(TermMode::MOUSE_MODE) =>
+            {
+                self.session.write(COPY_KEY);
+                cx.stop_propagation();
             }
             None => cx.propagate(),
         }
@@ -2174,6 +2193,44 @@ mod tests {
         pane.update_in(cx, |p, window, cx| p.on_focus_change(false, window, cx));
         assert_eq!(pane.read_with(cx, |p, _| p.session.written()), ["にほ"]);
         assert_eq!(pane.read_with(cx, |p, _| p.ime.clone()), None);
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+    }
+
+    /// With nothing selected in the grid, the copy key reaches a full-screen program that keeps
+    /// its own selection (the mouse and the kitty keys on); a shell's prompt doesn't get it.
+    #[gpui::test]
+    fn copy_reaches_a_program_with_its_own_selection(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
+            crate::init(cx);
+        });
+        let core = Arc::new(Core::new(Arc::new(|_| {})));
+        let (_, cx) = cx.add_window_view(|_, _| Host);
+        let pane = cx.update(|window, cx| {
+            new_pane(
+                1,
+                core,
+                std::env::temp_dir(),
+                None,
+                None,
+                TerminalConfig::default(),
+                TerminalTheme::dark(),
+                window,
+                cx,
+            )
+        });
+        let copy = |cx: &mut VisualTestContext| {
+            pane.update_in(cx, |p, window, cx| p.on_copy(&Copy, window, cx));
+            pane.read_with(cx, |p, _| p.session.written())
+        };
+        pane.update(cx, |p, _| p.session.emu.lock().feed(b"\x1b[>1u"));
+        assert!(copy(cx).is_empty());
+        pane.update(cx, |p, _| {
+            p.session.emu.lock().feed(b"\x1b[?1002h\x1b[?1006h")
+        });
+        assert_eq!(copy(cx), [COPY_KEY]);
         cx.update(|window, _| window.remove_window());
         cx.run_until_parked();
     }
