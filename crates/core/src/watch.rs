@@ -106,8 +106,9 @@ pub(crate) fn git_file(rel: &Path, own: bool) -> bool {
         ["HEAD" | "refs" | "packed-refs" | "reftable", ..] => true,
         // Upstreams and remotes: `git branch -u`, `git remote set-url`. Ignore rules too.
         ["config"] | ["info", "exclude"] => true,
-        ["index" | "MERGE_HEAD" | "CHERRY_PICK_HEAD" | "REVERT_HEAD" | "rebase-merge"
-        | "rebase-apply", ..] => own,
+        // BISECT_LOG and sequencer/: a bisect or a paused multi-pick started in a terminal.
+        ["index" | "MERGE_HEAD" | "CHERRY_PICK_HEAD" | "REVERT_HEAD" | "BISECT_LOG"
+        | "rebase-merge" | "rebase-apply" | "sequencer", ..] => own,
         // Another worktree added or removed, or switched to a branch it now holds. Its index
         // and logs are that worktree's business.
         ["worktrees", _] | ["worktrees", _, "HEAD"] => true,
@@ -179,8 +180,16 @@ impl ExternalGitDirs {
         // plain .git, only what git_file names counts: its objects and logs churn.
         let own = self.own == self.common;
         // A linked worktree's own dir sits inside the common one's worktrees/, so it goes first.
-        if !own && self.own.as_ref().is_some_and(|d| path.starts_with(d)) {
-            return Some(Kind::Git);
+        // Only what git_file names: each status with core.fsmonitor writes and deletes a cookie
+        // under fsmonitor--daemon/ here, and taking it for a change refreshed nonstop.
+        if let Some(rel) = self
+            .own
+            .as_ref()
+            .filter(|_| !own)
+            .and_then(|d| path.strip_prefix(d).ok())
+        {
+            let counts = rel.as_os_str().is_empty() || git_file(rel, true);
+            return counts.then_some(Kind::Git);
         }
         let rel = path.strip_prefix(self.common.as_ref()?).ok()?;
         git_file(rel, own).then_some(Kind::Git)
