@@ -17,7 +17,7 @@ use gitviber_ui::fuzzy::{Match, fuzzy_match, match_path, prepare_query};
 use gitviber_ui::keymap::{self, Category, IS_MAC, ROOT_CONTEXT, bindings_for};
 use gitviber_ui::memory::Live;
 use gitviber_ui::state::bump;
-use gitviber_ui::widgets::{ChangeKind, FileIcon, Keycaps, StatusLetter, key_hints};
+use gitviber_ui::widgets::{ChangeKind, FileIcon, Keycaps, PAGE, StatusLetter, key_hints};
 use gitviber_ui::workspace::{
     PanelContext, QuickItem, Registry, RunItem, Selection, Slot, Workspace,
 };
@@ -644,12 +644,12 @@ impl Palette {
         }
     }
 
-    /// PgUp / PgDn: ten rows at a time, stopping at the ends.
+    /// PgUp / PgDn: a page of rows at a time, as every list steps, stopping at the ends.
     fn page(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let k = &e.keystroke;
-        let dir: isize = match k.key.as_str() {
-            "pageup" => -10,
-            "pagedown" => 10,
+        let dir = match k.key.as_str() {
+            "pageup" => -(PAGE as isize),
+            "pagedown" => PAGE as isize,
             _ => return,
         };
         if k.modifiers.modified() {
