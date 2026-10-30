@@ -464,15 +464,12 @@ impl WorkspaceView {
         self.workspace.update(cx, |ws, cx| {
             let left = Part::Slot(Slot::Left);
             let inside = ws.focused_part(window, cx) == Some(left);
-            if inside && ws.active_panel(Slot::Left, cx) == Some(id) {
-                return ws.focus_back(Some(left), window, cx);
-            }
             // From one tab to another, back still means where focus was before the panel.
-            if !inside {
-                ws.remember_focus(window, cx);
+            let other_tab = inside && ws.active_panel(Slot::Left, cx) != Some(id);
+            if other_tab || ws.toggle_focus(inside, Some(left), window, cx) {
+                ws.show_panel(id, cx);
+                ws.focus_slot(Slot::Left, window, cx);
             }
-            ws.show_panel(id, cx);
-            ws.focus_slot(Slot::Left, window, cx);
         });
     }
 
