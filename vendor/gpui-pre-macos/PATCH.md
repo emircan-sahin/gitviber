@@ -39,3 +39,34 @@ US = key would have run ⌘=. On an ISO keyboard (`KBGetLayoutType`) macOS repor
 1 as kVK_ISO_Section, so that one is the US ` key there. Letters and digits stay as typed (German
 ⌘Y, the US Z key, isn't ⌘Z). These chords had no `key_char` before. Test:
 `events::gitviber_tests` (`cargo nextest run -p gpui-pre-macos gitviber`).
+
+## 4. Frames paced by `CAMetalDisplayLink` on macOS 14+ (`src/window.rs`, `src/metal_frames.rs`)
+
+Why: on macOS 26 the main thread waited about 33 ms per frame in `nextDrawable` after each
+`CVDisplayLink` tick (gpui-pre-apple PATCH.md, change 5). Upstream fixed it after 0.3.9 (zed
+#65472, 0373366); this is our own version of that design, without its `Arc` to `Rc` rework.
+
+The change:
+- `FrameSource`, chosen once per window: `Metal(Rc<MetalFrames>)` when
+  `MetalFrameSource::is_available()` (macOS 14+), else `DisplayLink`, the `CVDisplayLink`
+  registry as before. Older macOS keeps the old path unchanged.
+- `start_display_link` (Metal): `renderer.restore()`, then a new link on the layer whose callback
+  holds the window state weakly and runs `metal_frame`: hand the drawable to the renderer, run
+  GPUI's frame callback outside the lock, take back an unused drawable.
+- `stop_display_link` (Metal) invalidates the link instead of pausing it, so the synchronous
+  draws (activation, live resize's `displayLayer:`) and a trimmed window's draw can use
+  `nextDrawable`. Live resize makes a new link per resize step.
+- Idle pause (`MetalFrames`): after an update in which GPUI neither drew, presented, nor asked for
+  another frame, the link pauses, so an idle window takes no drawables and does no work.
+  `frame_waker` and `schedule_frame` (no-ops on this platform before) resume it; the waker lives
+  in `MacWindow` outside the state lock.
+- Window drop invalidates the link.
+
+With change 1: hidden → `stop_display_link` (link invalidated), then `trim`; visible →
+`restore`, then a new link. `start_display_link` also restores, so a link never starts on a
+trimmed layer.
+
+Checked: `metal_frames::gitviber_tests` (pause only when GPUI neither drew nor asked again; a
+wake during the update keeps the link running). Frame time, idle CPU, resize, displays and
+fullscreen need the running app.
+
