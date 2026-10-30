@@ -590,10 +590,17 @@ impl Element for ScrollBounce {
                         cx.background_executor().now(),
                         |dy| {
                             let before = handle.offset();
+                            let requested = before.y + px(dy);
                             let mut offset = before;
-                            offset.y = (before.y + px(dy)).clamp(-max, px(0.));
+                            offset.y = requested.clamp(-max, px(0.));
                             handle.set_offset(offset);
-                            (offset.y - before.y).as_f32()
+                            // Unclamped, all of it was used: deep in a long
+                            // list `after - before` loses more than ROUNDING.
+                            if offset.y == requested {
+                                dy
+                            } else {
+                                (offset.y - before.y).as_f32()
+                            }
                         },
                     )
                 };
@@ -825,7 +832,8 @@ mod tests {
         });
     }
 
-    struct WheelViewport(ScrollHandle);
+    /// A wheel-driven viewport 200 px tall over content of the given height.
+    struct WheelViewport(ScrollHandle, Pixels);
 
     impl Render for WheelViewport {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -838,10 +846,90 @@ mod tests {
                     .h(px(200.))
                     .overflow_y_scroll()
                     .track_scroll(&self.0)
-                    .child(div().h(px(600.)).w_full()),
+                    .child(div().h(self.1).w_full()),
             )
             .enabled(true)
             .scroll_wheel(true)
+        }
+    }
+
+    /// A trackpad flick: fingers down, a few fast packets a frame apart, lifted
+    /// while still moving, then the momentum the system sends after it.
+    fn fling(cx: &mut VisualTestContext, packets: &[f32], momentum: &[f32]) {
+        let frame = Duration::from_millis(16);
+        scroll(cx, 0., TouchPhase::Started);
+        for &dy in packets {
+            cx.executor().advance_clock(frame);
+            scroll(cx, dy, TouchPhase::Moved);
+        }
+        cx.executor().advance_clock(frame);
+        scroll(cx, 0., TouchPhase::Ended);
+        draw(cx);
+        for &dy in momentum {
+            cx.executor().advance_clock(frame);
+            scroll(cx, dy, TouchPhase::Moved);
+            draw(cx);
+        }
+    }
+
+    #[gpui::test]
+    fn a_drag_right_after_a_fling_scrolls_the_list(cx: &mut TestAppContext) {
+        let handle = ScrollHandle::new();
+        let (_, cx) = cx.add_window_view({
+            let handle = handle.clone();
+            move |_, _| WheelViewport(handle, px(10_000.))
+        });
+        draw(cx);
+        handle.set_offset(point(px(0.), px(-5_000.)));
+        draw(cx);
+        let origin = handle.bounds().origin;
+        // Fingers go back down while the momentum is still coming, twice over.
+        for _ in 0..2 {
+            fling(cx, &[-70.; 6], &[-60., -40.]);
+            assert_eq!(
+                handle.bounds().origin,
+                origin,
+                "a release mid-list threw the edge"
+            );
+            let before = handle.offset().y;
+            scroll(cx, 0., TouchPhase::Started);
+            scroll(cx, -50., TouchPhase::Moved);
+            draw(cx);
+            assert_eq!(
+                handle.offset().y,
+                before - px(50.),
+                "the drag moved the list"
+            );
+            assert_eq!(handle.bounds().origin, origin);
+            scroll(cx, 0., TouchPhase::Ended);
+            cx.executor().advance_clock(Duration::from_millis(300));
+            draw(cx);
+        }
+    }
+
+    #[gpui::test]
+    fn fractional_packets_deep_in_a_long_list_never_stretch_it(cx: &mut TestAppContext) {
+        // At a million pixels an f32 offset moves in 1/16 px steps, so a
+        // 0.09 px packet lands 0.0275 px short with no edge anywhere near.
+        for sign in [-1_f32, 1.] {
+            let handle = ScrollHandle::new();
+            let (_, cx) = cx.add_window_view({
+                let handle = handle.clone();
+                move |_, _| WheelViewport(handle, px(2_000_000.))
+            });
+            draw(cx);
+            handle.set_offset(point(px(0.), px(-1_000_000.)));
+            draw(cx);
+            let origin = handle.bounds().origin;
+            fling(cx, &[sign * 0.09, sign * 30.], &[sign * 0.09, sign * 0.09]);
+            scroll(cx, 0., TouchPhase::Started);
+            scroll(cx, sign * 0.09, TouchPhase::Moved);
+            scroll(cx, sign * 25., TouchPhase::Moved);
+            draw(cx);
+            assert_eq!(handle.bounds().origin, origin, "rounding read as an edge");
+            let moved = handle.offset().y.as_f32() + 1_000_000.;
+            assert!((moved - sign * 55.25).abs() < 0.01, "{moved}");
+            cx.update(|window, _| window.remove_window());
         }
     }
 
@@ -850,7 +938,7 @@ mod tests {
         let handle = ScrollHandle::new();
         let (_, cx) = cx.add_window_view({
             let handle = handle.clone();
-            move |_, _| WheelViewport(handle)
+            move |_, _| WheelViewport(handle, px(600.))
         });
         draw(cx);
         let origin = handle.bounds().origin;
@@ -871,7 +959,7 @@ mod tests {
         let handle = ScrollHandle::new();
         let (_, cx) = cx.add_window_view({
             let handle = handle.clone();
-            move |_, _| WheelViewport(handle)
+            move |_, _| WheelViewport(handle, px(600.))
         });
         draw(cx);
         let wheel = |cx: &mut VisualTestContext, dy| {

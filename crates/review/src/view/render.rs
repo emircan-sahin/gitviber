@@ -1379,6 +1379,8 @@ impl GuideView {
 impl Render for GuideView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.app_theme().clone();
+        // The "5m ago" times are plain text; nothing else redraws this view as they age.
+        gitviber_ui::widgets::repaint_next_minute(window, cx);
         if self.legacy.is_none()
             && let Some(g) = self.guide.as_ref().filter(|g| !g.diagram.is_empty())
         {

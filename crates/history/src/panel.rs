@@ -130,7 +130,11 @@ impl HistoryPanel {
                 },
             ),
             cx.subscribe_in(&list, window, Self::list_event),
-            cx.observe(&repo, |this: &mut Self, _, cx| this.sync_bisect(cx)),
+            // Also redraws the header's branch name, which a same-commit checkout changes alone.
+            cx.observe(&repo, |this: &mut Self, _, cx| {
+                this.sync_bisect(cx);
+                cx.notify();
+            }),
             cx.subscribe(&repo, |this: &mut Self, _, e: &RepoEvent, cx| {
                 if let (RepoEvent::Changed, Mode::Ref(r)) = (e, &mut this.mode) {
                     let with = r.with.clone();

@@ -1,6 +1,6 @@
 # gpui-base 0.8.0, patched
 
-The crates.io release of gpui-base 0.8.0, byte for byte, except four changes and this file:
+The crates.io release of gpui-base 0.8.0, byte for byte, except six changes and this file:
 1. `src/text/inline.rs`: closed markdown documents' shaped text is swept (below). Drop it once
    an upstream release sweeps the table itself.
 2. Line blocks in the code editor (the second half of this file). Drop it once upstream has
@@ -9,6 +9,10 @@ The crates.io release of gpui-base 0.8.0, byte for byte, except four changes and
    them once upstream exposes the selections and the syntax context.
 4. Raw HTML and footnotes in markdown as GitHub shows them (the end of this file). Drop the
    parts upstream takes.
+5. Trackpad scrolling that froze after a fast flick (the end of this file). Drop it once
+   upstream ships the same fixes (gpui-kit 0.8.1 has them).
+6. A long paragraph with many inline code or bold spans combined its highlights in quadratic
+   time on every frame (the end of this file). Drop it once upstream combines them once.
 
 Wired in through `[patch.crates-io]` in the workspace Cargo.toml (and excluded from the
 workspace). The whole patch: `diff -ru ~/.cargo/registry/src/index.crates.io-*/gpui-base-0.8.0
@@ -140,3 +144,33 @@ Tested here (`markdown::tests::inline_html_links_and_code_keep_their_meaning`,
 `details_over_several_blocks_are_offered_as_one`, and the footnote selection mapping), run with
 `cargo nextest run --manifest-path vendor/gpui-base/Cargo.toml --features test-support --lib`
 and its own target directory; and from crates/markdown (details, footnote anchors).
+
+## 5. Trackpad scroll freeze: why and the change
+
+A flick through a long list, with the fingers put back down while it still moved, left the list
+sliding "like a picture": its edge clipped and no new rows came in. Every later packet went into a
+stretched edge instead of the text. Three ways the edge got stretched with no edge near:
+
+- `src/overscroll.rs`, the release (`Ended`/`Cancelled` while dragging): the finger's speed threw
+  the edge even when nothing was stretched, since `Physics::let_go` reads a zero position as
+  outward. The next gesture grabbed that thrown edge. Now only a stretched edge carries the
+  speed; mid-list, the momentum that follows scrolls the text and throws the edge only if it
+  reaches it.
+- `src/overscroll.rs`, both `unused` checks: an `f32` rounding remainder counted as "ran into the
+  edge". A remainder up to `ROUNDING` (0.01 px) is now ignored.
+- `src/scroll_bounce.rs` (the scroll closure in the wheel handler) and `src/input/base/state.rs`
+  (`on_scroll_wheel`): deep in a long list an offset moves in steps bigger than 0.01 px (1/16 px
+  at a million), so `after - before` came back short. When the offset was not clamped, the whole
+  packet is now reported used.
+
+Tested here (`scroll_bounce::tests::a_drag_right_after_a_fling_scrolls_the_list` and
+`fractional_packets_deep_in_a_long_list_never_stretch_it`: both fail without the change, the edge
+thrown 26 px and 15.5 px out). Run as in part 4.
+
+## 6. Highlights of a paragraph: why and the change
+
+`src/text/node.rs`: each inline node's highlights were combined into the run built so far
+(`combine_highlights(highlights, node_highlights)`, a sort of every endpoint), which is quadratic in
+a paragraph's spans. A paragraph with inline code is laid out through `inline_flow_items`, which
+does this on every render. A node's marks lie within its own text, after every earlier node's, so
+they are now combined among themselves and appended: the same ranges, in linear time.

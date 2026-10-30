@@ -2739,11 +2739,15 @@ impl<M: InputModeKind> InputBaseState<M> {
                 cx.background_executor().now(),
                 |dy| {
                     let before = self.scroll_handle.offset();
-                    self.update_scroll_offset(
-                        Some(point(before.x + delta.x, before.y + px(dy))),
-                        cx,
-                    );
-                    (self.scroll_handle.offset().y - before.y).as_f32()
+                    let requested = before.y + px(dy);
+                    self.update_scroll_offset(Some(point(before.x + delta.x, requested)), cx);
+                    // Unclamped, all of it was used; see `ScrollBounce`.
+                    let after = self.scroll_handle.offset().y;
+                    if after == requested {
+                        dy
+                    } else {
+                        (after - before.y).as_f32()
+                    }
                 },
             );
             self.overscroll = overscroll;
