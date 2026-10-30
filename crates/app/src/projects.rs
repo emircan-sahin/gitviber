@@ -1,6 +1,7 @@
 //! The saved projects, as the welcome screen and the left panel list them (Settings → Appearance
-//! → Projects in the sidebar): a click or ↵ opens one, a drag reorders, hover actions and a
-//! right-click menu (also ⇧F10) do the rest, ⌫ removes one. A folder that was moved sinks below
+//! → Projects in the sidebar), in the top bar picker's arrangement with its folders open: a click
+//! or ↵ opens one, a drag reorders, hover actions and a right-click menu (also ⇧F10) do the
+//! rest, ⌫ removes one. A folder that was moved sinks below
 //! the others and offers Locate….
 
 use std::collections::HashMap;
@@ -8,6 +9,8 @@ use std::path::PathBuf;
 
 use gitviber_core::api;
 use gitviber_ui::actions::{project as project_cmds, terminal as term_cmds};
+use gitviber_ui::projects::{DropOn, Place, home_relative};
+use gitviber_ui::widgets::project_tile;
 use gitviber_ui::workspace::{Slot, Toast};
 use gitviber_ui::{ActiveAppTheme, UiState, Workspace};
 use gpui_kit::assets::IconName;
@@ -15,10 +18,10 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Global, Hsla,
+    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Global,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, PathPromptOptions,
     Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Task, Window,
-    div, hsla, prelude::FluentBuilder as _, px, rems,
+    div, prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::help::{open_url, toast};
@@ -93,50 +96,11 @@ fn info(path: &str, cx: &App) -> Option<Info> {
     cx.try_global::<Infos>()?.by_path.get(path).cloned()
 }
 
-/// `path` with the home folder written as ~, as a shell shows it.
-fn home_relative(path: &str, home: Option<&str>) -> String {
-    let home = home
-        .map(|h| h.trim_end_matches('/'))
-        .filter(|h| !h.is_empty());
-    match home.and_then(|h| path.strip_prefix(h)) {
-        Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("~{rest}"),
-        _ => path.to_string(),
-    }
-}
-
 pub fn folder_name(path: &str) -> &str {
     path.trim_end_matches('/')
         .rsplit('/')
         .next()
         .unwrap_or(path)
-}
-
-/// A stable hue per name, so projects are told apart at a glance.
-pub fn hue(name: &str) -> f32 {
-    let mut h: u32 = 0;
-    for c in name.encode_utf16() {
-        h = (h * 31 + u32::from(c)) % 360;
-    }
-    h as f32
-}
-
-/// Square letter tile in its project's hue.
-pub fn tile(name: &str, large: bool) -> AnyElement {
-    let letter: String = name.chars().next().unwrap_or('?').to_uppercase().collect();
-    let bg: Hsla = hsla(hue(name) / 360., 0.55, 0.62, 1.);
-    div()
-        .size(px(if large { 24. } else { 16. }))
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .rounded(px(4.))
-        .bg(bg)
-        .text_color(hsla(0., 0., 0., 0.8))
-        .text_size(rems(if large { 0.6875 } else { 0.59375 }))
-        .font_weight(gpui_kit::FontWeight::BOLD)
-        .child(letter)
-        .into_any_element()
 }
 
 /// The order shown: folders that are gone sink below the rest, each group in the user's order.
@@ -145,30 +109,12 @@ pub fn shown_order(list: &[String], gone: impl Fn(&str) -> bool) -> Vec<String> 
     here.into_iter().chain(away).cloned().collect()
 }
 
-/// `list` with `from` moved to where `to` is.
-pub fn moved(list: &[String], from: &str, to: &str) -> Vec<String> {
-    let mut out: Vec<String> = list.to_vec();
-    let (Some(a), Some(b)) = (
-        out.iter().position(|p| p == from),
-        out.iter().position(|p| p == to),
-    ) else {
-        return out;
-    };
-    let item = out.remove(a);
-    out.insert(b, item);
-    out
-}
-
 fn forget(path: &str, cx: &mut App) {
-    let path = path.to_string();
-    UiState::update(cx, move |s| s.recent_projects.retain(|p| *p != path));
+    UiState::update(cx, |s| s.forget_project(path));
 }
 
-fn move_to_top(path: &str, cx: &mut App) {
-    let path = path.to_string();
-    UiState::update(cx, move |s| {
-        gitviber_ui::state::bump(&mut s.recent_projects, &path, 20)
-    });
+fn toggle_pin(path: &str, cx: &mut App) {
+    UiState::update(cx, |s| s.project_org.toggle_pin(path));
 }
 
 /// In the main window, once git says it's a repository (open_repo).
@@ -226,12 +172,7 @@ fn locate(path: &str, cx: &mut App) {
         let new = new.to_string_lossy().into_owned();
         cx.update(|cx| {
             let (old, put) = (old.clone(), new.clone());
-            UiState::update(cx, move |s| {
-                s.recent_projects.retain(|p| *p != put);
-                if let Some(p) = s.recent_projects.iter_mut().find(|p| **p == old) {
-                    *p = put;
-                }
-            });
+            UiState::update(cx, move |s| s.relocate_project(&old, &put));
             refresh(true, cx);
             open_project(&new, cx);
         });
@@ -376,7 +317,7 @@ impl Render for DraggedProject {
             .bg(t.elevated)
             .border_1()
             .border_color(t.border_strong)
-            .child(tile(folder_name(&self.path), false))
+            .child(project_tile(&self.path, 16., cx))
             .child(folder_name(&self.path).to_string())
     }
 }
@@ -406,12 +347,13 @@ pub fn list(
         (k.focus.clone(), k.scroll.clone())
     };
     let focused = focus.is_focused(window);
-    let recent = UiState::get(cx).recent_projects.clone();
+    let state = UiState::get(cx);
+    let recent = state.recent_projects.clone();
+    let org = state.project_org.clone();
     let gone = |p: &str| info(p, cx).is_some_and(|i| !i.exists);
-    let shown = shown_order(&recent, gone);
+    let shown = shown_order(&org.flat(&recent), gone);
     let key_at = focused.then(|| key_row(&shown, keys.read(cx).row.as_deref(), current.as_deref()));
     let ring = keys.read(cx).by_key;
-    let first = recent.first().cloned();
     let home = std::env::var("HOME").ok().filter(|h| !h.is_empty());
     let t = cx.app_theme().clone();
     let rows = shown.clone().into_iter().enumerate().map(|(i, path)| {
@@ -435,7 +377,7 @@ pub fn list(
             .map_or_else(|| "Open".into(), |a| a.open_label().into());
         let (open, drop_to, clicked) = (path.clone(), path.clone(), path.clone());
         let keys_c = keys.downgrade();
-        let is_first = first.as_deref() == Some(path.as_str());
+        let pinned = org.place_of(&path) == Place::Pinned;
         let actions = (!compact).then(|| {
             let mut buttons: Vec<AnyElement> = Vec::new();
             let action = |id: &str, icon: IconName, tip: &'static str| {
@@ -516,11 +458,11 @@ pub fn list(
             .when(!here, |d| d.cursor_pointer())
             .when(!is_current, |d| d.hover(|s| s.bg(t.hover)))
             .when(keyed && !here, |d| d.bg(t.hover))
-            .child(
-                div()
-                    .when(missing, |d| d.opacity(0.45))
-                    .child(tile(&name, !compact)),
-            )
+            .child(div().when(missing, |d| d.opacity(0.45)).child(project_tile(
+                &path,
+                if compact { 16. } else { 24. },
+                cx,
+            )))
             .child(
                 div()
                     .flex_1()
@@ -578,7 +520,8 @@ pub fn list(
                 let to = drop_to.clone();
                 let from = dragged.path.clone();
                 UiState::update(cx, move |s| {
-                    s.recent_projects = moved(&s.recent_projects, &from, &to)
+                    let recent = s.recent_projects.clone();
+                    s.project_org.drop_on(&from, DropOn::Before(to), &recent)
                 });
             })
             .context_menu(move |menu, _, _| {
@@ -635,10 +578,13 @@ pub fn list(
                     )
                     .separator()
                     .item(
-                        PopupMenuItem::new("Move to Top")
-                            .icon(IconName::ArrowUpToLine)
-                            .disabled(is_first)
-                            .on_click(move |_, _, cx| move_to_top(&top, cx)),
+                        PopupMenuItem::new(if pinned { "Unpin" } else { "Pin" })
+                            .icon(if pinned {
+                                IconName::PinOff
+                            } else {
+                                IconName::Pin
+                            })
+                            .on_click(move |_, _, cx| toggle_pin(&top, cx)),
                     )
                     .item(
                         PopupMenuItem::new("Remove from List")
@@ -682,40 +628,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hues_are_stable_and_spread() {
-        assert_eq!(hue("git_viber"), hue("git_viber"));
-        assert_ne!(hue("alpha"), hue("beta"));
-        assert!(hue("x") < 360.);
-        // As the old app's tile computed it (UTF-16 units, mod 360 each step).
-        let mut h = 0u32;
-        for c in "ab".encode_utf16() {
-            h = (h * 31 + c as u32) % 360;
-        }
-        assert_eq!(hue("ab"), h as f32);
-    }
-
-    #[test]
-    fn gone_folders_sink_and_drags_reorder() {
+    fn gone_folders_sink() {
         let list: Vec<String> = ["/a", "/b", "/c"].map(String::from).into();
         assert_eq!(shown_order(&list, |p| p == "/a"), ["/b", "/c", "/a"]);
-        assert_eq!(moved(&list, "/c", "/a"), ["/c", "/a", "/b"]);
-        assert_eq!(moved(&list, "/a", "/c"), ["/b", "/c", "/a"]);
-        assert_eq!(moved(&list, "/x", "/a"), list);
         assert_eq!(folder_name("/Users/me/repo/"), "repo");
-    }
-
-    #[test]
-    fn paths_under_home_read_from_tilde() {
-        let home = Some("/Users/me");
-        assert_eq!(home_relative("/Users/me/code/app", home), "~/code/app");
-        assert_eq!(home_relative("/Users/me", Some("/Users/me/")), "~");
-        // Another user whose name starts the same isn't home.
-        assert_eq!(
-            home_relative("/Users/mechanic/app", home),
-            "/Users/mechanic/app"
-        );
-        assert_eq!(home_relative("/tmp/app", home), "/tmp/app");
-        assert_eq!(home_relative("/tmp/app", None), "/tmp/app");
     }
 
     #[test]

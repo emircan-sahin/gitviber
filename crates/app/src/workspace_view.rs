@@ -446,7 +446,7 @@ impl WorkspaceView {
                     return open_repo::act(found, Request::folder(folder), cx);
                 }
                 let path = folder.to_string_lossy().into_owned();
-                UiState::update(cx, |s| s.recent_projects.retain(|p| *p != path));
+                UiState::update(cx, |s| s.forget_project(&path));
                 if let Some(workspace) = workspace.upgrade() {
                     workspace.update(cx, |ws, cx| {
                         ws.toast(
@@ -1062,7 +1062,7 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::open_recent))
             .on_action(cx.listener(|_, _: &ClearRecent, _, cx| {
-                UiState::update(cx, |s| s.recent_projects.clear())
+                UiState::update(cx, |s| s.clear_recent_projects())
             }))
             .on_action(cx.listener(|this, _: &repo::Refresh, _, cx| {
                 if let Some(project) = this.workspace.read(cx).project().cloned() {
