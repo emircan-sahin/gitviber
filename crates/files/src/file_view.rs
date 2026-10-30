@@ -608,6 +608,8 @@ impl FileView {
             code.update(cx, |c, cx| {
                 c.file_changed(file.text, head, bars, window, cx)
             });
+            // `changed` is drawn in the header; a preview ignoring same text won't notify.
+            cx.notify();
             return;
         }
         let source = CodeSource {

@@ -47,7 +47,7 @@ pub struct CompareView {
     focus: FocusHandle,
     _read: Task<()>,
     _check: Task<()>,
-    _repo: Option<Subscription>,
+    _repo: Vec<Subscription>,
     _live: Live,
 }
 
@@ -86,7 +86,7 @@ impl CompareView {
             focus: cx.focus_handle(),
             _read: Task::ready(()),
             _check: Task::ready(()),
-            _repo: None,
+            _repo: Vec::new(),
             _live: Live::new("CompareView"),
         }
     }
@@ -99,17 +99,21 @@ impl CompareView {
             return;
         };
         let repo = RepoState::get(&project, cx);
-        self._repo = Some(cx.subscribe(
-            &repo,
-            |this: &mut Self, _, e: &gitviber_refs::RepoEvent, cx| {
-                if let gitviber_refs::RepoEvent::Changed = e {
-                    let tips = this.tips_now(cx);
-                    if tips != this.tips {
-                        this.read(cx);
+        self._repo = vec![
+            cx.subscribe(
+                &repo,
+                |this: &mut Self, _, e: &gitviber_refs::RepoEvent, cx| {
+                    if let gitviber_refs::RepoEvent::Changed = e {
+                        let tips = this.tips_now(cx);
+                        if tips != this.tips {
+                            this.read(cx);
+                        }
                     }
-                }
-            },
-        ));
+                },
+            ),
+            // The merge button reads the branch and whether a git action runs, which notify alone.
+            cx.observe(&repo, |_, _, cx| cx.notify()),
+        ];
         self.workspace = ws.downgrade();
         self.repo = Some(repo);
         self.read(cx);

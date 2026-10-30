@@ -9,7 +9,7 @@ use gitviber_core::api;
 use gitviber_ui::actions::editor;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::CountBadge;
-use gitviber_ui::workspace::{Panel, PanelContext, ProjectEvent};
+use gitviber_ui::workspace::{Panel, PanelContext, ProjectEvent, WorkspaceEvent};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -95,6 +95,14 @@ impl IssuesPanel {
                 }
             }),
         ];
+        if let Some(ws) = ctx.workspace.upgrade() {
+            // The open tab's row is drawn highlighted.
+            subs.push(cx.subscribe(&ws, |_, _, e: &WorkspaceEvent, cx| {
+                if matches!(e, WorkspaceEvent::TabsChanged) {
+                    cx.notify();
+                }
+            }));
+        }
         if let Some(project) = &ctx.project {
             subs.push(
                 cx.subscribe(project, |this: &mut Self, _, ev: &ProjectEvent, cx| {

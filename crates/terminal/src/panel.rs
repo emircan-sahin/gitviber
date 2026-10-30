@@ -208,7 +208,7 @@ pub struct TerminalPanel {
 
 struct Bound {
     workspace: WeakEntity<Workspace>,
-    _project: Option<Subscription>,
+    _project: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -510,6 +510,8 @@ impl TerminalPanel {
             cx.observe_global::<AppTheme>(|this, cx| this.sync_look(cx)),
             // A worktree's color picked: its tabs take it.
             cx.observe_global::<gitviber_refs::store::Saved>(|_, cx| cx.notify()),
+            // Recent projects fill the new-terminal menu.
+            cx.observe_global::<gitviber_ui::UiState>(|_, cx| cx.notify()),
         ];
         let mut open = false;
         if let Some(ws) = ctx.workspace.upgrade() {
@@ -547,7 +549,9 @@ impl TerminalPanel {
             this.save_at_quit(cx);
             async {}
         }));
-        let project = project.as_ref().map(|p| this.watch(p, window, cx));
+        let project = project
+            .as_ref()
+            .map_or_else(Vec::new, |p| this.watch(p, window, cx));
         this.bound = Some(Bound {
             workspace: ctx.workspace.clone(),
             _project: project,
@@ -571,20 +575,29 @@ impl TerminalPanel {
         project: &Entity<Project>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Subscription {
-        cx.subscribe_in(
-            project,
-            window,
-            |this, project, event: &ProjectEvent, window, cx| match event {
-                ProjectEvent::Switched { to, .. } => this.set_worktree(to.clone(), window, cx),
-                ProjectEvent::Opened => {
-                    let root = project.read(cx).root().to_path_buf();
-                    this.set_worktree(root, window, cx);
-                }
-                ProjectEvent::RepoChanged(_) => this.update_links(cx),
-                _ => {}
-            },
-        )
+    ) -> Vec<Subscription> {
+        let repo = gitviber_refs::RepoState::get(project, cx);
+        vec![
+            cx.subscribe_in(
+                project,
+                window,
+                |this, project, event: &ProjectEvent, window, cx| match event {
+                    ProjectEvent::Switched { to, .. } => this.set_worktree(to.clone(), window, cx),
+                    ProjectEvent::Opened => {
+                        let root = project.read(cx).root().to_path_buf();
+                        this.set_worktree(root, window, cx);
+                    }
+                    ProjectEvent::RepoChanged(_) => this.update_links(cx),
+                    _ => {}
+                },
+            ),
+            // The repo's worktrees land after RepoChanged; tab labels, colors and the
+            // worktree menu are drawn from them.
+            cx.observe(&repo, |this, _, cx| {
+                this.update_links(cx);
+                cx.notify();
+            }),
+        ]
     }
 
     fn on_workspace(
@@ -605,7 +618,9 @@ impl TerminalPanel {
                         self.leave_home(home, open, window, cx);
                     }
                 }
-                let sub = project.as_ref().map(|p| self.watch(p, window, cx));
+                let sub = project
+                    .as_ref()
+                    .map_or_else(Vec::new, |p| self.watch(p, window, cx));
                 if let Some(b) = self.bound.as_mut() {
                     b._project = sub;
                 }

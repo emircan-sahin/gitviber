@@ -78,6 +78,7 @@ pub struct OriginalPane {
     syncing: bool,
     task: Option<Task<()>>,
     _list: Option<gpui_kit::Subscription>,
+    _repo: gpui_kit::Subscription,
     _live: Live,
 }
 
@@ -92,6 +93,8 @@ impl OriginalPane {
             .try_global::<Fetched>()
             .and_then(|f| f.0.get(&fork.original))
             .is_none_or(|at| at.elapsed() > REFETCH_AFTER);
+        // The merge button reads the branch and whether a git action runs.
+        let _repo = cx.observe(&repo, |_, _, cx| cx.notify());
         let mut pane = OriginalPane {
             repo,
             workspace,
@@ -104,6 +107,7 @@ impl OriginalPane {
             syncing: false,
             task: None,
             _list: None,
+            _repo,
             _live: Live::new("OriginalPane"),
         };
         pane.load(stale, cx);
