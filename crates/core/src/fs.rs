@@ -338,15 +338,20 @@ pub fn create_dir(root: &Path, rel: &str) -> Result<(), String> {
 pub fn rename_entry(root: &Path, from: &str, to: &str) -> Result<(), String> {
     let (src, dst) = (resolve_entry(root, from)?, resolve_entry(root, to)?);
     src.symlink_metadata().map_err(|e| e.to_string())?;
+    // git ignores case here too: renamed on disk alone, the index (and every commit after)
+    // would keep the old name (`git mv` refuses a folder's case-only rename).
+    let case_only = from != to && from.to_lowercase() == to.to_lowercase();
+    // Run again after the index step failed (index.lock): the disk already has the new name.
+    if case_only && listed(&dst) && !listed(&src) {
+        return rename_in_index(root, from, to);
+    }
     // On APFS a case-only rename finds the source itself at the destination.
     if dst.symlink_metadata().is_ok() {
         if !same_entry(&src, &dst) {
             return Err(format!("{to} already exists"));
         }
         std::fs::rename(src, dst).map_err(|e| e.to_string())?;
-        // git ignores case here too: renamed on disk alone, the index (and every commit after)
-        // would keep the old name (`git mv` refuses a folder's case-only rename).
-        if from != to && from.to_lowercase() == to.to_lowercase() {
+        if case_only {
             return rename_in_index(root, from, to);
         }
         return Ok(());
@@ -389,12 +394,16 @@ fn same_entry(src: &Path, dst: &Path) -> bool {
         (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
         _ => false,
     };
-    let (Some(parent), Some(name)) = (dst.parent(), dst.file_name()) else {
+    same_inode && !listed(dst)
+}
+
+/// Its folder lists an entry with exactly `path`'s name, letter case and all.
+fn listed(path: &Path) -> bool {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
         return false;
     };
-    same_inode
-        && std::fs::read_dir(parent)
-            .is_ok_and(|mut entries| !entries.any(|e| e.is_ok_and(|e| e.file_name() == name)))
+    std::fs::read_dir(parent)
+        .is_ok_and(|mut entries| entries.any(|e| e.is_ok_and(|e| e.file_name() == name)))
 }
 
 #[cfg(not(unix))]
