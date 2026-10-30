@@ -2,11 +2,13 @@
 //! side and bottom panels, top bar and status bar items, quick open's source.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui_kit::{AnyElement, App, Entity, Global, SharedString, WeakEntity, Window};
 
 use super::item::{Panel, PanelHandle};
 use super::{Project, Workspace};
+use crate::fuzzy::Candidates;
 
 /// Where a panel lives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -124,21 +126,17 @@ impl BarItem {
     }
 }
 
-/// One row of quick open (⌘P).
+/// Quick open's files (⌘P) for a project: paths relative to it, shared as read, so opening the
+/// palette copies nothing.
 #[derive(Clone)]
-pub struct QuickItem {
-    /// Matched and shown: a path relative to the project for files.
-    pub label: SharedString,
-    pub detail: Option<SharedString>,
-    /// The label is a file path: its icon shows, and matching prefers its name.
-    pub is_path: bool,
-    pub run: RunItem,
+pub struct QuickOpen {
+    pub files: Arc<Candidates>,
+    /// Opens one of `files`.
+    pub open: Rc<dyn Fn(&str, &mut Window, &mut App)>,
 }
 
-pub type RunItem = Rc<dyn Fn(&mut Window, &mut App)>;
-
-/// Quick open's rows for a project: all of them; the palette matches and ranks.
-pub type QuickOpenSource = Rc<dyn Fn(&PanelContext, &mut App) -> Vec<QuickItem>>;
+/// Quick open's files for a project: all of them; the palette matches and ranks.
+pub type QuickOpenSource = Rc<dyn Fn(&PanelContext, &mut App) -> QuickOpen>;
 
 #[derive(Default)]
 pub struct Registry {

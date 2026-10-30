@@ -27,6 +27,8 @@ pub(crate) struct CommandOptions {
     /// GitViber: the current row's background and text, and every item row's frame.
     pub(crate) selected_colors: Option<(Hsla, Hsla)>,
     pub(crate) row_style: StyleRefinement,
+    /// GitViber: every item row is one height, and every heading another.
+    pub(crate) uniform_rows: bool,
 }
 
 impl Default for CommandOptions {
@@ -42,6 +44,7 @@ impl Default for CommandOptions {
             footer: None,
             selected_colors: None,
             row_style: StyleRefinement::default(),
+            uniform_rows: false,
         }
     }
 }
@@ -235,6 +238,14 @@ impl Command {
     /// with it, so the list keeps its height right.
     pub fn row_style(mut self, style: StyleRefinement) -> Self {
         self.options.row_style = style;
+        self
+    }
+
+    /// GitViber: every item row is one height and every heading another, whatever the list's
+    /// width (single-line rows). The list then lays out one of each to size itself, not every
+    /// row on each query.
+    pub fn uniform_rows(mut self, uniform: bool) -> Self {
+        self.options.uniform_rows = uniform;
         self
     }
 

@@ -73,5 +73,14 @@ size table once beats setting a size at ~360 call sites.
   `highlighter/highlighter.rs`: the main query's capture names are made into `SharedString`s
   once instead of a `String` per capture.
 
+- Sizing the palette's list (`command/command.rs`, `command/state.rs`): upstream lays out every
+  row with `layout_as_root` to size the virtual list, on each query, and once more on the frame
+  after opening, when the list's width arrives. `Command::uniform_rows(true)` says every item
+  row is one height and every heading another (single-line rows): `measure_rows` lays out the
+  first item and the first heading, at max-content width, and gives every row of that kind
+  their height; a width change no longer measures again (a rem change still does), and a
+  changed keybinding hint doesn't either. Quick open over 20k files (debug build, no window):
+  opening 120 ms → 22 ms, a key 145-220 ms → 40-85 ms, the rest being matching.
+
 Untouched on purpose: icon sizes, tabs, toggles, lists' row padding, the switch's own sizes
 (28×16 at Small is the old app's).

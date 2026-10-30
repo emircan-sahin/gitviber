@@ -152,7 +152,7 @@ pub fn commit_menu(
     let ref_menu = l.options.ref_menu;
     let filter_author = l.options.filter_author && !c.author.is_empty();
     let graph_badges: Vec<_> = if ref_menu {
-        group_refs(&c.refs, &l.remotes(cx), l.options.show_refs.as_ref())
+        group_refs(&c.refs, &l.remotes(), l.options.show_refs.as_ref())
             .into_iter()
             .filter(|b| !b.refs.is_empty())
             .collect()

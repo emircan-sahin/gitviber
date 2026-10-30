@@ -32,9 +32,9 @@ use gpui_kit::{
 pub use item::{Panel, PanelHandle, SaveDone, Tab, TabHandle, TabIcon, TabItem, save_signal};
 pub use project::{Project, ProjectEvent, RepoState};
 pub use registry::{
-    BarItem, BarSlot, PanelContext, PanelSpec, QuickItem, QuickOpenSource, Registry, RenderBarItem,
-    RunItem, Slot, register_bar_item, register_bar_item_default, register_panel,
-    register_panel_default, register_quick_open,
+    BarItem, BarSlot, PanelContext, PanelSpec, QuickOpen, QuickOpenSource, Registry, RenderBarItem,
+    Slot, register_bar_item, register_bar_item_default, register_panel, register_panel_default,
+    register_quick_open,
 };
 pub use selection::{
     ChangeList, ChangesOf, ComparePoint, GuideOf, Opener, PullRange, Selection, opener, page_host,

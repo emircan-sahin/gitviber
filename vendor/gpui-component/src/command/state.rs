@@ -175,6 +175,7 @@ impl CommandState {
     pub(crate) fn set_options(&mut self, options: CommandOptions) {
         if self.options.style.text != options.style.text
             || self.options.row_style != options.row_style
+            || self.options.uniform_rows != options.uniform_rows
         {
             self.needs_measure = true;
         }
@@ -507,8 +508,18 @@ impl CommandState {
             return;
         }
 
+        // GitViber: uniform rows don't depend on the width, and the first frame's measure
+        // already used this rem: only a later rem change measures again, so opening
+        // takes no second frame.
+        let remeasure = !self.options.uniform_rows
+            || self
+                .list_measurement_key
+                .as_ref()
+                .is_some_and(|key| key.rem_size != measurement_key.rem_size);
         self.list_measurement_key = Some(measurement_key);
-        self.measure_on_next_frame(window, cx);
+        if remeasure {
+            self.measure_on_next_frame(window, cx);
+        }
     }
 
     /// Measure the rows again on the next frame. Called while the list is
@@ -643,24 +654,34 @@ impl CommandState {
     /// Measure each row before passing the sizes to the virtual list. Custom
     /// item elements can have independent intrinsic heights.
     fn measure_rows(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let available = size(
-            self.list_measurement_key
-                .as_ref()
-                .map_or(AvailableSpace::MinContent, |key| {
-                    AvailableSpace::Definite(key.content_width)
-                }),
-            AvailableSpace::MinContent,
-        );
+        // GitViber: uniform rows are single-line; at their natural width a heading doesn't
+        // wrap before the list's width is known.
+        let width = match &self.list_measurement_key {
+            _ if self.options.uniform_rows => AvailableSpace::MaxContent,
+            Some(key) => AvailableSpace::Definite(key.content_width),
+            None => AvailableSpace::MinContent,
+        };
+        let available = size(width, AvailableSpace::MinContent);
         let mut text_style = StyleRefinement::default();
         text_style.text = self.options.style.text.clone();
         let mut bindings = vec![None; self.matched.len()];
+        // GitViber: with uniform rows, the first item and the first heading stand for all.
+        let (mut item_height, mut heading_height) = (None, None);
 
         let row_sizes = self
             .rows
             .iter()
             .enumerate()
             .map(|(row_ix, row)| {
-                let row = match row {
+                let known = match row {
+                    CommandRow::Item(_) => item_height,
+                    CommandRow::Heading(_) => heading_height,
+                    CommandRow::Separator => None,
+                };
+                if let Some(height) = known {
+                    return size(px(0.), height);
+                }
+                let row_element = match row {
                     CommandRow::Separator => return size(px(0.), px(SEPARATOR_ROW_HEIGHT)),
                     CommandRow::Heading(_) => self.render_row(row_ix, window, cx),
                     CommandRow::Item(matched_ix) => {
@@ -671,9 +692,15 @@ impl CommandState {
                 };
                 let row_size = div()
                     .refine_style(&text_style)
-                    .child(row)
+                    .child(row_element)
                     .into_any_element()
                     .layout_as_root(available, window, cx);
+                if self.options.uniform_rows {
+                    match row {
+                        CommandRow::Item(_) => item_height = Some(row_size.height),
+                        _ => heading_height = Some(row_size.height),
+                    }
+                }
                 size(px(0.), row_size.height)
             })
             .collect::<Vec<_>>();
@@ -787,7 +814,10 @@ impl CommandState {
             .measured_bindings
             .get(matched_ix)
             .and_then(Option::as_ref);
-        if !self.needs_measure && measured != binding.as_ref().map(Kbd::keystroke) {
+        if !self.needs_measure
+            && !self.options.uniform_rows
+            && measured != binding.as_ref().map(Kbd::keystroke)
+        {
             self.measure_on_next_frame(window, cx);
         }
 

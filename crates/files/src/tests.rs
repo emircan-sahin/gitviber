@@ -325,8 +325,10 @@ fn explorer_lists_creates_and_renames_and_quick_open_lists_files(cx: &mut TestAp
             .quick_open()
             .unwrap();
         source(&ctx, cx)
-            .into_iter()
-            .map(|q| q.label.to_string())
+            .files
+            .texts()
+            .iter()
+            .map(|f| f.to_string())
             .collect()
     });
     assert!(files.contains(&"src/big.rs".to_string()), "{files:?}");
@@ -388,8 +390,10 @@ fn quick_open(
             .quick_open()
             .unwrap();
         let files = source(&ctx, cx)
-            .into_iter()
-            .map(|q| q.label.to_string())
+            .files
+            .texts()
+            .iter()
+            .map(|f| f.to_string())
             .collect();
         (files, crate::quick_open::status(&ctx, cx))
     })
