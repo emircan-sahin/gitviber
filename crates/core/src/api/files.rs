@@ -189,8 +189,9 @@ pub fn create_dir(core: &Core, path: String) -> Res<()> {
     core.in_repo(move |r| fs::create_dir(r, &path))
 }
 
+/// Holds the index: a case-only rename of a tracked file renames it there too.
 pub fn rename_path(core: &Core, from: String, to: String) -> Res<()> {
-    core.in_repo(move |r| fs::rename_entry(r, &from, &to))
+    core.indexed(move |r| fs::rename_entry(r, &from, &to))
 }
 
 pub fn trash_path(core: &Core, path: String) -> Res<()> {
