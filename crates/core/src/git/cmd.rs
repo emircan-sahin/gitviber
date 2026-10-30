@@ -70,6 +70,38 @@ pub(crate) fn command(repo: &Path, args: &[&str]) -> Command {
     cmd
 }
 
+/// `command` for reading a project's files: a folder outside any repository (a plain project)
+/// is read as the work tree of an empty repository of the app's own, so listing, search and
+/// .gitignore work there as in a repository with nothing committed. Nothing is written to it.
+pub(crate) fn files_command(root: &Path, args: &[&str]) -> Command {
+    let mut cmd = command(root, args);
+    if outside_repo(root) {
+        if let Some(empty) = empty_repo() {
+            cmd.env("GIT_DIR", empty).env("GIT_WORK_TREE", root);
+        }
+    }
+    cmd
+}
+
+/// `root` is a folder in no repository (a plain project). A repository's root answers from its
+/// `.git` alone, without running git.
+pub fn outside_repo(root: &Path) -> bool {
+    !root.join(".git").exists() && toplevel(root).is_err_and(|e| e == NOT_A_REPO)
+}
+
+/// The empty bare repository `files_command` reads plain folders through, made on first use
+/// (again if a cleaner took it).
+fn empty_repo() -> Option<std::path::PathBuf> {
+    let dir = crate::paths::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("empty.git");
+    if !dir.join("HEAD").is_file() {
+        std::fs::create_dir_all(&dir).ok()?;
+        run(&dir, &["init", "--bare", "-q"]).ok()?;
+    }
+    Some(dir)
+}
+
 /// Generous: a cold cache on a big repo is slow. But one wedged read (fsmonitor, a network
 /// volume) used to leave the window's refresh waiting, and showing old state, for good.
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
@@ -143,6 +175,17 @@ pub(crate) fn run_network(repo: &Path, args: &[&str], net: &Net) -> Result<Vec<u
 
 pub fn run(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     run_with(repo, args, &[], None)
+}
+
+/// `run` through `files_command`: a plain folder's files too.
+pub(crate) fn run_files(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    exec(
+        files_command(root, args),
+        &format!("git {}", args.first().unwrap_or(&"")),
+        &[],
+        None,
+        read_timeout(),
+    )
 }
 
 pub(crate) fn run_text(repo: &Path, args: &[&str]) -> Result<String, String> {

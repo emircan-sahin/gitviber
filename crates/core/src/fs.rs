@@ -158,7 +158,7 @@ pub fn list_files(root: &Path) -> Result<Vec<String>, String> {
         "--exclude-standard",
         "--deduplicate",
     ];
-    let out = git::run(root, &args)?;
+    let out = git::run_files(root, &args)?;
     Ok(out
         .split(|&b| b == 0)
         .filter(|p| !p.is_empty())
@@ -180,7 +180,7 @@ pub fn list_ignored(root: &Path) -> Result<Vec<Entry>, String> {
         "--untracked-files=normal",
         "--ignore-submodules=all",
     ];
-    let out = git::run(root, &args)?;
+    let out = git::run_files(root, &args)?;
     let real_root = root.canonicalize().map_err(|e| e.to_string())?;
     let mut fields = out.split(|&b| b == 0);
     let mut entries = vec![];

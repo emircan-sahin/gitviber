@@ -1,9 +1,9 @@
 //! The working tree's status: changed files, line counts, nested repos, the operation under way.
 
 use super::{
-    both, command, git_dirs, is_binary, operation_in, publish_config_in, publish_remote_among,
-    push_target_as, read_regular, remote_urls, run, run_text, worktrees, ConfigList, GitDirs,
-    PushTarget, MAX_TEXT_BYTES, PREPARED,
+    both, command, files_command, git_dirs, is_binary, operation_in, publish_config_in,
+    publish_remote_among, push_target_as, read_regular, remote_urls, run, run_text, worktrees,
+    ConfigList, GitDirs, PushTarget, MAX_TEXT_BYTES, PREPARED,
 };
 use crate::process::exec;
 use serde::Serialize;
@@ -509,7 +509,7 @@ pub fn ignored(repo: &Path, paths: &[String]) -> Vec<String> {
     let input = paths.join("\0");
     // Exit code 1 just means "nothing ignored". These paths come from our own directory
     // listing, and literal pathspecs would break the trailing "/" that marks directories.
-    let mut cmd = command(repo, &["check-ignore", "-z", "--stdin"]);
+    let mut cmd = files_command(repo, &["check-ignore", "-z", "--stdin"]);
     cmd.env("GIT_LITERAL_PATHSPECS", "0");
     exec(cmd, "git check-ignore", &[1], Some(input.as_bytes()), None)
         .map(|raw| {

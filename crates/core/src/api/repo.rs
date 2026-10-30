@@ -8,15 +8,30 @@ pub struct OpenedRepo {
     pub root: String,
     /// The main worktree; the projects list is keyed by it, so agent worktrees don't pile up there.
     pub main: String,
+    /// False for a folder outside any repository: it opens as a plain project (files, terminals,
+    /// agents), and git's views offer `git init`.
+    pub git: bool,
 }
 
+/// Opens the repository `path` is in, or `path` itself as a plain folder when it's in none.
 pub fn open_repo(core: &Core, path: String) -> Res<OpenedRepo> {
-    let root = git::toplevel(&PathBuf::from(path))?;
+    let path = PathBuf::from(path);
+    let (root, git) = match git::toplevel(&path) {
+        Ok(top) => (top, true),
+        Err(e) if e == git::NOT_A_REPO => {
+            let folder = path.canonicalize().map_err(|e| e.to_string())?;
+            (folder.to_string_lossy().into_owned(), false)
+        }
+        Err(e) => return Err(e),
+    };
     let root_path = PathBuf::from(&root);
     // A new watcher even for the open repo: one deleted and made again at its path left the old
     // one watching nothing (inotify). It comes up on a thread of its own, while this goes on.
     let watcher = watch::start(core.events(), root_path.clone());
-    let main = git::main_worktree(Path::new(&root)).unwrap_or_else(|| root.clone());
+    let main = git
+        .then(|| git::main_worktree(Path::new(&root)))
+        .flatten()
+        .unwrap_or_else(|| root.clone());
     *core.watcher.lock().unwrap_or_else(|e| e.into_inner()) = Some(watcher);
     // gh's active account until the page sends this project's own (gh_use_account): one
     // project's pick never carries into the next. Before the repo switches, so none goes out as both.
@@ -31,7 +46,7 @@ pub fn open_repo(core: &Core, path: String) -> Res<OpenedRepo> {
     if let Some(w) = &*core.watcher.lock().unwrap_or_else(|e| e.into_inner()) {
         w.opened();
     }
-    Ok(OpenedRepo { root, main })
+    Ok(OpenedRepo { root, main, git })
 }
 
 /// Starts the watcher of the repo at `root` again, after Event::RepoWatchFailed. Once it's up,
@@ -180,9 +195,13 @@ pub fn folder_branch(_core: &Core, path: String) -> Res<Option<String>> {
 }
 
 /// Reveals a saved project, open or not. reveal_path is confined to the open repo; this only
-/// takes the top folder of a git worktree, so the page can't point Finder anywhere else.
+/// takes the top folder of a git worktree, or a folder outside any repository (a plain
+/// project), so the page can't point Finder into one's subfolders.
 pub fn reveal_project(_core: &Core, path: String) -> Res<()> {
-    let top = git::toplevel(Path::new(&path))?;
+    let top = match git::toplevel(Path::new(&path)) {
+        Err(e) if e == git::NOT_A_REPO => path.clone(),
+        top => top?,
+    };
     if Path::new(&top) != Path::new(&path) {
         return Err(format!("not a project folder: {path}"));
     }
@@ -237,6 +256,78 @@ mod close_tests {
         close_repo(&core).unwrap();
         assert!(core.repo().is_err());
         assert!(core.watcher.lock().unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod folder_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// A folder outside any repository opens as itself, without git; once `git init` ran there,
+    /// opening it again finds the repository.
+    #[test]
+    fn a_plain_folder_opens_and_becomes_a_repo_after_init() {
+        let dir = std::env::temp_dir().join(format!("gitviber-plain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let core = Core::new(Arc::new(|_| {}));
+        let _held = watch::held::hold(&dir);
+        if git::toplevel(&dir).is_ok() {
+            // The temp dir sits in a repository here: nothing to check.
+            return;
+        }
+        let opened = open_repo(&core, dir.to_string_lossy().into_owned()).unwrap();
+        assert!(!opened.git);
+        assert_eq!(Path::new(&opened.root), dir);
+        assert_eq!(opened.main, opened.root);
+        assert_eq!(
+            core.repo().unwrap(),
+            dir,
+            "files and terminals have their folder"
+        );
+
+        // Its files list, search and diff as a repository's would, .gitignore kept.
+        std::fs::write(dir.join(".gitignore"), "build/\n").unwrap();
+        std::fs::write(dir.join("sub/notes.txt"), "a plain idea\n").unwrap();
+        std::fs::create_dir_all(dir.join("build")).unwrap();
+        std::fs::write(dir.join("build/out.txt"), "a plain idea\n").unwrap();
+        let mut files = crate::api::files::list_files(&core).unwrap();
+        files.sort();
+        assert_eq!(files, [".gitignore", "sub/notes.txt"]);
+        let ignored = crate::api::files::list_ignored(&core).unwrap();
+        assert_eq!(
+            ignored.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(),
+            ["build"]
+        );
+        let query = crate::grep::Query {
+            text: "plain idea".into(),
+            ..Default::default()
+        };
+        let found = crate::api::files::search_files(&core, query).unwrap();
+        let hits: Vec<&str> = found.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(hits, ["sub/notes.txt"]);
+        let pair = crate::api::files::diff_pair(
+            &core,
+            "worktree".into(),
+            "sub/notes.txt".into(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(pair.modified.text.contains("plain idea"));
+        assert!(pair.rows.iter().all(|r| r.k == 0), "no line shows as added");
+
+        init_repo(&core, dir.to_string_lossy().into_owned()).unwrap();
+        let _held_again = watch::held::hold(&dir);
+        let opened = open_repo(&core, dir.to_string_lossy().into_owned()).unwrap();
+        assert!(opened.git);
+        assert_eq!(Path::new(&opened.root), dir);
+        close_repo(&core).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
