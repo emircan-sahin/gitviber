@@ -1,20 +1,26 @@
 use crate::journal::{Action, Mode};
 use crate::state::{Core, Res};
-use crate::{git, Event};
+use crate::{git, network, Event};
 use std::collections::HashMap;
 
 pub fn worktrees(core: &Core) -> Res<Vec<git::Worktree>> {
     core.read_repo(move |r| git::worktrees(r).map(git::with_live_locks))
 }
 
+/// `op`: a Git LFS repository downloads the branch's files first, with progress and Cancel.
 pub fn add_worktree(
     core: &Core,
     branch: String,
     base: Option<String>,
     track: bool,
     dir: Option<String>,
+    op: String,
+    progress: impl Fn(network::Progress) + Send + Sync + 'static,
 ) -> Res<String> {
-    core.in_repo(move |r| git::add_worktree(r, &branch, base.as_deref(), track, dir.as_deref()))
+    let net = core.watch_network(op, progress);
+    core.in_repo(move |r| {
+        git::add_worktree_with(r, &branch, base.as_deref(), track, dir.as_deref(), &net)
+    })
 }
 
 /// What handing `branch` back to the main folder would change, or why it can't be done.

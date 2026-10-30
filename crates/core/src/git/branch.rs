@@ -539,13 +539,43 @@ pub fn delete_remote_branch(repo: &Path, name: &str, net: &Net) -> Result<(), St
 }
 
 pub fn switch_branch(repo: &Path, name: &str, create: bool) -> Result<(), String> {
+    switch_branch_with(repo, name, create, &Net::default())
+}
+
+/// `switch_branch` with its Git LFS download watched by `net` (progress, Cancel until the
+/// checkout starts).
+pub fn switch_branch_with(repo: &Path, name: &str, create: bool, net: &Net) -> Result<(), String> {
     validate_branch(repo, name)?;
-    let args: Vec<&str> = if create {
-        vec!["switch", "-c", name]
-    } else {
-        vec!["switch", name]
-    };
-    run(repo, &args).map(|_| ())
+    if create {
+        return run(repo, &["switch", "-c", name]).map(|_| ());
+    }
+    if let Some(tip) = branch_tip(repo, name) {
+        crate::lfs::prefetch(repo, &tip, net)?;
+    }
+    net.updating_files();
+    run(repo, &["switch", name]).map(|_| ())
+}
+
+/// The full ref `git switch name` or `git worktree add <dir> name` checks out: the local branch,
+/// else the one remote branch of that name it would track.
+pub(crate) fn branch_tip(repo: &Path, name: &str) -> Option<String> {
+    let local = format!("refs/heads/{name}");
+    if run(repo, &["rev-parse", "--verify", "--quiet", &local]).is_ok() {
+        return Some(local);
+    }
+    let out = run_text(
+        repo,
+        &["for-each-ref", "--format=%(refname)", "refs/remotes/"],
+    )
+    .ok()?;
+    let mut found = out.lines().filter(|r| {
+        r.strip_suffix(name)
+            .is_some_and(|rest| rest.ends_with('/') && rest.matches('/').count() == 3)
+    });
+    match (found.next(), found.next()) {
+        (Some(one), None) => Some(one.to_string()),
+        _ => None,
+    }
 }
 
 /// Past this many the count reads "100+": the walk stops there.

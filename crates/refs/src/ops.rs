@@ -645,7 +645,9 @@ pub fn switch_branch(state: &Entity<RepoState>, name: String, window: &mut Windo
 
 fn switch_now(state: &Entity<RepoState>, name: String, window: &mut Window, cx: &mut App) {
     let again = name.clone();
+    // .net(): a Git LFS repository downloads the branch's files first.
     let action = GitAction::new("Switch branch")
+        .net()
         .done(switched(state, &name, cx))
         .on_error(switching(state, name.clone(), move |s, w, cx| {
             switch_branch(s, again.clone(), w, cx)
@@ -653,7 +655,15 @@ fn switch_now(state: &Entity<RepoState>, name: String, window: &mut Window, cx: 
     go(
         state,
         action,
-        move |core, _| plain(api::branches::switch_branch(core, name, false)),
+        move |core, op| {
+            plain(api::branches::switch_branch(
+                core,
+                name,
+                false,
+                op.id.clone(),
+                op.progress(),
+            ))
+        },
         window,
         cx,
     );
@@ -669,7 +679,15 @@ pub fn create_branch_here(
     go(
         state,
         action,
-        move |core, _| plain(api::branches::switch_branch(core, name, true)),
+        move |core, op| {
+            plain(api::branches::switch_branch(
+                core,
+                name,
+                true,
+                op.id.clone(),
+                op.progress(),
+            ))
+        },
         window,
         cx,
     );
@@ -687,6 +705,7 @@ fn detach_now(state: &Entity<RepoState>, b: Branch, window: &mut Window, cx: &mu
     let root = folder_name(&state.read(cx).root().to_string_lossy()).to_string();
     let again = b.clone();
     let action = GitAction::new("Check out")
+        .net()
         .done(format!("Checked out {} in {root}, detached", b.name))
         .detail("No branch is moved: commits made here belong to no branch until you create one.")
         .on_error(switching(state, b.name.clone(), move |s, w, cx| {
@@ -695,7 +714,14 @@ fn detach_now(state: &Entity<RepoState>, b: Branch, window: &mut Window, cx: &mu
     go(
         state,
         action,
-        move |core, _| plain(api::history::checkout_commit(core, b.sha)),
+        move |core, op| {
+            plain(api::history::checkout_commit(
+                core,
+                b.sha,
+                op.id.clone(),
+                op.progress(),
+            ))
+        },
         window,
         cx,
     );
@@ -968,14 +994,17 @@ pub fn branch_terminal(state: &Entity<RepoState>, name: String, window: &mut Win
         with(&weak, w, cx, |s, w, cx| {
             let action = GitAction::new("Create worktree")
                 .untracked()
+                .net()
                 .done(format!("{name} checked out in {where_}"));
             let made = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
             let slot = made.clone();
             let rx = run(
                 s,
                 action,
-                move |core, _| {
-                    let path = api::worktrees::add_worktree(core, name, None, false, dir)?;
+                move |core, op| {
+                    let (id, progress) = (op.id.clone(), op.progress());
+                    let path =
+                        api::worktrees::add_worktree(core, name, None, false, dir, id, progress)?;
                     *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
                     Ok(false)
                 },

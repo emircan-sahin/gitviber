@@ -72,12 +72,16 @@ impl Reflog {
         let Some((sha, _)) = self.entry(i) else {
             return;
         };
-        let a =
-            GitAction::new("Checkout").done(format!("Checked out {}", &sha[..7.min(sha.len())]));
+        let a = GitAction::new("Checkout")
+            .net()
+            .done(format!("Checked out {}", &sha[..7.min(sha.len())]));
         let done = self.repo.update(cx, |r, cx| {
             r.run(
                 a,
-                move |core, _| plain(api::history::checkout_commit(core, sha)),
+                move |core, op| {
+                    let (id, progress) = (op.id.clone(), op.progress());
+                    plain(api::history::checkout_commit(core, sha, id, progress))
+                },
                 window,
                 cx,
             )

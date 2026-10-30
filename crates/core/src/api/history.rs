@@ -1,6 +1,6 @@
 use crate::journal::{Action, Mode};
 use crate::state::{short, Core, Res};
-use crate::{fs, git, rewrite};
+use crate::{fs, git, network, rewrite};
 use std::path::Path;
 
 pub fn log(
@@ -230,10 +230,17 @@ pub fn cherry_pick_into(core: &Core, path: String, sha: String) -> Res<bool> {
     })
 }
 
-pub fn checkout_commit(core: &Core, sha: String) -> Res<()> {
+/// `op`: a Git LFS repository downloads the commit's files first, with progress and Cancel.
+pub fn checkout_commit(
+    core: &Core,
+    sha: String,
+    op: String,
+    progress: impl Fn(network::Progress) + Send + Sync + 'static,
+) -> Res<()> {
     let label = format!("Check out {}", short(&sha));
+    let net = core.watch_network(op, progress);
     core.journaled(Action::new(label, Mode::Keep), move |r| {
-        git::checkout_commit(r, &sha)
+        git::checkout_commit_with(r, &sha, &net)
     })
 }
 

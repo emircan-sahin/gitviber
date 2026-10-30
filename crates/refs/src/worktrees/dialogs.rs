@@ -351,9 +351,14 @@ impl NewWorktree {
         cx.notify();
         let rx = self.state.update(cx, |s, cx| {
             s.run(
-                GitAction::new("Create worktree").untracked().done(done),
-                move |core, _| {
-                    let path = api::worktrees::add_worktree(core, n, base, track, where_)?;
+                GitAction::new("Create worktree")
+                    .untracked()
+                    .net()
+                    .done(done),
+                move |core, op| {
+                    let (id, progress) = (op.id.clone(), op.progress());
+                    let path =
+                        api::worktrees::add_worktree(core, n, base, track, where_, id, progress)?;
                     *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
                     Ok(false)
                 },

@@ -605,3 +605,49 @@ fn submodules_listed_and_set_up() {
     submodule_update(&r, &Net::default()).unwrap();
     assert_eq!(submodules(&r).unwrap()[0].state, "ok");
 }
+
+/// A switch or a new worktree downloads the Git LFS files first, as a fetch the page shows and
+/// can stop; the checkout then finds them on disk.
+#[test]
+fn lfs_files_download_before_a_checkout() {
+    let sb = Sandbox::new("lfs-prefetch");
+    let c = sb.remote_with_clones(2);
+    let (a, b) = (&c[0], &c[1]);
+    if run(a, &["lfs", "install", "--local"]).is_err() {
+        eprintln!("git-lfs is not installed; skipping");
+        return;
+    }
+    run(b, &["lfs", "install", "--local"]).unwrap();
+    switch_branch(a, "art", true).unwrap();
+    let attrs = "*.psd filter=lfs diff=lfs merge=lfs -text\n";
+    write_commit(a, ".gitattributes", attrs, "lfs");
+    write_commit(a, "cover.psd", "layered cover art", "cover");
+    run(a, &["push", "-q", "-u", "origin", "art"]).unwrap();
+    run(b, &["fetch", "-q"]).unwrap();
+
+    let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let running = crate::network::Running::default();
+    let net = running.start("switch".into(), move |p| log.lock().unwrap().push(p));
+    switch_branch_with(b, "art", false, &net).unwrap();
+    assert_eq!(
+        fs::read_to_string(b.join("cover.psd")).unwrap(),
+        "layered cover art"
+    );
+    let seen = seen.lock().unwrap();
+    assert!(
+        seen.iter()
+            .any(|p| p.phase == "Downloading LFS objects" && p.cancellable),
+        "{seen:?}"
+    );
+    assert!(seen.last().is_some_and(|p| !p.cancellable), "{seen:?}");
+
+    // A new worktree on a branch only the remote has: its files come down the same way.
+    let fresh = sb.clone_of("fresh");
+    run(&fresh, &["lfs", "install", "--local"]).unwrap();
+    let wt = add_worktree_with(&fresh, "art", None, false, None, &Net::default()).unwrap();
+    assert_eq!(
+        fs::read_to_string(Path::new(&wt).join("cover.psd")).unwrap(),
+        "layered cover art"
+    );
+}

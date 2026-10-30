@@ -92,7 +92,9 @@ pub fn commit(repo: &Path, message: &str, opts: &CommitOptions, net: &Net) -> Re
     cmd.env_remove("GIT_LITERAL_PATHSPECS");
     let stash = tip(repo, "refs/stash");
     let head = tip(repo, "HEAD");
-    match network::run_local(cmd, "git commit", net, input) {
+    // ssh-keygen asks for a key's passphrase through SSH_ASKPASS when it has no terminal.
+    let ssh_signing = super::config_value(repo, None, "gpg.format").as_deref() == Some("ssh");
+    match network::run_local(cmd, "git commit", net, input, ssh_signing) {
         Ok(_) => Ok(()),
         // Not a file's change: a hook's own git (lint-staged's stash) writes the reflogs too.
         Err(f) if f.message == CANCELLED && made(repo, head.as_deref(), message, opts.amend) => {
