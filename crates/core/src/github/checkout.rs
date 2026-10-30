@@ -51,7 +51,7 @@ pub fn checkout(
         }
         // Not `git switch <head_ref>`: in a fork, upstream often has a same-named branch and
         // git's guess then refuses ("matched multiple remote tracking branches").
-        net.updating_files();
+        net.updating_files()?;
         return git::run(repo, &["switch", "-c", &local, "--track", &tracked]).map(|_| ());
     }
     let source = format!("refs/pull/{number}/head");

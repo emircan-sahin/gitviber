@@ -552,7 +552,7 @@ pub fn switch_branch_with(repo: &Path, name: &str, create: bool, net: &Net) -> R
     if let Some(tip) = branch_tip(repo, name) {
         crate::lfs::prefetch(repo, &tip, net)?;
     }
-    net.updating_files();
+    net.updating_files()?;
     run(repo, &["switch", name]).map(|_| ())
 }
 

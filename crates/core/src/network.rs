@@ -107,8 +107,8 @@ impl Net {
     }
 
     /// The download before a checkout is done and the checkout begins: Cancel is ignored from
-    /// here, and the page says so.
-    pub fn updating_files(&self) {
+    /// here, and the page says so. Err when it was cancelled before.
+    pub fn updating_files(&self) -> Result<(), String> {
         if self.settle() {
             self.report(Progress {
                 phase: LOCAL_PHASE.into(),
@@ -116,6 +116,10 @@ impl Net {
                 cancellable: false,
             });
         }
+        if self.cancelled() {
+            return Err(CANCELLED.into());
+        }
+        Ok(())
     }
 
     fn report(&self, p: Progress) {

@@ -148,7 +148,7 @@ pub fn add_worktree_with(
     if let Some(tip) = tip {
         crate::lfs::prefetch(repo, &tip, net)?;
     }
-    net.updating_files();
+    net.updating_files()?;
     match base {
         Some(base) => {
             let track = if track { "--track" } else { "--no-track" };

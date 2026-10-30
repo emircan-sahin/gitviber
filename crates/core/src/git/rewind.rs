@@ -222,7 +222,7 @@ pub fn checkout_commit_with(
 ) -> Result<(), String> {
     validate_rev(sha)?;
     crate::lfs::prefetch(repo, sha, net)?;
-    net.updating_files();
+    net.updating_files()?;
     run(repo, &["switch", "--detach", sha]).map(|_| ())
 }
 
