@@ -21,9 +21,9 @@ use gitviber_core::github::{Issue, Label, Pull};
 use gitviber_ui::keymap::scroll;
 use gitviber_ui::workspace::{
     PanelSpec, Project, ProjectEvent, PullRange, Selection, Slot, TabHandle, Toast, Workspace,
-    register_opener, register_panel,
+    WorkspaceEvent, register_opener, register_panel,
 };
-use gpui_kit::{App, AppContext as _, Global, WeakEntity, Window};
+use gpui_kit::{App, AppContext as _, Context, Entity, Global, Subscription, WeakEntity, Window};
 
 pub use issue_view::IssueView;
 pub use issues_panel::IssuesPanel;
@@ -31,8 +31,30 @@ pub use pull_file::PullFileView;
 pub use pull_view::PullView;
 pub use pulls_panel::PullsPanel;
 
-use crate::cache::Cache;
+use crate::cache::{Cache, Wakes};
 use crate::model::{IssueItem, PullItem, PullState};
+
+/// A page redrawn on a wake it hasn't drawn, or when the account changes: that lands without a
+/// wake. The stamp folds in the cache's generation too.
+fn observe_cache<V: 'static>(drawn: fn(&V) -> Wakes, cx: &mut Context<V>) -> Subscription {
+    let mut account = Cache::stamp(cx, &[crate::account::KEY]);
+    cx.observe_global::<Cache>(move |this: &mut V, cx| {
+        let now = Cache::stamp(cx, &[crate::account::KEY]);
+        if Cache::wakes(cx) != drawn(this) || now != account {
+            account = now;
+            cx.notify();
+        }
+    })
+}
+
+/// A panel redrawn when the tabs change: the open tab's row is drawn highlighted.
+fn redraw_on_tabs<V: 'static>(ws: &Entity<Workspace>, cx: &mut Context<V>) -> Subscription {
+    cx.subscribe(ws, |_, _, e: &WorkspaceEvent, cx| {
+        if matches!(e, WorkspaceEvent::TabsChanged) {
+            cx.notify();
+        }
+    })
+}
 
 pub(crate) fn init(cx: &mut App) {
     // A page's scroll keys; a PR's commits list keeps its own ↑/↓, Space and Home/End.
