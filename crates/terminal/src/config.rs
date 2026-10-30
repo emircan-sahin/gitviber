@@ -4,12 +4,13 @@
 use gpui::{App, Hsla, Rgba, SharedString};
 
 /// What ⌥ does in the terminal on macOS (`optionAsMeta`): type characters, or send Meta from the
-/// left ⌥ or either.
+/// left ⌥, the right one or either.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OptionAsMeta {
     #[default]
     Off,
     Left,
+    Right,
     Both,
 }
 

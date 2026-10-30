@@ -126,8 +126,9 @@ string_enum!(UiFont {
 });
 string_enum!(Whitespace { Amount = "amount", All = "all" });
 string_enum!(
-    /// What ⌥ does in the terminal on macOS: type characters, or send Meta from the left ⌥ or either.
-    OptionKey { Off = "off", Left = "left", Both = "both" }
+    /// What ⌥ does in the terminal on macOS: type characters, or send Meta from the left ⌥, the
+    /// right one or either.
+    OptionKey { Off = "off", Left = "left", Right = "right", Both = "both" }
 );
 string_enum!(
     /// A restored terminal an agent was running in: its resume command typed at the prompt, run, or neither.

@@ -222,19 +222,23 @@ impl Focusable for TerminalPane {
     }
 }
 
+/// NX_DEVICELALTKEYMASK, NX_DEVICERALTKEYMASK.
+const LEFT_OPTION: u64 = 0x20;
+const RIGHT_OPTION: u64 = 0x40;
+
 #[cfg(target_os = "macos")]
-fn left_option_down() -> bool {
+fn option_down(side: u64) -> bool {
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
         fn CGEventSourceFlagsState(state: i32) -> u64;
     }
-    // kCGEventSourceStateHIDSystemState; NX_DEVICELALTKEYMASK.
+    // kCGEventSourceStateHIDSystemState.
     // SAFETY: a pure query of the current modifier flags.
-    unsafe { CGEventSourceFlagsState(1) & 0x20 != 0 }
+    unsafe { CGEventSourceFlagsState(1) & side != 0 }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn left_option_down() -> bool {
+fn option_down(_: u64) -> bool {
     false
 }
 
@@ -837,7 +841,8 @@ impl TerminalPane {
         match self.config.option_as_meta {
             OptionAsMeta::Off => false,
             OptionAsMeta::Both => true,
-            OptionAsMeta::Left => left_option_down(),
+            OptionAsMeta::Left => option_down(LEFT_OPTION),
+            OptionAsMeta::Right => option_down(RIGHT_OPTION),
         }
     }
 

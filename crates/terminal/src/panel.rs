@@ -394,6 +394,7 @@ pub fn config_from(s: &Settings, t: &AppTheme) -> TerminalConfig {
         option_as_meta: match s.option_as_meta {
             OptionKey::Off => OptionAsMeta::Off,
             OptionKey::Left => OptionAsMeta::Left,
+            OptionKey::Right => OptionAsMeta::Right,
             OptionKey::Both => OptionAsMeta::Both,
         },
         shell_integration: s.shell_integration,
