@@ -44,7 +44,7 @@ const TRANSFER_PHASES: &[&str] = &[
     "Downloading LFS objects",
 ];
 /// The checkout after a clone or a pull's merge.
-const LOCAL_PHASE: &str = "Updating files";
+pub const LOCAL_PHASE: &str = "Updating files";
 
 /// One `\r`- or `\n`-ended piece of git's stderr under `--progress`, such as
 /// "Receiving objects:  45% (450/1000), 1.20 MiB | 800.00 KiB/s" or the server's
@@ -223,12 +223,6 @@ enum Kind<'a> {
     },
 }
 
-impl Kind<'_> {
-    fn is_network(&self) -> bool {
-        matches!(self, Kind::Network)
-    }
-}
-
 fn supervise(
     mut cmd: Command,
     label: &str,
@@ -280,6 +274,8 @@ fn supervise(
         }
         let out = s.spawn(|| {
             let mut buf = Vec::new();
+            // git-lfs draws its progress on stdout.
+            let mut lines = ProgressLines::default();
             // Where the line being read starts.
             let mut line = 0;
             if let Some(mut r) = stdout {
@@ -287,20 +283,11 @@ fn supervise(
                 while let Ok(n @ 1..) = r.read(&mut chunk) {
                     touch();
                     buf.extend_from_slice(&chunk[..n]);
-                    // git-lfs draws its progress on stdout.
-                    while let Some(i) = kind
-                        .is_network()
+                    while let Some(i) = matches!(kind, Kind::Network)
                         .then(|| buf[line..].iter().position(|b| *b == b'\r' || *b == b'\n'))
                         .flatten()
                     {
-                        if let Some(p) =
-                            parse_progress(&String::from_utf8_lossy(&buf[line..line + i]))
-                        {
-                            if !p.cancellable {
-                                net.settle();
-                            }
-                            net.report(p);
-                        }
+                        lines.feed(&String::from_utf8_lossy(&buf[line..line + i]), net);
                         line += i + 1;
                     }
                 }
@@ -371,6 +358,29 @@ fn supervise(
     })
 }
 
+/// The progress pieces of one output stream, each reported only when it changed.
+#[derive(Default)]
+struct ProgressLines {
+    last: Option<Progress>,
+}
+
+impl ProgressLines {
+    /// False when `text` isn't progress.
+    fn feed(&mut self, text: &str, net: &Net) -> bool {
+        let Some(p) = parse_progress(text) else {
+            return false;
+        };
+        if self.last.as_ref() != Some(&p) {
+            if !p.cancellable {
+                net.settle();
+            }
+            self.last = Some(p.clone());
+            net.report(p);
+        }
+        true
+    }
+}
+
 /// git redraws a progress line with `\r` and ends it with `\n`; each piece is either progress
 /// (reported when it changed) or text worth keeping. A local command's pieces are all kept,
 /// and the last of each read is its progress: a hook pouring out lines doesn't send each one.
@@ -380,28 +390,16 @@ fn read_stderr(pipe: Option<impl Read>, net: &Net, touch: &dyn Fn(), kind: Kind)
     let Some(mut r) = pipe else {
         return kept;
     };
-    let mut last: Option<Progress> = None;
+    let mut lines = ProgressLines::default();
     // The text kept, if any.
     let mut piece = |bytes: &[u8]| -> Option<String> {
         let text = String::from_utf8_lossy(bytes);
-        let progress = if local { None } else { parse_progress(&text) };
-        match progress {
-            Some(p) if last.as_ref() != Some(&p) => {
-                if !p.cancellable {
-                    net.settle();
-                }
-                last = Some(p.clone());
-                net.report(p);
-            }
-            Some(_) => {}
-            None if text.trim().is_empty() => {}
-            None => {
-                kept.push_str(text.trim_end());
-                kept.push('\n');
-                return Some(text.trim().to_string());
-            }
+        if (!local && lines.feed(&text, net)) || text.trim().is_empty() {
+            return None;
         }
-        None
+        kept.push_str(text.trim_end());
+        kept.push('\n');
+        Some(text.trim().to_string())
     };
     let mut pending = Vec::new();
     let mut chunk = [0u8; 8192];
