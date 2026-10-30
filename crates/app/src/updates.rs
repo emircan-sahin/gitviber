@@ -47,15 +47,10 @@ fn next_wait(answered: bool, failed_before: u32) -> Duration {
     RETRY.saturating_mul(1 << failed_before.min(16)).min(TICK)
 }
 
-/// Whether a timed check is due at `now`: none answered yet, or the last answer is EVERY old. A
-/// clock set back counts as due, or it would wait out the difference.
-fn due(checked_at: Option<i64>, now: i64) -> bool {
-    checked_at.is_none_or(|at| now < at || now - at >= EVERY)
-}
-
-/// Whether opening the Updates page checks: no check started in the last PAGE_AGAIN seconds.
-fn page_due(asked_at: Option<i64>, now: i64) -> bool {
-    asked_at.is_none_or(|at| now < at || now - at >= PAGE_AGAIN)
+/// Whether `secs` have passed since `at` by `now`, or nothing happened yet. A clock set back
+/// counts as passed, or it would wait out the difference.
+fn elapsed(at: Option<i64>, now: i64, secs: i64) -> bool {
+    at.is_none_or(|at| now < at || now - at >= secs)
 }
 
 /// Unix seconds, the wall clock's: it goes on while the Mac sleeps.
@@ -107,8 +102,9 @@ pub trait Updater {
         progress: Progress,
         cx: &mut App,
     ) -> Task<Result<(), String>>;
-    /// Quits and starts the downloaded version.
-    fn restart(&self, cx: &mut App);
+    /// Installs the download and has it start once this app is gone: true when it will, false
+    /// when that failed and the user was told why.
+    fn restart(&self, cx: &mut App) -> Task<bool>;
 }
 
 #[derive(Default)]
@@ -126,6 +122,7 @@ pub struct Updates {
     restarting: bool,
     _check: Option<Task<()>>,
     _download: Option<Task<()>>,
+    _restart: Option<Task<()>>,
     _timer: Option<Task<()>>,
 }
 
@@ -160,7 +157,7 @@ pub fn set_updater(updater: Rc<dyn Updater>, cx: &mut App) {
             let mut failed = 0;
             loop {
                 let answer = cx.update(|cx| {
-                    let due = due(Updates::get(cx).checked_at, now());
+                    let due = elapsed(Updates::get(cx).checked_at, now(), EVERY);
                     (due && Settings::get(cx).auto_update).then(|| {
                         let (tx, rx) = oneshot::channel();
                         run_check(false, Some(tx), cx);
@@ -222,7 +219,7 @@ pub fn status_line(cx: &App) -> String {
 /// Settings turned automatic checks off (Check Now still asks).
 pub fn page_opened(cx: &mut App) {
     let u = Updates::get(cx);
-    let due = u.updater.is_some() && page_due(u.asked_at, now());
+    let due = u.updater.is_some() && elapsed(u.asked_at, now(), PAGE_AGAIN);
     if due && Settings::get(cx).auto_update {
         run_check(false, None, cx);
     }
@@ -317,8 +314,30 @@ fn restart(cx: &mut App) {
     let Some(updater) = Updates::get(cx).updater.clone() else {
         return;
     };
-    Updates::get(cx).restarting = true;
-    updater.restart(cx);
+    let u = Updates::get(cx);
+    if u.restarting {
+        return;
+    }
+    u.restarting = true;
+    let installing = updater.restart(cx);
+    let task = cx.spawn(async move |cx| {
+        let installed = installing.await;
+        // Quits the usual way, which asks first while something runs; a Cancel keeps the app.
+        cx.update(|cx| {
+            if installed {
+                crate::quit::request_or(not_restarting, cx)
+            } else {
+                not_restarting(cx)
+            }
+        });
+    });
+    Updates::get(cx)._restart = Some(task);
+}
+
+/// The restart failed or the quit was called off: Restart to Update can be clicked again.
+fn not_restarting(cx: &mut App) {
+    Updates::get(cx).restarting = false;
+    cx.refresh_windows();
 }
 
 /// The update's dialog, in the window in front (Settings' What's New… asks from its own).
@@ -527,7 +546,7 @@ impl Badge {
 }
 
 /// None while no newer release is out.
-pub fn badge(cx: &App) -> Option<Badge> {
+fn badge(cx: &App) -> Option<Badge> {
     let u = cx.try_global::<Updates>()?;
     let version = u.release.as_ref()?.version.clone();
     Some(match (u.download, &u.failed) {
@@ -612,6 +631,8 @@ mod tests {
         asked: Cell<u32>,
         /// The next download fails with this.
         fail_download: RefCell<Option<&'static str>>,
+        /// Restarts asked for.
+        restarts: Cell<u32>,
     }
 
     impl Answers {
@@ -622,6 +643,7 @@ mod tests {
                 answers: RefCell::new(answers.into_iter().collect()),
                 asked: Cell::new(0),
                 fail_download: RefCell::default(),
+                restarts: Cell::new(0),
             })
         }
     }
@@ -647,7 +669,11 @@ mod tests {
             progress(Some(50), cx);
             Task::ready(Ok(()))
         }
-        fn restart(&self, _: &mut App) {}
+        /// Fails, as an install onto a full disk would.
+        fn restart(&self, _: &mut App) -> Task<bool> {
+            self.restarts.set(self.restarts.get() + 1);
+            Task::ready(false)
+        }
     }
 
     /// The updater plugged in as packaging does, its timer running, the wall clock at T0.
@@ -687,10 +713,10 @@ mod tests {
 
     #[test]
     fn a_check_is_due_when_none_answered_or_the_last_is_old_enough() {
-        assert!(due(None, T0));
-        assert!(!due(Some(T0), T0 + EVERY - 1));
-        assert!(due(Some(T0), T0 + EVERY));
-        assert!(due(Some(T0), T0 - 60), "the clock set back");
+        assert!(elapsed(None, T0, EVERY));
+        assert!(!elapsed(Some(T0), T0 + EVERY - 1, EVERY));
+        assert!(elapsed(Some(T0), T0 + EVERY, EVERY));
+        assert!(elapsed(Some(T0), T0 - 60, EVERY), "the clock set back");
     }
 
     #[gpui_kit::test]
@@ -828,10 +854,10 @@ mod tests {
 
     #[test]
     fn the_page_checks_again_only_after_a_minute() {
-        assert!(page_due(None, T0));
-        assert!(!page_due(Some(T0), T0 + PAGE_AGAIN - 1));
-        assert!(page_due(Some(T0), T0 + PAGE_AGAIN));
-        assert!(page_due(Some(T0), T0 - 1), "the clock set back");
+        assert!(elapsed(None, T0, PAGE_AGAIN));
+        assert!(!elapsed(Some(T0), T0 + PAGE_AGAIN - 1, PAGE_AGAIN));
+        assert!(elapsed(Some(T0), T0 + PAGE_AGAIN, PAGE_AGAIN));
+        assert!(elapsed(Some(T0), T0 - 1, PAGE_AGAIN), "the clock set back");
     }
 
     fn open_page(cx: &mut TestAppContext) {
@@ -939,6 +965,31 @@ mod tests {
             Updates::get(cx).restarting = true;
             assert_eq!(badge(cx).unwrap().label(), "Restarting…");
         });
+    }
+
+    #[gpui_kit::test]
+    fn a_failed_restart_gives_the_restart_button_back(cx: &mut TestAppContext) {
+        let updater = Answers::new([Ok(Some("0.1.21"))]);
+        with(updater.clone(), cx);
+        check_now(cx);
+        cx.update(download);
+        cx.run_until_parked();
+        cx.update(|cx| {
+            restart(cx);
+            assert_eq!(badge(cx).unwrap().label(), "Restarting…");
+            restart(cx);
+        });
+        assert_eq!(
+            updater.restarts.get(),
+            1,
+            "a second click while it installs waits"
+        );
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(badge(cx).unwrap().label(), "Restart to Update");
+            restart(cx);
+        });
+        assert_eq!(updater.restarts.get(), 2, "clickable again");
     }
 
     #[gpui_kit::test]

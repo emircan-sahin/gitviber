@@ -25,6 +25,7 @@ pub fn open_repo(core: &Core, path: String) -> Res<OpenedRepo> {
         Err(e) => return Err(e),
     };
     let root_path = PathBuf::from(&root);
+    git::opened_as(&root_path, !git);
     // A new watcher even for the open repo: one deleted and made again at its path left the old
     // one watching nothing (inotify). It comes up on a thread of its own, while this goes on.
     let watcher = watch::start(core.events(), root_path.clone());
@@ -239,6 +240,7 @@ pub fn trust_folder(_core: &Core, path: String) -> Res<()> {
     git::trust_folder(Path::new(&path))
 }
 
+/// `git init` in a plain folder; opening it again makes it the repository it is now.
 pub fn init_repo(_core: &Core, path: String) -> Res<()> {
     git::init(Path::new(&path))
 }

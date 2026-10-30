@@ -48,9 +48,13 @@ pub fn on_answer(phase: Phase, go: bool) -> (Phase, Then) {
     }
 }
 
+type OnStay = Box<dyn FnOnce(&mut App)>;
+
 struct Quit {
     phase: Phase,
     at: Option<Instant>,
+    /// Told when the quit being decided is called off (Cancel), so what waited on it can undo.
+    on_stay: Vec<OnStay>,
     _asking: Option<Task<()>>,
 }
 
@@ -61,6 +65,7 @@ fn get(cx: &mut App) -> &mut Quit {
         cx.set_global(Quit {
             phase: Phase::Idle,
             at: None,
+            on_stay: Vec::new(),
             _asking: None,
         });
     }
@@ -70,6 +75,12 @@ fn get(cx: &mut App) -> &mut Quit {
 /// Registered after the shared window commands: the last listener runs first and stops there.
 pub fn install(cx: &mut App) {
     cx.on_action(|_: &app::Quit, cx| request(cx));
+}
+
+/// `request`, telling `on_stay` if the user calls the quit off.
+pub fn request_or(on_stay: impl FnOnce(&mut App) + 'static, cx: &mut App) {
+    get(cx).on_stay.push(Box::new(on_stay));
+    request(cx);
 }
 
 /// ⌘Q, or the main window's close.
@@ -101,10 +112,21 @@ pub fn request(cx: &mut App) {
 
 fn answered(go: bool, cx: &mut App) {
     let q = get(cx);
-    let (phase, then) = on_answer(q.phase, go);
+    let was = q.phase;
+    let (phase, then) = on_answer(was, go);
     q.phase = phase;
     if then == Then::Leave {
         settle_then_leave(cx);
+    } else if was == Phase::Asking && phase == Phase::Idle {
+        stayed(cx);
+    }
+}
+
+fn stayed(cx: &mut App) {
+    let q = get(cx);
+    q.phase = Phase::Idle;
+    for on_stay in std::mem::take(&mut q.on_stay) {
+        on_stay(cx);
     }
 }
 
@@ -125,7 +147,7 @@ fn settle_then_leave(cx: &mut App) {
         ws,
         Box::new(|go, cx| match (go, get(cx).phase) {
             (true, Phase::Asking) => leave(cx),
-            (false, Phase::Asking) => get(cx).phase = Phase::Idle,
+            (false, Phase::Asking) => stayed(cx),
             // A second ⌘Q went first.
             _ => {}
         }),
@@ -249,6 +271,23 @@ mod tests {
             on_quit(Phase::Asking, soon, true),
             (Phase::Asking, Then::Nothing)
         );
+    }
+
+    #[gpui_kit::test]
+    fn cancel_tells_whoever_waited_on_the_quit(cx: &mut gpui_kit::TestAppContext) {
+        let told = std::rc::Rc::new(std::cell::Cell::new(0));
+        cx.update(|cx| {
+            let t = told.clone();
+            let q = get(cx);
+            q.phase = Phase::Asking;
+            q.on_stay.push(Box::new(move |_| t.set(t.get() + 1)));
+            answered(false, cx);
+            assert_eq!(get(cx).phase, Phase::Idle);
+            // Told once: a later Cancel doesn't repeat it.
+            get(cx).phase = Phase::Asking;
+            answered(false, cx);
+        });
+        assert_eq!(told.get(), 1);
     }
 
     #[test]

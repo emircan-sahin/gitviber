@@ -367,6 +367,24 @@ fn toplevel_tells_no_repo_from_git_failing() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn an_empty_git_dir_is_still_outside_any_repo() {
+    let dir = std::env::temp_dir().join(format!("gitviber-test-emptygit-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join(".git")).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    if toplevel(&dir).is_ok_and(|top| Path::new(&top) != dir) {
+        return; // the temp dir sits in a repository
+    }
+    assert!(outside_repo(&dir), "git, not the .git dir, decides");
+    // Opened: the answer is kept, and opening it again replaces it.
+    opened_as(&dir, false);
+    assert!(!outside_repo(&dir));
+    opened_as(&dir, true);
+    assert!(outside_repo(&dir));
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// The page sends these (src/lib/api/git.ts); anything else fails before git runs.
 #[test]
 fn modes_are_the_strings_the_page_sends() {

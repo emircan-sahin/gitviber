@@ -3,8 +3,10 @@
 use crate::network::{self, Net};
 use crate::process::{exec, git, search_path};
 use std::cell::Cell;
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 /// The app reads git's messages ("not a git repository", "non-fast-forward", index.lock,
@@ -83,10 +85,28 @@ pub(crate) fn files_command(root: &Path, args: &[&str]) -> Command {
     cmd
 }
 
-/// `root` is a folder in no repository (a plain project). A repository's root answers from its
-/// `.git` alone, without running git.
+/// Whether each opened root is a plain folder, as `open_repo` found it: every file read and
+/// watcher batch asks, and asking git each time doubled the processes they ran.
+fn opened_roots() -> &'static Mutex<HashMap<PathBuf, bool>> {
+    static OPENED: OnceLock<Mutex<HashMap<PathBuf, bool>>> = OnceLock::new();
+    OPENED.get_or_init(Mutex::default)
+}
+
+/// What opening `root` found; opening it again (a folder become a repository) replaces it.
+pub fn opened_as(root: &Path, plain: bool) {
+    let mut roots = opened_roots().lock().unwrap_or_else(|e| e.into_inner());
+    roots.insert(root.to_path_buf(), plain);
+}
+
+/// `root` is a folder in no repository (a plain project). Git's answer, not whether `.git`
+/// exists: an empty or broken `.git` is no repository to git.
 pub fn outside_repo(root: &Path) -> bool {
-    !root.join(".git").exists() && toplevel(root).is_err_and(|e| e == NOT_A_REPO)
+    let known = opened_roots()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(root)
+        .copied();
+    known.unwrap_or_else(|| toplevel(root).is_err_and(|e| e == NOT_A_REPO))
 }
 
 /// The empty bare repository `files_command` reads plain folders through, made on first use

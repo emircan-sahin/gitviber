@@ -670,14 +670,16 @@ mod tests {
         }
     }
 
-    /// The repository the tests open first: one commit.
+    /// The repository the tests open first: one commit. Made once: tests on parallel threads
+    /// asking at the same time raced each other's init and commit for git's lock files.
     fn here() -> PathBuf {
-        let dir = scratch("here");
-        // Asked again for its path: the commit is made once.
-        if !dir.join(".git/refs/heads/main").exists() {
+        static HERE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        HERE.get_or_init(|| {
+            let dir = scratch("here");
             git(&dir, &["commit", "-q", "--allow-empty", "-m", "one"]);
-        }
-        dir
+            dir
+        })
+        .clone()
     }
 
     /// A scratch repository to point core at instead.

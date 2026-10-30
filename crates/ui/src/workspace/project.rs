@@ -187,8 +187,10 @@ impl Project {
     /// Runs `git init` in the folder, then opens it as the repository it is now. The answer is
     /// git's error, for the caller to show.
     pub fn init_repository(&mut self, cx: &mut Context<Self>) -> Task<Result<(), String>> {
-        let root = self.root.clone();
-        let made = cx.background_spawn(async move { gitviber_core::git::init(&root) });
+        let core = backend::core(cx);
+        let root = self.root.to_string_lossy().into_owned();
+        let made =
+            cx.background_spawn(async move { gitviber_core::api::repo::init_repo(&core, root) });
         cx.spawn(async move |this, cx| {
             made.await?;
             let _ = this.update(cx, |this, cx| this.recheck_folder(cx));
@@ -211,15 +213,18 @@ impl Project {
     }
 
     /// A plain folder that has a `.git` now (`git init` in a terminal) is opened again, as the
-    /// repository it is. Only then: each open restarts core's watcher, whose first news would
-    /// ask again. Off the UI thread: a stalled network volume answers the stat in seconds.
+    /// repository it is. Only once git agrees: each open restarts core's watcher, whose first
+    /// news would ask again, so an empty or broken `.git` reopened it forever. Off the UI
+    /// thread: a stalled network volume answers the stat in seconds.
     fn recheck_folder(&mut self, cx: &mut Context<Self>) {
         if !self.is_folder() || self._open.is_some() || self._recheck.is_some() {
             return;
         }
         let root = self.root.clone();
         let probe = root.clone();
-        let made = cx.background_spawn(async move { probe.join(".git").exists() });
+        let made = cx.background_spawn(async move {
+            probe.join(".git").exists() && gitviber_core::git::toplevel(&probe).is_ok()
+        });
         self._recheck = Some(cx.spawn(async move |this, cx| {
             let made = made.await;
             let _ = this.update(cx, |this, cx| {
