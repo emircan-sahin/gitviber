@@ -59,7 +59,8 @@ The change:
 - Idle pause (`MetalFrames`): after an update in which GPUI neither drew, presented, nor asked for
   another frame, the link pauses, so an idle window takes no drawables and does no work.
   `frame_waker` and `schedule_frame` (no-ops on this platform before) resume it; the waker lives
-  in `MacWindow` outside the state lock.
+  in `MacWindow` outside the state lock. A link replaced during an update counts as a wake, so
+  that update doesn't pause the new one.
 - Window drop invalidates the link.
 
 With change 1: hidden → `stop_display_link` (link invalidated), then `trim`; visible →
@@ -67,6 +68,5 @@ With change 1: hidden → `stop_display_link` (link invalidated), then `trim`; v
 trimmed layer.
 
 Checked: `metal_frames::gitviber_tests` (pause only when GPUI neither drew nor asked again; a
-wake during the update keeps the link running). Frame time, idle CPU, resize, displays and
+wake or a link replaced during the update keeps it running). Frame time, idle CPU, resize, displays and
 fullscreen need the running app.
-
