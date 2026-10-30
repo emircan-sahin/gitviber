@@ -8,7 +8,7 @@ use super::{
 use crate::process::exec;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -106,6 +106,80 @@ pub struct RepoStatus {
     /// Set while git has left a message for the next commit, which `commit_template` reads, and
     /// changes with it: the message files' sizes and mtimes.
     pub prepared_message: Option<String>,
+    /// The user's status.showUntrackedFiles=no keeps untracked files out of `unstaged`.
+    pub untracked_hidden: bool,
+}
+
+const UNTRACKED_ALL: &str = "--untracked-files=all";
+const UNTRACKED_NORMAL: &str = "--untracked-files=normal";
+const UNTRACKED_NO: &str = "--untracked-files=no";
+
+/// The mode each repo's last status ran with.
+fn untracked_modes() -> &'static std::sync::Mutex<HashMap<PathBuf, &'static str>> {
+    static MODES: OnceLock<std::sync::Mutex<HashMap<PathBuf, &'static str>>> = OnceLock::new();
+    MODES.get_or_init(Default::default)
+}
+
+/// status.showUntrackedFiles, for monorepos that set it to skip the walk. Unset, every file
+/// (git's default lists a new folder as one entry); a value git refuses also falls back to it.
+fn untracked_mode(config: &ConfigList) -> &'static str {
+    match config
+        .value("status.showuntrackedfiles")
+        .map(|v| v.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("no" | "false" | "off" | "0") => UNTRACKED_NO,
+        Some("normal" | "true" | "yes" | "on" | "1") => UNTRACKED_NORMAL,
+        _ => UNTRACKED_ALL,
+    }
+}
+
+/// In `normal` mode a folder holding one of this repo's worktrees (`.claude/` holding an
+/// agent's) is listed for the worktree alone. Listed file by file instead, as in `all` mode,
+/// the worktree drops out and only the folder's own files stay.
+fn list_worktree_folders(repo: &Path, records: &mut Vec<String>) {
+    let folders: Vec<&str> = records
+        .iter()
+        .filter_map(|r| r.strip_prefix("? "))
+        .filter(|p| is_untracked_folder(repo, p))
+        .collect();
+    if folders.is_empty() {
+        return;
+    }
+    let Ok(list) = worktrees(repo) else { return };
+    let real = |p: &Path| p.canonicalize().ok();
+    let trees: Vec<PathBuf> = list
+        .iter()
+        .filter_map(|w| real(Path::new(&w.path)))
+        .collect();
+    let holding: Vec<String> = folders
+        .into_iter()
+        .filter(|f| real(&repo.join(f)).is_some_and(|d| trees.iter().any(|t| t.starts_with(&d))))
+        .map(str::to_string)
+        .collect();
+    if holding.is_empty() {
+        return;
+    }
+    let mut args = vec!["status", "--porcelain=v2", "-z", UNTRACKED_ALL, "--"];
+    args.extend(holding.iter().map(String::as_str));
+    let Ok(raw) = run_text(repo, &args) else {
+        return;
+    };
+    records.retain(|r| {
+        r.strip_prefix("? ")
+            .is_none_or(|p| !holding.iter().any(|h| h == p))
+    });
+    records.extend(
+        raw.split('\0')
+            .filter(|r| r.starts_with("? "))
+            .map(str::to_string),
+    );
+}
+
+/// An untracked folder git listed as one entry (`dir/`), which it does only in `normal` mode;
+/// a nested repository's root is listed so in every mode.
+pub fn is_untracked_folder(repo: &Path, path: &str) -> bool {
+    path.ends_with('/') && !is_nested_repo(repo, path)
 }
 
 pub(crate) fn change(path: &str, old_path: Option<&str>, status: char) -> FileChange {
@@ -235,15 +309,23 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
 
 /// `status` with the repo's git dirs known (the open repo's are kept: api::changes::status).
 pub(crate) fn status_in(repo: &Path, dirs: Option<&GitDirs>) -> Result<RepoStatus, String> {
-    let args = [
-        "status",
-        "--porcelain=v2",
-        "-z",
-        "--branch",
-        "--untracked-files=all",
-    ];
-    let (raw, config) = both(|| run(repo, &args), || ConfigList::read(repo));
-    let (raw, config) = (raw?, config.ok());
+    let args = |untracked| ["status", "--porcelain=v2", "-z", "--branch", untracked];
+    // The config is read alongside status, so status goes with the mode it had last time and
+    // runs again only when that changed (the first refresh of a repo that sets it, an edit).
+    let last = untracked_modes().lock().unwrap().get(repo).copied();
+    let guess = last.unwrap_or(UNTRACKED_ALL);
+    let (raw, config) = both(|| run(repo, &args(guess)), || ConfigList::read(repo));
+    let config = config.ok();
+    let mode = config.as_ref().map_or(guess, untracked_mode);
+    untracked_modes()
+        .lock()
+        .unwrap()
+        .insert(repo.to_path_buf(), mode);
+    let raw = if mode == guess {
+        raw?
+    } else {
+        run(repo, &args(mode))?
+    };
     let dir = dirs.map(|d| d.dir.as_path());
     let mut st = RepoStatus {
         root: repo.to_string_lossy().into_owned(),
@@ -265,13 +347,19 @@ pub(crate) fn status_in(repo: &Path, dirs: Option<&GitDirs>) -> Result<RepoStatu
         conflicted: vec![],
         operation: dir.and_then(operation_in),
         prepared_message: dir.and_then(prepared_stamp),
+        untracked_hidden: mode == UNTRACKED_NO,
     };
 
     let mut nested_roots = std::collections::HashSet::new();
     let mut budget = CountBudget::default();
-    let mut records = raw
+    let mut records: Vec<String> = raw
         .split(|b| *b == 0)
-        .map(|t| String::from_utf8_lossy(t).into_owned());
+        .map(|t| String::from_utf8_lossy(t).into_owned())
+        .collect();
+    if mode == UNTRACKED_NORMAL {
+        list_worktree_folders(repo, &mut records);
+    }
+    let mut records = records.into_iter();
     while let Some(rec) = records.next() {
         if let Some(h) = rec.strip_prefix("# ") {
             let (key, val) = h.split_once(' ').unwrap_or((h, ""));
@@ -342,7 +430,9 @@ pub(crate) fn status_in(repo: &Path, dirs: Option<&GitDirs>) -> Result<RepoStatu
             '?' => {
                 let path = &rec[2..];
                 let mut f = change(path, None, '?');
-                if let Some(root) = untracked_nested_root(repo, path) {
+                if is_untracked_folder(repo, path) {
+                    // `normal` mode: one entry for a folder git didn't list file by file.
+                } else if let Some(root) = untracked_nested_root(repo, path) {
                     // Files of a broken worktree collapse into one entry for its folder.
                     if !nested_roots.insert(root.clone()) {
                         continue;

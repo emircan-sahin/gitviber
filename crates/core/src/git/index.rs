@@ -1,6 +1,9 @@
 //! Staging, unstaging and discarding whole files.
 
-use super::{has_head, new_gitlink, run_text, run_with, untracked_nested_root, validate_rev};
+use super::{
+    has_head, is_untracked_folder, new_gitlink, run_text, run_with, untracked_nested_root,
+    validate_rev,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -30,6 +33,13 @@ pub fn stage(repo: &Path, paths: &[String]) -> Result<(), String> {
 /// Refuses untracked nested repositories (an agent's worktree) unless `allow_nested`: git
 /// would stage one as a gitlink, a pointer to its current commit, and none of its files.
 pub fn stage_with(repo: &Path, paths: &[String], allow_nested: bool) -> Result<(), String> {
+    let expanded;
+    let paths = if allow_nested || !paths.iter().any(|p| is_untracked_folder(repo, p)) {
+        paths
+    } else {
+        expanded = untracked_folders_expanded(repo, paths)?;
+        &expanded[..]
+    };
     if !allow_nested {
         if let Some(p) = nested_repos(repo, paths)?.first() {
             return Err(format!(
@@ -40,6 +50,25 @@ pub fn stage_with(repo: &Path, paths: &[String], allow_nested: bool) -> Result<(
         }
     }
     run_on(repo, &["add", "-A"], paths)
+}
+
+/// `paths` with each untracked folder (a `dir/` entry of status in `normal` mode) replaced by
+/// its files: an agent's worktree inside one stays out rather than failing the whole stage.
+fn untracked_folders_expanded(repo: &Path, paths: &[String]) -> Result<Vec<String>, String> {
+    let (folders, mut out): (Vec<String>, Vec<String>) = paths
+        .iter()
+        .cloned()
+        .partition(|p| is_untracked_folder(repo, p));
+    let args = with_paths(vec!["ls-files", "-z", "-o", "--exclude-standard"], &folders);
+    let listed = run_text(repo, &args)?;
+    // Nested repositories come as `dir/`, files only below them.
+    out.extend(
+        listed
+            .split('\0')
+            .filter(|p| !p.is_empty() && !p.ends_with('/'))
+            .map(str::to_string),
+    );
+    Ok(out)
 }
 
 /// Nested repositories at or under `paths` that `git add` would turn into new gitlinks (or

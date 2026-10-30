@@ -276,7 +276,9 @@ impl ChangeTab {
                                 (s.unstaged, Compare::Unstaged)
                             };
                             list.into_iter()
-                                .filter(|f| f.nested.is_none())
+                                .filter(|f| {
+                                    f.nested.is_none() && !crate::model::list::untracked_folder(f)
+                                })
                                 .map(|f| {
                                     let against = if staged {
                                         head.clone()

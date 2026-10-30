@@ -9,7 +9,7 @@ use crate::model::conflicts::{Unsure, resolve_question, unsure};
 use crate::model::list::{
     ChangesView, Item, Kind, Lists, Mtimes, NESTED_EXPLAINED, file_sig, files, folder_key,
     items_of, kept_by_restore, left_out, range_of, stageable, sum_lines, toggled, unstage_paths,
-    viewed_key,
+    untracked_folder, viewed_key,
 };
 use crate::model::text::{describe_stash, ignore_pattern};
 use crate::model::tree::folders_of;
@@ -309,6 +309,8 @@ pub struct ChangesPanel {
     bisect: Option<Entity<BisectBar>>,
     prepared: Option<String>,
     lists: Lists,
+    /// status.showUntrackedFiles=no: untracked files aren't in `lists`, and the panel says so.
+    untracked_hidden: bool,
     mtimes: Option<Mtimes>,
     stashes: Vec<StashInfo>,
     submodules: Vec<(String, String, String)>,
@@ -436,6 +438,7 @@ impl ChangesPanel {
             bisect: None,
             prepared: None,
             lists: Lists::default(),
+            untracked_hidden: false,
             mtimes: None,
             stashes: vec![],
             submodules: vec![],
@@ -657,6 +660,7 @@ impl ChangesPanel {
                         this.sync_bisect(cx);
                         this.prepared = status.prepared_message.clone();
                         this.lists = Lists::of(&status);
+                        this.untracked_hidden = status.untracked_hidden;
                         this.mtimes = mtimes;
                         this.stashes = stashes
                             .into_iter()
@@ -881,7 +885,9 @@ impl ChangesPanel {
                 }
                 for item in items_of(kind, list, self.view, self.mtimes.as_ref(), &self.closed) {
                     match &item {
-                        Item::File { change, depth, .. } if change.file.nested.is_some() => {
+                        Item::File { change, depth, .. }
+                            if change.file.nested.is_some() || untracked_folder(&change.file) =>
+                        {
                             rows.push(Row::Nested(change.file.clone(), *depth))
                         }
                         _ => rows.push(Row::Item(item)),
@@ -896,6 +902,11 @@ impl ChangesPanel {
                         "All caught up: no changes."
                     }
                     .into(),
+                ));
+            }
+            if self.untracked_hidden {
+                rows.push(Row::Note(
+                    "Untracked files hidden by status.showUntrackedFiles".into(),
                 ));
             }
         }
@@ -2216,14 +2227,21 @@ impl ChangesPanel {
                 .text_size(px(11.5))
                 .child(text)
                 .into_any_element(),
-            Row::Nested(file, depth) => base()
-                .pl(px(10. + depth as f32 * 12.))
-                .text_color(t.subtle)
-                .child(Icon::new(Lucide::FolderGit2).xsmall())
-                .child(PathLabel(file.path.clone().into()))
-                .child(div().flex_1())
-                .child(div().text_size(px(11.)).child("nested repo"))
-                .into_any_element(),
+            Row::Nested(file, depth) => {
+                let (icon, label) = if file.nested.is_some() {
+                    (Lucide::FolderGit2, "nested repo")
+                } else {
+                    (Lucide::Folder, "untracked folder")
+                };
+                base()
+                    .pl(px(10. + depth as f32 * 12.))
+                    .text_color(t.subtle)
+                    .child(Icon::new(icon).xsmall())
+                    .child(PathLabel(file.path.clone().into()))
+                    .child(div().flex_1())
+                    .child(div().text_size(px(11.)).child(label))
+                    .into_any_element()
+            }
             Row::Item(Item::Folder {
                 kind,
                 path,
@@ -2401,6 +2419,7 @@ impl ChangesPanel {
                             .iter()
                             .filter(|f| {
                                 f.nested.is_none()
+                                    && !untracked_folder(f)
                                     && is_viewed(
                                         ws.read(cx),
                                         &Selection::Unstaged { file: (*f).clone() },
