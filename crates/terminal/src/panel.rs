@@ -1364,6 +1364,7 @@ impl TerminalPanel {
                 cx.emit(PanelEvent::Bell { pane: id });
             }
             PaneEvent::Attention(note) => self.needs_you(id, Some(note.clone()), None, cx),
+            PaneEvent::AgentStatus(state) => self.agent_reported(id, *state, cx),
             PaneEvent::CommandEnded(end) => {
                 self.command_ended(id, end, window, cx);
                 cx.emit(PanelEvent::CommandEnded {

@@ -85,6 +85,8 @@ pub enum PaneEvent {
     Prompt,
     /// A program's notification escape (OSC 9, 777, 99): Claude Code's, Codex's.
     Attention(crate::agent::Note),
+    /// The state the program in it reported (OSC 7501).
+    AgentStatus(crate::agent::AgentState),
     /// A pinch over it asked the font a step bigger (1) or smaller (-1).
     FontStep(i32),
     /// ⌘-click on a link, or its hint typed.
@@ -464,7 +466,12 @@ impl TerminalPane {
         if theme != self.theme {
             self.theme = theme;
             self.cache.borrow_mut().clear();
+            let was_dark = self.session.outbox.answers().dark();
             self.apply_theme_answers();
+            let dark = self.session.outbox.answers().dark();
+            if dark != was_dark && self.session.emu.lock().parser.scheme_notify() {
+                self.session.write(crate::session::scheme_report(dark));
+            }
             cx.notify();
         }
     }
@@ -617,6 +624,7 @@ impl TerminalPane {
                 }
                 Note::Ended(end) => cx.emit(PaneEvent::CommandEnded(end)),
                 Note::Attention(note) => cx.emit(PaneEvent::Attention(note)),
+                Note::Status(state) => cx.emit(PaneEvent::AgentStatus(state)),
                 Note::Cwd(dir) => self.dir = dir.into(),
                 Note::Exited { exit, lived } => {
                     self.exited = true;

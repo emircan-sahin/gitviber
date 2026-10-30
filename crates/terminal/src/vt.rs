@@ -30,12 +30,16 @@ pub struct Parser {
     depths: Depths,
 }
 
-/// alacritty's stack depths, followed call by call: the keyboard modes' per screen.
+/// alacritty's stack depths, followed call by call: the keyboard modes' per screen. Also mode
+/// 2031, which alacritty doesn't keep: the program asked to hear of color scheme changes.
 #[derive(Default)]
 struct Depths {
     keys: [usize; 2],
     titles: usize,
+    scheme_notify: bool,
 }
+
+const SCHEME_NOTIFY: PrivateMode = PrivateMode::Unknown(2031);
 
 impl Parser {
     pub fn new() -> Self {
@@ -57,6 +61,11 @@ impl Parser {
             depths: &mut self.depths,
         };
         self.processor.stop_sync(&mut bounded);
+    }
+
+    /// The program set mode 2031: tell it when the background turns dark or light.
+    pub fn scheme_notify(&self) -> bool {
+        self.depths.scheme_notify
     }
 
     pub fn sync_timeout(&self) -> &StdSyncHandler {
@@ -166,6 +175,20 @@ impl<T: EventListener> Handler for Bounded<'_, T> {
         Handler::reset_state(self.term)
     }
 
+    fn set_private_mode(&mut self, mode: PrivateMode) {
+        if mode == SCHEME_NOTIFY {
+            self.depths.scheme_notify = true;
+        }
+        Handler::set_private_mode(self.term, mode)
+    }
+
+    fn unset_private_mode(&mut self, mode: PrivateMode) {
+        if mode == SCHEME_NOTIFY {
+            self.depths.scheme_notify = false;
+        }
+        Handler::unset_private_mode(self.term, mode)
+    }
+
     forward! {
         set_cursor_style(style: Option<CursorStyle>);
         set_cursor_shape(shape: CursorShape);
@@ -208,8 +231,6 @@ impl<T: EventListener> Handler for Bounded<'_, T> {
         set_mode(mode: Mode);
         unset_mode(mode: Mode);
         report_mode(mode: Mode);
-        set_private_mode(mode: PrivateMode);
-        unset_private_mode(mode: PrivateMode);
         report_private_mode(mode: PrivateMode);
         set_scrolling_region(top: usize, bottom: Option<usize>);
         set_keypad_application_mode();
@@ -306,6 +327,20 @@ mod tests {
         let popped = std::mem::take(&mut *titles.0.lock().unwrap());
         assert_eq!(popped.len(), MAX_DEPTH);
         assert!(popped.iter().all(|t| *t == long));
+    }
+
+    #[test]
+    fn mode_2031_is_kept_until_unset_or_reset() {
+        let mut t = term(VoidListener);
+        let mut p = Parser::new();
+        assert!(!p.scheme_notify());
+        p.advance(&mut t, b"\x1b[?2004;2031h");
+        assert!(p.scheme_notify());
+        assert!(t.mode().contains(TermMode::BRACKETED_PASTE));
+        p.advance(&mut t, b"\x1b[?2031l");
+        assert!(!p.scheme_notify());
+        p.advance(&mut t, b"\x1b[?2031h\x1bc");
+        assert!(!p.scheme_notify());
     }
 
     #[test]

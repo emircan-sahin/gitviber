@@ -185,6 +185,9 @@ arguments, if you turned those on.
 
 - Paste a screenshot or drop files and Claude Code or Codex gets their paths.
 - Shift+Enter reaches a program that asks for it as its own key, as Claude Code and Codex do.
+- Claude Code tells the terminal its state as it changes, so its tab's ring and dot follow it the
+  moment it starts, stops or asks.
+- Switch the app between light and dark and a running Claude Code on its "auto" theme switches too.
 - On a Mac a trackpad swipe scrolls Claude Code's fullscreen view row by row, as it does vim and htop.
 - Pasting several lines into a program that would run each one as it arrives asks first.
 

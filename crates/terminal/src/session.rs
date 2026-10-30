@@ -104,6 +104,8 @@ pub(crate) enum Note {
     Cwd(String),
     /// A program's notification escape.
     Attention(crate::agent::Note),
+    /// The state the program in the pane reported (OSC 7501).
+    Status(crate::agent::AgentState),
     Exited {
         exit: Option<Exit>,
         lived: Duration,
@@ -156,6 +158,13 @@ impl Default for Answers {
 }
 
 impl Answers {
+    /// The background is dark: the color scheme a program is told.
+    pub fn dark(&self) -> bool {
+        let Rgb { r, g, b } = self.background;
+        // Rec. 709 luma.
+        0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b) < 128.
+    }
+
     fn color(&self, index: usize) -> Rgb {
         match index {
             0..16 => self.ansi[index],
@@ -225,6 +234,10 @@ impl Outbox {
 
     fn closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
+    }
+
+    pub fn answers(&self) -> Answers {
+        *self.answers.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn set_answers(&self, f: impl FnOnce(&mut Answers)) {
@@ -385,6 +398,19 @@ impl Emu {
             // XTVERSION names this app: answered as xterm.js, Claude Code took the pane for VS Code's
             // terminal and its wheel and glyph atlas workarounds.
             Found::XtVersion => self.outbox.write("\x1bP>|GitViber\x1b\\".into(), false),
+            // Answered here, ahead of the DA1 that follows the probe: a later reply is taken as none.
+            Found::ProgramStatus(data) if data.starts_with('?') => {
+                self.outbox.write("\x1b]7501;?\x1b\\".into(), false)
+            }
+            Found::ProgramStatus(data) => {
+                if let Some(state) = crate::agent::program_status(data) {
+                    self.outbox.note(Note::Status(state));
+                }
+            }
+            Found::ColorScheme => {
+                let dark = self.outbox.answers().dark();
+                self.outbox.write(scheme_report(dark), false);
+            }
             Found::Cwd(url) => {
                 if let Some(dir) = cwd_from_url(url) {
                     self.outbox.note(Note::Cwd(dir));
@@ -426,6 +452,11 @@ impl Emu {
     pub fn mode(&self) -> TermMode {
         *self.term.mode()
     }
+}
+
+/// The color scheme report (DSR 997): sent to `CSI ? 996 n`, and unasked on a change under mode 2031.
+pub(crate) fn scheme_report(dark: bool) -> String {
+    format!("\x1b[?997;{}n", if dark { 1 } else { 2 })
 }
 
 /// How a pane's shell starts.
@@ -767,6 +798,57 @@ mod tests {
             matches!(&notes[..], [Note::Prompt, Note::Ended(e), Note::Prompt] if e.exit == Some(0))
         );
         assert_eq!(emu.marks.last_output(&emu.term).as_deref(), Some("a"));
+    }
+
+    fn writes(rx: &Receiver<Io>) -> Vec<String> {
+        rx.try_iter()
+            .filter_map(|io| match io {
+                Io::Write(text, _) => Some(text),
+                Io::Resize(..) => None,
+            })
+            .collect()
+    }
+
+    /// The probe's answer goes out before alacritty's DA1 reply: one after it counts as none.
+    #[test]
+    fn the_status_probe_is_answered_before_the_da1_after_it_and_reports_are_noted() {
+        let outbox = Arc::new(Outbox::default());
+        let (tx, rx) = channel();
+        *outbox.io.lock().unwrap() = Some(tx);
+        let mut emu = Emu::new(20, 5, test_config(), outbox.clone());
+        emu.feed(b"\x1b[>0q\x1b]7501;?\x1b\\\x1b[c");
+        let w = writes(&rx);
+        assert_eq!(w.len(), 3, "{w:?}");
+        assert_eq!(w[1], "\x1b]7501;?\x1b\\");
+        assert!(w[2].starts_with("\x1b[?"), "{w:?}");
+        emu.feed(b"\x1b]7501;state=blocked:app=claude-code:kind=question\x07");
+        emu.feed(b"\x1b]7501;state=working:app=claude-code:id=1\x07");
+        let notes = outbox.take_notes();
+        assert!(
+            matches!(
+                &notes[..],
+                [Note::Status(crate::agent::AgentState::Waiting)]
+            ),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn the_color_scheme_query_is_answered_from_the_background() {
+        let outbox = Arc::new(Outbox::default());
+        let (tx, rx) = channel();
+        *outbox.io.lock().unwrap() = Some(tx);
+        let mut emu = Emu::new(20, 5, test_config(), outbox.clone());
+        emu.feed(b"\x1b[?996n");
+        outbox.set_answers(|a| {
+            a.background = Rgb {
+                r: 250,
+                g: 250,
+                b: 248,
+            }
+        });
+        emu.feed(b"\x1b[?996n");
+        assert_eq!(writes(&rx), ["\x1b[?997;1n", "\x1b[?997;2n"]);
     }
 
     #[test]
