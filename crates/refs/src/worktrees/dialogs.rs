@@ -6,8 +6,8 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use gitviber_core::{api, git};
+use gitviber_ui::ActiveAppTheme;
 use gitviber_ui::memory::Live;
-use gitviber_ui::{ActiveAppTheme, Workspace};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -31,13 +31,6 @@ use crate::ops::{main_of, open_worktree};
 use crate::repo::{GitAction, RepoState, undo_action};
 use crate::toast::{Kind, Note};
 use crate::ui::{cancel, hint, note, open_form, ref_menu};
-
-/// The window's repo state, when a project is open.
-fn state_of(window: &Window, cx: &mut App) -> Option<Entity<RepoState>> {
-    let ws = Workspace::for_window(window, cx)?;
-    let project = ws.read(cx).project()?.clone();
-    Some(RepoState::get(&project, cx))
-}
 
 fn is_commit(base: &str) -> bool {
     (base.len() == 40 || base.len() == 64) && base.chars().all(|c| c.is_ascii_hexdigit())
@@ -111,7 +104,7 @@ pub struct NewWorktree {
 }
 
 fn open_with(source: Source, base: Option<String>, window: &mut Window, cx: &mut App) {
-    let Some(state) = state_of(window, cx) else {
+    let Some(state) = RepoState::for_window(window, cx) else {
         return;
     };
     let title = match &source {
@@ -727,7 +720,7 @@ pub struct RenameWorktree {
 }
 
 pub fn open_rename(w: Worktree, window: &mut Window, cx: &mut App) {
-    let Some(state) = state_of(window, cx) else {
+    let Some(state) = RepoState::for_window(window, cx) else {
         return;
     };
     let form = cx.new(|cx| {
@@ -955,7 +948,7 @@ pub struct LockWorktree {
 }
 
 pub fn open_lock(w: Worktree, window: &mut Window, cx: &mut App) {
-    let Some(state) = state_of(window, cx) else {
+    let Some(state) = RepoState::for_window(window, cx) else {
         return;
     };
     let form = cx.new(|cx| {
@@ -1058,7 +1051,7 @@ pub struct CleanUp {
 /// pull request's head) shows nothing on it is lost. Their ignored files aren't changes to git,
 /// so `git worktree remove` deletes them without asking: they're listed here.
 pub fn open_clean_up(list: Vec<Cleanable>, window: &mut Window, cx: &mut App) {
-    let Some(state) = state_of(window, cx) else {
+    let Some(state) = RepoState::for_window(window, cx) else {
         return;
     };
     let form = cx.new(|cx| CleanUp::new(state, list, cx));

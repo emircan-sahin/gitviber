@@ -121,6 +121,13 @@ impl RepoState {
         state
     }
 
+    /// The state of the project open in `window`, if one is.
+    pub fn for_window(window: &Window, cx: &mut App) -> Option<Entity<RepoState>> {
+        let ws = gitviber_ui::Workspace::for_window(window, cx)?;
+        let project = ws.read(cx).project()?.clone();
+        Some(RepoState::get(&project, cx))
+    }
+
     /// The project's state if some view made it; none is made.
     pub fn existing(project: &Entity<Project>, cx: &App) -> Option<Entity<RepoState>> {
         cx.try_global::<States>()?
@@ -927,6 +934,36 @@ mod tests {
         );
         git(&dir, &["branch", "-q", "-u", &format!("origin/{branch}")]);
         assert_eq!(crate::ops::secret_only_in_head(&core, &listed), None);
+    }
+
+    /// A commit checkout off a detached HEAD whose commits no branch holds asks first; one that
+    /// leaves nothing behind goes ahead.
+    #[gpui_kit::test]
+    fn a_commit_checkout_asks_before_leaving_detached_commits(cx: &mut TestAppContext) {
+        let dir = scratch("left-behind");
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        let first = git(&dir, &["rev-parse", "HEAD"]);
+        git(&dir, &["checkout", "-q", "--detach"]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "loose"]);
+        let loose = git(&dir, &["rev-parse", "HEAD"]);
+        let (_ws, state, cx) = setup_in(dir.clone(), cx);
+        use gpui_kit::component::WindowExt as _;
+        let dialogs = |cx: &mut VisualTestContext| cx.update(|w, cx| w.has_active_dialog(cx));
+        let checkout = |sha: &str, cx: &mut VisualTestContext| {
+            let sha = sha.to_string();
+            cx.update(|window, cx| drop(crate::ops::checkout_commit(&state, sha, window, cx)));
+            cx.run_until_parked();
+        };
+        checkout(&first, cx);
+        assert!(dialogs(cx), "asked");
+        assert_eq!(git(&dir, &["rev-parse", "HEAD"]), loose, "stayed");
+        cx.update(|window, cx| window.close_dialog(cx));
+        cx.run_until_parked();
+        // A branch holds them now: nothing to ask.
+        git(&dir, &["branch", "kept"]);
+        checkout(&first, cx);
+        assert!(!dialogs(cx));
+        assert_eq!(git(&dir, &["rev-parse", "HEAD"]), first);
     }
 
     #[gpui_kit::test]

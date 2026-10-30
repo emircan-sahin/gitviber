@@ -159,20 +159,8 @@ impl IssueView {
                 }
                 cx.notify();
             }),
-            cx.observe_global::<Cache>({
-                // The account decides what the page offers, and it lands without a wake.
-                let mut account = Cache::stamp(cx, &[crate::account::KEY]);
-                move |this: &mut Self, cx| {
-                    let now = Cache::stamp(cx, &[crate::account::KEY]);
-                    if Cache::wakes(cx) != this.wakes
-                        || Cache::generation(cx) != this.generation
-                        || now != account
-                    {
-                        account = now;
-                        cx.notify();
-                    }
-                }
-            }),
+            // The account decides what the page offers.
+            super::observe_cache(|this: &Self| this.wakes, cx),
             cx.observe_window_activation(window, |_, window, cx| {
                 if window.is_window_active() {
                     Cache::wake(cx);

@@ -16,9 +16,11 @@ pub(crate) struct MetalFrames {
 }
 
 impl MetalFrames {
-    /// Dropping the old source invalidates its link.
+    /// Dropping the old source invalidates its link. Counts as a wake: an update in flight
+    /// mustn't pause a link that started after it.
     pub fn replace(&self, source: Option<MetalFrameSource>) {
         *self.source.borrow_mut() = source;
+        self.woken.set(true);
     }
 
     pub fn is_attached(&self) -> bool {
@@ -80,6 +82,14 @@ mod gitviber_tests {
 
         frames.begin_frame();
         assert!(frames.end_frame(false), "an idle update pauses the link");
+    }
+
+    #[test]
+    fn a_link_replaced_during_an_update_is_not_paused_by_it() {
+        let frames = MetalFrames::default();
+        frames.begin_frame();
+        frames.replace(None);
+        assert!(!frames.end_frame(false));
     }
 
     #[test]

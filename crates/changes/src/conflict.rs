@@ -2,8 +2,9 @@
 //! changed a click away, and a choice for it (current, incoming, both, or written by hand). The
 //! text between folds to a few lines; the result can be previewed whole. Once every block is
 //! chosen, Mark resolved writes the file and stages it. A conflict with no blocks to choose in
-//! (a deleted side, a binary, Git LFS files, markers already gone) keeps one side of the whole file instead.
-//! The conflicts can also go to the worktree's agent, or to the merge tool git's config names.
+//! (a deleted side, a binary, Git LFS files, markers already gone) keeps one side of the whole
+//! file instead. The conflicts can also go to the worktree's agent, or to the merge tool git's
+//! config names.
 
 use crate::model::conflicts::{
     Choice, Pick, WholeFile, bases_for, ends_with_newline, for_terminal, is_crlf, lfs_file,
@@ -956,7 +957,7 @@ impl ConflictView {
             .into_any_element()
     }
 
-    /// Conflicts without text blocks (deletions, binaries): a side of the whole file.
+    /// The sides offered for a conflict without text blocks; Git LFS files by their sizes.
     fn whole_choice(&self, l: &Loaded) -> WholeFile {
         match l.lfs {
             Some(sizes) => lfs_file(sizes, self.rebase),
@@ -969,6 +970,8 @@ impl ConflictView {
         }
     }
 
+    /// Conflicts without text blocks (deletions, binaries, Git LFS files): a side of the whole
+    /// file.
     fn whole(&self, l: &Loaded, t: &AppTheme, cx: &mut Context<Self>) -> AnyElement {
         let w = self.whole_choice(l);
         let busy = self.busy;

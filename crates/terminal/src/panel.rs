@@ -204,6 +204,14 @@ pub struct TerminalPanel {
     bound: Option<Bound>,
     /// The home folder it started in while no project was open, until the first one opens.
     home: Option<PathBuf>,
+    /// The saved projects, for the new-terminal menu: kept so other UiState writes (bounds,
+    /// panel sizes) don't redraw the panel.
+    recent: Vec<String>,
+}
+
+fn recent_projects(cx: &App) -> &[String] {
+    cx.try_global::<gitviber_ui::UiState>()
+        .map_or(&[], |s| s.recent_projects.as_slice())
 }
 
 struct Bound {
@@ -484,6 +492,7 @@ impl TerminalPanel {
             branch_reads: HashMap::new(),
             bound: None,
             home: None,
+            recent: Vec::new(),
         }
     }
 
@@ -506,13 +515,18 @@ impl TerminalPanel {
         );
         let mut this = Self::new(gitviber_ui::core(cx), root, config, theme, window, cx);
         this.home = project.is_none().then(|| this.root.clone());
+        this.recent = recent_projects(cx).to_vec();
         let mut subscriptions = vec![
             cx.observe_global::<Settings>(|this, cx| this.sync_look(cx)),
             cx.observe_global::<AppTheme>(|this, cx| this.sync_look(cx)),
             // A worktree's color picked: its tabs take it.
             cx.observe_global::<gitviber_refs::store::Saved>(|_, cx| cx.notify()),
-            // Recent projects fill the new-terminal menu.
-            cx.observe_global::<gitviber_ui::UiState>(|_, cx| cx.notify()),
+            cx.observe_global::<gitviber_ui::UiState>(|this, cx| {
+                if recent_projects(cx) != this.recent.as_slice() {
+                    this.recent = recent_projects(cx).to_vec();
+                    cx.notify();
+                }
+            }),
         ];
         let mut open = false;
         if let Some(ws) = ctx.workspace.upgrade() {
@@ -862,15 +876,11 @@ impl TerminalPanel {
                 p.main_worktree().unwrap_or(p.root()).to_path_buf()
             })
             .unwrap_or_else(|| self.root.clone());
-        cx.try_global::<gitviber_ui::UiState>()
-            .map(|s| {
-                s.recent_projects
-                    .iter()
-                    .filter(|p| Path::new(p) != main)
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.recent
+            .iter()
+            .filter(|p| Path::new(p) != main)
+            .cloned()
+            .collect()
     }
 
     /// A tab's color: its worktree's, as the picker shows it (picked, else its name's); a tab

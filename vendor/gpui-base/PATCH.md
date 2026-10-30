@@ -9,8 +9,8 @@ The crates.io release of gpui-base 0.8.0, byte for byte, except six changes and 
    them once upstream exposes the selections and the syntax context.
 4. Raw HTML and footnotes in markdown as GitHub shows them (the end of this file). Drop the
    parts upstream takes.
-5. Trackpad scrolling that froze after a fast flick (the end of this file). Drop it once
-   upstream ships the same fixes (gpui-kit 0.8.1 has them).
+5. Trackpad scrolling that froze after a fast flick (the end of this file). Drop it on the
+   bump to gpui-kit/gpui-base 0.8.1, which has the same fixes.
 6. A long paragraph with many inline code or bold spans combined its highlights in quadratic
    time on every frame (the end of this file). Drop it once upstream combines them once.
 

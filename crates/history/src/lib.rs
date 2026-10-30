@@ -346,6 +346,34 @@ mod tests {
         assert_eq!(first_frame(true, cx), 0);
     }
 
+    /// Core reads the repository open now: a page warmed for another root is dropped, not
+    /// stored under it.
+    #[gpui_kit::test]
+    fn a_page_read_ahead_for_a_root_core_left_is_dropped(cx: &mut TestAppContext) {
+        gitviber_ui::test_support::config_dir("history-test");
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            gitviber_ui::install_core(cx);
+            gitviber_refs::init(cx);
+            super::init(cx);
+        });
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        let open = repo();
+        cx.update(|window, cx| {
+            Workspace::register_window(&ws, window, cx);
+            ws.update(cx, |ws, cx| ws.open_project(open.clone(), window, cx));
+        });
+        cx.run_until_parked();
+        let other = gitviber_ui::test_support::temp_dir("history-other");
+        cx.update(|_, cx| crate::warm::warm(other.clone(), cx));
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert!(crate::warm::take(&other, cx).is_none());
+            assert!(crate::warm::take(&open, cx).is_some_and(|log| !log.is_empty()));
+        });
+    }
+
     #[gpui_kit::test]
     fn the_list_acts_on_the_head_it_read_and_ignores_rows_gone_since(cx: &mut TestAppContext) {
         gitviber_ui::test_support::config_dir("history-test");

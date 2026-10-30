@@ -579,7 +579,8 @@ fn switched(state: &Entity<RepoState>, name: &str, cx: &App) -> String {
 
 /// Leaving a detached HEAD whose commits no branch, tag or remote branch holds would leave them
 /// to the reflog: asked first, with a branch made here as the way to keep them. `go` leaves.
-fn unless_left_behind(
+/// Every action that moves HEAD goes through here.
+pub fn unless_left_behind(
     state: &Entity<RepoState>,
     verb: &'static str,
     window: &mut Window,
@@ -701,6 +702,45 @@ pub fn detach_here(state: &Entity<RepoState>, b: Branch, window: &mut Window, cx
     });
 }
 
+/// Checks `sha` out detached, its LFS files downloaded with progress and Cancel. Answers whether
+/// it went through; false too when the user chose to stay.
+pub fn checkout_commit(
+    state: &Entity<RepoState>,
+    sha: String,
+    window: &mut Window,
+    cx: &mut App,
+) -> oneshot::Receiver<bool> {
+    let (tx, rx) = oneshot::channel();
+    let weak = state.downgrade();
+    unless_left_behind(state, "Check out", window, cx, move |window, cx| {
+        with(&weak, window, cx, |s, w, cx| {
+            let short = sha[..7.min(sha.len())].to_string();
+            let action = GitAction::new("Checkout")
+                .net()
+                .done(format!("Checked out {short}"));
+            let done = run(
+                s,
+                action,
+                move |core, op| {
+                    plain(api::history::checkout_commit(
+                        core,
+                        sha,
+                        op.id.clone(),
+                        op.progress(),
+                    ))
+                },
+                w,
+                cx,
+            );
+            cx.spawn(async move |_| {
+                let _ = tx.send(done.await.unwrap_or(false));
+            })
+            .detach();
+        })
+    });
+    rx
+}
+
 fn detach_now(state: &Entity<RepoState>, b: Branch, window: &mut Window, cx: &mut App) {
     let root = folder_name(&state.read(cx).root().to_string_lossy()).to_string();
     let again = b.clone();
@@ -743,21 +783,24 @@ pub fn switch_remote(state: &Entity<RepoState>, b: Branch, window: &mut Window, 
     let go = {
         let (weak, name, b) = (state.downgrade(), name.clone(), b.clone());
         move |window: &mut Window, cx: &mut App| {
-            with(&weak, window, cx, |s, w, cx| {
-                let again = b.clone();
-                let action = GitAction::new("Switch branch")
-                    .done(switched(s, &name, cx))
-                    .on_error(switching(s, name.clone(), move |s, w, cx| {
-                        switch_remote(s, again.clone(), w, cx)
-                    }));
-                let remote = b.name.clone();
-                go(
-                    s,
-                    action,
-                    move |core, _| plain(api::branches::switch_tracking(core, remote)),
-                    w,
-                    cx,
-                );
+            let Some(state) = weak.upgrade() else { return };
+            unless_left_behind(&state, "Switch", window, cx, move |window, cx| {
+                with(&weak, window, cx, |s, w, cx| {
+                    let again = b.clone();
+                    let action = GitAction::new("Switch branch")
+                        .done(switched(s, &name, cx))
+                        .on_error(switching(s, name.clone(), move |s, w, cx| {
+                            switch_remote(s, again.clone(), w, cx)
+                        }));
+                    let remote = b.name.clone();
+                    go(
+                        s,
+                        action,
+                        move |core, _| plain(api::branches::switch_tracking(core, remote)),
+                        w,
+                        cx,
+                    );
+                })
             })
         }
     };

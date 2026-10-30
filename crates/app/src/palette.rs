@@ -178,6 +178,8 @@ pub struct Palette {
     /// Set to stop the files' matching in flight.
     matching: Arc<AtomicBool>,
     _matching: Option<Task<()>>,
+    /// `rows` are an earlier query's: the files' matching for this one is still running.
+    stale: bool,
     /// Quick open's lists, observed once files were asked for: a listing landing shows up.
     _listed: Option<Subscription>,
     _live: Live,
@@ -391,6 +393,7 @@ impl Palette {
                 _load: None,
                 matching: Arc::default(),
                 _matching: None,
+                stale: false,
                 _listed: None,
                 _live: Live::new("Palette"),
             };
@@ -477,6 +480,7 @@ impl Palette {
     fn rank(&mut self, cx: &mut Context<Self>) {
         self.matching.store(true, Ordering::Relaxed);
         self._matching = None;
+        self.stale = false;
         self.rank_rows(cx);
         self.sections = sections(&self.rows);
     }
@@ -525,7 +529,7 @@ impl Palette {
         }
         self.rows = match self.mode {
             Mode::Commands | Mode::Files => {
-                self.rank_files(&query, cx);
+                self.set_file_rows(&query, false, cx);
                 return;
             }
             Mode::Changes => {
@@ -568,9 +572,9 @@ impl Palette {
         };
     }
 
-    /// Sets the files' rows; a query over many files is matched in the background, the rows
-    /// staying as they are until it's done.
-    fn rank_files(&mut self, query: &str, cx: &mut Context<Self>) {
+    /// Sets the files' rows; a query over many files is matched in the background, unless `now`,
+    /// the rows staying as they are until it's done.
+    fn set_file_rows(&mut self, query: &str, now: bool, cx: &mut Context<Self>) {
         let Some(files) = self.quick.as_ref().map(|q| q.files.clone()) else {
             self.rows = Vec::new();
             return;
@@ -580,13 +584,14 @@ impl Palette {
         for (at, path) in self.recent.iter().enumerate() {
             recent.entry(path.clone()).or_insert(at);
         }
-        if query.is_empty() || files.len() <= MATCH_ON_UI_THREAD {
+        if now || query.is_empty() || files.len() <= MATCH_ON_UI_THREAD {
             let found = rank_files(&query, &files, &recent, &AtomicBool::new(false));
             self.rows = self.file_rows(&files, found.unwrap_or_default(), query.is_empty());
             return;
         }
         let cancel = Arc::new(AtomicBool::new(false));
         self.matching = cancel.clone();
+        self.stale = true;
         let matched = cx.background_spawn(async move {
             rank_files(&query, &files, &recent, &cancel).map(|found| (files, found))
         });
@@ -595,6 +600,7 @@ impl Palette {
                 return;
             };
             let _ = this.update(cx, |p, cx| {
+                p.stale = false;
                 p.rows = p.file_rows(&files, found, false);
                 p.sections = sections(&p.rows);
                 cx.notify();
@@ -624,6 +630,15 @@ impl Palette {
     }
 
     fn confirm(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.stale {
+            // Enter acts on what's typed, not on the rows the last query left.
+            self.matching.store(true, Ordering::Relaxed);
+            self._matching = None;
+            self.stale = false;
+            let query = self.query.to_string();
+            self.set_file_rows(&query, true, cx);
+            self.sections = sections(&self.rows);
+        }
         let Some(row) = self.rows.get(row) else {
             return;
         };
@@ -980,6 +995,7 @@ impl Render for Palette {
 mod tests {
     use super::*;
 
+    use std::cell::RefCell;
     use std::rc::Rc;
 
     use gitviber_ui::workspace::{TabHandle, TabItem, register_opener, register_quick_open};
@@ -1501,13 +1517,15 @@ mod tests {
             .unwrap();
         settle(cx);
         assert_eq!(labels(&palette, cx).len(), LIMIT);
-        // A few frames' worth of the ~15 rows on screen; measuring every row was 2 × 200.
+        // `settle` draws 3 frames of the rows on screen (~30 in the test window, 90 measured);
+        // measuring every row was 2 × 200 a frame, half of them still fails.
+        const FEW: usize = 3 * 40;
         let built = ROWS_BUILT.with(|n| n.replace(0));
-        assert!(built < LIMIT, "{built} rows built on open");
+        assert!(built < FEW, "{built} rows built on open");
         cx.simulate_keystrokes("m");
         settle(cx);
         let built = ROWS_BUILT.with(|n| n.replace(0));
-        assert!(built < LIMIT, "{built} rows built for a key");
+        assert!(built < FEW, "{built} rows built for a key");
     }
 
     /// Many files are matched off the UI thread: the rows stay until the answer comes, a newer
@@ -1546,6 +1564,49 @@ mod tests {
             .collect();
         assert!(!expected.is_empty());
         assert_eq!(labels(&palette, cx), expected);
+    }
+
+    /// Enter while a background match runs opens the best row for what's typed, not one the
+    /// previous query's rows held.
+    #[gpui_kit::test]
+    fn enter_during_a_background_match_opens_the_typed_querys_row(cx: &mut TestAppContext) {
+        let (host, cx) = window("enter-pending", cx);
+        let files = fake_files(MATCH_ON_UI_THREAD * 3);
+        let candidates = Arc::new(Candidates::new(
+            files.iter().map(|f| f.clone().into()).collect(),
+        ));
+        let opened: Rc<RefCell<Option<String>>> = Rc::default();
+        let sink = opened.clone();
+        cx.update(|_, cx| {
+            register_quick_open(
+                cx,
+                Rc::new(move |_: &PanelContext, _: &mut App| {
+                    let sink = sink.clone();
+                    QuickOpen {
+                        files: candidates.clone(),
+                        open: Rc::new(move |path, _, _| {
+                            *sink.borrow_mut() = Some(path.to_string())
+                        }),
+                    }
+                }),
+            )
+        });
+        let ws = cx.update(|_, cx| host.read(cx).ws.clone());
+        let palette = cx
+            .update(|window, cx| Palette::show(Mode::Files, &ws, window, cx))
+            .unwrap();
+        settle(cx);
+        cx.update(|window, cx| {
+            palette.update(cx, |p, cx| {
+                p.query = "listmod".into();
+                p.rank(cx);
+                assert!(p.stale, "matched in the background");
+                p.confirm(0, window, cx);
+            })
+        });
+        settle(cx);
+        let best = rank("listmod", &files, |f| f.as_str(), true, |_| None)[0].0;
+        assert_eq!(opened.borrow().as_deref(), Some(files[best].as_str()));
     }
 
     /// Opening quick open over 20k files and typing into it, timed; run with --ignored

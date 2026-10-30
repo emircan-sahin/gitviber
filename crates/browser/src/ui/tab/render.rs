@@ -194,6 +194,11 @@ impl Focusable for BrowserTab {
 }
 
 impl TabItem for BrowserTab {
+    /// The page is a native view placed from its paint, which a cached frame skips.
+    fn cacheable(&self, _: &App) -> bool {
+        false
+    }
+
     fn tab_title(&self, cx: &App) -> SharedString {
         self.page_title(cx)
             .unwrap_or_else(|| page_label(&self.current_url(cx)))

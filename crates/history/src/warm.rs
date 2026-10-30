@@ -43,7 +43,7 @@ pub(crate) fn init(cx: &mut App) {
     .detach();
 }
 
-fn warm(root: PathBuf, cx: &mut App) {
+pub(crate) fn warm(root: PathBuf, cx: &mut App) {
     if crate::store::get(cx).all_branches || cx.default_global::<FirstPages>().shown.contains(&root)
     {
         return;
@@ -51,12 +51,21 @@ fn warm(root: PathBuf, cx: &mut App) {
     let core = gitviber_ui::core(cx);
     let key = root.clone();
     let read = cx.spawn(async move |cx| {
+        let pinned = key.clone();
         let log = cx
-            .background_spawn(async move { Source::Head.read(&core, 0, PAGE) })
+            .background_spawn(async move {
+                // Core reads the repo open now: one opened since, before or during, isn't root's.
+                let open = || core.repo().is_ok_and(|r| r == pinned);
+                if !open() {
+                    return None;
+                }
+                let log = Source::Head.read(&core, 0, PAGE).ok();
+                log.filter(|_| open())
+            })
             .await;
         cx.update_global::<FirstPages, _>(|pages, _| {
             if let Some(page) = pages.pages.get_mut(&key) {
-                page.log = log.ok();
+                page.log = log;
             }
         });
     });
