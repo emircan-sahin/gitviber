@@ -1827,6 +1827,13 @@ mod tests {
         cx.update(|_, cx| project.update(cx, |p, cx| p.repo_changed(cx)));
         cx.run_until_parked();
         assert_eq!(state(&project, cx), RepoState::Folder);
+        // An empty `.git` is no repository to git: no reopen, and its files read as a folder's.
+        std::fs::create_dir(plain.join(".git")).unwrap();
+        cx.update(|_, cx| project.update(cx, |p, cx| p.repo_changed(cx)));
+        cx.run_until_parked();
+        assert_eq!(state(&project, cx), RepoState::Folder);
+        assert_eq!(opened.get(), 1, "not opened again");
+        assert!(gitviber_core::git::outside_repo(&plain));
 
         // Initialize Repository: the same project, a repository now, and Opened again.
         let made = cx.update(|_, cx| project.update(cx, |p, cx| p.init_repository(cx)));
