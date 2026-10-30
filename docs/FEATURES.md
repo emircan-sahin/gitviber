@@ -150,7 +150,7 @@ server or talk to the agent without leaving the change you're reading.
   stays in sight; hover the dots for a count ("2 agents working, 1 waiting for you"), and past
   six panes they turn into a count per state. Zoomed to one pane (`⇧⌘↵`), the toolbar shows which one it is.
 - In the terminal, `⌃⌘T` puts focus on the tab strip: `←` / `→` switch tabs, `⌥←` / `⌥→` move one, `⌘W` closes it,
-  and `↵` or `Esc` goes back to the pane.
+  and `↵`, `Esc` or `⌃⌘T` again goes back to the pane.
 - The terminal has its own font, size, line height, cursor and scrollback in Settings. `⌘=` / `⌘−`
   in the terminal, a pinch or Ctrl+scroll over it size its text.
 - `⌘F` finds in the terminal and its scrollback, with match case, whole word and regex.
@@ -432,6 +432,8 @@ worktree.
 - **Settings** (`⌘,`) has one search over every setting.
 - **Shortcuts.** Most actions have one, every one can be rebound in Settings (`⌘,`), and holding `⌘`
   shows the ones that work where you are. See [Shortcuts](SHORTCUTS.md).
+- **Keyboard all the way.** A focus shortcut pressed again gives focus back where it was, and every
+  picker opened by a key or the palette takes the keys: arrows, Home/End, `↵` to pick, `Esc` to close.
 
 ---
 

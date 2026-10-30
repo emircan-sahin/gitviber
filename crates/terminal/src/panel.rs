@@ -1464,8 +1464,12 @@ impl TerminalPanel {
         cx.notify();
     }
 
-    /// Keys to the tab strip (terminal.focusTabs): from a pane Tab is the shell's.
+    /// Keys to the tab strip (terminal.focusTabs): from a pane Tab is the shell's. Again from
+    /// the strip, back into the terminal.
     pub fn focus_strip(&self, window: &mut Window, cx: &mut App) {
+        if self.strip_focus.is_focused(window) {
+            return self.focus_active(window, cx);
+        }
         if self.set().is_some_and(|s| !s.groups.is_empty()) {
             window.focus(&self.strip_focus, cx);
         }
@@ -1476,6 +1480,15 @@ impl TerminalPanel {
     /// tab.moveLeft/moveRight (`move_group`).
     fn strip_key(&mut self, e: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(set) = self.set() else { return };
+        // Its binding is the panes' own: on the strip, its chord (as bound now) goes back in.
+        let again = cx
+            .all_bindings_for_input(std::slice::from_ref(&e.keystroke))
+            .iter()
+            .any(|b| b.action().partial_eq(&terminal::FocusTabs));
+        if again && self.strip_focus.is_focused(window) {
+            self.focus_active(window, cx);
+            return cx.stop_propagation();
+        }
         // A tab's name field has its own keys (a space is typed).
         if !self.strip_focus.is_focused(window)
             || e.keystroke.modifiers.modified()
@@ -3496,6 +3509,10 @@ mod tests {
         assert!(on_strip(cx));
         cx.simulate_keystrokes("enter");
         assert!(in_pane(cx));
+        focus_tabs(cx);
+        assert!(on_strip(cx));
+        focus_tabs(cx);
+        assert!(in_pane(cx), "pressed again, the shortcut goes back in");
         panel.update(cx, |p, cx| p.close_all(cx));
         cx.update(|window, _| window.remove_window());
         cx.run_until_parked();

@@ -8,7 +8,9 @@ use std::collections::HashMap;
 use gitviber_core::api;
 use gitviber_ui::keymap::worktree as wt_actions;
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::{StatusDot, now_unix, relative_time, repaint_next_minute};
+use gitviber_ui::widgets::{
+    Ends, StatusDot, list_step, now_unix, relative_time, repaint_next_minute,
+};
 use gitviber_ui::workspace::PanelContext;
 use gitviber_ui::{ActiveAppTheme, Project};
 use gpui_kit::assets::IconName;
@@ -463,22 +465,19 @@ impl WorktreePicker {
         if k.modifiers.platform || k.modifiers.control || k.modifiers.alt {
             return;
         }
-        let n = self.list.len();
-        match k.key.as_str() {
-            "down" if n > 0 => self.index = Some(self.index.map_or(0, |i| (i + 1) % n)),
-            "up" if n > 0 => self.index = Some(self.index.map_or(n - 1, |i| (i + n - 1) % n)),
-            "enter" => {
-                if let Some(w) = self.hot().filter(Self::usable) {
-                    self.act(Act::Open, w, window, cx);
+        if let Some(to) = list_step(k, self.index, self.list.len(), Ends::Wrap, false) {
+            self.index = Some(to);
+            self.scroll.scroll_to_item(to);
+        } else {
+            match k.key.as_str() {
+                "enter" => {
+                    if let Some(w) = self.hot().filter(Self::usable) {
+                        self.act(Act::Open, w, window, cx);
+                    }
                 }
+                "escape" => self.close(cx),
+                _ => return,
             }
-            "escape" => self.close(cx),
-            _ => return,
-        }
-        if matches!(k.key.as_str(), "up" | "down")
-            && let Some(i) = self.index
-        {
-            self.scroll.scroll_to_item(i);
         }
         cx.stop_propagation();
         cx.notify();

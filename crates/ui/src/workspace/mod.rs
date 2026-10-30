@@ -26,7 +26,7 @@ use std::rc::Rc;
 
 use gpui_kit::{
     AnyView, AnyWindowHandle, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
-    Global, SharedString, Subscription, WeakEntity, Window,
+    Global, SharedString, Subscription, WeakEntity, WeakFocusHandle, Window,
 };
 
 pub use item::{Panel, PanelHandle, SaveDone, Tab, TabHandle, TabIcon, TabItem, save_signal};
@@ -139,6 +139,9 @@ pub struct Workspace {
     /// The terminal over the whole workspace (⌘↵ in it).
     bottom_maximized: bool,
     center_focus: FocusHandle,
+    /// Where focus was when a focus shortcut (⇧⌘E, ⇧⌘G, ⌃1, ⌘J…) took it away: pressed again,
+    /// the shortcut gives it back. Weak, so a closed tab's view isn't kept for it.
+    focus_back: Option<WeakFocusHandle>,
     panels: HashMap<&'static str, PanelHandle>,
     toasts: Vec<Toast>,
     _project_events: Option<Subscription>,
@@ -171,6 +174,7 @@ impl Workspace {
             bottom: side(sizes.bottom.size.is_some() && !sizes.bottom.collapsed, cx),
             bottom_maximized: false,
             center_focus: cx.focus_handle(),
+            focus_back: None,
             panels: HashMap::new(),
             toasts: Vec::new(),
             _project_events: None,
@@ -1178,6 +1182,56 @@ impl Workspace {
             Part::Center => self.center_focus.contains_focused(window, cx),
             Part::Slot(slot) => self.side(*slot).focus.contains_focused(window, cx),
         })
+    }
+
+    /// A focus shortcut's way in: where focus is now, for `focus_back`.
+    pub fn remember_focus(&mut self, window: &Window, cx: &App) {
+        self.focus_back = window.focused(cx).map(|f| f.downgrade());
+    }
+
+    /// The focus shortcut pressed again: focus goes back where `remember_focus` saw it, unless
+    /// that's in `leaving` or no longer drawn in an open part (a closed tab, a hidden panel, an
+    /// inactive tab's view); then to the code view.
+    pub fn focus_back(
+        &mut self,
+        leaving: Option<Part>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let back = self
+            .focus_back
+            .take()
+            .and_then(|w| w.upgrade())
+            .filter(|h| {
+                self.drawn_part(h, window)
+                    .is_some_and(|p| Some(p) != leaving)
+            });
+        match back {
+            Some(handle) => handle.focus(window, cx),
+            None => self.focus_center(window, cx),
+        }
+    }
+
+    /// The shown part `handle` was drawn in last frame; None outside every part or not drawn.
+    /// A part's own handle counts as inside it whether drawn or not: hence the shown check.
+    fn drawn_part(&self, handle: &FocusHandle, window: &Window) -> Option<Part> {
+        Part::ORDER.into_iter().find(|part| match part {
+            Part::Center => {
+                !self.terminal_maximized() && self.center_focus.contains(handle, window)
+            }
+            Part::Slot(slot) => {
+                self.is_shown(*slot) && self.side(*slot).focus.contains(handle, window)
+            }
+        })
+    }
+
+    /// ⇧⌘G, ⇧⌘E: focus into `slot`'s panel, or with focus already there, back where it was.
+    pub fn toggle_slot_focus(&mut self, slot: Slot, window: &mut Window, cx: &mut Context<Self>) {
+        if self.focused_part(window, cx) == Some(Part::Slot(slot)) {
+            return self.focus_back(Some(Part::Slot(slot)), window, cx);
+        }
+        self.remember_focus(window, cx);
+        self.focus_slot(slot, window, cx);
     }
 
     /// F6 and ⇧F6: the next open part after the focused one, wrapping.

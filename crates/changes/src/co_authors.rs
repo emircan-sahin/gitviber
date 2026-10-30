@@ -5,6 +5,7 @@ use crate::model::text::{author_name, is_co_author};
 use gitviber_core::api;
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::memory::Live;
+use gitviber_ui::widgets::{Ends, list_step};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Icon, Sizable as _, v_flex};
@@ -105,9 +106,14 @@ impl CoAuthorPicker {
             return;
         }
         let n = self.rows(cx).len();
+        let typed = !self.query.read(cx).value().is_empty();
+        if let Some(to) = list_step(&e.keystroke, self.index, n, Ends::Stop, typed) {
+            self.index = Some(to);
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         match e.keystroke.key.as_str() {
-            "down" if n > 0 => self.index = Some(self.index.map_or(0, |i| (i + 1).min(n - 1))),
-            "up" if n > 0 => self.index = Some(self.index.map_or(0, |i| i.saturating_sub(1))),
             "enter" => {
                 if let Some(i) = self.index {
                     self.add(i, window, cx);

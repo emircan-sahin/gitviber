@@ -465,6 +465,7 @@ pub(crate) fn init(cx: &mut App) {
     install(cx);
     // Not ours to replace on a rebinding (no META): install keeps them.
     cx.bind_keys(find_bindings(IS_MAC));
+    crate::widgets::list_keys::bind(cx);
     // A rendered document, whichever view shows it; one inside a page that scrolls hands the
     // keys on to it.
     scroll::bind(cx, "MarkdownView", false);

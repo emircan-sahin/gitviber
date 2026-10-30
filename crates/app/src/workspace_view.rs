@@ -12,8 +12,8 @@ use gitviber_ui::memory::{self, Live};
 use gitviber_ui::state::PanelSizes;
 use gitviber_ui::widgets::{CountBadge, Pressable as _};
 use gitviber_ui::workspace::{
-    ChangesOf, PanelContext, ProjectEvent, Registry, Selection, Slot, TabGroup, Toast, Workspace,
-    WorkspaceEvent,
+    ChangesOf, PanelContext, Part, ProjectEvent, Registry, Selection, Slot, TabGroup, Toast,
+    Workspace, WorkspaceEvent,
 };
 use gitviber_ui::{ActiveAppTheme, Settings, UiState, theme, windows};
 use gpui_kit::component::InteractiveElementExt as _;
@@ -217,7 +217,7 @@ impl WorkspaceView {
                 this.overlay.update(cx, |o, cx| o.keystroke(key, &m, cx));
             }
         }));
-        let open_in = cx.new(|_| OpenInButton::new(workspace.clone()));
+        let open_in = cx.new(|cx| OpenInButton::new(workspace.clone(), cx));
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let memory_tick = memory::readout_enabled().then(|| {
@@ -459,8 +459,18 @@ impl WorkspaceView {
         }));
     }
 
+    /// ⌃1–⌃4: focus into that tab of the git panel; pressed with focus already there, back out.
     fn show_left(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.workspace.update(cx, |ws, cx| {
+            let left = Part::Slot(Slot::Left);
+            let inside = ws.focused_part(window, cx) == Some(left);
+            if inside && ws.active_panel(Slot::Left, cx) == Some(id) {
+                return ws.focus_back(Some(left), window, cx);
+            }
+            // From one tab to another, back still means where focus was before the panel.
+            if !inside {
+                ws.remember_focus(window, cx);
+            }
             ws.show_panel(id, cx);
             ws.focus_slot(Slot::Left, window, cx);
         });
@@ -851,17 +861,21 @@ fn toggle_slot(ws: &Entity<Workspace>, slot: Slot, window: &mut Window, cx: &mut
     if ws.read(cx).is_shown(slot) {
         hide_slot(ws, slot, window, cx);
     } else {
-        ws.update(cx, |ws, cx| ws.focus_slot(slot, window, cx));
+        ws.update(cx, |ws, cx| {
+            ws.remember_focus(window, cx);
+            ws.focus_slot(slot, window, cx)
+        });
     }
 }
 
-/// Hides a panel; focus in it goes to the code view rather than out of every part.
+/// Hides a panel; focus in it goes back where it was before the panel took it, else to the
+/// code view, rather than out of every part.
 fn hide_slot(ws: &Entity<Workspace>, slot: Slot, window: &mut Window, cx: &mut App) {
     ws.update(cx, |ws, cx| {
         let had = ws.slot_focus(slot).contains_focused(window, cx);
         ws.set_open(slot, false, cx);
         if had {
-            ws.focus_center(window, cx);
+            ws.focus_back(Some(Part::Slot(slot)), window, cx);
         }
     });
 }
@@ -1215,11 +1229,11 @@ impl WorkspaceView {
             }))
             .on_action(cx.listener(|this, _: &view::FocusGitPanel, w, cx| {
                 this.workspace
-                    .update(cx, |ws, cx| ws.focus_slot(Slot::Left, w, cx))
+                    .update(cx, |ws, cx| ws.toggle_slot_focus(Slot::Left, w, cx))
             }))
             .on_action(cx.listener(|this, _: &view::ShowExplorer, w, cx| {
                 this.workspace
-                    .update(cx, |ws, cx| ws.focus_slot(Slot::Right, w, cx))
+                    .update(cx, |ws, cx| ws.toggle_slot_focus(Slot::Right, w, cx))
             }))
             .on_action(cx.listener(|this, _: &view::FocusCode, w, cx| {
                 this.workspace.update(cx, |ws, cx| ws.focus_center(w, cx))
@@ -2300,6 +2314,60 @@ mod tests {
             keys(cx, "secondary-j");
             assert_eq!(focused(cx), Some(Part::Slot(Slot::Bottom)));
             keys(cx, "secondary-j");
+            assert_eq!(focused(cx), Some(Part::Center));
+        }
+
+        /// A focus shortcut pressed again gives focus back where it was; a hidden panel or one
+        /// that hid meanwhile gives it to the code view.
+        #[gpui_kit::test]
+        fn a_focus_shortcut_again_goes_back_where_focus_was(cx: &mut TestAppContext) {
+            let project = setup("focus-back", cx);
+            let cx = &mut launch(Some(project), START, cx);
+            let ws = workspace(cx);
+            let focused = |cx: &mut VisualTestContext| {
+                cx.update(|window, cx| ws.read(cx).focused_part(window, cx))
+            };
+            let changes = if cfg!(target_os = "macos") {
+                "ctrl-1"
+            } else {
+                "alt-1"
+            };
+            cx.update(|_, cx| ws.update(cx, |ws, cx| ws.set_open(Slot::Bottom, true, cx)));
+            draw(cx);
+            cx.update(|window, cx| ws.update(cx, |ws, cx| ws.focus_slot(Slot::Bottom, window, cx)));
+            draw(cx);
+            assert_eq!(focused(cx), Some(Part::Slot(Slot::Bottom)));
+            keys(cx, "shift-secondary-e");
+            assert_eq!(focused(cx), Some(Part::Slot(Slot::Right)));
+            keys(cx, "shift-secondary-e");
+            assert_eq!(
+                focused(cx),
+                Some(Part::Slot(Slot::Bottom)),
+                "back to the terminal"
+            );
+            keys(cx, "shift-secondary-g");
+            assert_eq!(focused(cx), Some(Part::Slot(Slot::Left)));
+            keys(cx, "shift-secondary-g");
+            assert_eq!(focused(cx), Some(Part::Slot(Slot::Bottom)));
+            // ⌃1 from the git panel's tab and back.
+            keys(cx, changes);
+            assert_eq!(focused(cx), Some(Part::Slot(Slot::Left)));
+            keys(cx, changes);
+            assert_eq!(focused(cx), Some(Part::Slot(Slot::Bottom)));
+            // ⌘J hiding the terminal hands focus back to the explorer it came from.
+            keys(cx, "shift-secondary-e");
+            keys(cx, "secondary-j");
+            keys(cx, "secondary-j");
+            assert_eq!(focused(cx), Some(Part::Slot(Slot::Bottom)));
+            keys(cx, "secondary-j");
+            assert_eq!(focused(cx), Some(Part::Slot(Slot::Right)));
+            // Where focus was hid meanwhile: the code view.
+            keys(cx, "secondary-j");
+            keys(cx, "shift-secondary-e");
+            assert_eq!(focused(cx), Some(Part::Slot(Slot::Right)));
+            cx.update(|_, cx| ws.update(cx, |ws, cx| ws.set_open(Slot::Bottom, false, cx)));
+            draw(cx);
+            keys(cx, "shift-secondary-e");
             assert_eq!(focused(cx), Some(Part::Center));
         }
     }

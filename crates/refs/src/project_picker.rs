@@ -1,6 +1,6 @@
 //! The top bar's project chip and its picker: the saved projects as the user arranged them
 //! (gitviber_ui::projects): Pinned, folders, the rest by last opened or by hand. A filter on
-//! top, ↑/↓ ↵ and ⇧F10 on the rows, drags to reorder or file, and a right-click menu for the
+//! top, ↑/↓ Home/End PgUp/PgDn ↵ and ⇧F10 on the rows, drags to reorder or file, and a right-click menu for the
 //! pin, the color and the folder.
 
 use gitviber_ui::keymap::{file, shortcut_label};
@@ -8,7 +8,7 @@ use gitviber_ui::memory::Live;
 use gitviber_ui::projects::{
     DropOn, Line, Place, ProjectOrg, ProjectSort, SWATCHES, Section, home_relative, project_name,
 };
-use gitviber_ui::widgets::{project_tile, swatch_tile};
+use gitviber_ui::widgets::{Ends, list_step, on_list_keys, project_tile, swatch_tile};
 use gitviber_ui::workspace::PanelContext;
 use gitviber_ui::{ActiveAppTheme, Project, UiState, Workspace};
 use gpui_kit::assets::IconName;
@@ -52,11 +52,7 @@ pub fn switch_project(cx: &mut App) {
     let Some(handle) = cx.active_window() else {
         return;
     };
-    let chip = cx
-        .try_global::<ProjectChips>()
-        .and_then(|c| c.0.iter().find(|(w, _)| *w == handle))
-        .and_then(|(_, c)| c.upgrade());
-    if let Some(chip) = chip {
+    if let Some(chip) = ProjectChip::of_window(handle, cx) {
         chip.update(cx, |c, cx| {
             c.asked = true;
             cx.notify();
@@ -87,6 +83,32 @@ impl ProjectChip {
             _subs: subs,
             _live: Live::new("ProjectChip"),
         }
+    }
+
+    /// The chip `window` drew last.
+    pub fn of_window(window: AnyWindowHandle, cx: &App) -> Option<Entity<Self>> {
+        cx.try_global::<ProjectChips>()?
+            .0
+            .iter()
+            .find(|(w, _)| *w == window)?
+            .1
+            .upgrade()
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.picker.is_some()
+    }
+
+    /// The row the keys are on, counting folders and projects but not headers, while the
+    /// filter has the keys.
+    pub fn key_row(&self, window: &Window, cx: &App) -> Option<usize> {
+        let p = self.picker.as_ref()?.read(cx);
+        if !p.query.focus_handle(cx).is_focused(window) {
+            return None;
+        }
+        let lines = p.lines(cx);
+        let at = p.hot_line(&lines)?;
+        Some(lines[..at].iter().filter(|l| l.is_row()).count())
     }
 
     /// The project is its main worktree, even inside a linked one.
@@ -147,9 +169,14 @@ impl Render for ProjectChip {
         let mut popover = Popover::new("project-picker")
             .anchor(Anchor::TopLeft)
             .open(picker.is_some())
-            .on_open_change(
-                cx.listener(|this, open: &bool, window, cx| this.set_open(*open, window, cx)),
-            )
+            .on_open_change(cx.listener(|this, open: &bool, window, cx| {
+                this.set_open(*open, window, cx);
+                // A click opened the popover, which took focus before the picker existed: the
+                // filter takes it now, so the keys work at once.
+                if let Some(p) = &this.picker {
+                    p.read(cx).query.focus_handle(cx).focus(window, cx);
+                }
+            }))
             .trigger(trigger)
             .content(move |_, _, _| {
                 picker
@@ -338,10 +365,11 @@ impl ProjectPicker {
         let rows: Vec<usize> = (0..lines.len()).filter(|i| lines[*i].is_row()).collect();
         let n = rows.len();
         let pos = at.and_then(|a| rows.iter().position(|r| *r == a));
-        let searching = !self.typed(cx).trim().is_empty();
+        let typed = self.typed(cx);
+        let searching = !typed.trim().is_empty();
+        let step = list_step(k, pos, n, Ends::Wrap, !typed.is_empty());
         let to = match k.key.as_str() {
-            "down" if n > 0 => Some(rows[pos.map_or(0, |p| (p + 1) % n)]),
-            "up" if n > 0 => Some(rows[pos.map_or(n - 1, |p| (p + n - 1) % n)]),
+            _ if step.is_some() => step.map(|p| rows[p]),
             // With nothing typed the caret has nowhere to go: ←/→ fold and unfold.
             "left" | "right" if !searching => {
                 let open = k.key == "right";
@@ -873,8 +901,8 @@ impl Render for ProjectPicker {
                     window.dispatch_action(act.boxed_clone(), cx);
                 })
         };
-        div()
-            .key_context("ProjectPicker")
+        on_list_keys(div(), cx.listener(Self::on_key))
+            .key_context("ProjectPicker ListFilter")
             .capture_key_down(cx.listener(Self::on_key))
             .w(px(340.))
             .flex()

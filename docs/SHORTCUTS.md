@@ -2,7 +2,7 @@
 
 Back to the [README](../README.md). Hold `⌘` in the app, or press `⌘/`, to see the ones that work where you are.
 
-Every shortcut below can be rebound in Settings (`⌘,`), except moving around a list or view (arrows, `↵`, `Space`, `⎋`), `⌃G`, and `⌘G` `⇧⌘G` in the terminal.
+Every shortcut below can be rebound in Settings (`⌘,`), except moving around a list or view (arrows, `Home` `End` `PgUp` `PgDn`, `↵`, `Space`, `⎋`), `⌃G`, and `⌘G` `⇧⌘G` in the terminal.
 While you type, only shortcuts with `⌘`, `⌃` or an F-key apply. `⌘` with an arrow and `⌃` with a letter edit the text instead, and the git actions on `⌘Z` `⇧⌘Z` `⌘⌫` `⌥⌘S` `⌥⌘N` `⇧⌘⌫` don't run there.
 
 On Linux `⌘` is Ctrl, the views are on Alt+1–4, Ctrl+Tab / Ctrl+Shift+Tab switch tabs, link labels are Ctrl+Shift+Space, and the terminal's
@@ -15,9 +15,10 @@ Reopening a closed tab, closing the other tabs, focusing the commit message or t
 | `⌘,` | Settings |
 | Hold `⌘`, or `⌘/` | Show the shortcuts that work where you are (the hold can be turned off in Settings) |
 | `⇧⌘P` `⌘P` | Command palette, quick open |
+| `↓` `↑` `Home` `End` `PgUp` `PgDn`, `↵`, `Esc` | Move through a picker or list (project, branch, worktree, Open in…), pick the row, close it with focus back where it was; with text in its search field `Home` `End` stay the field's |
 | `⌘F` `⇧⌘F` | Find where focus is, find in files |
 | `⌥⌘F`, or `/` in the list | Search the history |
-| `⌃1` `⌃2` `⌃3` `⌃4` | Changes, History, PRs, Issues |
+| `⌃1` `⌃2` `⌃3` `⌃4` | Changes, History, PRs, Issues; pressed again there, focus goes back where it was |
 | `⌘1` … `⌘8`, `⌘9` | Go to tab 1 to 8, the last tab; the terminal's while it has focus |
 | `⇧⌘]` `⇧⌘[`, `⌘→` `⌘←`, `⌃⇥` `⌃⇧⇥` | Next / previous tab; the terminal's while it has focus, though in a terminal pane `⌘←` `⌘→` go to the line's start and end |
 | `⇧⌘T` `⌥⌘T` | Reopen the closed tab, close the other tabs |
@@ -44,11 +45,11 @@ Reopening a closed tab, closing the other tabs, focusing the commit message or t
 | `←` `→` | Collapse, expand a folder (in the project picker, with nothing typed) |
 | `⇧⌘O` | Open in the external app you last picked |
 | `⌘B` `⌥⌘B` | Toggle the git panel, the file explorer |
-| `⇧⌘G` `⌘E` `⇧⌘E` | Focus the git panel, the code view, the file explorer |
+| `⇧⌘G` `⌘E` `⇧⌘E` | Focus the git panel, the code view, the file explorer; `⇧⌘G` `⇧⌘E` pressed again there give focus back where it was |
 | `F6` `⇧F6` | Focus the next / previous panel (not from the terminal, which keeps F-keys for its programs) |
-| `⌘J` or `⌃` `` ` `` | Toggle the terminal |
+| `⌘J` or `⌃` `` ` `` | Toggle the terminal; hiding it gives focus back where it was before it showed (`⌘B` `⌥⌘B` too) |
 | `⌘T` | New terminal |
-| `⌃⌘T` | Focus the terminal's tabs, where `←` `→` switch, `⌥←` `⌥→` move one, `⌘W` closes it and `↵` or `Esc` goes back (in the terminal) |
+| `⌃⌘T` | Focus the terminal's tabs, where `←` `→` switch, `⌥←` `⌥→` move one, `⌘W` closes it and `↵`, `Esc` or `⌃⌘T` again goes back (in the terminal) |
 | `⌘D` `⇧⌘D` `⌘K` | Split right, split down, clear (in the terminal) |
 | `⌘G` `⇧⌘G` | Next / previous match of the terminal's find (in the terminal) |
 | `⇧⌘←` `⇧⌘→` | Previous / next terminal pane by its number, wrapping around; zoomed, the pane shown (in the terminal) |
@@ -65,7 +66,7 @@ Reopening a closed tab, closing the other tabs, focusing the commit message or t
 | `⌘=` `⌘−` `⌘0` | Zoom the interface; in the terminal, its font size (a pinch or Ctrl+scroll too); in a browser tab, the page |
 | `⌥⌘=` `⌥⌘−` `⌥⌘0` | Code font size |
 | `⌘W` | Close tab, or the terminal pane in focus |
-| `⌃⌘C` | Focus the commit message (in the Changes panel) |
+| `⌃⌘C` | Focus the commit message (in the Changes panel); again, back where focus was |
 | `⌘↵` | Commit (in the commit message); create the tag (in its message); post the comment (in an issue's comment) |
 | `⌃⇧⌘T` `⌃⇧⌘P` `⌃⌘P` | Fetch, pull, push |
 | `⌘O` | Open repository |

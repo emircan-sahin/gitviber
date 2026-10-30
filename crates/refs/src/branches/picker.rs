@@ -10,7 +10,7 @@ use std::rc::Rc;
 use gitviber_core::{api, git};
 use gitviber_ui::keymap::git as git_actions;
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::{now_unix, relative_time, repaint_next_minute};
+use gitviber_ui::widgets::{Ends, list_step, now_unix, relative_time, repaint_next_minute};
 use gitviber_ui::workspace::PanelContext;
 use gitviber_ui::{ActiveAppTheme, Project};
 use gpui_kit::assets::IconName;
@@ -594,17 +594,18 @@ impl BranchPicker {
         }
         let layout = self.layout(cx);
         let n = layout.rows.len();
-        match k.key.as_str() {
-            "down" if n > 0 => self.index = Some(self.index.map_or(0, |i| (i + 1) % n)),
-            "up" if n > 0 => self.index = Some(self.index.map_or(n - 1, |i| (i + n - 1) % n)),
-            "escape" => self.close(cx),
-            "enter" => self.choose(window, cx),
-            _ => return,
-        }
-        if matches!(k.key.as_str(), "up" | "down")
-            && let Some(line) = self.index.and_then(|i| layout.line_of.get(i).copied())
-        {
-            self.scroll.scroll_to_item(line, ScrollStrategy::Nearest);
+        let typed = !self.typed(cx).is_empty();
+        if let Some(to) = list_step(k, self.index, n, Ends::Wrap, typed) {
+            self.index = Some(to);
+            if let Some(&line) = layout.line_of.get(to) {
+                self.scroll.scroll_to_item(line, ScrollStrategy::Nearest);
+            }
+        } else {
+            match k.key.as_str() {
+                "escape" => self.close(cx),
+                "enter" => self.choose(window, cx),
+                _ => return,
+            }
         }
         cx.stop_propagation();
         cx.notify();
