@@ -124,11 +124,16 @@ fn command(app: &Handle, req: Request) -> Res<Reply> {
         };
         return Ok(output::finish(reply, &ctx));
     }
-    let cmd = control::parse(&req.cmd, &req.args)?;
+    let batch = req.cmd == "batch";
+    let mut steps = if batch {
+        control::batch(&req.args)?
+    } else {
+        vec![control::step(&req.cmd, &req.args)?]
+    };
     let (pty, root) = pane(app, &req)?;
     let name = target(req.tab)?;
-    let first = match &cmd {
-        Command::Open(url) => Some(url.clone()),
+    let first = match steps.first() {
+        Some((Command::Open(url), _)) => Some(url.clone()),
         _ => None,
     };
     let (id, found) = main(app, move |app| {
@@ -136,10 +141,15 @@ fn command(app: &Handle, req: Request) -> Res<Reply> {
     })?;
     // Made: just made, at the address an open asks for.
     let made = found == Found::Made;
-    if let Command::FillSecret(_, name) = &cmd {
+    for (cmd, _) in &steps {
+        let Command::FillSecret(_, name) = cmd else {
+            continue;
+        };
+        let batched = req.secrets.iter().find(|(n, _)| n == name);
         let value = req
             .secret
             .clone()
+            .or_else(|| batched.map(|(_, v)| v.clone()))
             .ok_or("No value came with --secret: run it as `gitviber browser`.")?;
         if value.chars().count() < output::SHORTEST_SECRET {
             return Err(format!(
@@ -154,19 +164,12 @@ fn command(app: &Handle, req: Request) -> Res<Reply> {
         });
     }
     let said = format!("{} {}", req.cmd, req.args.join(" "));
-    let acts = cmd.acts();
     drive(app, id, found, |tab| {
-        let ran = if acts {
-            tab.yours().and_then(|()| {
-                let ran = tab.run(cmd, made, &req.cwd, req.reveal);
-                // Taken while it ran: whatever it did or didn't do, the page isn't what it saw.
-                match tab.users()? {
-                    Some(name) => Err(control::interrupted(&name)),
-                    None => ran,
-                }
-            })
+        let ran = if batch {
+            tab.batch(steps, made, &req.cwd, req.reveal)
         } else {
-            tab.run(cmd, made, &req.cwd, req.reveal)
+            let (cmd, then) = steps.remove(0);
+            tab.step(cmd, then, made, &req.cwd, req.reveal)
         };
         tab.finish(ran, &said, req.reveal, pty)
     })
@@ -438,10 +441,13 @@ fn hash(s: &str) -> u64 {
     h.finish()
 }
 
-/// What a command leaves besides its reply: the page as it left it, for the loop nudge.
+/// What a command leaves besides its reply: the page as it left it, for the loop nudge, and
+/// whether it went to another document (a batch stops), or to another address (`--snapshot`).
 #[derive(Default)]
 struct Meta {
     state: Option<String>,
+    new_page: bool,
+    moved: bool,
 }
 
 /// A reply with no page state to compare.
@@ -451,8 +457,21 @@ fn plain(reply: Reply) -> (Reply, Meta) {
 
 /// A reply, and the page as the agent read it in it.
 fn read(reply: Reply, state: &str) -> (Reply, Meta) {
-    let state = Some(state.to_string());
-    (reply, Meta { state })
+    let meta = Meta {
+        state: Some(state.to_string()),
+        ..Meta::default()
+    };
+    (reply, meta)
+}
+
+/// A reply on the page a load just brought.
+fn went(reply: Reply) -> (Reply, Meta) {
+    let meta = Meta {
+        new_page: true,
+        moved: true,
+        ..Meta::default()
+    };
+    (reply, meta)
 }
 
 /// No nonce, no reply: page text unmarked, or marked by one the page could guess, is worse.
@@ -612,6 +631,61 @@ impl Tab {
         }
     }
 
+    /// A command, refused on a tab the user has if it acts, and failed if they took it
+    /// meanwhile; with `then`, the page's tree after it once it went to another page.
+    fn step(
+        &self,
+        cmd: Command,
+        then: Option<control::Snap>,
+        made: bool,
+        cwd: &str,
+        reveal: bool,
+    ) -> Res<(Reply, Meta)> {
+        let acts = cmd.acts();
+        if acts {
+            self.yours()?;
+        }
+        let ran = self.run(cmd, made, cwd, reveal);
+        // Taken while it ran: whatever it did or didn't do, the page isn't what it saw.
+        if acts {
+            if let Some(name) = self.users()? {
+                return Err(control::interrupted(&name));
+            }
+        }
+        let (mut reply, meta) = ran?;
+        if let Some(snap) = then.filter(|_| meta.moved) {
+            let tree = match self.snapshot(snap, cwd, reveal) {
+                Ok((tree, _)) => tree.out.unwrap_or_default(),
+                Err(e) => format!("(no snapshot: {e})"),
+            };
+            let did = reply.out.take().unwrap_or_default();
+            reply.out = Some(format!("{did}\n{tree}"));
+        }
+        Ok((reply, meta))
+    }
+
+    /// `batch`'s steps in this one turn (output::batch says where it stops); the loop nudge
+    /// goes by the last step's page.
+    fn batch(
+        &self,
+        steps: Vec<(Command, Option<control::Snap>)>,
+        made: bool,
+        cwd: &str,
+        reveal: bool,
+    ) -> Res<(Reply, Meta)> {
+        let mut last = Meta::default();
+        let said = output::batch(steps, |i, (cmd, then)| {
+            let (reply, meta) = self.step(cmd, then, made && i == 0, cwd, reveal)?;
+            if let Some(error) = reply.error {
+                return Err(error);
+            }
+            let new_page = meta.new_page;
+            last = meta;
+            Ok((reply.out.unwrap_or_default(), new_page))
+        })?;
+        Ok((Reply::out(said), last))
+    }
+
     fn run(&self, cmd: Command, made: bool, cwd: &str, reveal: bool) -> Res<(Reply, Meta)> {
         let act = |input: Value| self.acted(|| self.said(input));
         Ok(match cmd {
@@ -620,11 +694,11 @@ impl Tab {
                     let id = self.id.clone();
                     main(&self.app, move |_| super::navigate(&id, &url))?;
                 }
-                plain(self.arrived("Opened")?)
+                went(self.arrived("Opened")?)
             }
-            Command::Back => plain(self.go(Go::Back, "Back at")?),
-            Command::Forward => plain(self.go(Go::Forward, "Forward at")?),
-            Command::Reload => plain(self.go(Go::Reload, "Reloaded")?),
+            Command::Back => went(self.go(Go::Back, "Back at")?),
+            Command::Forward => went(self.go(Go::Forward, "Forward at")?),
+            Command::Reload => went(self.go(Go::Reload, "Reloaded")?),
             Command::Url => {
                 let id = self.id.clone();
                 // A page that can't say whether it plays leaves the line out.
@@ -867,14 +941,19 @@ impl Tab {
         let at = super::epoch_ms();
         self.script(json!({ "cmd": "watch" }))?;
         let did = act()?;
-        let (line, state) = self.changed(&before, at, request)?;
-        Ok(read(Reply::out(format!("{did}\n{line}")), &state))
+        let (c, state) = self.changed(&before, at, request)?;
+        let meta = Meta {
+            state: Some(state),
+            new_page: c.new_page,
+            moved: c.new_page || c.url != c.url_before,
+        };
+        Ok((Reply::out(format!("{did}\n{}", output::changed(&c))), meta))
     }
 
     /// Once an action's loads, requests (past id `request`) and redraws have landed, or SETTLE
     /// has gone, a load LOAD: what changed since `at` on the page as it was `before`, and the
     /// page as it is now.
-    fn changed(&self, before: &PageState, at: f64, request: u32) -> Res<(String, String)> {
+    fn changed(&self, before: &PageState, at: f64, request: u32) -> Res<(output::Changes, String)> {
         let until = Instant::now() + SETTLE;
         std::thread::sleep(POLL / 2);
         loop {
@@ -920,9 +999,10 @@ impl Tab {
                 .collect(),
             requests: self.requests(request)?,
             url: page.url.clone(),
+            revealed: serde_json::from_value(seen["revealed"].clone()).unwrap_or_default(),
         };
         let state = seen["state"].as_str().unwrap_or(&page.url).to_string();
-        Ok((output::changed(&c), state))
+        Ok((c, state))
     }
 
     /// The requests past id `after` in the tab's network log.

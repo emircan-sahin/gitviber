@@ -30,6 +30,8 @@ pub struct Changes {
     pub answered: Vec<String>,
     /// Requests the action started, oldest first.
     pub requests: Vec<Request>,
+    /// The `+` lines of what the added nodes hold (watch.js `revealed`).
+    pub revealed: Vec<String>,
 }
 
 #[derive(Debug, Default, PartialEq, Clone, Copy)]
@@ -134,11 +136,57 @@ pub fn changed(c: &Changes) -> String {
     if requests.len() > REQUESTS {
         said.push(format!("+{} more requests", requests.len() - REQUESTS));
     }
-    if said.is_empty() {
+    let line = if said.is_empty() {
         "→ no DOM change".into()
     } else {
         format!("→ {}", said.join(", "))
+    };
+    std::iter::once(line)
+        .chain(c.revealed.iter().cloned())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `batch`'s reply, its steps run in order by `run` (a step's text, and whether it loaded
+/// another document): each numbered; at a failure, or after a new document where the rest's
+/// refs would be stale, the rest left out and said so. Err once a step failed.
+pub fn batch<T>(
+    steps: Vec<T>,
+    mut run: impl FnMut(usize, T) -> Result<(String, bool), String>,
+) -> Result<String, String> {
+    let total = steps.len();
+    let rest = |from: usize| match total - from {
+        0 => format!("step {total}"),
+        _ => format!("steps {from}-{total}"),
+    };
+    let mut out = vec![];
+    for (i, step) in steps.into_iter().enumerate() {
+        let n = i + 1;
+        match run(i, step) {
+            Err(e) => {
+                out.push(format!("[{n}] {e}"));
+                if n < total {
+                    out.push(format!(
+                        "Stopped at step {n} of {total}: {} didn't run.",
+                        rest(n + 1)
+                    ));
+                }
+                return Err(out.join("\n"));
+            }
+            Ok((text, new_page)) => {
+                out.push(format!("[{n}] {text}"));
+                if new_page && n < total {
+                    out.push(format!(
+                        "Stopped after step {n} of {total}: it loaded another page, where refs \
+                         from before are stale, so {} didn't run: snapshot, then send them again.",
+                        rest(n + 1)
+                    ));
+                    break;
+                }
+            }
+        }
     }
+    Ok(out.join("\n"))
 }
 
 fn plural(n: u64) -> &'static str {
@@ -559,6 +607,18 @@ mod tests {
             ..Changes::default()
         };
         assert_eq!(changed(&quiet), "→ no DOM change");
+        let revealed = Changes {
+            added: 2,
+            revealed: vec![
+                "+ alert \"Email is required\"".into(),
+                "+ button \"Retry\" [ref=e41]".into(),
+            ],
+            ..Changes::default()
+        };
+        assert_eq!(
+            changed(&revealed),
+            "→ +2 elements\n+ alert \"Email is required\"\n+ button \"Retry\" [ref=e41]"
+        );
         // A canvas game moves with no element changing: said, so it isn't read as nothing.
         let painted = Changes {
             canvas: Canvas::Repainted,
@@ -575,6 +635,63 @@ mod tests {
         assert_eq!(Canvas::of(&json!("animating")), Canvas::Animating);
         assert_eq!(Canvas::of(&json!(null)), Canvas::Still);
         assert_eq!(Canvas::of(&json!("other")), Canvas::Still);
+    }
+
+    #[test]
+    fn a_batch_stops_at_a_failure_and_after_a_new_page() {
+        // (text, a new page) for each step, or why it failed.
+        let run = |steps: Vec<Result<(&str, bool), &str>>| {
+            let mut ran = vec![];
+            let reply = batch(steps, |i, step| {
+                ran.push(i);
+                step.map(|(t, new)| (t.to_string(), new))
+                    .map_err(String::from)
+            });
+            (reply, ran)
+        };
+        let all = run(vec![
+            Ok(("Filled", false)),
+            Ok(("Clicked\n→ new page /post", true)),
+        ]);
+        assert_eq!(
+            all,
+            (
+                Ok("[1] Filled\n[2] Clicked\n→ new page /post".into()),
+                vec![0, 1]
+            )
+        );
+        let failed = run(vec![
+            Ok(("Filled", false)),
+            Err("No element matches #x"),
+            Ok(("", false)),
+        ]);
+        assert_eq!(
+            failed,
+            (
+                Err(
+                    "[1] Filled\n[2] No element matches #x\nStopped at step 2 of 3: step 3 \
+                     didn't run."
+                        .into()
+                ),
+                vec![0, 1]
+            )
+        );
+        let left = run(vec![
+            Ok(("Clicked", true)),
+            Ok(("", false)),
+            Ok(("", false)),
+        ]);
+        assert_eq!(left.1, vec![0]);
+        assert_eq!(
+            left.0,
+            Ok(
+                "[1] Clicked\nStopped after step 1 of 3: it loaded another page, where refs from \
+                before are stale, so steps 2-3 didn't run: snapshot, then send them again."
+                    .into()
+            )
+        );
+        // The last failing is said with no steps left over.
+        assert_eq!(run(vec![Err("stale")]).0, Err("[1] stale".into()));
     }
 
     #[test]

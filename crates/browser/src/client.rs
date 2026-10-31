@@ -78,8 +78,19 @@ fn run(args: Vec<String>) -> i32 {
     if cmd == "device" && cli.args == ["--list"] {
         return print(&Reply::out(control::device_list()), cli.json);
     }
-    let secret = match secret(&cmd, &cli.args) {
-        Ok(secret) => secret,
+    let mut args = cli.args;
+    if cmd == "batch" && args.is_empty() {
+        match piped() {
+            Ok(lines) => args = vec![lines],
+            Err(e) => {
+                eprintln!("{e}");
+                return 1;
+            }
+        }
+    }
+    let found = secret(&cmd, &args).and_then(|one| Ok((one, secrets(&cmd, &args)?)));
+    let (secret, secrets) = match found {
+        Ok(found) => found,
         Err(e) => {
             eprintln!("{e}");
             return 1;
@@ -106,9 +117,10 @@ fn run(args: Vec<String>) -> i32 {
             .map(|d| d.to_string_lossy().into_owned())
             .unwrap_or_default(),
         cmd,
-        args: cli.args,
+        args,
         reveal: cli.reveal,
         secret,
+        secrets,
     };
     match ask(Path::new(&socket), &request) {
         Ok(reply) => print(&reply, cli.json),
@@ -132,12 +144,44 @@ fn secret(cmd: &str, args: &[String]) -> Result<Option<String>, String> {
     if cmd != "fill" {
         return Ok(None);
     }
-    control::fill_secret(args)?
-        .map(|name| {
-            std::env::var(name)
-                .map_err(|_| format!("${name} isn't set in this shell: export it first"))
-        })
-        .transpose()
+    control::fill_secret(args)?.map(env_secret).transpose()
+}
+
+/// `batch`'s fill steps with `--secret <NAME>`: each name with its value.
+fn secrets(cmd: &str, args: &[String]) -> Result<Vec<(String, String)>, String> {
+    if cmd != "batch" {
+        return Ok(vec![]);
+    }
+    let mut found: Vec<(String, String)> = vec![];
+    for words in control::batch_lines(args)? {
+        let Some(("fill", rest)) = words.split_first().map(|(c, r)| (c.as_str(), r)) else {
+            continue;
+        };
+        if let Some(name) = control::fill_secret(rest)? {
+            if !found.iter().any(|(n, _)| n == name) {
+                found.push((name.into(), env_secret(name)?));
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn env_secret(name: &str) -> Result<String, String> {
+    std::env::var(name).map_err(|_| format!("${name} isn't set in this shell: export it first"))
+}
+
+/// `batch` with no commands given: its lines from stdin, piped in.
+fn piped() -> Result<String, String> {
+    use std::io::{IsTerminal, Read};
+    let mut stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        return Err(control::BATCH_USAGE.into());
+    }
+    let mut lines = String::new();
+    stdin
+        .read_to_string(&mut lines)
+        .map_err(|e| format!("Couldn't read the commands from stdin: {e}"))?;
+    Ok(lines)
 }
 
 fn print(reply: &Reply, json: bool) -> i32 {
@@ -233,6 +277,23 @@ mod tests {
     }
 
     #[test]
+    fn a_batchs_secrets_come_from_the_environment_once_each() {
+        let home = std::env::var("HOME").unwrap();
+        let lines = ["fill e1 --secret HOME\ntype e2 --secret USER".to_string()];
+        let both = [
+            lines[0].clone(),
+            "gitviber browser fill e3 --secret HOME".into(),
+        ];
+        assert_eq!(secrets("batch", &both), Ok(vec![("HOME".into(), home)]));
+        assert_eq!(secret("batch", &lines), Ok(None));
+        assert_eq!(secrets("fill", &["e1 --secret HOME".into()]), Ok(vec![]));
+        let unset = secrets("batch", &["fill e1 --secret GITVIBER_NO_SUCH_VAR".into()]);
+        assert!(unset
+            .unwrap_err()
+            .contains("$GITVIBER_NO_SUCH_VAR isn't set"));
+    }
+
+    #[test]
     fn json_gives_the_fields_in_place_of_the_text_where_there_are_some() {
         let text: serde_json::Value =
             serde_json::from_str(&json_text(&Reply::out("done"))).unwrap();
@@ -282,6 +343,7 @@ mod tests {
             args: vec![],
             reveal: false,
             secret: None,
+            secrets: vec![],
         };
         let reply = ask(&socket, &request).ok().unwrap();
         assert_eq!(reply, Reply::out("http://localhost:5173/"));
@@ -345,6 +407,7 @@ mod tests {
             args: vec![],
             reveal: false,
             secret: None,
+            secrets: vec![],
         };
         assert!(matches!(ask(&socket, &request), Err(Failure::NoAnswer)));
         assert!(matches!(ask(&socket, &request), Err(Failure::NoAnswer)));
