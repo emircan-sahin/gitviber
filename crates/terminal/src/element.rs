@@ -1,9 +1,11 @@
-//! Paints a pane's grid: only the rows on screen, text in runs of one style shaped per word and
-//! reused across frames while a row's cells stay the same, box drawing as rectangles, then the
-//! selection, find's matches, the cursor, the command marks and an IME's composition on top.
+//! Paints a pane's grid: only the rows on screen, text shaped a line per run of ASCII (any other
+//! glyph alone) and reused across frames while a row's cells stay the same, box drawing as
+//! rectangles, then the selection, find's matches, the cursor, the command marks and an IME's
+//! composition on top.
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use alacritty_terminal::grid::{Dimensions, Row};
 use alacritty_terminal::index::{Column, Line, Point as GridPoint};
@@ -272,7 +274,9 @@ impl Fonts {
     fn new(family: &SharedString, weight: f32) -> Self {
         let font = |w: f32, style| Font {
             family: family.clone(),
-            features: FontFeatures::disable_ligatures(),
+            // `disable_ligatures` turns off `calt` only: a font's `fi` would take one glyph for
+            // two cells, and gpui places the glyphs after it a cell short.
+            features: FontFeatures(Arc::new(vec![("calt".into(), 0), ("liga".into(), 0)])),
             fallbacks: None,
             weight: FontWeight(w),
             style,
@@ -297,7 +301,7 @@ impl Fonts {
     }
 }
 
-/// A run of narrow cells with glyphs, shaped as one line.
+/// A run of narrow ASCII cells, with the spaces between them, shaped as one line.
 struct Segment {
     start: usize,
     text: String,
@@ -378,15 +382,22 @@ fn build_row(
         }
         let c = cell.c;
         let blank = c == ' ' || c == '\t' || cell.flags.contains(Flags::HIDDEN);
-        // A word's spaces stay in its line: a line a word, each painted as a layer of its own,
-        // made painting the rows most of a frame's time.
+        // Anything else is shaped alone, as wide cells are: gpui puts a line's glyphs a cell
+        // apart by count, and a narrow fallback glyph (Cyrillic і, Thai), a split vowel (Bengali)
+        // or a right-to-left word reordered moved the rest of the line off its cells.
+        let plain = c.is_ascii()
+            && cell
+                .zerowidth()
+                .is_none_or(|z| z.iter().all(|c| is_mark_char(*c)));
+        // A line's spaces stay in it: a line a word, each painted as a layer of its own, made
+        // painting the rows most of a frame's time.
         if blank && width == 1 {
             gap += 1;
             col += 1;
             continue;
         }
         let boxed = if blank { None } else { boxdraw::glyph(c) };
-        if (blank || boxed.is_some() || width == 2)
+        if (blank || boxed.is_some() || width == 2 || !plain)
             && let Some(s) = seg.take()
         {
             shape_segment(s, &mut shape);
@@ -428,7 +439,7 @@ fn build_row(
                     strikethrough: None,
                 }),
             }
-            if width == 2
+            if (width == 2 || !plain)
                 && let Some(s) = seg.take()
             {
                 shape_segment(s, &mut shape);
@@ -559,7 +570,7 @@ impl Element for TerminalElement {
         } else {
             0.
         };
-        let shift = px((frac * f32::from(cell_h) * scale).round() / scale);
+        let shift = crate::pane::row_shift(frac, cell_h, scale);
         let shown = screen + (shift > px(0.)) as usize;
         let top = origin.y - shift;
         let palette = Palette {
@@ -1116,5 +1127,88 @@ mod tests {
         assert_eq!(spans(p(0, 3), p(2, 5), false, Line(2), 80), Some((0, 5)));
         assert_eq!(spans(p(0, 3), p(2, 5), false, Line(3), 80), None);
         assert_eq!(spans(p(0, 8), p(2, 5), true, Line(1), 80), Some((5, 8)));
+    }
+
+    /// Each glyph on its own cell, by the real text system: shaped in one line with its
+    /// neighbours, a narrow fallback glyph pulled the glyphs after it a cell left, a ligature
+    /// too, and a right-to-left word came out reordered across the line.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn every_glyph_lands_on_its_cell() {
+        use alacritty_terminal::event::VoidListener;
+        use alacritty_terminal::term::{Config, Term, test::TermSize};
+        use gpui::AppContext as _;
+
+        struct Blank;
+        impl gpui::Render for Blank {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                gpui::div()
+            }
+        }
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            Arc::new(gpui_apple::AppleTextSystem::new()),
+            Arc::new(gitviber_ui::assets::Assets),
+            gpui_snapshot_platform::current_headless_renderer,
+        );
+        let window = cx
+            .open_window(size(px(400.), px(100.)), |_, cx| cx.new(|_| Blank))
+            .unwrap();
+        let theme = TerminalTheme::dark();
+        let config = crate::TerminalConfig::default();
+        let fonts = Fonts::new(&config.font_family, config.font_weight);
+        let font_size = px(config.font_size);
+        for text in ["ab і cd ef", "x שלום עולם y", "e\u{301}x yz", "fi fl"] {
+            let mut term = Term::new(Config::default(), &TermSize::new(30, 2), VoidListener);
+            crate::vt::Parser::new().advance(&mut term, text.as_bytes());
+            let palette = Palette {
+                theme: &theme,
+                colors: *term.colors(),
+            };
+            let row = &term.grid()[Line(0)];
+            let cols = term.columns();
+            let (cell_w, shape) = cx
+                .update_window(window.into(), |_, w, _| {
+                    let ts = w.text_system();
+                    let advance = ts
+                        .advance(ts.resolve_font(&fonts.regular), font_size, 'm')
+                        .unwrap()
+                        .width;
+                    let scale = w.scale_factor();
+                    let cell_w = px((f32::from(advance) * scale).round() / scale);
+                    let shape = build_row(row, cols, &palette, &fonts, font_size, cell_w, w);
+                    (f32::from(cell_w), shape)
+                })
+                .unwrap();
+            let mut seen = vec![false; cols];
+            for (start, line) in &shape.texts {
+                for g in line.runs.iter().flat_map(|r| &r.glyphs) {
+                    let c = line.text[g.index..].chars().next().unwrap();
+                    let x = *start as f32 * cell_w + f32::from(g.position.x);
+                    // A combining mark draws over its cell, from its left edge or its right.
+                    let on = (0..cols)
+                        .find(|&i| row[Column(i)].zerowidth().is_some_and(|z| z.contains(&c)));
+                    if let Some(on) = on {
+                        let left = on as f32 * cell_w;
+                        assert!((left - 1. ..=left + cell_w + 1.).contains(&x), "{text:?}");
+                        continue;
+                    }
+                    let col = (x / cell_w).round() as usize;
+                    let cell = &row[Column(col.min(cols - 1))];
+                    assert_eq!(cell.c, c, "{text:?}: {c:?} drawn at column {col}");
+                    assert!(
+                        (x - col as f32 * cell_w).abs() <= 1.,
+                        "{text:?}: {c:?} at {x}"
+                    );
+                    seen[col] = true;
+                }
+            }
+            for (col, seen) in seen.iter().enumerate() {
+                let c = row[Column(col)].c;
+                assert!(
+                    *seen || c == ' ',
+                    "{text:?}: column {col} ({c:?}) has no glyph"
+                );
+            }
+        }
     }
 }
