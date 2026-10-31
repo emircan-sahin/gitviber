@@ -34,7 +34,7 @@ use crate::keys;
 use crate::layout::PaneId;
 use crate::marks::{CommandEnd, end_title, strip_marks};
 use crate::mouse::{self, Button, Kind, Mods};
-use crate::session::{Note, Session, Signal, Spawn, term_config};
+use crate::session::{Emu, Note, Session, Signal, Spawn, term_config};
 use crate::{
     Copy, CopyLastOutput, Paste as PasteAction, ScrollPageDown, ScrollPageUp, ScrollToBottom,
     ScrollToTop, SelectAll, SelectLastOutput,
@@ -81,6 +81,12 @@ fn until_background_frame(now: Instant) -> Duration {
 const FIND_REFRESH: Duration = Duration::from_millis(250);
 /// Pinch zoom per font step.
 const PINCH_STEP: f32 = 0.08;
+
+/// How far up a view `frac` of a row short of its offset draws the rows: whole device pixels, so
+/// no edge blurs.
+pub(crate) fn row_shift(frac: f32, cell_h: Pixels, scale: f32) -> Pixels {
+    px((frac * f32::from(cell_h) * scale).round() / scale)
+}
 
 /// The pane's padding: the left one holds the command marks.
 pub(crate) const PAD_LEFT: f32 = 12.;
@@ -928,7 +934,7 @@ impl TerminalPane {
                 _ => None,
             };
             if let Some(s) = scroll {
-                self.session.emu.lock().term.scroll_display(s);
+                self.scroll_rows(|emu| emu.term.scroll_display(s));
                 cx.stop_propagation();
                 cx.notify();
                 self.rehover(cx);
@@ -1143,30 +1149,34 @@ impl TerminalPane {
     /// ⌘↑ / ⌘↓ between the marked prompts; a full-screen program's, or a shell's with no marks,
     /// keep the keys.
     fn jump(&mut self, dir: i32, cx: &mut Context<Self>) {
-        {
-            let mut guard = self.session.emu.lock();
-            let emu = &mut *guard;
-            if emu.term.mode().contains(TermMode::ALT_SCREEN) || !emu.marks.has_commands() {
-                cx.propagate();
-                return;
-            }
-            emu.marks.jump(&mut emu.term, dir);
+        let emu = self.session.emu.lock();
+        if emu.term.mode().contains(TermMode::ALT_SCREEN) || !emu.marks.has_commands() {
+            cx.propagate();
+            return;
         }
+        drop(emu);
+        self.scroll_rows(|emu| emu.marks.jump(&mut emu.term, dir));
         cx.notify();
         self.rehover(cx);
     }
 
     fn scroll_history(&mut self, scroll: Scroll, cx: &mut Context<Self>) {
         self.end_hints(cx);
-        let mut emu = self.session.emu.lock();
-        if emu.term.mode().contains(TermMode::ALT_SCREEN) {
+        if self.mode().contains(TermMode::ALT_SCREEN) {
             cx.propagate();
             return;
         }
-        emu.term.scroll_display(scroll);
-        drop(emu);
+        self.scroll_rows(|emu| emu.term.scroll_display(scroll));
         cx.notify();
         self.rehover(cx);
+    }
+
+    /// Scrolls the history by rows, `f` under the lock, and lands on a row: a swipe's part of a
+    /// row kept through it left the top row cut in half.
+    fn scroll_rows<R>(&mut self, f: impl FnOnce(&mut Emu) -> R) -> R {
+        let out = f(&mut self.session.emu.lock());
+        self.scroll_frac = 0.;
+        out
     }
 
     /// The last command's output, from the integration's marks; None without one.
@@ -1197,9 +1207,7 @@ impl TerminalPane {
     }
 
     pub fn select_last_output(&mut self, cx: &mut Context<Self>) {
-        let mut emu = self.session.emu.lock();
-        let emu = &mut *emu;
-        emu.marks.select_last_output(&mut emu.term);
+        self.scroll_rows(|emu| emu.marks.select_last_output(&mut emu.term));
         cx.notify();
     }
 
@@ -1568,11 +1576,7 @@ impl TerminalPane {
             };
             self.session.write(key.repeat(n));
         } else {
-            self.session
-                .emu
-                .lock()
-                .term
-                .scroll_display(Scroll::Delta(rows));
+            self.scroll_rows(|emu| emu.term.scroll_display(Scroll::Delta(rows)));
             cx.notify();
             self.rehover(cx);
         }
@@ -1635,15 +1639,16 @@ impl TerminalPane {
         if step != 0 {
             self.step_find(step);
         }
-        let mut emu = self.session.emu.lock();
+        let emu = self.session.emu.lock();
         let target = self.find.as_ref().and_then(|f| {
             let m = f.window.matches.get(f.current?)?;
             Some(shifted(*m.start(), emu.scrolled - f.scanned_at))
         });
-        if let Some(point) = target.filter(|p| p.line >= emu.term.topmost_line()) {
-            emu.term.scroll_to_point(point);
-        }
+        let target = target.filter(|p| p.line >= emu.term.topmost_line());
         drop(emu);
+        if let Some(point) = target {
+            self.scroll_rows(|emu| emu.term.scroll_to_point(point));
+        }
         cx.notify();
         Ok(self.find_result())
     }
@@ -1846,7 +1851,7 @@ impl Render for TerminalPane {
         let elevated = self.theme.elevated;
         let border = self.theme.border_strong;
         let fg = self.theme.foreground;
-        let overlays = self.link_overlays();
+        let overlays = self.link_overlays(window.scale_factor());
         div()
             .id(("terminal-pane", self.id))
             .track_focus(&self.focus)
@@ -1938,22 +1943,32 @@ impl Render for TerminalPane {
 impl TerminalPane {
     /// The hints' labels, each at its link's first cell (the part typed dimmed), and what ⌘-click
     /// on the hovered link does.
-    fn link_overlays(&self) -> Vec<gpui::AnyElement> {
+    fn link_overlays(&self, scale: f32) -> Vec<gpui::AnyElement> {
         let Some(m) = self.metrics else { return vec![] };
-        let offset = self.session.emu.lock().term.grid().display_offset() as i32;
+        let (offset, alt) = {
+            let emu = self.session.emu.lock();
+            let alt = emu.mode().contains(TermMode::ALT_SCREEN);
+            (emu.term.grid().display_offset() as i32, alt)
+        };
         let (cw, ch) = (m.cell.width, m.cell.height);
-        let frac = self.scroll_frac;
+        // Where the element draws the rows: up by whole device pixels, a row more below.
+        let frac = if offset > 0 && !alt {
+            self.scroll_frac
+        } else {
+            0.
+        };
+        let shift = row_shift(frac, ch, scale);
+        let shown = m.rows as i32 + (shift > px(0.)) as i32;
+        // From the grid's top left.
         let at = |line: i32, col: usize| {
             let r = line + offset;
-            ((0..m.rows as i32 + (frac > 0.) as i32).contains(&r)).then(|| {
-                (
-                    px(PAD_LEFT) + cw * col as f32,
-                    px(PAD_TOP) + ch * (r as f32 - frac),
-                )
-            })
+            (0..shown)
+                .contains(&r)
+                .then(|| (cw * col as f32, ch * r as f32 - shift))
         };
         let t = &self.theme;
         let mut out = vec![];
+        let mut labels = vec![];
         if let Some(h) = &self.hints {
             for (i, link) in h.links.iter().enumerate() {
                 let Some((x, y)) = h
@@ -1965,7 +1980,7 @@ impl TerminalPane {
                     continue;
                 };
                 let label = &h.hints.labels[i];
-                out.push(
+                labels.push(
                     div()
                         .absolute()
                         .left(x)
@@ -1986,9 +2001,24 @@ impl TerminalPane {
                 );
             }
         }
+        // Cut at the grid's edges, as the rows under them are.
+        if !labels.is_empty() {
+            out.push(
+                div()
+                    .absolute()
+                    .left(px(PAD_LEFT))
+                    .top(px(PAD_TOP))
+                    .right_0()
+                    .h(ch * m.rows as f32)
+                    .overflow_hidden()
+                    .children(labels)
+                    .into_any_element(),
+            );
+        }
         if let Some(link) = self.hovered_link()
             && let Some((x, y)) = at(link.start.0, link.start.1)
         {
+            let (x, y) = (px(PAD_LEFT) + x, px(PAD_TOP) + y);
             let tip = div()
                 .absolute()
                 .left(x)
@@ -2355,6 +2385,114 @@ mod tests {
         assert_eq!(view(cx).1, 0.);
         cx.update(|window, _| window.remove_window());
         cx.run_until_parked();
+    }
+
+    /// A pane three rows up a history of finished commands, half a row short of that: where a
+    /// swipe leaves it.
+    fn between_rows(cx: &mut TestAppContext) -> (Entity<TerminalPane>, &mut VisualTestContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
+            crate::init(cx);
+        });
+        let core = Arc::new(Core::new(Arc::new(|_| {})));
+        let (one, cx) = cx.add_window_view(|window, cx| {
+            let pane = new_pane(
+                1,
+                core,
+                std::env::temp_dir(),
+                None,
+                None,
+                TerminalConfig::default(),
+                TerminalTheme::dark(),
+                window,
+                cx,
+            );
+            pane.update(cx, |p, _| p.started = true);
+            One(pane)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let pane = one.read_with(cx, |o, _| o.0.clone());
+        let mut text = String::new();
+        for i in 0..40 {
+            text += &format!("\x1b]133;A\x07$ cmd{i}\r\n\x1b]133;C;cmdline=cmd{i}\x07");
+            text += &(0..8)
+                .map(|n| format!("out {i}.{n}\r\n"))
+                .collect::<String>();
+            text += "\x1b]133;D;0\x07";
+        }
+        text += "\x1b]133;A\x07$ ";
+        pane.update(cx, |p, _| {
+            let mut emu = p.session.emu.lock();
+            emu.feed(text.as_bytes());
+            emu.term.scroll_display(Scroll::Delta(3));
+            drop(emu);
+            p.scroll_frac = 0.5;
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        (pane, cx)
+    }
+
+    /// Up the history, and on a row: a scroll by rows that kept a swipe's half row left the top
+    /// row cut in half.
+    fn on_a_row(pane: &Entity<TerminalPane>, cx: &mut VisualTestContext) {
+        let (offset, frac) = pane.read_with(cx, |p, _| {
+            let offset = p.session.emu.lock().term.grid().display_offset();
+            (offset, p.scroll_frac)
+        });
+        assert!(offset > 0, "{offset}");
+        assert_eq!(frac, 0.);
+    }
+
+    #[gpui::test]
+    fn paging_the_history_lands_on_a_row(cx: &mut TestAppContext) {
+        let (pane, cx) = between_rows(cx);
+        pane.update(cx, |p, cx| p.scroll_history(Scroll::PageUp, cx));
+        on_a_row(&pane, cx);
+    }
+
+    #[gpui::test]
+    fn shift_page_up_lands_on_a_row(cx: &mut TestAppContext) {
+        let (pane, cx) = between_rows(cx);
+        pane.update_in(cx, |p, window, cx| p.focus(window, cx));
+        cx.simulate_keystrokes("shift-pageup");
+        on_a_row(&pane, cx);
+    }
+
+    #[gpui::test]
+    fn the_command_jump_lands_on_a_row(cx: &mut TestAppContext) {
+        let (pane, cx) = between_rows(cx);
+        pane.update(cx, |p, cx| p.jump(-1, cx));
+        on_a_row(&pane, cx);
+    }
+
+    #[gpui::test]
+    fn selecting_the_last_output_lands_on_a_row(cx: &mut TestAppContext) {
+        let (pane, cx) = between_rows(cx);
+        pane.update(cx, |p, cx| p.select_last_output(cx));
+        assert!(pane.read_with(cx, |p, _| p.has_selection()));
+        on_a_row(&pane, cx);
+    }
+
+    #[gpui::test]
+    fn a_find_jump_lands_on_a_row(cx: &mut TestAppContext) {
+        let (pane, cx) = between_rows(cx);
+        pane.update(cx, |p, cx| p.find("out 2.3", FindOptions::default(), 0, cx))
+            .unwrap();
+        on_a_row(&pane, cx);
+    }
+
+    #[gpui::test]
+    fn a_mouse_wheel_lands_on_a_row(cx: &mut TestAppContext) {
+        let (pane, cx) = between_rows(cx);
+        let middle = pane.read_with(cx, |p, _| p.metrics.expect("laid out").bounds.center());
+        cx.simulate_event(ScrollWheelEvent {
+            position: middle,
+            delta: ScrollDelta::Lines(gpui::point(0., 3.)),
+            modifiers: gpui::Modifiers::none(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        on_a_row(&pane, cx);
     }
 
     /// Focus reports go out on real changes only. GPUI tells a pane of its window going to the
