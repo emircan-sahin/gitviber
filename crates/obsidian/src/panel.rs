@@ -5,9 +5,10 @@
 //! vault on show is watched, so the tree and open notes follow edits made in Obsidian.
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gitviber_core::obsidian::Vault;
 use gitviber_core::{Core, api};
@@ -39,6 +40,9 @@ const INDENT: f32 = 12.;
 /// The open section's least height (its header and two rows), and its height until dragged.
 const MIN_SECTION: f32 = 84.;
 const DEFAULT_SECTION: f32 = 240.;
+/// How long an opening section waits for its folders' listings before drawing what came in: one
+/// slow folder (iCloud-only, a network volume) would hold back every row.
+pub(crate) const OPENING_WAIT: Duration = Duration::from_millis(150);
 
 /// As the file manager is named where the file opens.
 const REVEAL_LABEL: &str = if cfg!(target_os = "macos") {
@@ -81,8 +85,14 @@ pub struct VaultSection {
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
     listings: HashMap<SharedString, Task<()>>,
+    /// The listings an opening section started and is still waiting for, up to `OPENING_WAIT`.
+    opening: HashSet<SharedString>,
+    opening_wait: Option<Task<()>>,
     /// A listing changed the tree since the rows were built.
     relisted: bool,
+    /// Folders whose listing never ends, as a slow volume's.
+    #[cfg(test)]
+    stalled: Vec<SharedString>,
     _subs: Vec<Subscription>,
     _live: Live,
 }
@@ -167,7 +177,11 @@ impl VaultSection {
             scroll: UniformListScrollHandle::new(),
             focus,
             listings: HashMap::new(),
+            opening: HashSet::new(),
+            opening_wait: None,
             relisted: false,
+            #[cfg(test)]
+            stalled: Vec::new(),
             _subs: subs,
             _live: Live::new("VaultSection"),
         };
@@ -196,6 +210,8 @@ impl VaultSection {
         self.error = None;
         self.selected = None;
         self.listings.clear();
+        self.opening.clear();
+        self.opening_wait = None;
         self.relisted = false;
         if let Some(v) = want.as_ref().filter(|_| open) {
             self.hold = Some(self.model.update(cx, |m, cx| m.hold(&v.path, cx)));
@@ -206,6 +222,19 @@ impl VaultSection {
         self.vault = want;
         self.open = open;
         self.refresh(cx);
+        // The rows wait for this batch: drawn as each listing came in, the section grew in steps.
+        self.opening = self.listings.keys().cloned().collect();
+        if !self.opening.is_empty() {
+            self.opening_wait = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(OPENING_WAIT).await;
+                _ = this.update(cx, |this, cx| {
+                    this.opening.clear();
+                    if std::mem::take(&mut this.relisted) {
+                        this.rebuild(cx);
+                    }
+                });
+            }));
+        }
     }
 
     fn keep_open_folders(&self, cx: &mut App) {
@@ -271,24 +300,30 @@ impl VaultSection {
         };
         let id = self.tree.begin(&path);
         let (core, rel, key) = (self.core.clone(), path.to_string(), path.clone());
-        let task = cx.spawn(async move |this, cx| {
-            let listed = cx
-                .background_spawn(async move {
-                    api::obsidian::vault_list_dir(&core, vault, rel).map(|entries| {
-                        entries
-                            .into_iter()
-                            .map(|e| Node {
-                                name: e.name.into(),
-                                path: e.path.into(),
-                                is_dir: e.is_dir,
-                                ignored: false,
-                            })
-                            .collect::<Vec<_>>()
+        let listing = cx.background_spawn(async move {
+            api::obsidian::vault_list_dir(&core, vault, rel).map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|e| Node {
+                        name: e.name.into(),
+                        path: e.path.into(),
+                        is_dir: e.is_dir,
+                        ignored: false,
                     })
-                })
-                .await;
+                    .collect::<Vec<_>>()
+            })
+        });
+        #[cfg(test)]
+        let listing = if self.stalled.contains(&path) {
+            cx.background_spawn(std::future::pending())
+        } else {
+            listing
+        };
+        let task = cx.spawn(async move |this, cx| {
+            let listed = listing.await;
             _ = this.update(cx, |this, cx| {
                 this.listings.remove(&key);
+                this.opening.remove(&key);
                 match this.tree.listed(&key, id, listed) {
                     Listed::Changed | Listed::Closed => this.relisted = true,
                     Listed::RootFailed(e) => {
@@ -300,9 +335,7 @@ impl VaultSection {
                 if key.is_empty() && this.error.is_some() && this.tree.children("").is_some() {
                     this.error = None;
                 }
-                // The rows wait for every folder being listed: an opening section lists its
-                // root and each folder it had open, and drawn as each came in, it grew in steps.
-                if this.listings.is_empty() && std::mem::take(&mut this.relisted) {
+                if this.opening.is_empty() && std::mem::take(&mut this.relisted) {
                     this.rebuild(cx);
                 }
             });
@@ -695,6 +728,11 @@ impl VaultSection {
     #[cfg(test)]
     pub(crate) fn open_folder(&mut self, path: &str, cx: &mut Context<Self>) {
         self.set_open(path, true, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stall(&mut self, path: &str) {
+        self.stalled.push(path.to_string().into());
     }
 
     #[cfg(test)]
