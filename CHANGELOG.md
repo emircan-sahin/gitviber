@@ -6,6 +6,14 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.21] - 2026-10-31
+
+### Fixed
+
+- **Hovering a terminal line with a non-ASCII letter before a colon no longer closes the app.** A line like `açıklama: #333` made the color-link check cut a two-byte letter in half.
+- **Hovering a terminal while its pane narrows no longer closes the app.** The pointer is mapped onto the terminal's grid, which can lag behind the pane's size for a moment, instead of past its last column.
+- **A window shows correctly after the display wakes from sleep.** Its first frame after showing draws everything, where a Claude Code pane used to stay scrambled until something in it changed.
+
 ## [0.1.20] - 2026-10-30
 
 ### Added
