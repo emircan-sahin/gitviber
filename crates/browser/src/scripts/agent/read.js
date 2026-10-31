@@ -102,14 +102,15 @@ function line(el, role, name, ref, urls) {
 }
 
 /**
- * The page under `scope` (a ref or CSS; the body if none) as lines of the tree: each element
- * with a role, refs on what acts, `depth` levels at most. Past `most` lines or `chars` characters
+ * The page under `scope` (a ref or CSS; the body if none), or under each of `roots` in turn, as
+ * lines of the tree: each element with a role, refs on what acts, `depth` levels at most. Past `most` lines or `chars` characters
  * nothing more is looked at but counted, by the region it's in (`lost`): a huge page costs little
  * more than a big one. With `viewport`, an element over a screen above or below the viewport is
  * counted too (`off`, by region), not walked, unless something in it shows on screen.
  */
-function walk({ interactive = false, scope = null, depth = null, boxes = false, urls = false, viewport = false, most = LINES, chars = CHARS - TAIL }) {
-  const root = scope ? resolve(scope) : (document.body ?? document.documentElement);
+function walk({ interactive = false, scope = null, roots = null, depth = null, boxes = false, urls = false, viewport = false, most = LINES, chars = CHARS - TAIL }) {
+  roots ??= [scope ? resolve(scope) : (document.body ?? document.documentElement)];
+  let root;
   const lines = [];
   let [full, size] = [false, 0];
   const lost = new Map();
@@ -213,7 +214,8 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
       const acts = INTERACTIVE.has(role);
       const name = nameOf(el, leaf || TITLES.has(role));
       if (!interactive || acts) {
-        const ref = acts ? refOf(el) : null;
+        // None for a line past the most, which no one reads.
+        const ref = acts && lines.length < most ? refOf(el) : null;
         let text = line(el, role, name, ref, urls);
         if (boxes && ref) text += ` [box=${boxOf(el).join(",")}]`;
         emit(level, text);
@@ -247,7 +249,7 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
       run = null;
     }
   };
-  visit(root, 0, false, false, root);
+  for (root of roots) visit(root, 0, false, false, root);
   if (full && !lost.size) lost.set(null, 1);
   return { lines, lost: [...lost], off };
 }
@@ -298,7 +300,8 @@ function snapshot({ file = false, all = false, ...ask }) {
   if (lost.length) lines.push(cutShort(lost));
   if (off.below) lines.push(`- … ${many(off.below, "element")} below (${screens(off.bottom - window.innerHeight)})${where("below")}; scroll down, -s <ref>, find, or --all`);
   else if (off.above) lines.push("[end of page]");
-  return { out: lines.length ? lines.join("\n") : "(nothing on the page)", removed: prune() };
+  prune();
+  return { out: lines.length ? lines.join("\n") : "(nothing on the page)", removed: state.gone.splice(0) };
 }
 
 /** The regions of `counts` ([element, count]) with the most, biggest first, each with a ref; then the rest. */
@@ -415,15 +418,13 @@ function refOf(el) {
   return ref;
 }
 
-/** Refs whose element left the page, dropped: what `snapshot --json` reports removed. */
+/** Refs whose element left the page, dropped: what the next `snapshot --json` reports removed. */
 function prune() {
-  const gone = [];
   for (const [ref, weak] of state.refs) {
     if (live(weak.deref())) continue;
     state.refs.delete(ref);
-    gone.push(ref);
+    state.gone.push(ref);
   }
-  return gone;
 }
 
 const shows = (el) => el.getClientRects().length > 0 && styleOf(el).visibility !== "hidden";

@@ -30,6 +30,8 @@ pub struct Changes {
     pub answered: Vec<String>,
     /// Requests the action started, oldest first.
     pub requests: Vec<Request>,
+    /// The `+` lines of what the added nodes hold (watch.js `revealed`).
+    pub revealed: Vec<String>,
 }
 
 #[derive(Debug, Default, PartialEq, Clone, Copy)]
@@ -134,11 +136,91 @@ pub fn changed(c: &Changes) -> String {
     if requests.len() > REQUESTS {
         said.push(format!("+{} more requests", requests.len() - REQUESTS));
     }
-    if said.is_empty() {
+    let line = if said.is_empty() {
         "→ no DOM change".into()
     } else {
         format!("→ {}", said.join(", "))
+    };
+    std::iter::once(line)
+        .chain(c.revealed.iter().cloned())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// What a batch step came to.
+#[derive(Debug, PartialEq)]
+pub enum Ran {
+    /// Its text, and whether the page it left makes refs taken before stale.
+    Did(String, Stale),
+    Failed(String),
+    /// Not run: it could still be running when the CLI stops waiting for the batch.
+    Late,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Stale {
+    No,
+    /// Another document.
+    NewPage,
+    /// The same document at another address (history.pushState): a list's items may be others.
+    Moved,
+}
+
+/// `batch`'s reply, its steps run in order by `run`: each numbered; at a failure, past the time
+/// the CLI waits, or after a step where the rest's refs would be stale, the rest left out and
+/// said so. Err once a step failed or ran late.
+pub fn batch<T>(steps: Vec<T>, mut run: impl FnMut(usize, T) -> Ran) -> Result<String, String> {
+    let total = steps.len();
+    let rest = |from: usize| match total - from {
+        0 => format!("step {total}"),
+        _ => format!("steps {from}-{total}"),
+    };
+    let mut out = vec![];
+    for (i, step) in steps.into_iter().enumerate() {
+        let n = i + 1;
+        let (text, stale) = match run(i, step) {
+            Ran::Did(text, stale) => (text, stale),
+            Ran::Failed(e) => {
+                out.push(format!("[{n}] {e}"));
+                if n < total {
+                    out.push(format!(
+                        "Stopped at step {n} of {total}: {} didn't run.",
+                        rest(n + 1)
+                    ));
+                }
+                return Err(out.join("\n"));
+            }
+            Ran::Late => {
+                out.push(format!(
+                    "Out of time at step {n} of {total}: {} didn't run, as they could outlast \
+                     the CLI's five minutes for the whole batch: send them again.",
+                    rest(n)
+                ));
+                return Err(out.join("\n"));
+            }
+        };
+        out.push(format!("[{n}] {text}"));
+        let why = match stale {
+            Stale::No => continue,
+            Stale::NewPage => "it loaded another page",
+            Stale::Moved => "it went to another address",
+        };
+        if n < total {
+            out.push(format!(
+                "Stopped after step {n} of {total}: {why}, where refs from before are stale, \
+                 so {} didn't run: snapshot, then send them again.",
+                rest(n + 1)
+            ));
+            break;
+        }
     }
+    Ok(out.join("\n"))
+}
+
+/// Whether two addresses differ in their #fragment alone: the same document, at a place in it.
+pub fn fragment_only(a: &str, b: &str) -> bool {
+    let page = |u: &str| u.split('#').next().unwrap_or_default().to_string();
+    a != b && page(a) == page(b)
 }
 
 fn plural(n: u64) -> &'static str {
@@ -559,6 +641,18 @@ mod tests {
             ..Changes::default()
         };
         assert_eq!(changed(&quiet), "→ no DOM change");
+        let revealed = Changes {
+            added: 2,
+            revealed: vec![
+                "+ alert \"Email is required\"".into(),
+                "+ button \"Retry\" [ref=e41]".into(),
+            ],
+            ..Changes::default()
+        };
+        assert_eq!(
+            changed(&revealed),
+            "→ +2 elements\n+ alert \"Email is required\"\n+ button \"Retry\" [ref=e41]"
+        );
         // A canvas game moves with no element changing: said, so it isn't read as nothing.
         let painted = Changes {
             canvas: Canvas::Repainted,
@@ -575,6 +669,98 @@ mod tests {
         assert_eq!(Canvas::of(&json!("animating")), Canvas::Animating);
         assert_eq!(Canvas::of(&json!(null)), Canvas::Still);
         assert_eq!(Canvas::of(&json!("other")), Canvas::Still);
+    }
+
+    #[test]
+    fn a_batch_stops_at_a_failure_after_a_new_page_or_address_and_out_of_time() {
+        // Each step's text, or failure.
+        let run = |steps: Vec<Ran>| {
+            let mut ran = vec![];
+            let reply = batch(steps, |i, step| {
+                ran.push(i);
+                step
+            });
+            (reply, ran)
+        };
+        let did = |t: &str, stale| Ran::Did(t.into(), stale);
+        let all = run(vec![
+            did("Filled", Stale::No),
+            did("Clicked\n→ new page /post", Stale::NewPage),
+        ]);
+        assert_eq!(
+            all,
+            (
+                Ok("[1] Filled\n[2] Clicked\n→ new page /post".into()),
+                vec![0, 1]
+            )
+        );
+        let failed = run(vec![
+            did("Filled", Stale::No),
+            Ran::Failed("No element matches #x".into()),
+            did("", Stale::No),
+        ]);
+        assert_eq!(
+            failed,
+            (
+                Err(
+                    "[1] Filled\n[2] No element matches #x\nStopped at step 2 of 3: step 3 \
+                     didn't run."
+                        .into()
+                ),
+                vec![0, 1]
+            )
+        );
+        let left = run(vec![
+            did("Clicked", Stale::NewPage),
+            did("", Stale::No),
+            did("", Stale::No),
+        ]);
+        assert_eq!(left.1, vec![0]);
+        assert_eq!(
+            left.0,
+            Ok(
+                "[1] Clicked\nStopped after step 1 of 3: it loaded another page, where refs from \
+                before are stale, so steps 2-3 didn't run: snapshot, then send them again."
+                    .into()
+            )
+        );
+        let moved = run(vec![did("Clicked", Stale::Moved), did("", Stale::No)]);
+        assert_eq!(moved.1, vec![0]);
+        assert!(moved.0.unwrap().contains("it went to another address"));
+        let late = run(vec![
+            did("Waited", Stale::No),
+            Ran::Late,
+            did("", Stale::No),
+        ]);
+        assert_eq!(
+            late,
+            (
+                Err(
+                    "[1] Waited\nOut of time at step 2 of 3: steps 2-3 didn't run, as they could \
+                     outlast the CLI's five minutes for the whole batch: send them again."
+                        .into()
+                ),
+                vec![0, 1]
+            )
+        );
+        // The last failing is said with no steps left over.
+        assert_eq!(
+            run(vec![Ran::Failed("stale".into())]).0,
+            Err("[1] stale".into())
+        );
+    }
+
+    #[test]
+    fn an_address_that_changes_its_fragment_alone_is_the_same_page() {
+        let at = "http://localhost:3000/list?page=1";
+        assert!(fragment_only(
+            at,
+            "http://localhost:3000/list?page=1#item-4"
+        ));
+        assert!(fragment_only(&format!("{at}#a"), &format!("{at}#b")));
+        assert!(!fragment_only(at, at));
+        assert!(!fragment_only(at, "http://localhost:3000/list?page=2"));
+        assert!(!fragment_only(at, "http://localhost:3000/list?page=2#x"));
     }
 
     #[test]

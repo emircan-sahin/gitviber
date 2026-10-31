@@ -63,6 +63,7 @@ function el(tag: string, attrs: Record<string, string> = {}, children: (Node | s
     hasAttribute: (k: string) => k in attrs,
     setAttribute: (k: string, v: string) => void (attrs[k] = v),
     matches: (css: string) => css === ":disabled" && node.disabled === true,
+    getElementsByTagName: () => all(node),
     getClientRects: () => (node.style.display === "none" ? [] : [node.box]),
     getBoundingClientRect: () => node.box,
     scrollIntoView: () => {},
@@ -131,7 +132,15 @@ function page(children: Node[]) {
       body,
       documentElement: body,
       activeElement: null,
-      getElementById: () => null,
+      // The capturing listeners on it, which a test's page calls as it fires an event.
+      listeners: new Map<string, Set<(e: unknown) => void>>(),
+      addEventListener(type: string, fn: (e: unknown) => void) {
+        this.listeners.set(type, (this.listeners.get(type) ?? new Set()).add(fn));
+      },
+      removeEventListener(type: string, fn: (e: unknown) => void) {
+        this.listeners.get(type)?.delete(fn);
+      },
+      getElementById: (id: string) => find(body, `#${id}`),
       querySelector: (css: string) => find(body, css),
       querySelectorAll: (css: string) => (css.startsWith("dialog") ? all(body).filter((n) => n.getAttribute("role") === "dialog") : []),
       getElementsByTagName: () => all(body),
@@ -459,4 +468,175 @@ test("a page that never holds still is read at the most, and a failed action lea
   const a = (await run(p, { cmd: "changes", quiet: 0, most: 0 })).state;
   await act(p, { cmd: "click", target: "#spin" });
   assert.equal((await run(p, { cmd: "changes", quiet: 0, most: 0 })).state, a);
+});
+
+/** `nodes` put on the page under `parent`, as a page's script adds them. */
+function attach(parent: Node, ...nodes: Node[]) {
+  for (const n of nodes) {
+    parent.childNodes.push(n);
+    n.parentNode = n.parentElement = parent;
+  }
+}
+
+test("an action names what it added that acts, top to bottom, after an alert's text", async () => {
+  const save = el("button", {}, ["Save"], { id: "save" });
+  const ghost = el("button", {}, ["Ghost"]);
+  const behind = el("div", { "aria-hidden": "true" }, []);
+  const said = { nodeType: 3, nodeValue: "", textContent: "", childNodes: [] } as unknown as Node;
+  const status = el("div", { "aria-live": "polite" }, [said]);
+  const p = page([save, behind, status]);
+  p.hit = save;
+  const cancel = el("button", {}, ["Cancel"]);
+  const confirm = el("button", {}, ["Confirm"]);
+  const shut = el("button", {}, ["Shut"], { style: { display: "none" } });
+  const dialog = el("div", { role: "dialog" }, [el("p", {}, ["Sure?"]), cancel, confirm, shut], { box: { x: 10, y: 300, width: 200, height: 100 } });
+  const agree = el("input", { type: "checkbox", "aria-label": "Agree" }, [], { box: { x: 10, y: 100, width: 20, height: 20 } });
+  const alert = el("div", { role: "alert" }, ["Name is required"]);
+  save.onClick = () => {
+    attach(p.document.body, dialog, agree, alert);
+    attach(behind, ghost);
+    said.nodeValue = said.textContent = "Saved ".repeat(30);
+    // The dialog's button again on its own, as a page that adds in steps reports it.
+    Observer.fire([{ type: "childList", addedNodes: [dialog, confirm, agree, alert, alert.childNodes[0], ghost] }, { type: "characterData", target: said } as Mutation]);
+  };
+  await act(p, { cmd: "click", target: "#save" });
+  const seen = await run(p, { cmd: "changes", quiet: 0, most: 0 });
+  assert.deepEqual(seen.revealed, [
+    '+ alert "Name is required"',
+    `+ live "${"Saved ".repeat(20).slice(0, 119)}…"`,
+    '+ checkbox "Agree" [ref=e1]',
+    '+ button "Cancel" [ref=e2]',
+    '+ button "Confirm" [ref=e3]',
+  ]);
+  assert.equal(seen.last, 3, "the refs count toward the tab's highest");
+  // The same refs a snapshot gives after.
+  const tree = (await run(p, { cmd: "snapshot", interactive: true })).out;
+  assert.ok(tree.includes('checkbox "Agree" [ref=e1]') && tree.includes('button "Confirm" [ref=e3]'), tree);
+  save.onClick = null;
+  await act(p, { cmd: "click", target: "#save" });
+  assert.deepEqual((await run(p, { cmd: "changes", quiet: 0, most: 0 })).revealed, [], "nothing added: nothing named");
+});
+
+test("past 15 new elements the reply points at the snapshot of all of them", async () => {
+  const more = el("button", {}, ["More"], { id: "more" });
+  const list = el("div", {}, []);
+  const p = page([more, list]);
+  p.hit = more;
+  const rows = Array.from({ length: 20 }, (_, i) => el("button", {}, [`Row ${i + 1}`], { box: { x: 0, y: 40 * i, width: 100, height: 30 } }));
+  more.onClick = () => {
+    attach(list, ...rows);
+    // Reported in another order than they show.
+    Observer.fire([{ type: "childList", addedNodes: [...rows].reverse() }]);
+  };
+  await act(p, { cmd: "click", target: "#more" });
+  const { revealed, last } = await run(p, { cmd: "changes", quiet: 0, most: 0 });
+  assert.equal(revealed.length, 16);
+  assert.equal(revealed[0], '+ button "Row 1" [ref=e1]');
+  assert.equal(revealed[14], '+ button "Row 15" [ref=e15]');
+  const ref = /^… more: snapshot -s (e\d+)$/.exec(revealed[15])?.[1];
+  assert.ok(ref, revealed[15]);
+  // Walked one past those shown, not all: the rows past it get no ref till a snapshot reads them.
+  assert.equal(last, 17);
+  const all = (await run(p, { cmd: "snapshot", interactive: true, scope: ref })).out.split("\n");
+  assert.deepEqual([all.length, all[15], all[19]], [20, '- button "Row 16" [ref=e16]', '- button "Row 20" [ref=e21]']);
+});
+
+test("a node changed over and over is kept once, so what an action adds after still shows", async () => {
+  const tick = el("button", {}, ["Tick"], { id: "tick" });
+  const clock = { nodeType: 3, nodeValue: "0", textContent: "0", childNodes: [] } as unknown as Node;
+  const p = page([tick, el("span", {}, [clock])]);
+  p.hit = tick;
+  const done = el("button", {}, ["Done"]);
+  tick.onClick = () => {
+    Observer.fire(Array.from({ length: 600 }, () => ({ type: "characterData", target: clock }) as Mutation));
+    attach(p.document.body, done);
+    Observer.fire([{ type: "childList", addedNodes: [done] }]);
+  };
+  await act(p, { cmd: "click", target: "#tick" });
+  const seen = await run(p, { cmd: "changes", quiet: 0, most: 0 });
+  assert.equal(seen.texts, 600);
+  assert.deepEqual(seen.revealed, ['+ button "Done" [ref=e1]']);
+});
+
+test("what an attribute or a toggle shows is named as what was added is", async () => {
+  // Each a box lower than the last, so they're named in this order.
+  const at = (y: number) => ({ box: { x: 10, y, width: 100, height: 30 } });
+  const part = (name: string, attrs: Record<string, string>, y: number, own: Record<string, unknown> = {}) => el("div", attrs, [el("button", {}, [name])], { ...at(y), ...own });
+  const [hidden, muted] = [{ hidden: "" } as Record<string, string>, { "aria-hidden": "true" }];
+  const unhid = part("Hidden", hidden, 100);
+  const unmuted = part("Muted", muted, 200);
+  const details = part("Details", {}, 300);
+  const styled = part("Styled", {}, 400);
+  const menu = part("Menu item", {}, 500, { id: "menu" });
+  const popover = part("Popover", {}, 600);
+  const opener = el("button", { "aria-expanded": "false", "aria-controls": "menu" }, ["Open"], { id: "opener" });
+  // Changed but shown before, or hidden now: nothing to name.
+  const restyled = part("Restyled", { class: "a" }, 700);
+  const hid = part("Hid", {}, 800);
+  const p = page([opener, unhid, unmuted, details, styled, menu, popover, restyled, hid]);
+  p.hit = opener;
+  const attr = (target: Node, attributeName: string, oldValue: string | null) => ({ type: "attributes", target, attributeName, oldValue }) as Mutation;
+  opener.onClick = () => {
+    delete hidden.hidden;
+    muted["aria-hidden"] = "false";
+    opener.setAttribute("aria-expanded", "true");
+    details.setAttribute("open", "");
+    hid.setAttribute("hidden", "");
+    hid.style.display = "none";
+    Observer.fire([
+      attr(unhid, "hidden", ""),
+      attr(unmuted, "aria-hidden", "true"),
+      attr(details, "open", null),
+      attr(styled, "style", "color: red; display: none"),
+      attr(opener, "aria-expanded", "false"),
+      attr(restyled, "class", ""),
+      attr(hid, "hidden", null),
+    ]);
+    for (const fn of p.document.listeners.get("toggle") ?? []) fn({ type: "toggle", target: popover });
+  };
+  await act(p, { cmd: "click", target: "#opener" });
+  const { revealed } = await run(p, { cmd: "changes", quiet: 0, most: 0 });
+  assert.deepEqual(revealed, ["Hidden", "Muted", "Details", "Styled", "Menu item", "Popover"].map((n, i) => `+ button "${n}" [ref=e${i + 1}]`));
+  assert.equal(p.document.listeners.get("toggle")?.size, 0, "the toggle listener goes with the watch");
+});
+
+test("a page that breaks reading what was added still has its changes counted, not taken for a load", async () => {
+  const go = el("button", {}, ["Go"], { id: "go" });
+  const p = page([go]);
+  p.hit = go;
+  const odd = el("div", {}, [], {
+    getClientRects: () => {
+      throw new Error("boom");
+    },
+  });
+  go.onClick = () => {
+    attach(p.document.body, odd);
+    Observer.fire([{ type: "childList", addedNodes: [odd] }]);
+  };
+  await act(p, { cmd: "click", target: "#go" });
+  const seen = await run(p, { cmd: "changes", quiet: 0, most: 0 });
+  assert.deepEqual([seen.gone, seen.error, seen.added, seen.revealed], [undefined, undefined, 1, []]);
+});
+
+test("refs of what an action took away are dropped by the next action, and the next snapshot names them", async () => {
+  const go = el("button", {}, ["Go"], { id: "go" });
+  const p = page([go]);
+  p.hit = go;
+  const ok = el("button", {}, ["OK"]);
+  go.onClick = () => {
+    attach(p.document.body, ok);
+    Observer.fire([{ type: "childList", addedNodes: [ok] }]);
+  };
+  await act(p, { cmd: "click", target: "#go" });
+  assert.deepEqual((await run(p, { cmd: "changes", quiet: 0, most: 0 })).revealed, ['+ button "OK" [ref=e1]']);
+  go.onClick = () => {
+    p.document.body.childNodes.pop();
+    ok.isConnected = false;
+    Observer.fire([{ type: "childList", removedNodes: [ok] }]);
+  };
+  await act(p, { cmd: "click", target: "#go" });
+  await run(p, { cmd: "changes", quiet: 0, most: 0 });
+  const tree = await run(p, { cmd: "snapshot" });
+  assert.deepEqual(tree.removed, ["e1"]);
+  assert.deepEqual((await run(p, { cmd: "snapshot" })).removed, [], "said once");
 });

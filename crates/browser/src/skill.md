@@ -43,6 +43,10 @@ own domain is GitViber's.
   change` means no element changed: on a canvas game look for `canvas repainted`, or take a
   screenshot (fill and check read their field back instead). A failed action
   says why (covered, disabled, not visible): fix that, don't force it with `eval`.
+- Save calls: `open <url> -i` brings the page's `snapshot -i` along; the `+` lines under `→` give
+  refs for what an action added (a menu, a dialog, an error), so act on them without a snapshot;
+  several steps go as one `batch`, which stops at a failure or a new page and says where:
+  `printf '%s\n' "fill e3 'Ada Lovelace'" 'check e5' 'click e9 -i' | gitviber browser batch -`.
 - Clicks, typing, keys, hover, drag and scroll reach the page as the user's own input (trusted).
   Only if a page ignores one, try once with `--synthetic` where the command takes it. A refusal
   (a `<select>`'s menu, a draggable start, a line break in a single-line field) names what to use.
