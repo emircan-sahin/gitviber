@@ -18,7 +18,7 @@ use gpui_kit::{
 
 pub use chord::{IS_MAC, canonical, chord_keys, format_chord};
 pub use commands::*;
-pub use preset::{Preset, take_switch_notice};
+pub use preset::{Preset, SwitchNotice, notice_closed, switch_notice};
 
 use crate::settings::Settings;
 
@@ -31,7 +31,7 @@ pub mod requests {
 
 /// Find Next / Previous in an open find box: the code view's, a diff's or a rendered document's.
 /// Not commands (the old app left them to Monaco): no palette entry, and with no box open the
-/// key goes on, so ⇧⌘G still focuses the Git panel.
+/// key goes on, so ⇧⌘G still runs its command (the classic keys' Focus Git Panel).
 pub mod find {
     gpui_kit::actions!(find, [Next, Prev]);
 }

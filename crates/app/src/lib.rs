@@ -199,12 +199,12 @@ pub fn run(started: impl FnOnce(&mut App) + 'static) {
         // Before the window: what the launch opens is looked up while the window is made.
         opened::install(cx);
         // Before it too: the window's place, once saved, would count as a past launch.
-        let tell_preset = gitviber_ui::keymap::take_switch_notice(cx);
+        let preset_notice = gitviber_ui::keymap::switch_notice(cx);
         open_main_window(None, cx);
         // After it: the menu bar isn't in the window's first frame.
         menus::install(cx);
-        if tell_preset {
-            settings_window::preset_toast(cx);
+        if let Some(notice) = preset_notice {
+            settings_window::preset_toast(notice, cx);
         }
         let (raise_tx, mut raise_rx) = futures::channel::mpsc::unbounded::<()>();
         let core = gitviber_ui::core(cx);

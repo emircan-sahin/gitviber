@@ -4,7 +4,7 @@
 //! (command id → chords, an empty list unbinds), only while they differ from the preset's.
 
 use gitviber_ui::keymap::edit::{clash_note, recorded, with_binding};
-use gitviber_ui::keymap::{self, IS_MAC, Preset, bindings_for, format_chord};
+use gitviber_ui::keymap::{self, IS_MAC, Preset, SwitchNotice, bindings_for, format_chord};
 use gitviber_ui::widgets::Keycaps;
 use gitviber_ui::workspace::Toast;
 use gitviber_ui::{ActiveAppTheme, Settings};
@@ -15,8 +15,8 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _};
 use gpui_kit::{
     AnyElement, App, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _, WeakEntity, div, prelude::FluentBuilder as _, px,
-    rems,
+    StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
+    prelude::FluentBuilder as _, px, rems,
 };
 
 use super::fields::{note, segmented, segments, switch, with_keys};
@@ -231,21 +231,33 @@ pub fn record(id: &str, index: usize, chord: &str, cx: &mut App) {
     set_keys(id, Some(recorded(&keys, index, chord)), cx);
 }
 
-/// For a user from before presets, once (`keymap::take_switch_notice`): the keys moved to the
-/// default preset, and the classic ones are a click away.
-pub fn preset_toast(cx: &mut App) {
-    let toast = Toast::info(
-        "Shortcuts now follow the VS Code preset. The classic GitViber keys are one click away, \
-         here or in Settings → Keyboard Shortcuts.",
-    )
-    .title("Keyboard shortcuts changed")
-    .action("Use Classic Keys", |_, cx| {
-        Settings::update(cx, |s| s.keymap_preset = Preset::Classic)
-    })
-    .action("Open Settings", |_, cx| {
-        super::open(Some(super::Section::Shortcuts), cx)
-    });
-    crate::help::toast(toast, cx);
+/// For a user from before presets (`keymap::switch_notice`): where their keys went. It stays
+/// until a button or its close button, and comes back at the next launch until then.
+pub fn preset_toast(notice: SwitchNotice, cx: &mut App) {
+    let open_settings =
+        |_: &mut Window, cx: &mut App| super::open(Some(super::Section::Shortcuts), cx);
+    let key = |id| keymap::shortcut_label(id, cx).unwrap_or_default();
+    let toast = match notice {
+        SwitchNotice::Moved => Toast::info(format!(
+            "Shortcuts now follow VS Code: tabs are {}–{}, {} focuses the code, {} opens the \
+             palette.",
+            key("tab.goto1"),
+            key("tab.goto8"),
+            key("view.focusCode"),
+            key("workbench.showCommands"),
+        ))
+        .title("Keyboard shortcuts changed")
+        .action("Use Classic Keys", |_, cx| {
+            Settings::update(cx, |s| s.keymap_preset = Preset::Classic)
+        })
+        .action("Open Settings", open_settings),
+        SwitchNotice::KeptClassic => Toast::info(
+            "Your custom shortcuts stay on the Classic keys; switch in Settings → Keyboard.",
+        )
+        .title("Keyboard shortcuts")
+        .action("Open Settings", open_settings),
+    };
+    crate::help::toast(toast.on_close(|_, cx| keymap::notice_closed(cx)), cx);
 }
 
 /// Why a chord can't be recorded: macOS takes it before the app sees it.

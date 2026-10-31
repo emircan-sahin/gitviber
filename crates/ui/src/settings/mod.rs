@@ -89,6 +89,10 @@ impl Settings {
         let map = value.as_object().unwrap_or(&empty);
         let mut settings = Settings::read(map);
         settings.normalize();
+        // A file from before presets: its rebound keys were made over the classic ones.
+        if !map.contains_key("keymapPreset") && !settings.keybindings.is_empty() {
+            settings.keymap_preset = crate::keymap::Preset::Classic;
+        }
         let known: Vec<String> = Settings::keys().collect();
         let unknown = map
             .iter()

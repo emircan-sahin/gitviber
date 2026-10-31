@@ -107,7 +107,7 @@ static VSCODE: &[Keys] = &[
     keys("tab.goto6", &["ctrl+6"]).other(&["alt+6"]),
     keys("tab.goto7", &["ctrl+7"]).other(&["alt+7"]),
     keys("tab.goto8", &["ctrl+8"]).other(&["alt+8"]),
-    keys("tab.last", &["ctrl+0"]).other(&["alt+0"]),
+    keys("tab.last", &["ctrl+0", "ctrl+9"]).other(&["alt+0", "alt+9"]),
     keys("tab.next", &["alt+cmd+right", "shift+cmd+]", "ctrl+tab"])
         .other(&["cmd+pagedown", "cmd+tab"]),
     keys(
@@ -124,16 +124,41 @@ static VSCODE: &[Keys] = &[
     keys("browser.open", &[]),
 ];
 
-/// Once per install: true when this is a user from before presets, whose keys just moved to the
-/// default one; the caller tells them where the classic keys are. A new install never hears it.
-pub fn take_switch_notice(cx: &mut App) -> bool {
-    if UiState::get(cx).keymap_preset_told {
-        return false;
-    }
+/// The one-time word for a user from before presets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwitchNotice {
+    /// Their keys moved to the VS Code preset.
+    Moved,
+    /// They had rebound keys, so they stay on the classic preset (`Settings::from_value`).
+    KeptClassic,
+}
+
+/// What to tell a user from before presets about their keys, at each launch until they close the
+/// word (`notice_closed`): a toast that went with the window mustn't be the only telling. A new
+/// install never hears it.
+pub fn switch_notice(cx: &mut App) -> Option<SwitchNotice> {
     let state = UiState::get(cx);
-    let existing = state.window.is_some() || !state.recent_projects.is_empty();
+    if state.keymap_preset_told {
+        return None;
+    }
+    let s = Settings::get(cx);
+    let existing =
+        state.window.is_some() || !state.recent_projects.is_empty() || !s.keybindings.is_empty();
+    let notice = match s.keymap_preset {
+        _ if !existing => None,
+        Preset::VsCode => Some(SwitchNotice::Moved),
+        Preset::Classic if !s.keybindings.is_empty() => Some(SwitchNotice::KeptClassic),
+        Preset::Classic => None,
+    };
+    if notice.is_none() {
+        notice_closed(cx);
+    }
+    notice
+}
+
+/// The word was read: a button on it or its close button.
+pub fn notice_closed(cx: &mut App) {
     UiState::update(cx, |s| s.keymap_preset_told = true);
-    existing && Settings::get(cx).keymap_preset != Preset::Classic
 }
 
 #[cfg(test)]
@@ -152,25 +177,44 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn a_user_from_before_presets_is_told_once(cx: &mut gpui_kit::TestAppContext) {
+    fn a_user_from_before_presets_is_told_until_they_close_it(cx: &mut gpui_kit::TestAppContext) {
         let used = UiState {
             recent_projects: vec!["/p".into()],
             ..UiState::default()
         };
-        launch(cx, "preset-told-once", Some(used));
+        launch(cx, "preset-told", Some(used));
         assert_eq!(
             cx.update(|cx| Settings::get(cx).keymap_preset),
             Preset::VsCode
         );
-        assert!(cx.update(take_switch_notice));
-        assert!(!cx.update(take_switch_notice));
+        // Asked again at each launch until the word is closed, then never.
+        assert_eq!(cx.update(switch_notice), Some(SwitchNotice::Moved));
+        assert_eq!(cx.update(switch_notice), Some(SwitchNotice::Moved));
+        cx.update(notice_closed);
+        assert_eq!(cx.update(switch_notice), None);
         assert!(cx.update(|cx| UiState::get(cx).keymap_preset_told));
+    }
+
+    #[gpui_kit::test]
+    fn a_user_who_rebound_keys_stays_classic(cx: &mut gpui_kit::TestAppContext) {
+        let dir = crate::test_support::config_dir("preset-rebound");
+        let old = r#"{"keybindings": {"git.push": ["cmd+u"]}}"#;
+        std::fs::write(dir.join("settings.json"), old).unwrap();
+        cx.update(|cx| {
+            crate::settings::init(cx);
+            crate::state::init(cx);
+        });
+        assert_eq!(
+            cx.update(|cx| Settings::get(cx).keymap_preset),
+            Preset::Classic
+        );
+        assert_eq!(cx.update(switch_notice), Some(SwitchNotice::KeptClassic));
     }
 
     #[gpui_kit::test]
     fn a_new_install_is_never_told(cx: &mut gpui_kit::TestAppContext) {
         launch(cx, "preset-new-install", None);
-        assert!(!cx.update(take_switch_notice));
+        assert_eq!(cx.update(switch_notice), None);
         assert!(cx.update(|cx| UiState::get(cx).keymap_preset_told));
     }
 
@@ -185,6 +229,12 @@ mod tests {
         // A file from before presets, or a name this build doesn't know: the default.
         assert_eq!(Settings::from_json("{}").keymap_preset, Preset::VsCode);
         let s = Settings::from_json(r#"{"keymapPreset": "emacs"}"#);
+        assert_eq!(s.keymap_preset, Preset::VsCode);
+        // Keys rebound before presets were made over the classic ones; a picked preset stays.
+        let rebound = r#""keybindings": {"git.push": ["cmd+u"]}"#;
+        let s = Settings::from_json(&format!("{{{rebound}}}"));
+        assert_eq!(s.keymap_preset, Preset::Classic);
+        let s = Settings::from_json(&format!(r#"{{"keymapPreset": "vscode", {rebound}}}"#));
         assert_eq!(s.keymap_preset, Preset::VsCode);
     }
 }
