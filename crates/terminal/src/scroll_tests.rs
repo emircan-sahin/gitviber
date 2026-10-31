@@ -2,6 +2,7 @@
 //! screen: what a frame of it costs (`scroll_bench`, ignored: run it with `--run-ignored all
 //! --no-capture`), and that a long scroll keeps memory flat.
 
+use std::cell::Cell;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -22,26 +23,31 @@ impl Render for Host {
     }
 }
 
-/// Bytes allocated and not freed: what a long scroll leaves behind.
+/// Bytes allocated and not freed by the thread counting: what a long scroll leaves behind. Other
+/// threads go uncounted, as plain `cargo test` runs the crate's other tests in this process.
 struct Counting;
 
-static LIVE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+thread_local! {
+    // Const and without a destructor: read inside the allocator, it never allocates itself.
+    static LIVE: Cell<Option<isize>> = const { Cell::new(None) };
+}
+
+fn count(bytes: isize) {
+    let _ = LIVE.try_with(|l| l.set(l.get().map(|n| n + bytes)));
+}
 
 // SAFETY: forwards to the system allocator, only counting.
 unsafe impl std::alloc::GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
-        LIVE.fetch_add(layout.size() as isize, std::sync::atomic::Ordering::Relaxed);
+        count(layout.size() as isize);
         unsafe { std::alloc::System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
-        LIVE.fetch_sub(layout.size() as isize, std::sync::atomic::Ordering::Relaxed);
+        count(-(layout.size() as isize));
         unsafe { std::alloc::System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
-        LIVE.fetch_add(
-            new_size as isize - layout.size() as isize,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        count(new_size as isize - layout.size() as isize);
         unsafe { std::alloc::System.realloc(ptr, layout, new_size) }
     }
 }
@@ -49,8 +55,11 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOC: Counting = Counting;
 
-fn live() -> isize {
-    LIVE.load(std::sync::atomic::Ordering::Relaxed)
+/// What `f` left allocated, counted on this thread only.
+fn left_allocated(f: impl FnOnce()) -> isize {
+    LIVE.with(|l| l.set(Some(0)));
+    f();
+    LIVE.with(|l| l.replace(None)).unwrap_or(0)
 }
 
 /// A line as a busy agent's output has them: a colored prompt, 256-color words, a background,
@@ -257,11 +266,11 @@ fn a_long_scroll_keeps_memory_flat() {
     };
     pass(&mut b);
     pass(&mut b);
-    let before = live();
-    for _ in 0..3 {
-        pass(&mut b);
-    }
-    let grew = live() - before;
+    let grew = left_allocated(|| {
+        for _ in 0..3 {
+            pass(&mut b);
+        }
+    });
     eprintln!("3 passes through the history: {grew} bytes still allocated");
     assert!(grew < 1_000_000, "scrolling left {grew} bytes behind");
 }
