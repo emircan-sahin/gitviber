@@ -515,10 +515,11 @@ fn css_color(line: &[char], at: usize, len: usize) -> bool {
         return false;
     }
     let head = before[..colon].trim_end();
-    let word_start = head
-        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
-        .map_or(0, |p| p + 1);
-    let prop = &head[word_start..];
+    // The last word by chars: a byte offset + 1 split a 'ı' before it.
+    let prop = head
+        .rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+        .next()
+        .unwrap_or_default();
     [
         "color",
         "background",
@@ -1445,6 +1446,9 @@ mod tests {
         assert_eq!(refs("+  color: #333;"), Vec::<String>::new());
         assert_eq!(refs("   background: #666666;"), Vec::<String>::new());
         assert_eq!(refs("border: 1px solid #111"), Vec::<String>::new());
+        // A two-byte letter before the property's word: sliced inside it, the hover aborted.
+        assert_eq!(refs("açıklama: #333"), ["#333"]);
+        assert_eq!(refs("ığ-color: #333"), Vec::<String>::new());
     }
 
     #[test]
