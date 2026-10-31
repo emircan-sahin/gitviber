@@ -229,7 +229,8 @@ with its images and links, in a serif (or sans-serif) face sized for long readin
 length and the app's theme colors. It goes light or dark with the app, or with the tab's own switch.
 The Aa button beside it sets the text size and face, kept for every page. Nothing of the page's
 scripts runs in it; links still open. `⇧⌘R` again, or following a link, brings the page back as it
-was, scroll position and all, without loading it again. The article is found by the open-source
+was, scroll position and all, without loading it again. `⇧⌘R` tries any page, even one whose button
+hasn't shown, and says so when there's no article. The article is found by the open-source
 Readability library, which goes into the page only when you ask for the reader.
 
 ### Device mode
