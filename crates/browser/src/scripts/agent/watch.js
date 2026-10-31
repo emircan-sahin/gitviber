@@ -85,20 +85,79 @@ function documents(doc = document) {
   return [doc, ...frames.flatMap((inner) => documents(inner))];
 }
 
+// Nodes an action added (or texts it changed) kept for `revealed`: a flood past them is counted only.
+const KEPT = 500;
+
+/** Lines `revealed` names past its live regions' texts, then a pointer to the rest. */
+const REVEALED = 15;
+
+const LIVE_TEXT = 120;
+
+const isLive = (el) => {
+  const role = el.getAttribute?.("role");
+  const live = el.getAttribute?.("aria-live");
+  return role === "alert" || role === "status" || (!!live && live !== "off");
+};
+
+/** The alert, status or aria-live region a node is in, if any. */
+function regionOf(node) {
+  for (let el = node?.nodeType === 1 ? node : node?.parentElement; el; el = el.parentElement) if (isLive(el)) return el;
+  return null;
+}
+
+/** The closest element holding all of `els`; the body across frames. */
+function common(els) {
+  let at = els[0];
+  while (at && !els.every((el) => at.contains(el))) at = at.parentElement;
+  return at ?? document.body;
+}
+
+/**
+ * What an action's added nodes show: the text of each alert or live region they're in, then what
+ * acts under them, refs and all, top to bottom, REVEALED at most and a pointer to the rest.
+ */
+function revealed(nodes) {
+  const out = [];
+  for (const region of new Set(nodes.map(regionOf).filter((r) => live(r) && shows(r)))) {
+    const text = flat(region.innerText ?? region.textContent);
+    if (text) out.push(`+ ${roleOf(region) ?? "live"} ${quote(cut(text, LIVE_TEXT))}`);
+  }
+  const added = new Set(nodes.filter((n) => n?.nodeType === 1 && live(n)));
+  // One under another added node is walked with it; one under aria-hidden isn't read at all.
+  const under = (el) => {
+    for (let p = el.parentElement; p; p = p.parentElement) if (added.has(p) || p.getAttribute("aria-hidden") === "true") return true;
+    return false;
+  };
+  const roots = [...added]
+    .filter((el) => (shows(el) || styleOf(el).display === "contents") && !under(el))
+    .map((el) => [boxOf(el), el])
+    .sort(([a], [b]) => a[1] - b[1] || a[0] - b[0])
+    .map(([, el]) => el);
+  if (!roots.length) return out;
+  const { lines } = walk({ interactive: true, roots });
+  out.push(...lines.slice(0, REVEALED).map((l) => `+ ${l.slice(2)}`));
+  if (lines.length > REVEALED) out.push(`… +${lines.length - REVEALED} more: snapshot -s ${refOf(common(roots))}`);
+  return out;
+}
+
 /** What changes on the page from now, an action's, until `changes` reads it. */
 async function watch() {
   state.watch?.observer.disconnect();
   const canvases = await pictures();
-  const seen = { added: 0, removed: 0, texts: 0, attributes: 0, at: Date.now() };
+  const seen = { added: 0, removed: 0, texts: 0, attributes: 0, at: Date.now(), nodes: [] };
+  const keep = (node) => seen.nodes.length < KEPT && seen.nodes.push(node);
   const count = (records) => {
     if (records.length) seen.at = Date.now();
     for (const r of records) {
       if (r.type === "attributes") seen.attributes++;
-      else if (r.type === "characterData") seen.texts++;
-      else {
+      else if (r.type === "characterData") {
+        seen.texts++;
+        keep(r.target);
+      } else {
         for (const n of r.addedNodes) {
           if (n.nodeType === 1) seen.added++;
           else if (n.nodeType === 3) seen.texts++;
+          keep(n);
         }
         for (const n of r.removedNodes) if (n.nodeType === 1) seen.removed++;
       }
@@ -126,5 +185,5 @@ async function changes({ quiet = 100, most = 500 }) {
   // A repaint is in the state too, so the loop nudge sees a canvas game move; an animation that
   // runs by itself is not, or no repeated action would ever be nudged.
   const canvas = repainted(w.canvases);
-  return { added, removed, texts, attributes, canvas, dialogs: dialogs() - w.dialogs, state: pageState() + (typeof canvas === "number" ? `|canvas:${canvas}` : "") };
+  return { added, removed, texts, attributes, canvas, dialogs: dialogs() - w.dialogs, revealed: revealed(w.seen.nodes), state: pageState() + (typeof canvas === "number" ? `|canvas:${canvas}` : "") };
 }

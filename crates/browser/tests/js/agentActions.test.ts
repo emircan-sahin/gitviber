@@ -460,3 +460,72 @@ test("a page that never holds still is read at the most, and a failed action lea
   await act(p, { cmd: "click", target: "#spin" });
   assert.equal((await run(p, { cmd: "changes", quiet: 0, most: 0 })).state, a);
 });
+
+/** `nodes` put on the page under `parent`, as a page's script adds them. */
+function attach(parent: Node, ...nodes: Node[]) {
+  for (const n of nodes) {
+    parent.childNodes.push(n);
+    n.parentNode = n.parentElement = parent;
+  }
+}
+
+test("an action names what it added that acts, top to bottom, after an alert's text", async () => {
+  const save = el("button", {}, ["Save"], { id: "save" });
+  const ghost = el("button", {}, ["Ghost"]);
+  const behind = el("div", { "aria-hidden": "true" }, []);
+  const said = { nodeType: 3, nodeValue: "", textContent: "", childNodes: [] } as unknown as Node;
+  const status = el("div", { "aria-live": "polite" }, [said]);
+  const p = page([save, behind, status]);
+  p.hit = save;
+  const cancel = el("button", {}, ["Cancel"]);
+  const confirm = el("button", {}, ["Confirm"]);
+  const shut = el("button", {}, ["Shut"], { style: { display: "none" } });
+  const dialog = el("div", { role: "dialog" }, [el("p", {}, ["Sure?"]), cancel, confirm, shut], { box: { x: 10, y: 300, width: 200, height: 100 } });
+  const agree = el("input", { type: "checkbox", "aria-label": "Agree" }, [], { box: { x: 10, y: 100, width: 20, height: 20 } });
+  const alert = el("div", { role: "alert" }, ["Name is required"]);
+  save.onClick = () => {
+    attach(p.document.body, dialog, agree, alert);
+    attach(behind, ghost);
+    said.nodeValue = said.textContent = "Saved ".repeat(30);
+    // The dialog's button again on its own, as a page that adds in steps reports it.
+    Observer.fire([{ type: "childList", addedNodes: [dialog, confirm, agree, alert, alert.childNodes[0], ghost] }, { type: "characterData", target: said } as Mutation]);
+  };
+  await act(p, { cmd: "click", target: "#save" });
+  const seen = await run(p, { cmd: "changes", quiet: 0, most: 0 });
+  assert.deepEqual(seen.revealed, [
+    '+ alert "Name is required"',
+    `+ live "${"Saved ".repeat(20).slice(0, 119)}…"`,
+    '+ checkbox "Agree" [ref=e1]',
+    '+ button "Cancel" [ref=e2]',
+    '+ button "Confirm" [ref=e3]',
+  ]);
+  assert.equal(seen.last, 3, "the refs count toward the tab's highest");
+  // The same refs a snapshot gives after.
+  const tree = (await run(p, { cmd: "snapshot", interactive: true })).out;
+  assert.ok(tree.includes('checkbox "Agree" [ref=e1]') && tree.includes('button "Confirm" [ref=e3]'), tree);
+  save.onClick = null;
+  await act(p, { cmd: "click", target: "#save" });
+  assert.deepEqual((await run(p, { cmd: "changes", quiet: 0, most: 0 })).revealed, [], "nothing added: nothing named");
+});
+
+test("past 15 new elements the reply points at the snapshot of all of them", async () => {
+  const more = el("button", {}, ["More"], { id: "more" });
+  const list = el("div", {}, []);
+  const p = page([more, list]);
+  p.hit = more;
+  const rows = Array.from({ length: 20 }, (_, i) => el("button", {}, [`Row ${i + 1}`], { box: { x: 0, y: 40 * i, width: 100, height: 30 } }));
+  more.onClick = () => {
+    attach(list, ...rows);
+    // Reported in another order than they show.
+    Observer.fire([{ type: "childList", addedNodes: [...rows].reverse() }]);
+  };
+  await act(p, { cmd: "click", target: "#more" });
+  const { revealed } = await run(p, { cmd: "changes", quiet: 0, most: 0 });
+  assert.equal(revealed.length, 16);
+  assert.equal(revealed[0], '+ button "Row 1" [ref=e1]');
+  assert.equal(revealed[14], '+ button "Row 15" [ref=e15]');
+  const ref = /^… \+5 more: snapshot -s (e\d+)$/.exec(revealed[15])?.[1];
+  assert.ok(ref, revealed[15]);
+  const all = (await run(p, { cmd: "snapshot", interactive: true, scope: ref })).out.split("\n");
+  assert.deepEqual([all.length, all[19]], [20, '- button "Row 20" [ref=e20]']);
+});

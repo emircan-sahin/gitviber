@@ -81,12 +81,13 @@ function line(el, role, name, ref) {
 }
 
 /**
- * The page under `scope` (a ref or CSS; the body if none) as lines of the tree: each element
- * with a role, refs on what acts, `depth` levels at most. Past `most` lines or `chars` characters
- * nothing more is looked at but counted: a huge page costs little more than a big one.
+ * The page under `scope` (a ref or CSS; the body if none), or under each of `roots` in turn, as
+ * lines of the tree: each element with a role, refs on what acts, `depth` levels at most. Past
+ * `most` lines or `chars` characters nothing more is looked at but counted: a huge page costs
+ * little more than a big one.
  */
-function walk({ interactive = false, scope = null, depth = null, boxes = false, most = LINES, chars = CHARS }) {
-  const root = scope ? resolve(scope) : (document.body ?? document.documentElement);
+function walk({ interactive = false, scope = null, roots = null, depth = null, boxes = false, most = LINES, chars = CHARS }) {
+  roots ??= [scope ? resolve(scope) : (document.body ?? document.documentElement)];
   const lines = [];
   let [full, size, omitted] = [false, 0, 0];
   const emit = (level, text) => {
@@ -147,7 +148,7 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
     const children = el.shadowRoot ? [...el.shadowRoot.childNodes, ...el.childNodes] : [...el.childNodes];
     for (const child of children) visit(child, next, pointer || style.cursor === "pointer", muted || TITLES.has(role));
   };
-  visit(root, 0, false, false);
+  for (const root of roots) visit(root, 0, false, false);
   return { lines, omitted: full ? Math.max(omitted, 1) : 0 };
 }
 
