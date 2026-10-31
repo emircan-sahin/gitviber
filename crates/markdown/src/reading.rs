@@ -30,7 +30,7 @@ const PARAGRAPH_GAP_EM: f32 = 0.75;
 /// The column in ems of the body: about 75 characters of prose a line, at any zoom.
 const MEASURE_EM: f32 = 40.;
 
-/// Code blocks, tables and diagrams get this much: 860px at the default size.
+/// Code blocks, tables and diagrams get this much: about 860px at the default size.
 const WIDE_EM: f32 = 56.;
 
 /// The body text's size: 15.4px at the default 13.5px code font, before any zoom.

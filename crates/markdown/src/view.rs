@@ -1303,6 +1303,25 @@ mod tests {
         assert!((narrow - (500. - 64.)).abs() < 1., "{narrow}");
     }
 
+    /// A pull request's body or a comment keeps the interface's text size through a zoom step:
+    /// only a document a pane shows reads at the reading size.
+    #[gpui_kit::test]
+    fn inline_views_keep_the_interfaces_size(cx: &mut TestAppContext) {
+        let (host, cx) = window(cx);
+        let doc = "A paragraph with `code`.\n\n```\nfn main() {}\n```\n";
+        for inline in [true, false] {
+            let height = shown(&host, doc, inline, cx);
+            let before = height(cx);
+            cx.update(|_, cx| (0..4).for_each(|_| gitviber_ui::Settings::step_reading_size(cx, 1)));
+            let after = height(cx);
+            cx.update(|_, cx| gitviber_ui::Settings::step_reading_size(cx, 0));
+            match inline {
+                true => assert_eq!(after, before),
+                false => assert!(after > before, "{after} after {before}"),
+            }
+        }
+    }
+
     /// Paragraphs are spaced by 3/4 of the body's size, at any zoom: a line and a gap, 2.35em.
     #[gpui_kit::test]
     fn the_paragraph_gap_follows_the_reading_size(cx: &mut TestAppContext) {
@@ -1326,10 +1345,10 @@ mod tests {
         let doc = format!("{words}\n\n```\n{words}\n```\n\n| a |\n|---|\n| {words} |\n");
         let view = cx.update(|window, cx| {
             let view = cx.new(|cx| MarkdownView::new(&doc, MarkdownBase::default(), window, cx));
-            host.update(cx, |h, cx| h.0 = Some(view.clone().into()));
+            host.update(cx, |h, _| h.0 = Some(view.clone().into()));
             view
         });
-        let mut heights = |width: f32, cx: &mut VisualTestContext| {
+        let heights = |width: f32, cx: &mut VisualTestContext| {
             cx.simulate_resize(gpui_kit::size(px(width), px(900.)));
             draw(cx);
             view.read_with(cx, |v, cx| {
