@@ -40,6 +40,7 @@ use gpui_kit::{
 
 pub use git::Which;
 use shell::Page;
+pub use shortcuts::preset_toast;
 
 /// The sections, most used first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

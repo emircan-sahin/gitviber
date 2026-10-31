@@ -1,10 +1,11 @@
-//! The command registry and the keymap built from it. Defaults per platform, the user's
-//! rebindings from settings (`keybindings`: command id → chords, an empty list unbinds), and the
-//! key contexts that keep letters and ⌥ chords out of text fields and the terminal.
+//! The command registry and the keymap built from it. Defaults per preset and platform, the
+//! user's rebindings over them from settings (`keybindings`: command id → chords, an empty list
+//! unbinds), and the key contexts that keep letters and ⌥ chords out of text fields and the terminal.
 
 pub mod chord;
 mod commands;
 pub mod edit;
+mod preset;
 pub mod scroll;
 
 use std::cell::RefCell;
@@ -17,6 +18,7 @@ use gpui_kit::{
 
 pub use chord::{IS_MAC, canonical, chord_keys, format_chord};
 pub use commands::*;
+pub use preset::{Preset, take_switch_notice};
 
 use crate::settings::Settings;
 
@@ -92,10 +94,11 @@ fn typed_letter(e: &KeystrokeEvent, cx: &App) -> Option<Keystroke> {
         return None;
     }
     let chord = edit::chord_of(ks, IS_MAC)?;
-    let overrides = &Settings::get(cx).keybindings;
+    let s = Settings::get(cx);
     all_commands()
         .any(|c| {
-            chord::runs_in_editor(&chord, c) && bindings_for(c, overrides, IS_MAC).contains(&chord)
+            chord::runs_in_editor(&chord, c)
+                && bindings_for(c, s.keymap_preset, &s.keybindings, IS_MAC).contains(&chord)
         })
         .then(|| Keystroke {
             modifiers: Modifiers::none(),
@@ -214,9 +217,9 @@ pub struct Command {
     pub id: &'static str,
     pub title: &'static str,
     pub category: Category,
-    /// The default chords on macOS, the first one shown.
+    /// The classic preset's chords on macOS, the first one shown.
     pub keys: &'static [&'static str],
-    /// The defaults elsewhere, where they differ.
+    /// The classic chords elsewhere, where they differ.
     pub keys_other: Option<&'static [&'static str]>,
     /// The key context it listens in, for a command only one place handles ("Terminal").
     pub local: Option<&'static str>,
@@ -294,7 +297,7 @@ impl Command {
         self.local.map(place_name)
     }
 
-    /// The platform's defaults.
+    /// The classic preset's chords for the platform; `Preset::keys` has the others.
     pub fn default_keys(&self, mac: bool) -> &'static [&'static str] {
         match self.keys_other {
             Some(other) if !mac => other,
@@ -357,22 +360,32 @@ pub fn clean_overrides(raw: &Overrides) -> Overrides {
         .collect()
 }
 
-/// The chords a command runs on now: the user's, else the platform's defaults.
-pub fn bindings_for(command: &Command, overrides: &Overrides, mac: bool) -> Vec<String> {
+/// The chords a command runs on now: the user's, else the preset's for the platform.
+pub fn bindings_for(
+    command: &Command,
+    preset: Preset,
+    overrides: &Overrides,
+    mac: bool,
+) -> Vec<String> {
     match overrides.get(command.id) {
         Some(keys) => keys.clone(),
-        None => command
-            .default_keys(mac)
+        None => preset
+            .keys(command, mac)
             .iter()
             .map(|k| k.to_string())
             .collect(),
     }
 }
 
+/// `bindings_for` with the settings' preset and rebindings.
+pub fn current_bindings(command: &Command, cx: &App) -> Vec<String> {
+    let s = Settings::get(cx);
+    bindings_for(command, s.keymap_preset, &s.keybindings, IS_MAC)
+}
+
 /// A command's first chord, formatted for a tooltip or a hint; None when it has none.
 pub fn shortcut_label(id: &str, cx: &App) -> Option<String> {
-    let command = command(id)?;
-    let keys = bindings_for(command, &Settings::get(cx).keybindings, IS_MAC);
+    let keys = current_bindings(command(id)?, cx);
     keys.first().map(|k| format_chord(k, IS_MAC))
 }
 
@@ -407,7 +420,7 @@ pub fn context_for(chord: &str, command: &Command, mac: bool) -> String {
 /// Our part of GPUI's keymap, in the order to add it: a later binding wins a shared keystroke,
 /// so the commands go in reverse (the first listed wins), and within one command the first chord
 /// goes first (the menu bar shows a command's earliest binding).
-pub fn key_bindings(overrides: &Overrides, mac: bool) -> Vec<KeyBinding> {
+pub fn key_bindings(preset: Preset, overrides: &Overrides, mac: bool) -> Vec<KeyBinding> {
     let mut out = Vec::new();
     let mut add = |command: &Command, chord: &str| {
         if !command.id.starts_with("app.")
@@ -433,7 +446,7 @@ pub fn key_bindings(overrides: &Overrides, mac: bool) -> Vec<KeyBinding> {
         }
     };
     for command in all_commands().collect::<Vec<_>>().into_iter().rev() {
-        for chord in bindings_for(command, overrides, mac) {
+        for chord in bindings_for(command, preset, overrides, mac) {
             add(command, &chord);
         }
     }
@@ -448,8 +461,8 @@ pub fn key_bindings(overrides: &Overrides, mac: bool) -> Vec<KeyBinding> {
 /// Puts the commands' bindings into GPUI's keymap, replacing the ones from before; other
 /// crates' bindings stay.
 pub fn install(cx: &mut App) {
-    let overrides = Settings::get(cx).keybindings.clone();
-    let ours = key_bindings(&overrides, IS_MAC);
+    let s = Settings::get(cx);
+    let ours = key_bindings(s.keymap_preset, &s.keybindings, IS_MAC);
     let keymap = cx.key_bindings();
     let theirs: Vec<KeyBinding> = keymap
         .borrow()
@@ -485,11 +498,12 @@ pub(crate) fn init(cx: &mut App) {
     })
     .detach();
     cx.observe_keystrokes(|_, _, _| PRESSED.set(None)).detach();
-    let mut last = Settings::get(cx).keybindings.clone();
+    let keys = |s: &Settings| (s.keymap_preset, s.keybindings.clone());
+    let mut last = keys(Settings::get(cx));
     cx.observe_global::<Settings>(move |cx| {
-        let now = &Settings::get(cx).keybindings;
-        if *now != last {
-            last = now.clone();
+        let now = keys(Settings::get(cx));
+        if now != last {
+            last = now;
             install(cx);
         }
     })
@@ -519,8 +533,8 @@ mod tests {
     #[test]
     fn every_default_chord_is_canonical_and_binds() {
         for command in all_commands().chain(SYSTEM_COMMANDS) {
-            for mac in [true, false] {
-                for key in command.default_keys(mac) {
+            for (preset, mac) in Preset::ALL.iter().flat_map(|p| [(*p, true), (*p, false)]) {
+                for key in preset.keys(command, mac) {
                     assert_eq!(canonical(key).as_deref(), Some(*key), "{}", command.id);
                     let ks = chord::to_keystroke(key, mac);
                     assert!(
@@ -531,8 +545,16 @@ mod tests {
                 }
             }
         }
-        let bindings = key_bindings(&Overrides::new(), true);
-        assert!(bindings.len() > 100, "{}", bindings.len());
+        for preset in Preset::ALL {
+            let bindings = key_bindings(*preset, &Overrides::new(), true);
+            assert!(bindings.len() > 100, "{}", bindings.len());
+        }
+        // A preset names only commands there are.
+        for preset in Preset::ALL {
+            for id in preset.changed() {
+                assert!(command(id).is_some(), "{preset:?}: {id}");
+            }
+        }
     }
 
     #[test]
@@ -633,7 +655,7 @@ mod tests {
     #[test]
     fn the_first_listed_command_wins_a_shared_chord() {
         let winner = |chord: &str, overrides: &Overrides, context: &str| {
-            let keymap = gpui_kit::Keymap::new(key_bindings(overrides, true));
+            let keymap = gpui_kit::Keymap::new(key_bindings(Preset::Classic, overrides, true));
             let stack = [gpui_kit::KeyContext::parse(context).unwrap()];
             let typed = gpui_kit::Keystroke::parse(&chord::to_keystroke(chord, true)).unwrap();
             let (bindings, _) = keymap.bindings_for_input(&[typed], &stack);
@@ -649,7 +671,7 @@ mod tests {
             Some("view.toggleGitPanel")
         );
         assert_eq!(
-            edit::winner("cmd+1", &overrides, true).map(|c| c.id),
+            edit::winner("cmd+1", Preset::Classic, &overrides, true).map(|c| c.id),
             Some("view.toggleGitPanel")
         );
         let mut overrides = Overrides::new();
@@ -664,19 +686,63 @@ mod tests {
         );
         // ⌘↵ is the commit box's, never the window's.
         assert_eq!(winner("cmd+enter", &Overrides::new(), ROOT_CONTEXT), None);
-        assert!(edit::winner("cmd+enter", &Overrides::new(), true).is_none());
+        assert!(edit::winner("cmd+enter", Preset::Classic, &Overrides::new(), true).is_none());
     }
 
     #[test]
     fn overrides_replace_and_unbind() {
         let push = command("git.push").unwrap();
         let mut overrides = Overrides::new();
-        assert_eq!(bindings_for(push, &overrides, true), vec!["ctrl+cmd+p"]);
-        assert!(bindings_for(push, &overrides, false).is_empty());
+        let keys = |o: &Overrides, mac| bindings_for(push, Preset::Classic, o, mac);
+        assert_eq!(keys(&overrides, true), vec!["ctrl+cmd+p"]);
+        assert!(keys(&overrides, false).is_empty());
         overrides.insert("git.push".into(), vec!["shift+cmd+u".into()]);
-        assert_eq!(bindings_for(push, &overrides, true), vec!["shift+cmd+u"]);
+        assert_eq!(keys(&overrides, true), vec!["shift+cmd+u"]);
         overrides.insert("git.push".into(), vec![]);
-        assert!(bindings_for(push, &overrides, true).is_empty());
+        assert!(keys(&overrides, true).is_empty());
+    }
+
+    #[test]
+    fn a_preset_changes_only_its_commands_and_rebindings_go_over_it() {
+        let keys = |id: &str, preset, o: &Overrides, mac| {
+            bindings_for(command(id).unwrap(), preset, o, mac)
+        };
+        let none = Overrides::new();
+        assert_eq!(keys("tab.goto1", Preset::Classic, &none, true), ["cmd+1"]);
+        assert_eq!(keys("tab.goto1", Preset::VsCode, &none, true), ["ctrl+1"]);
+        assert_eq!(keys("tab.goto1", Preset::VsCode, &none, false), ["alt+1"]);
+        assert_eq!(
+            keys("browser.open", Preset::Classic, &none, true),
+            ["shift+cmd+b"]
+        );
+        assert!(keys("browser.open", Preset::VsCode, &none, true).is_empty());
+        // Unlisted, a command keeps its classic keys and their platform split.
+        assert_eq!(
+            keys("git.push", Preset::VsCode, &none, true),
+            ["ctrl+cmd+p"]
+        );
+        assert!(keys("git.push", Preset::VsCode, &none, false).is_empty());
+        let mut o = Overrides::new();
+        o.insert("tab.goto1".into(), vec!["cmd+u".into()]);
+        o.insert("browser.open".into(), vec!["alt+cmd+o".into()]);
+        for preset in Preset::ALL {
+            assert_eq!(keys("tab.goto1", *preset, &o, true), ["cmd+u"]);
+            assert_eq!(keys("browser.open", *preset, &o, true), ["alt+cmd+o"]);
+        }
+        // The keymap follows: ⌃1 is the first tab, ⌘1 the code view.
+        let keymap = gpui_kit::Keymap::new(key_bindings(Preset::VsCode, &none, true));
+        let stack = [gpui_kit::KeyContext::parse(ROOT_CONTEXT).unwrap()];
+        let runs = |ks: &str| {
+            let typed = gpui_kit::Keystroke::parse(ks).unwrap();
+            let (bindings, _) = keymap.bindings_for_input(&[typed], &stack);
+            bindings
+                .first()
+                .and_then(|b| command_for_action(b.action()))
+                .map(|c| c.id)
+        };
+        assert_eq!(runs("ctrl-1"), Some("tab.goto1"));
+        assert_eq!(runs("cmd-1"), Some("view.focusCode"));
+        assert_eq!(runs("shift-cmd-b"), None);
     }
 
     #[test]

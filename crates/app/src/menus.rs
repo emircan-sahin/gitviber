@@ -264,7 +264,7 @@ fn inputs(
     cx: &App,
 ) -> (
     Vec<bool>,
-    gitviber_ui::keymap::Overrides,
+    (gitviber_ui::keymap::Preset, gitviber_ui::keymap::Overrides),
     Vec<String>,
     String,
 ) {
@@ -277,7 +277,7 @@ fn inputs(
             s.word_wrap,
             s.blame,
         ],
-        s.keybindings.clone(),
+        (s.keymap_preset, s.keybindings.clone()),
         UiState::get(cx).recent_projects.clone(),
         open_in_label(cx),
     )
@@ -439,7 +439,11 @@ mod tests {
 
     #[test]
     fn only_command_keys_kept_from_where_focus_is_are_taken() {
-        let keymap = Keymap::new(gitviber_ui::keymap::key_bindings(&Default::default(), true));
+        let keymap = Keymap::new(gitviber_ui::keymap::key_bindings(
+            Default::default(),
+            &Default::default(),
+            true,
+        ));
         let stack = |names: &[&str]| -> Vec<KeyContext> {
             names
                 .iter()

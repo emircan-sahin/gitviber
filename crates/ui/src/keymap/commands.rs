@@ -1,8 +1,8 @@
 //! Every command in one place: its id (the key a user's rebinding is stored under), title,
-//! category and default chords, and the GPUI action that runs it. A chord is a canonical
-//! string such as "shift+cmd+e": modifiers in ⌃⌥⇧⌘ order, then the key (see `chord`). When two
-//! commands share a chord, the one listed first wins. Off macOS "cmd" is Ctrl and "ctrl" the
-//! Super key.
+//! category and classic chords (`preset` has the other presets' changes), and the GPUI action
+//! that runs it. A chord is a canonical string such as "shift+cmd+e": modifiers in ⌃⌥⇧⌘ order,
+//! then the key (see `chord`). When two commands share a chord, the one listed first wins. Off
+//! macOS "cmd" is Ctrl and "ctrl" the Super key.
 //!
 //! Feature crates handle these with `.on_action(cx.listener(|this, _: &git::Pull, window, cx| ..))`
 //! on their element; a command shows in the palette and the menu bar is enabled only while
@@ -788,17 +788,26 @@ mod tests {
 
     use super::*;
     use crate::keymap::chord::{is_reserved, runs_in_terminal, runs_while_typing};
-    use crate::keymap::{Overrides, bindings_for, command};
+    use crate::keymap::{Overrides, Preset, bindings_for, command};
+
+    /// Every preset on both platforms, with no rebindings.
+    fn defaults() -> impl Iterator<Item = (Preset, bool)> {
+        Preset::ALL.iter().flat_map(|p| [(*p, true), (*p, false)])
+    }
 
     #[test]
     fn no_two_global_commands_share_a_default_and_macos_takes_none() {
-        for mac in [true, false] {
+        for (preset, mac) in defaults() {
             let mut owner: HashMap<String, &str> = HashMap::new();
             for c in COMMANDS.iter().filter(|c| c.local.is_none()) {
-                for chord in bindings_for(c, &Overrides::new(), mac) {
-                    assert!(!is_reserved(&chord, mac), "{chord} ({}, mac {mac})", c.id);
+                for chord in bindings_for(c, preset, &Overrides::new(), mac) {
+                    assert!(
+                        !is_reserved(&chord, mac),
+                        "{chord} ({}, {preset:?} mac {mac})",
+                        c.id
+                    );
                     if let Some(other) = owner.insert(chord.clone(), c.id) {
-                        panic!("{chord} is {other}'s and {}'s (mac {mac})", c.id);
+                        panic!("{chord} is {other}'s and {}'s ({preset:?} mac {mac})", c.id);
                     }
                 }
             }
@@ -807,13 +816,16 @@ mod tests {
 
     #[test]
     fn no_two_commands_of_one_place_share_a_default() {
-        for mac in [true, false] {
+        for (preset, mac) in defaults() {
             let mut owner: HashMap<(&str, String), &str> = HashMap::new();
             for c in COMMANDS {
                 let Some(place) = c.local else { continue };
-                for chord in bindings_for(c, &Overrides::new(), mac) {
+                for chord in bindings_for(c, preset, &Overrides::new(), mac) {
                     if let Some(other) = owner.insert((place, chord.clone()), c.id) {
-                        panic!("{chord} is {other}'s and {}'s in {place} (mac {mac})", c.id);
+                        panic!(
+                            "{chord} is {other}'s and {}'s in {place} ({preset:?} mac {mac})",
+                            c.id
+                        );
                     }
                 }
             }
@@ -830,18 +842,21 @@ mod tests {
             "diff.discardChange",
         ] {
             let c = command(id).unwrap();
-            for mac in [true, false] {
-                for chord in bindings_for(c, &Overrides::new(), mac) {
+            for (preset, mac) in defaults() {
+                for chord in bindings_for(c, preset, &Overrides::new(), mac) {
                     assert!(!runs_while_typing(&chord, c, mac), "{id}: {chord}");
                     assert!(!runs_in_terminal(&chord, c, mac), "{id}: {chord}");
                 }
             }
         }
         // ⌥ turns S into ß and N into a dead key; the key's letter still finds the command.
-        let winner =
-            |chord| crate::keymap::edit::winner(chord, &Overrides::new(), true).map(|c| c.id);
-        assert_eq!(winner("alt+cmd+s"), Some("diff.stageChange"));
-        assert_eq!(winner("alt+cmd+n"), Some("diff.unstageChange"));
+        for preset in Preset::ALL {
+            let winner = |chord| {
+                crate::keymap::edit::winner(chord, *preset, &Overrides::new(), true).map(|c| c.id)
+            };
+            assert_eq!(winner("alt+cmd+s"), Some("diff.stageChange"));
+            assert_eq!(winner("alt+cmd+n"), Some("diff.unstageChange"));
+        }
     }
 
     #[test]
@@ -853,12 +868,18 @@ mod tests {
             ("changes.focusMessage", "ctrl+cmd+c"),
         ] {
             let c = command(id).unwrap();
-            assert_eq!(bindings_for(c, &Overrides::new(), true), [chord], "{id}");
-            assert!(bindings_for(c, &Overrides::new(), false).is_empty(), "{id}");
+            for preset in Preset::ALL {
+                let keys = |mac| bindings_for(c, *preset, &Overrides::new(), mac);
+                assert_eq!(keys(true), [chord], "{id}");
+                assert!(keys(false).is_empty(), "{id}");
+            }
             assert!(runs_while_typing(chord, c, true), "{id}");
             assert!(runs_in_terminal(chord, c, true), "{id}");
         }
         // ⌘G stays macOS's Find Next.
-        assert!(crate::keymap::edit::winner("cmd+g", &Overrides::new(), true).is_none());
+        for preset in Preset::ALL {
+            let winner = crate::keymap::edit::winner("cmd+g", *preset, &Overrides::new(), true);
+            assert!(winner.is_none());
+        }
     }
 }

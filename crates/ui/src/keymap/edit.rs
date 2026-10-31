@@ -1,10 +1,10 @@
 //! The shortcut editor's rules, pure: a pressed key as the chord it's stored as, a rebinding kept
-//! only while it differs from the default, and which command a shared chord runs.
+//! only while it differs from the preset's, and which command a shared chord runs.
 
 use gpui_kit::Keystroke;
 
 use super::chord::{canonical, format_chord};
-use super::{Command, Overrides, all_commands, bindings_for, place_name};
+use super::{Command, Overrides, Preset, all_commands, bindings_for, place_name};
 
 /// The digit or symbol a US layout types a shifted character with: macOS reports ⇧⌘] as ⌘}.
 fn unshifted(key: &str) -> Option<&'static str> {
@@ -73,9 +73,10 @@ pub fn chord_of(ks: &Keystroke, mac: bool) -> Option<String> {
     canonical(&parts.join("+"))
 }
 
-/// `overrides` with command `id` bound to `keys`; None, or the platform's defaults, drops the
+/// `overrides` with command `id` bound to `keys`; None, or the preset's keys, drops the
 /// override: storing what equals the default would pin it and hide a later default's change.
 pub fn with_binding(
+    preset: Preset,
     overrides: &Overrides,
     id: &str,
     keys: Option<Vec<String>>,
@@ -84,7 +85,7 @@ pub fn with_binding(
     let mut next = overrides.clone();
     let defaults: Option<Vec<String>> = all_commands()
         .find(|c| c.id == id)
-        .map(|c| c.default_keys(mac).iter().map(|k| k.to_string()).collect());
+        .map(|c| preset.keys(c, mac).iter().map(|k| k.to_string()).collect());
     match keys {
         Some(keys) if Some(&keys) != defaults.as_ref() => {
             next.insert(id.to_string(), keys);
@@ -115,14 +116,27 @@ pub fn recorded(keys: &[String], index: usize, chord: &str) -> Vec<String> {
 }
 
 /// The global command a chord runs: the first one listed that has it, as the keymap orders them.
-pub fn winner(chord: &str, overrides: &Overrides, mac: bool) -> Option<&'static Command> {
-    all_commands()
-        .filter(|c| c.local.is_none())
-        .find(|c| bindings_for(c, overrides, mac).iter().any(|k| k == chord))
+pub fn winner(
+    chord: &str,
+    preset: Preset,
+    overrides: &Overrides,
+    mac: bool,
+) -> Option<&'static Command> {
+    all_commands().filter(|c| c.local.is_none()).find(|c| {
+        bindings_for(c, preset, overrides, mac)
+            .iter()
+            .any(|k| k == chord)
+    })
 }
 
 /// Why `chord` on `c` is ambiguous, naming which command runs; None when it isn't.
-pub fn clash_note(c: &Command, chord: &str, overrides: &Overrides, mac: bool) -> Option<String> {
+pub fn clash_note(
+    c: &Command,
+    chord: &str,
+    preset: Preset,
+    overrides: &Overrides,
+    mac: bool,
+) -> Option<String> {
     // By default some local commands take a global key over in their own place (⌘W in the
     // terminal): not a clash until the user rebinds one of the two.
     let meant = |o: &Command| {
@@ -132,7 +146,11 @@ pub fn clash_note(c: &Command, chord: &str, overrides: &Overrides, mac: bool) ->
     };
     let others: Vec<&Command> = all_commands()
         .filter(|o| o.id != c.id && !meant(o))
-        .filter(|o| bindings_for(o, overrides, mac).iter().any(|k| k == chord))
+        .filter(|o| {
+            bindings_for(o, preset, overrides, mac)
+                .iter()
+                .any(|k| k == chord)
+        })
         .collect();
     if others.is_empty() {
         return None;
@@ -164,7 +182,7 @@ pub fn clash_note(c: &Command, chord: &str, overrides: &Overrides, mac: bool) ->
             .collect();
         return Some(format!("{k} also runs {}", named.join(", ")));
     }
-    match winner(chord, overrides, mac) {
+    match winner(chord, preset, overrides, mac) {
         Some(w) if w.id == c.id => Some(format!(
             "{k} is also bound to {}; this command takes precedence",
             titles(&global)
@@ -179,12 +197,18 @@ pub fn clash_note(c: &Command, chord: &str, overrides: &Overrides, mac: bool) ->
 
 /// Whether the shortcut list's search finds `c`: its title, category, id or keys, either way
 /// they're written.
-pub fn matches_query(c: &Command, query: &str, overrides: &Overrides, mac: bool) -> bool {
+pub fn matches_query(
+    c: &Command,
+    query: &str,
+    preset: Preset,
+    overrides: &Overrides,
+    mac: bool,
+) -> bool {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
         return true;
     }
-    let keys = bindings_for(c, overrides, mac);
+    let keys = bindings_for(c, preset, overrides, mac);
     [c.title, c.category.label(), c.id]
         .into_iter()
         .map(str::to_string)
@@ -244,14 +268,54 @@ mod tests {
     #[test]
     fn a_default_binding_is_not_stored() {
         let push = command("git.push").unwrap();
-        let mut o = with_binding(&Overrides::new(), push.id, Some(vec!["cmd+u".into()]), true);
+        let mut o = with_binding(
+            Preset::Classic,
+            &Overrides::new(),
+            push.id,
+            Some(vec!["cmd+u".into()]),
+            true,
+        );
         assert_eq!(o["git.push"], vec!["cmd+u".to_string()]);
-        o = with_binding(&o, push.id, Some(vec!["ctrl+cmd+p".into()]), true);
+        o = with_binding(
+            Preset::Classic,
+            &o,
+            push.id,
+            Some(vec!["ctrl+cmd+p".into()]),
+            true,
+        );
         assert!(!o.contains_key("git.push"));
-        o = with_binding(&o, push.id, Some(vec![]), true);
+        o = with_binding(Preset::Classic, &o, push.id, Some(vec![]), true);
         assert!(o["git.push"].is_empty());
-        o = with_binding(&o, push.id, None, true);
+        o = with_binding(Preset::Classic, &o, push.id, None, true);
         assert!(o.is_empty());
+    }
+
+    /// Against the preset in use: its own keys aren't stored, the classic ones are.
+    #[test]
+    fn a_presets_binding_is_not_stored() {
+        let id = "tab.goto1";
+        let bind = |key: &str| {
+            with_binding(
+                Preset::VsCode,
+                &Overrides::new(),
+                id,
+                Some(vec![key.into()]),
+                true,
+            )
+        };
+        assert!(bind("ctrl+1").is_empty());
+        assert_eq!(bind("cmd+1")[id], vec!["cmd+1".to_string()]);
+    }
+
+    /// ⌥⌘→ is the next tab, and in the terminal the pane to the right: no clash shown.
+    #[test]
+    fn a_terminal_pane_key_over_a_presets_tab_key_is_no_clash() {
+        let o = Overrides::new();
+        for id in ["terminal.focusRight", "tab.next"] {
+            let c = command(id).unwrap();
+            let note = clash_note(c, "alt+cmd+right", Preset::VsCode, &o, true);
+            assert_eq!(note, None, "{id}");
+        }
     }
 
     #[test]
@@ -278,19 +342,25 @@ mod tests {
         } else {
             (pull, fetch)
         };
-        assert_eq!(winner("cmd+u", &o, true).unwrap().id, winning.id);
+        assert_eq!(
+            winner("cmd+u", Preset::Classic, &o, true).unwrap().id,
+            winning.id
+        );
         assert!(
-            clash_note(winning, "cmd+u", &o, true)
+            clash_note(winning, "cmd+u", Preset::Classic, &o, true)
                 .unwrap()
                 .ends_with("this command takes precedence")
         );
         assert!(
-            clash_note(losing, "cmd+u", &o, true)
+            clash_note(losing, "cmd+u", Preset::Classic, &o, true)
                 .unwrap()
                 .contains(&format!("bound to {}, which", winning.title))
         );
         // Unshared, nothing to say.
-        assert_eq!(clash_note(fetch, "cmd+u", &Overrides::new(), true), None);
+        assert_eq!(
+            clash_note(fetch, "cmd+u", Preset::Classic, &Overrides::new(), true),
+            None
+        );
     }
 
     #[test]
@@ -298,8 +368,12 @@ mod tests {
         // ⌘D splits in the terminal by default; no global command has it unless rebound.
         let split = command("terminal.split").unwrap();
         let o = Overrides::new();
-        for key in bindings_for(split, &o, true) {
-            assert_eq!(clash_note(split, &key, &o, true), None, "{key}");
+        for key in bindings_for(split, Preset::Classic, &o, true) {
+            assert_eq!(
+                clash_note(split, &key, Preset::Classic, &o, true),
+                None,
+                "{key}"
+            );
         }
     }
 
@@ -307,10 +381,28 @@ mod tests {
     fn search_reads_titles_ids_and_keys() {
         let palette = command("workbench.showCommands").unwrap();
         let o = Overrides::new();
-        assert!(matches_query(palette, "palette", &o, true));
-        assert!(matches_query(palette, "workbench", &o, true));
-        assert!(matches_query(palette, "⇧⌘P", &o, true));
-        assert!(matches_query(palette, "shift+cmd+p", &o, true));
-        assert!(!matches_query(palette, "nothing like it", &o, true));
+        assert!(matches_query(palette, "palette", Preset::Classic, &o, true));
+        assert!(matches_query(
+            palette,
+            "workbench",
+            Preset::Classic,
+            &o,
+            true
+        ));
+        assert!(matches_query(palette, "⇧⌘P", Preset::Classic, &o, true));
+        assert!(matches_query(
+            palette,
+            "shift+cmd+p",
+            Preset::Classic,
+            &o,
+            true
+        ));
+        assert!(!matches_query(
+            palette,
+            "nothing like it",
+            Preset::Classic,
+            &o,
+            true
+        ));
     }
 }

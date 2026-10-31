@@ -106,6 +106,7 @@ fn first_for(part: Option<Part>) -> &'static [Category] {
 /// that don't were left out, greyed out they crowded the ones that do. A local one works in its
 /// own place, which it names instead.
 pub fn groups(
+    preset: keymap::Preset,
     overrides: &keymap::Overrides,
     part: Option<Part>,
     runs: impl Fn(&keymap::Command) -> bool,
@@ -116,7 +117,7 @@ pub fn groups(
         None => by.push((category, vec![row])),
     };
     for c in keymap::all_commands() {
-        let keys = bindings_for(c, overrides, IS_MAC);
+        let keys = bindings_for(c, preset, overrides, IS_MAC);
         if keys.is_empty() {
             continue;
         }
@@ -126,8 +127,11 @@ pub fn groups(
         }
         if c.id == "tab.goto1" {
             if runs(c) {
-                let last = keymap::command("tab.goto8")
-                    .and_then(|l| bindings_for(l, overrides, IS_MAC).into_iter().next());
+                let last = keymap::command("tab.goto8").and_then(|l| {
+                    bindings_for(l, preset, overrides, IS_MAC)
+                        .into_iter()
+                        .next()
+                });
                 let keys = match last {
                     Some(last) => vec![keys[0].clone(), THROUGH.into(), last],
                     None => vec![keys[0].clone()],
@@ -156,7 +160,7 @@ pub fn groups(
         }
         let wins = keys
             .iter()
-            .any(|k| winner(k, overrides, IS_MAC).is_some_and(|w| w.id == c.id));
+            .any(|k| winner(k, preset, overrides, IS_MAC).is_some_and(|w| w.id == c.id));
         if wins && runs(c) {
             add(
                 c.category,
@@ -282,7 +286,7 @@ impl ShortcutOverlay {
             return false;
         }
         let own = keymap::command("workbench.shortcutOverlay")
-            .map(|c| bindings_for(c, &Settings::get(cx).keybindings, IS_MAC))
+            .map(|c| keymap::current_bindings(c, cx))
             .unwrap_or_default();
         let chord = keymap::edit::chord_of(&e.keystroke, IS_MAC);
         if chord.as_ref().is_some_and(|c| own.contains(c)) {
@@ -409,9 +413,12 @@ impl Render for ShortcutOverlay {
             return div().into_any_element();
         };
         let part = self.workspace.read(cx).focused_part(window, cx);
-        let overrides = Settings::get(cx).keybindings.clone();
+        let (preset, overrides) = {
+            let s = Settings::get(cx);
+            (s.keymap_preset, s.keybindings.clone())
+        };
         let available = window.available_actions(cx);
-        let list = groups(&overrides, part, |c| {
+        let list = groups(preset, &overrides, part, |c| {
             let action = c.action();
             available.iter().any(|a| a.name() == action.name())
                 && !window.bindings_for_action(action.as_ref()).is_empty()
@@ -603,7 +610,12 @@ mod tests {
 
     #[test]
     fn tabs_read_as_one_row_and_fixed_groups_close_the_list() {
-        let list = groups(&keymap::Overrides::new(), None, |_| true);
+        let list = groups(
+            keymap::Preset::VsCode,
+            &keymap::Overrides::new(),
+            None,
+            |_| true,
+        );
         let tabs = list.iter().find(|g| g.title.as_ref() == "Tabs").unwrap();
         let goto = tabs
             .rows
@@ -625,7 +637,12 @@ mod tests {
 
     #[test]
     fn what_doesnt_run_here_stays_out_but_local_commands_name_their_place() {
-        let list = groups(&keymap::Overrides::new(), None, |_| false);
+        let list = groups(
+            keymap::Preset::VsCode,
+            &keymap::Overrides::new(),
+            None,
+            |_| false,
+        );
         assert!(list.iter().all(|g| g.rows.iter().all(|r| r.place.is_some()
             || g.title.as_ref() == "Navigation"
             || g.title.as_ref() == "System")));
@@ -639,6 +656,7 @@ mod tests {
     #[test]
     fn the_focused_parts_categories_come_first() {
         let list = groups(
+            keymap::Preset::VsCode,
             &keymap::Overrides::new(),
             Some(Part::Slot(Slot::Bottom)),
             |_| true,

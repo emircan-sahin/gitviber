@@ -3,7 +3,7 @@
 
 use super::*;
 #[cfg(target_os = "macos")]
-use gitviber_ui::actions::{changes, terminal, view, window};
+use gitviber_ui::actions::{changes, terminal, window};
 #[cfg(target_os = "macos")]
 use gitviber_ui::actions::{git, review, tab as tabs};
 use gitviber_ui::keymap::ROOT_CONTEXT;
@@ -327,7 +327,7 @@ fn a_bound_ctrl_chord_reaches_the_app_from_a_page(cx: &mut TestAppContext) {
     setup(cx);
     let ran = Rc::new(RefCell::new(Vec::new()));
     cx.update(|cx| {
-        record::<view::Changes>("changes", &ran, cx);
+        record::<tabs::Goto1>("first tab", &ran, cx);
         record::<tabs::Next>("next tab", &ran, cx);
         record::<terminal::Toggle>("terminal", &ran, cx);
         record::<changes::FocusMessage>("message", &ran, cx);
@@ -354,7 +354,7 @@ fn a_bound_ctrl_chord_reaches_the_app_from_a_page(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("ctrl-1 ctrl-tab ctrl-` ctrl-cmd-c");
     assert_eq!(
         *ran.borrow(),
-        ["changes", "next tab", "terminal", "message"]
+        ["first tab", "next tab", "terminal", "message"]
     );
 }
 

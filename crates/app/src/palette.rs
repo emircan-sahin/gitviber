@@ -15,14 +15,14 @@ use gitviber_core::git::{FileChange, GitInfo};
 use gitviber_core::{Core, api};
 use gitviber_files::quick_open::{self, QuickOpenFiles, QuickOpenStatus};
 use gitviber_ui::fuzzy::{self, Candidate, Candidates, Match, prepare_query};
-use gitviber_ui::keymap::{self, Category, IS_MAC, ROOT_CONTEXT, bindings_for};
+use gitviber_ui::keymap::{self, Category, ROOT_CONTEXT};
 use gitviber_ui::memory::Live;
 use gitviber_ui::state::bump;
 use gitviber_ui::widgets::{
     ChangeKind, FileIcon, Keycaps, PAGE, StatusLetter, key_hint, key_hints,
 };
 use gitviber_ui::workspace::{PanelContext, QuickOpen, Registry, Selection, Slot, Workspace};
-use gitviber_ui::{ActiveAppTheme, Settings, UiState, actions::workbench, store};
+use gitviber_ui::{ActiveAppTheme, UiState, actions::workbench, store};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
@@ -489,7 +489,6 @@ impl Palette {
         let query = self.query.to_string();
         if let Some(q) = query.strip_prefix('>') {
             let recent = &UiState::get(cx).recent_commands;
-            let overrides = &Settings::get(cx).keybindings;
             self.rows = rank(
                 q,
                 &self.commands,
@@ -506,7 +505,7 @@ impl Palette {
                     label: label.clone(),
                     hits: listed.label_hits(m.hits),
                     hint: None,
-                    keys: bindings_for(c, overrides, IS_MAC)
+                    keys: keymap::current_bindings(c, cx)
                         .into_iter()
                         .next()
                         .map(Into::into),
