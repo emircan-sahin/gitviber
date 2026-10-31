@@ -14,6 +14,12 @@ const TITLES = new Set(["heading"]);
 // With no name or state, around one line at most, these only cost a line and its indent.
 const BARE = new Set(["listitem", "row", "cell", "gridcell", "group"]);
 
+// What a snapshot cut short names, with a ref, as the place to read on with -s.
+const REGIONS = new Set(["main", "navigation", "banner", "contentinfo", "complementary", "region", "search", "form", "dialog", "alertdialog", "article", "list", "table", "grid", "tabpanel", "menu", "listbox", "tree"]);
+
+/** Regions a cut names at most. */
+const NAMED = 4;
+
 /** Characters a text line holds: runs of text next to each other join up to it. */
 const TEXT = 200;
 
@@ -98,12 +104,21 @@ function line(el, role, name, ref, urls) {
 /**
  * The page under `scope` (a ref or CSS; the body if none) as lines of the tree: each element
  * with a role, refs on what acts, `depth` levels at most. Past `most` lines or `chars` characters
- * nothing more is looked at but counted: a huge page costs little more than a big one.
+ * nothing more is looked at but counted, by the region it's in (`lost`): a huge page costs little
+ * more than a big one. With `viewport`, an element over a screen above or below the viewport is
+ * counted too (`off`), not walked.
  */
-function walk({ interactive = false, scope = null, depth = null, boxes = false, urls = false, most = LINES, chars = CHARS }) {
+function walk({ interactive = false, scope = null, depth = null, boxes = false, urls = false, viewport = false, most = LINES, chars = CHARS - TAIL }) {
   const root = scope ? resolve(scope) : (document.body ?? document.documentElement);
   const lines = [];
-  let [full, size, omitted] = [false, 0, 0];
+  let [full, size] = [false, 0];
+  const lost = new Map();
+  // The regions the walk is in, innermost last: what a cut names to read on in.
+  const open = [];
+  const screen = viewport ? window.innerHeight || 0 : 0;
+  const off = { above: 0, below: 0, top: 0, bottom: 0 };
+  // Where the document being walked is in the top one's viewport: a frame's is lower down.
+  let dy = 0;
   // The last line, while it's text: the next text at its level joins it.
   let run = null;
   const emit = (level, text) => {
@@ -142,11 +157,19 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
     }
     if (!interactive) emit(level, line(el, "iframe", name, null, urls));
     const body = inner.body ?? inner.documentElement;
+    const was = dy;
+    dy = above(el, { x: 0, y: dy }).y;
     if (body) visit(body, interactive ? level : level + 1, false, muted);
+    dy = was;
   };
   // `muted`: under a title, whose text its name says already.
   const visit = (node, level, pointer, muted) => {
-    if (full) return void (omitted += count(node));
+    if (full) {
+      const n = count(node);
+      if (!n) return;
+      const region = REGIONS.has(roleOf(node)) && node.getClientRects().length ? node : (open.at(-1) ?? null);
+      return void lost.set(region, (lost.get(region) ?? 0) + n);
+    }
     if (depth !== null && level > depth) return;
     if (node.nodeType === 3) {
       const text = interactive || muted ? "" : flat(node.nodeValue);
@@ -158,6 +181,16 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
     if (el.hidden || el.getAttribute("aria-hidden") === "true") return;
     const style = styleOf(el);
     if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return;
+    if (screen && el !== root) {
+      const r = el.getBoundingClientRect();
+      const y = r.y + dy;
+      // A box with no size (a wrapper of fixed or floated content) doesn't say where its content is.
+      if (r.width > 0 && r.height > 0 && (y > 2 * screen || y + r.height < -screen)) {
+        if (y > 0) [off.below, off.bottom] = [off.below + count(el), Math.max(off.bottom, y + r.height)];
+        else [off.above, off.top] = [off.above + count(el), Math.min(off.top, y)];
+        return;
+      }
+    }
     if (el.localName === "iframe") return frame(el, level, muted);
     // A div that takes clicks (React's onClick) shows only as a pointer where its parent has none.
     const role = roleOf(el) ?? ((style.cursor === "pointer" && !pointer) || el.hasAttribute("onclick") ? "clickable" : null);
@@ -179,8 +212,11 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
       if (leaf) return;
     }
     const said = muted || TITLES.has(role) || (!interactive && el.localName === "label" && names(el));
+    const region = REGIONS.has(role) && el !== root;
+    if (region) open.push(el);
     const children = el.shadowRoot ? [...el.shadowRoot.childNodes, ...el.childNodes] : [...el.childNodes];
     for (const child of children) visit(child, next, pointer || style.cursor === "pointer", said);
+    if (region) open.pop();
     // One line under it at most: that line takes its place (none, with -d, may be more past the depth).
     const under = lines.length - start - 1;
     if (bare && !full && (under === 1 || (under === 0 && depth === null))) {
@@ -191,21 +227,50 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
     }
   };
   visit(root, 0, false, false);
-  return { lines, omitted: full ? Math.max(omitted, 1) : 0 };
+  if (full && !lost.size) lost.set(null, 1);
+  return { lines, lost: [...lost], off };
 }
 
 /** Lines and characters a snapshot gives at most (an agent's tool cuts its output near 30 000), and one written to a file. */
 const CHARS = 25000;
 
+/** Of those, what the lines after the tree may take: what's above, below or left out. */
+const TAIL = 500;
+
 const FILE_LINES = 20000;
 
 const FILE_CHARS = 2000000;
 
-// A file keeps the hrefs: it's searched, not read whole into an agent's context.
-function snapshot({ file = false, ...ask }) {
-  const { lines, omitted } = walk(file ? { ...ask, urls: true, most: FILE_LINES, chars: FILE_CHARS } : ask);
-  if (omitted) lines.push(`- … omitted ~${omitted} elements: narrow it with --ref, -s, -d or -i`);
+/**
+ * The tree an agent reads: the viewport and a screen around it, unless `all`, a scope or a file
+ * asks for the whole. A file keeps the hrefs: it's searched, not read whole into a context.
+ */
+function snapshot({ file = false, all = false, ...ask }) {
+  const whole = file || all || !!ask.scope;
+  const { lines, lost, off } = walk(file ? { ...ask, urls: true, most: FILE_LINES, chars: FILE_CHARS } : { ...ask, viewport: !whole });
+  const screens = (px) => {
+    const n = Math.max(1, Math.round(px / window.innerHeight));
+    return `≈${n} screen${n === 1 ? "" : "s"}`;
+  };
+  if (off.above) lines.unshift(`- … ${off.above} elements above (${screens(-off.top)}): scroll up, -s <ref>, find, or --all`);
+  else if (off.below) lines.unshift("[top of page]");
+  if (lost.length) lines.push(cutShort(lost));
+  if (off.below) lines.push(`- … ${off.below} elements below (${screens(off.bottom - window.innerHeight)}): scroll down, -s <ref>, find, or --all`);
+  else if (off.above) lines.push("[end of page]");
   return { out: lines.length ? lines.join("\n") : "(nothing on the page)", removed: prune() };
+}
+
+/** The line a snapshot past its size ends with: what it left out, by the regions it's in, the biggest first. */
+function cutShort(lost) {
+  const named = lost.filter(([el]) => el).sort((a, b) => b[1] - a[1]).slice(0, NAMED);
+  const rest = lost.reduce((n, [, k]) => n + k, 0) - named.reduce((n, [, k]) => n + k, 0);
+  const parts = named.map(([el, n]) => {
+    const name = nameOf(el, false);
+    return `${n} in ${roleOf(el)}${name ? ` ${quote(cut(name, 40))}` : ""} [ref=${refOf(el)}]`;
+  });
+  if (!parts.length) return `- … past the size limit, ${rest} elements not shown: narrow it with -s, -d, -i or find`;
+  if (rest) parts.push(`${rest} elsewhere`);
+  return `- … past the size limit, elements not shown: ${parts.join(", ")}: read one with -s <ref>, or narrow it with -d, -i or find`;
 }
 
 /** An element's box in the viewport, CSS px: x, y, width, height. */
@@ -370,7 +435,8 @@ function view({ target = null, clip = null, refs = false }) {
     walk({ interactive: true, most: FILE_LINES, chars: FILE_CHARS });
     for (const [ref, weak] of state.refs) {
       const it = weak.deref();
-      if (!live(it) || !it.getClientRects().length || labels.length === LABELS) continue;
+      // A region's ref (from a cut snapshot's last line) is for -s, not a place to click.
+      if (!live(it) || !it.getClientRects().length || labels.length === LABELS || REGIONS.has(roleOf(it))) continue;
       const b = rectOf(it);
       const at = onTop(it, b);
       if (at.x + b.width <= x0 || at.y + b.height <= y0 || at.x >= x1 || at.y >= y1) continue;

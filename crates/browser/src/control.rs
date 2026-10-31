@@ -99,25 +99,30 @@ Pages
   url                          The page's address and title, and audio: playing while it makes sound
 
 Reading
-  snapshot [-i] [-s <ref|css>] [-d <n>] [-u] [--boxes] [-o <file>]
-                               The page as a tree, with refs (e1, e2, ...) to act on: -i only
-                               what can be clicked or typed in, -s under one element, -d so many
-                               levels deep, -u each link's href too (one link's: get attr href
-                               <ref>), --boxes each ref's x,y,w,h in the viewport (CSS px), -o
-                               all of it, hrefs too, into a .txt, .md, .yml or .yaml file, over
-                               none but an earlier snapshot (its path and line count printed).
-                               A field shows its value only when it has one; a label's text
-                               goes with its field's name. Past 1500 lines or 25 000 characters
-                               it stops and says how many elements it left out. Refs (also @e1
-                               or ref=e1) stay with their element; one whose element left, or
-                               from another page or a frame that moved on, fails as stale. A
-                               frame of the page's origin reads as part of it, its refs acted on
-                               as any, and a CSS selector looks in its own page as
+  snapshot [-i] [-s <ref|css>] [-d <n>] [-u] [--all] [--boxes] [-o <file>]
+                               The page as a tree, with refs (e1, e2, ...) to act on: what is
+                               in the viewport and a screen above and below it, each side past
+                               that one line (`- … 412 elements below (≈5 screens)`), and
+                               [top of page] or [end of page] on a side it reaches when the
+                               other is cut. --all the whole page, -i only what can be clicked
+                               or typed in, -s all under one element, -d so many levels deep, -u
+                               each link's href too (one link's: get attr href <ref>), --boxes
+                               each ref's x,y,w,h in the viewport (CSS px), -o all the page,
+                               hrefs too, into a .txt, .md, .yml or .yaml file, over none but an
+                               earlier snapshot (its path and line count printed). A field
+                               shows its value only when it has one; a label's text goes with
+                               its field's name. Past 1500 lines or 25 000 characters it stops
+                               and names the regions it left out, each with a ref for -s. Refs
+                               (also @e1 or ref=e1) stay with their element; one whose element
+                               left, or from another page or a frame that moved on, fails as
+                               stale. A frame of the page's origin reads as part of it, its refs
+                               acted on as any, and a CSS selector looks in its own page as
                                `frame=<ref|css> >> <css>` (frames nest: `frame=a >> frame=b >>
                                <css>`); another origin's frame is named only. --json: also the
                                refs gone since the last snapshot
-  find <text|/regex/>          The tree's lines with the text (any case) or matching the regex,
-                               hrefs too, each with the line before and after it; 30 at most
+  find <text|/regex/>          The whole page's tree lines with the text (any case) or matching
+                               the regex, hrefs too, each with the line before and after it; 30
+                               at most
   get text|html|value|box <ref|css>
   get attr <name> <ref|css>
   get styles [property...] <ref|css>
@@ -550,6 +555,8 @@ pub struct Snap {
     pub depth: Option<u32>,
     /// Each link's href: a file has them anyway.
     pub urls: bool,
+    /// The whole page, not the viewport and a screen around it.
+    pub all: bool,
     /// Each ref's box in the viewport, CSS px.
     pub boxes: bool,
     /// Written to this file in full, not printed.
@@ -938,6 +945,7 @@ fn snapshot(args: &[String]) -> Result<Command, String> {
             "-s" | "--ref" => snap.scope = Some(value(&mut it, arg)?.clone()),
             "-d" | "--depth" => snap.depth = Some(number(value(&mut it, arg)?, arg)?),
             "-u" | "--urls" => snap.urls = true,
+            "--all" => snap.all = true,
             "--boxes" => snap.boxes = true,
             "-o" | "--output" => snap.file = Some(value(&mut it, arg)?.clone()),
             _ => return Err(format!("snapshot doesn't take {arg:?}")),
@@ -2030,6 +2038,14 @@ mod tests {
                 }))
             );
         }
+        assert_eq!(
+            parse("snapshot", &args("--all -i")),
+            Ok(Command::Snapshot(Snap {
+                interactive: true,
+                all: true,
+                ..Snap::default()
+            }))
+        );
         assert_eq!(
             parse("find", &args("Sign in")),
             Ok(Command::Find("Sign in".into()))

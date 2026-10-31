@@ -262,10 +262,24 @@ test("a big page stops at its line limit and says how much it left out", async (
   assert.equal(lines.length, 1501);
   assert.equal(lines[1499], '- img "1499"');
   // Past the limit the rest is only counted.
-  assert.equal(lines.at(-1), "- … omitted ~2499 elements: narrow it with --ref, -s, -d or -i");
+  assert.equal(lines.at(-1), "- … past the size limit, 2499 elements not shown: narrow it with -s, -d, -i or find");
   // Written to a file, it all goes.
   const file = (await run(p as never, { cmd: "snapshot", file: true })).out.split("\n");
   assert.equal(file.length, 4000);
+});
+
+test("a cut names the regions it left out, each with a ref to read it with -s", async () => {
+  const items = (n: number) => Array.from({ length: n }, (_, i) => el("img", { alt: `${i}` }));
+  const entries = Array.from({ length: 300 }, (_, i) => el("li", {}, [`${i}`]));
+  const p = around([el("nav", { "aria-label": "Site" }, items(1400)), el("main", {}, [el("ul", {}, entries)]), el("footer", {}, items(20)), el("dialog", {}, [], { getClientRects: () => [] })]);
+  const { out } = await run(p as never, { cmd: "snapshot" });
+  // The list was being walked when the cut came; main and the footer weren't reached.
+  assert.equal(out.split("\n").at(-1), '- … past the size limit, elements not shown: 203 in list [ref=e1], 21 in contentinfo [ref=e2], 1 elsewhere: read one with -s <ref>, or narrow it with -d, -i or find');
+  const list = (await run(p as never, { cmd: "snapshot", scope: "e1" })).out.split("\n");
+  assert.deepEqual([list.length, list[0], list[300]], [301, "- list", '  - text "299"']);
+  // A region's ref is to read in, not one a screenshot labels.
+  Object.assign(p.window, { innerWidth: 1280, innerHeight: 800 });
+  assert.deepEqual((await run(p as never, { cmd: "view", refs: true })).labels, []);
 });
 
 test("refs from another snapshot, odd spellings and commands that aren't are refused", async () => {
@@ -310,7 +324,7 @@ test("a snapshot stops at its characters too, before an agent's tool would cut i
   const items = Array.from({ length: 600 }, (_, i) => el("button", {}, [`${"Long name ".repeat(7)}${i}`]));
   const { out } = await run(around(items) as never, { cmd: "snapshot" });
   assert.ok(out.length < 25000, `${out.length}`);
-  assert.match(out.split("\n").at(-1), /^- … omitted ~\d+ elements: narrow it with --ref, -s, -d or -i$/);
+  assert.match(out.split("\n").at(-1), /^- … past the size limit, \d+ elements not shown: narrow it with -s, -d, -i or find$/);
 });
 
 test("--ref reads one element's part of the tree, --boxes where each ref is", async () => {
@@ -319,6 +333,48 @@ test("--ref reads one element's part of the tree, --boxes where each ref is", as
   const nav = (await run(p, { cmd: "snapshot", scope: "e2", boxes: true })).out;
   assert.equal(nav, '- link "Docs" [ref=e2] [box=10,20,100,30]');
   assert.equal((await run(p, { cmd: "snapshot", scope: "e40" })).error, "No ref e40 on this page: take a new snapshot");
+});
+
+test("a snapshot reads the viewport and a screen around it, and counts what's past that", async () => {
+  const at = (y: number, height = 100, width = 1000) => ({ getBoundingClientRect: () => ({ x: 0, y, width, height }) });
+  const footer = el("footer", {}, [el("a", { href: "/a" }, ["About"]), el("a", { href: "/b" }, ["Blog"]), el("a", { href: "/c" }, ["Contact"])], at(3000, 200));
+  const p = around([
+    el("header", {}, [el("a", { href: "/" }, ["Home"])], at(-2000)),
+    el("h2", {}, ["Intro"], at(-500)),
+    el("button", {}, ["Go"], at(100, 30)),
+    // A portal's box has no height; what it holds shows where it's fixed.
+    el("div", {}, [el("button", {}, ["Close"], at(300, 30))], at(5000, 0, 1280)),
+    el("div", {}, ["Later"], at(1500)),
+    footer,
+  ]);
+  Object.assign(p.window, { innerWidth: 1280, innerHeight: 800 });
+  const { out } = await run(p as never, { cmd: "snapshot" });
+  assert.equal(
+    out,
+    [
+      "- … 2 elements above (≈3 screens): scroll up, -s <ref>, find, or --all",
+      '- heading "Intro" [level=2]',
+      '- button "Go" [ref=e1]',
+      '- button "Close" [ref=e2]',
+      '- text "Later"',
+      "- … 4 elements below (≈3 screens): scroll down, -s <ref>, find, or --all",
+    ].join("\n"),
+  );
+  // --all, -s and find read past it; refs given before stay.
+  const all = (await run(p as never, { cmd: "snapshot", all: true, interactive: true })).out;
+  assert.equal(all, ['- link "Home" [ref=e3]', '- button "Go" [ref=e1]', '- button "Close" [ref=e2]', '- link "About" [ref=e4]', '- link "Blog" [ref=e5]', '- link "Contact" [ref=e6]'].join("\n"));
+  assert.equal((await run(p as never, { cmd: "snapshot", scope: "e4" })).out, '- link "About" [ref=e4]');
+  assert.equal((await run(p as never, { cmd: "find", pattern: "Contact" })).count, 1);
+  // Cut on one side only, the other says the page ends there.
+  footer.getBoundingClientRect = () => ({ x: 0, y: 700, width: 1000, height: 200 });
+  const top = (await run(p as never, { cmd: "snapshot", interactive: true })).out.split("\n");
+  assert.deepEqual([top[0], top.at(-1)], ["- … 2 elements above (≈3 screens): scroll up, -s <ref>, find, or --all", "[end of page]"]);
+});
+
+test("a page that fits in the viewport and a screen around it reads as it always did", async () => {
+  const p = page();
+  Object.assign(p.window, { innerWidth: 1280, innerHeight: 800 });
+  assert.equal((await run(p, { cmd: "snapshot", interactive: true })).out.split("\n").length, 6);
 });
 
 test("find gives the lines that match, each with a line around it, and says when none do", async () => {
