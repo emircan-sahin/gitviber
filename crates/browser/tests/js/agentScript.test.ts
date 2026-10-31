@@ -58,7 +58,7 @@ function el(tag: string, attrs: Record<string, string> = {}, children: (Fake | s
 /** A sign-in page: its bars, a form with a label, a password, a hidden button and a clickable div. */
 function page() {
   const email = el("input", { id: "email", type: "email" }, [], { value: "" });
-  const label = el("label", { for: "email" }, ["Email"]);
+  const label = el("label", { for: "email" }, ["Email"], { control: email });
   email.labels = [label];
   const body = el("body", {}, [
     el("header", {}, [el("nav", {}, [el("a", { href: "/" }, ["Home"]), el("a", { href: "/docs" }, ["Docs"])])]),
@@ -107,14 +107,58 @@ test("a snapshot reads as the tree an agent acts on, refs on what takes clicks a
       "- main",
       '  - heading "Sign in" [level=1]',
       "  - form",
-      '    - text "Email"',
-      '    - textbox "Email" [ref=e3] value=""',
+      '    - textbox "Email" [ref=e3]',
       '    - textbox "Password" [ref=e4] value="•••••••"',
       '    - button "Sign in" [ref=e5]',
       '    - clickable "Forgot?" [ref=e6]',
       '  - text "Welcome back"',
     ].join("\n"),
   );
+});
+
+test("a snapshot says nothing twice: text runs join, bare wrappers fold, labels go with their field", async () => {
+  const named = el("input", { "aria-label": "Search the docs" }, [], { value: "" });
+  const hidden = el("input", { type: "checkbox" }, [], { style: { display: "none" }, getClientRects: () => [] });
+  const p = around([
+    el("p", {}, ["Read the", el("b", {}, ["whole"]), "guide", el("a", { href: "/g" }, ["here"]), "today"]),
+    el("ul", {}, [el("li", {}, [el("a", { href: "/a" }, ["A"])]), el("li", {}, []), el("li", {}, ["One", el("a", { href: "/b" }, ["B"])])]),
+    el("table", {}, [el("tr", {}, [el("td", {}, ["1"]), el("td", {}, ["2"])])]),
+    el("label", {}, ["Find"], { control: named }),
+    named,
+    el("label", {}, ["Remember me"], { control: hidden }),
+    hidden,
+    el("p", {}, ["x".repeat(195)]),
+    el("p", {}, ["y".repeat(100)]),
+  ]);
+  hidden.labels = [];
+  const { out } = await run(p as never, { cmd: "snapshot" });
+  assert.equal(
+    out,
+    [
+      '- text "Read the whole guide"',
+      '- link "here" [ref=e1]',
+      '- text "today"',
+      "- list",
+      '  - link "A" [ref=e2]',
+      "  - listitem",
+      '    - text "One"',
+      '    - link "B" [ref=e3]',
+      "- table",
+      "  - row",
+      '    - text "1"',
+      '    - text "2"',
+      // Another name, or a field that doesn't show: the label's text is all that says it.
+      '- text "Find"',
+      '- textbox "Search the docs" [ref=e4]',
+      '- text "Remember me"',
+      // Past a line's 200 characters a run starts a line of its own.
+      `- text "${"x".repeat(195)}"`,
+      `- text "${"y".repeat(100)}"`,
+    ].join("\n"),
+  );
+  // -d keeps a bare line whose lines are past the depth: there's more under it.
+  const shallow = (await run(p as never, { cmd: "snapshot", depth: 1 })).out;
+  assert.match(shallow, /\n- list\n {2}- listitem\n {2}- listitem\n {2}- listitem\n- table\n {2}- row\n/);
 });
 
 test("a link's href shows only when asked for, and always in a file", async () => {
@@ -211,12 +255,12 @@ test("a page's aria can hide or rename, but never smuggles lines or refs into th
 });
 
 test("a big page stops at its line limit and says how much it left out", async () => {
-  const items = Array.from({ length: 4000 }, (_, i) => el("p", {}, [`${i}`]));
+  const items = Array.from({ length: 4000 }, (_, i) => el("img", { alt: `${i}` }));
   const p = around([el("div", {}, items)]);
   const { out } = await run(p as never, { cmd: "snapshot" });
   const lines: string[] = out.split("\n");
   assert.equal(lines.length, 1501);
-  assert.equal(lines[1499], '- text "1499"');
+  assert.equal(lines[1499], '- img "1499"');
   // Past the limit the rest is only counted.
   assert.equal(lines.at(-1), "- … omitted ~2499 elements: narrow it with --ref, -s, -d or -i");
   // Written to a file, it all goes.

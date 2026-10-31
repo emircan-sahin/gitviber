@@ -11,6 +11,12 @@ const LEAF = new Set(["link", "button", "textbox", "searchbox", "checkbox", "rad
 // Named by their text too, but what acts inside them (a title's link) still gets a ref.
 const TITLES = new Set(["heading"]);
 
+// With no name or state, around one line at most, these only cost a line and its indent.
+const BARE = new Set(["listitem", "row", "cell", "gridcell", "group"]);
+
+/** Characters a text line holds: runs of text next to each other join up to it. */
+const TEXT = 200;
+
 const TAGS = { button: "button", select: "combobox", textarea: "textbox", nav: "navigation", main: "main", header: "banner", footer: "contentinfo", aside: "complementary", form: "form", dialog: "dialog", ul: "list", ol: "list", li: "listitem", table: "table", tr: "row", th: "columnheader", td: "cell", summary: "button", progress: "progressbar", meter: "meter", option: "option", fieldset: "group", details: "group", article: "article", iframe: "iframe" };
 
 const INPUTS = { checkbox: "checkbox", radio: "radio", range: "slider", number: "spinbutton", search: "searchbox", button: "button", submit: "button", reset: "button", image: "button", file: "button", color: "button", hidden: null };
@@ -56,6 +62,12 @@ function nameOf(el, byText) {
   return flat(el.textContent) || title || flat(el.querySelector?.("img[alt]")?.getAttribute("alt"));
 }
 
+/** Whether a label's text is the name of a control that shows: its line says it already. */
+function names(label) {
+  const control = label.control;
+  return !!control && control.getClientRects().length > 0 && nameOf(control, false).includes(flat(label.textContent));
+}
+
 function valueOf(el) {
   if (el.localName === "select") return flat(el.options?.[el.selectedIndex]?.textContent);
   if ((el.getAttribute("type") ?? "").toLowerCase() === "password") return el.value ? "•".repeat(Math.min(el.value.length, 8)) : "";
@@ -75,7 +87,10 @@ function line(el, role, name, ref, urls) {
   const expanded = el.getAttribute("aria-expanded");
   if (expanded) out += expanded === "true" ? " [expanded]" : " [collapsed]";
   if (el.getAttribute("aria-selected") === "true") out += " [selected]";
-  if (role === "textbox" || role === "searchbox" || role === "combobox" || role === "spinbutton" || role === "slider") out += ` value=${quote(cut(valueOf(el)))}`;
+  if (role === "textbox" || role === "searchbox" || role === "combobox" || role === "spinbutton" || role === "slider") {
+    const value = valueOf(el);
+    if (value) out += ` value=${quote(cut(value))}`;
+  }
   if (urls && role === "link") out += ` -> ${cut(flat(el.getAttribute("href")), 120)}`;
   return out;
 }
@@ -89,12 +104,28 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
   const root = scope ? resolve(scope) : (document.body ?? document.documentElement);
   const lines = [];
   let [full, size, omitted] = [false, 0, 0];
+  // The last line, while it's text: the next text at its level joins it.
+  let run = null;
   const emit = (level, text) => {
     const at = `${"  ".repeat(interactive ? 0 : level)}${text}`;
+    run = null;
     if (lines.length < most && size + at.length < chars) {
       lines.push(at);
       size += at.length + 1;
     } else full = true;
+  };
+  const say = (level, text) => {
+    const joined = run?.level === level ? `${run.text} ${text}` : "";
+    const at = joined && joined.length <= TEXT ? `${"  ".repeat(level)}- text ${quote(joined)}` : "";
+    const grown = at.length - lines.at(-1)?.length;
+    if (at && size + grown < chars) {
+      size += grown;
+      lines[lines.length - 1] = at;
+      run.text = joined;
+      return;
+    }
+    emit(level, `- text ${quote(cut(text, TEXT))}`);
+    if (!full) run = { level, text };
   };
   // An element and all its own, counted by the engine rather than walked a node at a time.
   const count = (node) => (node.nodeType === 1 ? node.getElementsByTagName("*").length + 1 : 0);
@@ -119,7 +150,7 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
     if (depth !== null && level > depth) return;
     if (node.nodeType === 3) {
       const text = interactive || muted ? "" : flat(node.nodeValue);
-      if (text) emit(level, `- text ${quote(cut(text, 200))}`);
+      if (text) say(level, text);
       return;
     }
     if (node.nodeType !== 1 || SKIP.has(node.localName)) return;
@@ -131,6 +162,8 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
     // A div that takes clicks (React's onClick) shows only as a pointer where its parent has none.
     const role = roleOf(el) ?? ((style.cursor === "pointer" && !pointer) || el.hasAttribute("onclick") ? "clickable" : null);
     let next = level;
+    let bare = false;
+    const start = lines.length;
     const leaf = LEAF.has(role) || (role === "clickable" && !el.querySelector(ACTIONABLE));
     if (role) {
       const acts = INTERACTIVE.has(role);
@@ -141,11 +174,21 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
         if (boxes && ref) text += ` [box=${boxOf(el).join(",")}]`;
         emit(level, text);
         next = level + 1;
+        bare = BARE.has(role) && text === `- ${role}` && !full;
       }
       if (leaf) return;
     }
+    const said = muted || TITLES.has(role) || (!interactive && el.localName === "label" && names(el));
     const children = el.shadowRoot ? [...el.shadowRoot.childNodes, ...el.childNodes] : [...el.childNodes];
-    for (const child of children) visit(child, next, pointer || style.cursor === "pointer", muted || TITLES.has(role));
+    for (const child of children) visit(child, next, pointer || style.cursor === "pointer", said);
+    // One line under it at most: that line takes its place (none, with -d, may be more past the depth).
+    const under = lines.length - start - 1;
+    if (bare && !full && (under === 1 || (under === 0 && depth === null))) {
+      size -= lines[start].length + 1 + 2 * under;
+      lines.splice(start, 1);
+      if (under) lines[start] = lines[start].slice(2);
+      run = null;
+    }
   };
   visit(root, 0, false, false);
   return { lines, omitted: full ? Math.max(omitted, 1) : 0 };
