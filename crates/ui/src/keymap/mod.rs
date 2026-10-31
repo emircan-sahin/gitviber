@@ -579,7 +579,7 @@ mod tests {
         const NEW: &[&str] = &[
             // The old app's terminal tabs were a Tab stop of the page; here a pane's Tab is the shell's.
             "terminal.focusTabs",
-            // A rendered document's zoom keys: its text follows the code font, not the window.
+            // A rendered document's zoom keys: its text has a size of its own.
             "markdown.zoomIn",
             "markdown.zoomOut",
             "markdown.zoomReset",

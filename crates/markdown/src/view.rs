@@ -110,6 +110,8 @@ pub struct MarkdownView {
     extensions: MarkdownExtensions,
     /// Sized to its content, inside something else that scrolls (a PR body, a comment).
     inline: bool,
+    /// Set for reading ([`reading`]): a full-pane view, or an inline one asked to be.
+    reading: bool,
     found: Option<Found>,
     /// The scrolling div an inline view sits in, for revealing a match.
     reveal_in: Option<ScrollHandle>,
@@ -148,6 +150,13 @@ impl MarkdownView {
         Self::build(source, base, true, window, cx)
     }
 
+    /// Set for reading as a full-pane view is, while inline: for a document shown in parts (a
+    /// vault note).
+    pub fn reading(mut self) -> Self {
+        self.reading = true;
+        self
+    }
+
     fn build(
         source: &str,
         base: MarkdownBase,
@@ -178,6 +187,7 @@ impl MarkdownView {
             diagrams,
             extensions,
             inline,
+            reading: !inline,
             found: None,
             reveal_in: None,
             reveal: None,
@@ -784,7 +794,8 @@ fn extensions(
     let nested = (top).then(|| extensions(view.clone(), base.clone(), false));
     let nested_view = {
         let (view, base, nested) = (view.clone(), base.clone(), nested.clone());
-        move |id: String, source: &str| {
+        move |id: String, source: &str, cx: &App| {
+            let reading = view.upgrade().is_some_and(|v| v.read(cx).reading);
             text_view(
                 ElementId::Name(id.into()),
                 Some(source.to_string().into()),
@@ -793,6 +804,7 @@ fn extensions(
                 &base,
                 nested.clone().unwrap_or_default(),
             )
+            .when(reading, |v| v.style(reading::style(cx)))
         }
     };
     ext = ext.block_renderer("gv-details", {
@@ -806,7 +818,7 @@ fn extensions(
             let open = is_open(&view, key, d.open, cx);
             let part = |name: &str, source: &str| {
                 (!source.trim().is_empty())
-                    .then(|| nested_view(format!("gv-details-{at}-{name}"), source))
+                    .then(|| nested_view(format!("gv-details-{at}-{name}"), source, cx))
             };
             div()
                 .flex()
@@ -845,9 +857,9 @@ fn extensions(
         let folds = !callout.fold.is_empty();
         let open = !folds || is_open(&view, key, callout.fold == "+", cx);
         let body = (open && !callout.body.trim().is_empty())
-            .then(|| nested_view(format!("gv-callout-{at}"), &callout.body));
+            .then(|| nested_view(format!("gv-callout-{at}"), &callout.body, cx));
         let title = if !github && has_markup(&callout.title) {
-            nested_view(format!("gv-callout-{at}-title"), &callout.title).into_any_element()
+            nested_view(format!("gv-callout-{at}-title"), &callout.title, cx).into_any_element()
         } else {
             callout.title.clone().into_any_element()
         };
@@ -909,6 +921,7 @@ impl Render for MarkdownView {
             &self.base,
             self.extensions.clone(),
         )
+        .when(self.reading, |v| v.style(reading::style(cx)))
         .scrollable(!self.inline)
         .selectable(true)
         .when_some(
@@ -921,6 +934,7 @@ impl Render for MarkdownView {
                 .key_context("MarkdownView")
                 .track_focus(&self.focus)
                 .w_full()
+                .when(self.reading, |el| reading::typography(el, cx))
                 .child(image_cache(self.images.clone()).w_full().child(view));
         }
         let list = self.state.read(cx).list_state().clone();
@@ -1225,12 +1239,16 @@ mod tests {
         })
     }
 
-    fn code_size(cx: &mut VisualTestContext) -> f32 {
-        cx.update(|_, cx| gitviber_ui::Settings::get(cx).code_font_size)
+    /// The code font's size and the one the document reads at.
+    fn sizes(cx: &mut VisualTestContext) -> (f32, f32) {
+        cx.update(|_, cx| {
+            let s = gitviber_ui::Settings::get(cx);
+            (s.code_font_size, s.reading_code_size())
+        })
     }
 
     #[gpui_kit::test]
-    fn a_preview_reads_in_a_centered_column_that_zooms_with_the_code_font(cx: &mut TestAppContext) {
+    fn a_preview_reads_in_a_centered_column_that_zooms_on_its_own(cx: &mut TestAppContext) {
         let (view, cx) = long_page(cx);
         cx.simulate_resize(gpui_kit::size(px(1600.), px(900.)));
         draw(cx);
@@ -1241,17 +1259,22 @@ mod tests {
         assert!((middle - 800.).abs() < 1., "{middle}");
         let (_, tall) = scrolled(&view, cx);
 
+        // The code editors and diffs keep their size.
         cx.simulate_keystrokes("secondary-=");
         draw(cx);
-        assert_eq!(code_size(cx), 14.);
+        assert_eq!(sizes(cx), (13.5, 14.));
         let (wider, _) = column(&view, cx);
         assert!((wider - 14. * 8. / 7. * 40.).abs() < 1., "{wider}");
         let (_, taller) = scrolled(&view, cx);
         assert!(taller > tall, "{taller} after {tall}");
         cx.simulate_keystrokes("secondary-- secondary--");
-        assert_eq!(code_size(cx), 13.);
+        assert_eq!(sizes(cx), (13.5, 13.));
+        // The code font still moves the reading along.
+        cx.update(|_, cx| gitviber_ui::Settings::step_code_font(cx, 1));
+        assert_eq!(sizes(cx), (14., 13.5));
         cx.simulate_keystrokes("secondary-0");
-        assert_eq!(code_size(cx), 13.5);
+        assert_eq!(sizes(cx), (14., 14.));
+        cx.update(|_, cx| gitviber_ui::Settings::step_code_font(cx, 0));
 
         // A pane narrower than the column: the text takes it, less its sides.
         cx.simulate_resize(gpui_kit::size(px(500.), px(900.)));

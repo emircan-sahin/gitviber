@@ -352,9 +352,10 @@ a terminal) the project turns into a repository in place.
 Markdown renders the way GitHub shows it, in files, pull requests and issues alike: Mermaid
 diagrams and math, drawn by the app itself, `> [!NOTE]` alerts, and a file's frontmatter as a table.
 
-A file's preview and a vault note read like an article: text a step above the code font size, in a
-centered column about 75 characters wide. `⌘=` / `⌘−` / `⌘0` there (or `⌥⌘=` / `⌥⌘−` / `⌥⌘0`
-anywhere) change the code font size, and the text follows it.
+A file's or a diff's preview and a vault note read like an article: text a step above the code
+font size, in a centered column about 75 characters wide. `⌘=` / `⌘−` / `⌘0` there change that
+text's size alone, kept between launches; `⌥⌘=` / `⌥⌘−` / `⌥⌘0` change the code font size of every
+editor and diff, and the text moves along with it.
 
 ### Obsidian vault
 

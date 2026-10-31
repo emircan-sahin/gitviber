@@ -377,8 +377,8 @@ pub static COMMANDS: &[Command] = &[
     cmd::<media::ZoomOut>("media.zoomOut", "Zoom Out Image", Editor, &["-", "cmd+-"])
         .local("ImageView"),
     cmd::<media::Fit>("media.fit", "Fit Image", Editor, &["0", "cmd+0"]).local("ImageView"),
-    // A document being read takes them too: its text follows the code font size, which the
-    // window's zoom doesn't change.
+    // A document being read takes them too, for a text size of its own: the window's zoom
+    // would size the whole interface, the code font every editor and diff.
     cmd::<markdown::ZoomIn>(
         "markdown.zoomIn",
         "Increase Text Size",
