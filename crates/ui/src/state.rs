@@ -114,6 +114,9 @@ pub struct UiState {
     /// Pins, folders, the sort and the colors of `recent_projects`.
     #[serde(deserialize_with = "lenient")]
     pub project_org: ProjectOrg,
+    /// The one-time word on the keys' move to presets was closed (or not needed).
+    #[serde(deserialize_with = "lenient")]
+    pub keymap_preset_told: bool,
 }
 
 const RECENT_PROJECTS: usize = 20;

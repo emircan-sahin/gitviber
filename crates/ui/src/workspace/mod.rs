@@ -41,7 +41,7 @@ pub use selection::{
     page_label, register_opener, selection_key, selection_path,
 };
 pub use tabs::{ClosedTab, Opened, TabEntry, TabGroup, Tabs};
-pub use toast::{Toast, ToastAction, ToastKind, ToastRun};
+pub use toast::{Toast, ToastAction, ToastClosed, ToastKind, ToastRun};
 pub use viewed::ViewedMarks;
 
 use crate::memory::Live;
@@ -55,6 +55,9 @@ pub enum WorkspaceEvent {
     /// A panel showed, hid or switched.
     LayoutChanged,
 }
+
+/// How many places `focus_back` remembers: one per part and a few more.
+const FOCUS_TRAIL: usize = 8;
 
 #[derive(Default)]
 struct Windows(HashMap<AnyWindowHandle, WeakEntity<Workspace>>);
@@ -139,9 +142,11 @@ pub struct Workspace {
     /// The terminal over the whole workspace (⌘↵ in it).
     bottom_maximized: bool,
     center_focus: FocusHandle,
-    /// Where focus was when a focus shortcut (⇧⌘E, ⇧⌘G, ⌃1, ⌘J…) took it away: pressed again,
-    /// the shortcut gives it back. Weak, so a closed tab's view isn't kept for it.
-    focus_back: Option<WeakFocusHandle>,
+    /// Where focus was and the part it was in, the latest first: noted as it leaves a part
+    /// (`watch_focus`), by a click too, and as a focus key takes it. Pressed again, the key gives
+    /// it back (`focus_back`). Weak, so a closed tab's view isn't kept for it.
+    focus_trail: Vec<(WeakFocusHandle, Option<Part>)>,
+    _focus_watch: Vec<Subscription>,
     panels: HashMap<&'static str, PanelHandle>,
     toasts: Vec<Toast>,
     _project_events: Option<Subscription>,
@@ -174,7 +179,8 @@ impl Workspace {
             bottom: side(sizes.bottom.size.is_some() && !sizes.bottom.collapsed, cx),
             bottom_maximized: false,
             center_focus: cx.focus_handle(),
-            focus_back: None,
+            focus_trail: Vec::new(),
+            _focus_watch: Vec::new(),
             panels: HashMap::new(),
             toasts: Vec::new(),
             _project_events: None,
@@ -1184,30 +1190,72 @@ impl Workspace {
         })
     }
 
-    /// A focus shortcut's way in: where focus is now, for `focus_back`.
-    pub fn remember_focus(&mut self, window: &Window, cx: &App) {
-        self.focus_back = window.focused(cx).map(|f| f.downgrade());
+    /// Notes where focus goes out of each part, for `focus_back`: a click away counts as much
+    /// as a key. Once per window, by its view.
+    pub fn watch_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let parts = [
+            self.center_focus.clone(),
+            self.left.focus.clone(),
+            self.right.focus.clone(),
+            self.bottom.focus.clone(),
+        ];
+        self._focus_watch = parts
+            .into_iter()
+            .zip([
+                Part::Center,
+                Part::Slot(Slot::Left),
+                Part::Slot(Slot::Right),
+                Part::Slot(Slot::Bottom),
+            ])
+            .map(|(handle, part)| {
+                cx.on_focus_out(&handle, window, move |ws, e, _, _| {
+                    ws.note_focus(e.blurred, Some(part))
+                })
+            })
+            .collect();
     }
 
-    /// The focus shortcut pressed again: focus goes back where `remember_focus` saw it, unless
-    /// that's in `leaving` or no longer drawn in an open part (a closed tab, a hidden panel, an
-    /// inactive tab's view); then to the code view.
+    fn note_focus(&mut self, handle: WeakFocusHandle, part: Option<Part>) {
+        self.focus_trail
+            .retain(|(h, _)| *h != handle && h.upgrade().is_some());
+        self.focus_trail.insert(0, (handle, part));
+        self.focus_trail.truncate(FOCUS_TRAIL);
+    }
+
+    /// A focus key's way in: where focus is now, for `focus_back`.
+    pub fn remember_focus(&mut self, window: &Window, cx: &App) {
+        if let Some(focused) = window.focused(cx) {
+            let part = self.focused_part(window, cx);
+            self.note_focus(focused.downgrade(), part);
+        }
+    }
+
+    /// A focus key pressed again: focus goes back where it came from, the latest place it was
+    /// out of `leaving` and not where it is now. That place closed or hidden meanwhile: the code
+    /// view, then the terminal.
     pub fn focus_back(
         &mut self,
         leaving: Option<Part>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let back = self
-            .focus_back
-            .take()
-            .and_then(|w| w.upgrade())
-            .filter(|h| {
-                self.drawn_part(h, window)
-                    .is_some_and(|p| Some(p) != leaving)
-            });
+        let came_from = self.focus_trail.iter().find(|(h, part)| {
+            leaving.is_none_or(|l| *part != Some(l))
+                && !h.upgrade().is_some_and(|h| h.contains_focused(window, cx))
+        });
+        let back = came_from.and_then(|(h, _)| h.upgrade()).filter(|h| {
+            self.drawn_part(h, window)
+                .is_some_and(|p| Some(p) != leaving)
+        });
+        let tab = self.tabs.active().and_then(|t| t.item.focus_handle(cx));
         match back {
             Some(handle) => handle.focus(window, cx),
+            None if tab.is_none()
+                && leaving != Some(Part::Slot(Slot::Bottom))
+                && self.is_shown(Slot::Bottom) =>
+            {
+                self.focus_slot(Slot::Bottom, window, cx)
+            }
             None => self.focus_center(window, cx),
         }
     }
@@ -1243,12 +1291,50 @@ impl Workspace {
         !inside
     }
 
-    /// ⇧⌘G, ⇧⌘E: focus into `slot`'s panel, or with focus already there, back where it was.
-    pub fn toggle_slot_focus(&mut self, slot: Slot, window: &mut Window, cx: &mut Context<Self>) {
+    /// A panel's focus key (⌘0, ⇧⌘E, ⌃`, ⌃⇧G): into `slot`, showing it, on panel `id` when
+    /// given; pressed with focus already there, back where it came from, the panel left open.
+    /// From another of the slot's tabs it switches to `id` and stays. True when focus went in.
+    pub fn focus_panel(
+        &mut self,
+        slot: Slot,
+        id: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let part = Part::Slot(slot);
         let inside = self.focused_part(window, cx) == Some(part);
-        if self.toggle_focus(inside, Some(part), window, cx) {
-            self.focus_slot(slot, window, cx);
+        let other_tab = inside && id.is_some_and(|id| self.active_panel(slot, cx) != Some(id));
+        if !other_tab && !self.toggle_focus(inside, Some(part), window, cx) {
+            return false;
+        }
+        if let Some(id) = id {
+            self.show_panel(id, cx);
+        }
+        self.focus_slot(slot, window, cx);
+        true
+    }
+
+    /// A panel's show/hide key (⌘B, ⌘E, ⌘J): hidden, it shows and focus stays where it is,
+    /// unless nothing has it; shown, it hides, and focus in it goes back where it came from.
+    pub fn toggle_shown(&mut self, slot: Slot, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_shown(slot) {
+            return self.hide(slot, window, cx);
+        }
+        if self.focused_part(window, cx).is_none() {
+            return self.focus_slot(slot, window, cx);
+        }
+        if self.leave_maximized(slot) {
+            self.changed(WorkspaceEvent::LayoutChanged, cx);
+        }
+        self.set_open(slot, true, cx);
+    }
+
+    /// Hides a panel; focus in it goes back where it came from rather than out of every part.
+    pub fn hide(&mut self, slot: Slot, window: &mut Window, cx: &mut Context<Self>) {
+        let had = self.side(slot).focus.contains_focused(window, cx);
+        self.set_open(slot, false, cx);
+        if had {
+            self.focus_back(Some(Part::Slot(slot)), window, cx);
         }
     }
 

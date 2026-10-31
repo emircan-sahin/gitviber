@@ -3,13 +3,15 @@
 //! where it should, and text fields keep their editing keys. A root listener notes every command
 //! that reaches it; the places a command's own view would take it are noted where they are.
 //! The keystrokes are macOS's; Linux's chords are checked by binding the keymap built for it.
+//! Most cases pin the classic preset, whose keys they were written for; the VS Code preset's
+//! own keys have their cases at the end.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use gitviber_ui::keymap::{
-    self, Overrides, ROOT_CONTEXT, SYSTEM_COMMANDS, TERMINAL_CONTEXT, all_commands, tab,
+    self, Overrides, Preset, ROOT_CONTEXT, SYSTEM_COMMANDS, TERMINAL_CONTEXT, all_commands, tab,
 };
 use gpui_kit::component::input::{Editor, EditorState, Input, InputState, Textarea, TextareaState};
 use gpui_kit::{
@@ -18,7 +20,13 @@ use gpui_kit::{
     Window, div, px,
 };
 
+mod panels;
+
 type Log = Rc<RefCell<Vec<String>>>;
+
+/// Plain `cargo test` runs these on threads of one process, which share the config folder's
+/// variable: a folder per setup, and one setup at a time reading it.
+static SETUP: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum At {
@@ -202,10 +210,21 @@ impl Render for Shell {
     }
 }
 
-/// The app's keymap as `gitviber::init` builds it, from defaults: gitviber-ui's commands and
-/// gpui-component's fields, then the keys the feature crates add.
+/// The app's keymap as `gitviber::init` builds it, from the classic preset: gitviber-ui's
+/// commands and gpui-component's fields, then the keys the feature crates add.
 fn setup(cx: &mut TestAppContext) -> (Entity<Shell>, Log, &mut VisualTestContext) {
-    gitviber_ui::test_support::config_dir("app-keys");
+    setup_with(Preset::Classic, cx)
+}
+
+fn setup_with(
+    preset: Preset,
+    cx: &mut TestAppContext,
+) -> (Entity<Shell>, Log, &mut VisualTestContext) {
+    let one = SETUP.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = gitviber_ui::test_support::config_dir(&format!("app-keys-{}", preset.as_str()));
+    // In the file, as a launch reads it: the keymap is built from it before the feature crates'.
+    let settings = format!(r#"{{"keymapPreset": "{}"}}"#, preset.as_str());
+    std::fs::write(dir.join("settings.json"), settings).unwrap();
     cx.update(|cx| {
         gitviber_ui::init(cx);
         gitviber_ui::install_core(cx);
@@ -213,6 +232,7 @@ fn setup(cx: &mut TestAppContext) -> (Entity<Shell>, Log, &mut VisualTestContext
         gitviber_terminal::init(cx);
         gitviber_files::init(cx);
     });
+    drop(one);
     let log = Log::default();
     let mut shell = None;
     let window = cx.add_window(|window, cx| {
@@ -317,7 +337,7 @@ fn the_terminal_keeps_the_shells_keys_and_takes_its_own(cx: &mut TestAppContext)
             // ⌃ with a non-letter is the app's; letters, ⌥, F-keys and ⌘-arrows stay the shell's.
             ("ctrl-tab", &["tab.next"]),
             ("ctrl-1", &["view.changes"]),
-            ("ctrl-`", &["terminal.toggle"]),
+            ("ctrl-`", &["terminal.focus"]),
             ("cmd-j", &["terminal.toggle"]),
             ("j", &[]),
             ("ctrl-r", &[]),
@@ -505,6 +525,7 @@ fn each_place_runs_its_own_keys(cx: &mut TestAppContext) {
             ("cmd-=", &["browser.zoomIn"]),
             ("cmd-0", &["browser.zoomReset"]),
             ("shift-cmd-c", &["browser.pick"]),
+            ("shift-cmd-r", &["browser.toggleReader"]),
         ],
     );
     // Its address bar types, and the page's keys reach past it.
@@ -600,11 +621,12 @@ fn each_place_runs_its_own_keys(cx: &mut TestAppContext) {
 #[gpui::test]
 fn a_rebinding_replaces_the_default_key(cx: &mut TestAppContext) {
     let (shell, log, cx) = setup(cx);
+    // Set, not saved: under plain `cargo test` the save would land in another case's folder.
     cx.update(|_, cx| {
-        gitviber_ui::Settings::update(cx, |s| {
-            s.keybindings
-                .insert("review.nextFile".into(), vec!["n".into()]);
-        })
+        let mut s = gitviber_ui::Settings::get(cx).clone();
+        s.keybindings
+            .insert("review.nextFile".into(), vec!["n".into()]);
+        cx.set_global(s);
     });
     cx.run_until_parked();
     assert_eq!(press(cx, &shell, &log, At::Root, "n"), ["review.nextFile"]);
@@ -618,7 +640,11 @@ fn linux_keys_are_ctrl_chords(cx: &mut TestAppContext) {
     let (shell, log, cx) = setup(cx);
     cx.update(|_, cx| {
         cx.clear_key_bindings();
-        cx.bind_keys(keymap::key_bindings(&Overrides::new(), false));
+        cx.bind_keys(keymap::key_bindings(
+            Preset::Classic,
+            &Overrides::new(),
+            false,
+        ));
     });
     let cases: &[(At, &str, &[&str])] = &[
         (At::Pane, "ctrl-alt-left", &["terminal.prevPane"]),
@@ -652,14 +678,155 @@ fn linux_keys_are_ctrl_chords(cx: &mut TestAppContext) {
 /// Two global commands on one chord: only the first listed would ever run.
 #[test]
 fn no_two_global_commands_share_a_default_chord() {
-    for mac in [true, false] {
-        let mut by_chord: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-        for c in all_commands().filter(|c| c.local.is_none()) {
-            for k in c.default_keys(mac) {
-                by_chord.entry(k).or_default().push(c.id);
+    for preset in Preset::ALL {
+        for mac in [true, false] {
+            let mut by_chord: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+            for c in all_commands().filter(|c| c.local.is_none()) {
+                for k in preset.keys(c, mac) {
+                    by_chord.entry(k).or_default().push(c.id);
+                }
             }
+            let shared: Vec<_> = by_chord.iter().filter(|(_, ids)| ids.len() > 1).collect();
+            assert!(shared.is_empty(), "{preset:?} mac {mac}: {shared:?}");
         }
-        let shared: Vec<_> = by_chord.iter().filter(|(_, ids)| ids.len() > 1).collect();
-        assert!(shared.is_empty(), "mac {mac}: {shared:?}");
+    }
+}
+
+#[gpui::test]
+fn the_vscode_presets_keys_run_where_they_should(cx: &mut TestAppContext) {
+    let (shell, log, cx) = setup_with(Preset::VsCode, cx);
+    expect(
+        cx,
+        &shell,
+        &log,
+        At::Root,
+        &[
+            ("cmd-b", &["view.toggleGitPanel"]),
+            ("cmd-e", &["view.toggleExplorer"]),
+            ("alt-cmd-b", &["view.toggleExplorer"]),
+            ("shift-cmd-e", &["view.showExplorer"]),
+            ("shift-cmd-f", &["search.findInFiles"]),
+            ("ctrl-shift-g", &["view.changes"]),
+            ("ctrl-`", &["terminal.focus"]),
+            ("cmd-j", &["terminal.toggle"]),
+            ("ctrl-~", &["terminal.new"]),
+            ("f1", &["workbench.showCommands"]),
+            ("ctrl-1", &["tab.goto1"]),
+            ("ctrl-0", &["tab.last"]),
+            ("ctrl-9", &["tab.last"]),
+            ("cmd-1", &["view.focusCode"]),
+            ("cmd-0", &["view.focusGitPanel"]),
+            ("alt-cmd-right", &["tab.next"]),
+            ("alt-cmd-left", &["tab.prev"]),
+            ("ctrl-r", &["file.switchProject"]),
+            ("alt-cmd-r", &["file.reveal"]),
+            // Run Build Task's key opens nothing, and ⇧⌘G is only a find box's.
+            ("shift-cmd-b", &[]),
+            ("shift-cmd-g", &[]),
+        ],
+    );
+    // The terminal keeps its pane keys over the tabs' ⌥⌘arrows, and splits on ⌘\ too.
+    expect(
+        cx,
+        &shell,
+        &log,
+        At::Pane,
+        &[
+            ("alt-cmd-right", &["terminal.focusRight"]),
+            ("alt-cmd-left", &["terminal.focusLeft"]),
+            ("shift-cmd-enter", &["terminal.zoomPane"]),
+            ("cmd-\\", &["terminal.split"]),
+            ("cmd-d", &["terminal.split"]),
+            ("cmd-k", &["terminal.clear"]),
+            ("ctrl-1", &["terminal: tab 1"]),
+            ("ctrl-`", &["terminal.focus"]),
+            ("ctrl-r", &[]),
+        ],
+    );
+    // ⌘0 resets a document's text size; elsewhere it's the side bar's.
+    expect(
+        cx,
+        &shell,
+        &log,
+        At::Reading,
+        &[
+            ("cmd-=", &["markdown.zoomIn"]),
+            ("cmd--", &["markdown.zoomOut"]),
+            ("cmd-0", &["markdown.zoomReset"]),
+        ],
+    );
+    expect(
+        cx,
+        &shell,
+        &log,
+        At::Diff,
+        &[
+            ("alt-f5", &["diff.nextChange"]),
+            ("f7", &["diff.nextChange"]),
+        ],
+    );
+    // Typing in the code view or the commit box: the keys a field doesn't edit with still run.
+    for at in [At::Code, At::Summary, At::Description] {
+        expect(
+            cx,
+            &shell,
+            &log,
+            at,
+            &[
+                ("ctrl-shift-g", &["view.changes"]),
+                ("ctrl-r", &["file.switchProject"]),
+                ("alt-cmd-right", &["tab.next"]),
+                ("alt-cmd-left", &["tab.prev"]),
+                ("ctrl-1", &["tab.goto1"]),
+                ("ctrl-0", &["tab.last"]),
+                ("shift-cmd-p", &["workbench.showCommands"]),
+                ("ctrl-k", &[]),
+            ],
+        );
+    }
+    expect(
+        cx,
+        &shell,
+        &log,
+        At::Browser,
+        &[
+            ("ctrl-shift-g", &["view.changes"]),
+            ("ctrl-r", &["file.switchProject"]),
+            ("alt-cmd-right", &["tab.next"]),
+            ("ctrl-1", &["tab.goto1"]),
+            ("cmd-0", &["browser.zoomReset"]),
+            ("cmd-1", &["view.focusCode"]),
+            ("shift-cmd-r", &["browser.toggleReader"]),
+        ],
+    );
+}
+
+/// Off macOS Alt+digit types nothing in a field, so the VS Code tab keys run there; the
+/// terminal keeps it, readline's count (Alt+3 Alt+B: back three words).
+#[gpui::test]
+fn linux_vscode_tab_keys_run_from_fields_not_the_terminal(cx: &mut TestAppContext) {
+    let (shell, log, cx) = setup_with(Preset::VsCode, cx);
+    cx.update(|_, cx| {
+        cx.clear_key_bindings();
+        cx.bind_keys(keymap::key_bindings(
+            Preset::VsCode,
+            &Overrides::new(),
+            false,
+        ));
+    });
+    let cases: &[(At, &str, &[&str])] = &[
+        (At::Root, "alt-1", &["tab.goto1"]),
+        (At::Summary, "alt-1", &["tab.goto1"]),
+        (At::Description, "alt-0", &["tab.last"]),
+        (At::Browser, "alt-9", &["tab.last"]),
+        (At::Pane, "alt-1", &[]),
+        (At::Pane, "ctrl-shift-g", &["view.changes"]),
+    ];
+    for (at, keys, want) in cases {
+        assert_eq!(
+            press(cx, &shell, &log, *at, keys),
+            *want,
+            "{keys} at {at:?}"
+        );
     }
 }

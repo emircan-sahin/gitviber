@@ -408,7 +408,7 @@ pub(super) fn clear_data(window: &mut Window, cx: &mut App) {
         .detach();
 }
 
-/// A new user tab in `window`'s workspace, beside the code (⇧⌘B).
+/// A new user tab in `window`'s workspace, beside the code (Open Browser; the classic keys' ⇧⌘B).
 pub fn open_new_tab(window: &mut Window, cx: &mut App) {
     let Some(ws) = Workspace::for_window(window, cx) else {
         return;

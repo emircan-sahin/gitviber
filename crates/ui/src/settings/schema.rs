@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::keymap::{IS_MAC, Overrides, clean_overrides};
+use crate::keymap::{IS_MAC, Overrides, Preset, clean_overrides};
 use crate::theme::ThemeId;
 
 pub const DEFAULT_FONT_SIZE: f32 = 13.5;
@@ -476,7 +476,8 @@ via_serde!(
     ResumeMode,
     TerminalCursor,
     ImageCompare,
-    ThemeId
+    ThemeId,
+    Preset
 );
 
 impl FromSetting for Option<String> {
@@ -665,7 +666,9 @@ settings! {
     blame: bool = false,
     /// Holding ⌘ by itself shows the shortcuts that apply.
     shortcut_overlay: bool = true,
-    /// Per-command overrides of the default key bindings; an empty list unbinds.
+    /// The default keys, which `keybindings` go over.
+    keymap_preset: Preset = Preset::VsCode,
+    /// Per-command overrides of the preset's key bindings; an empty list unbinds.
     keybindings: Overrides = Overrides::new(),
     /// Repos (main worktree paths) whose commits are signed off. Set from the commit box.
     sign_off_repos: Vec<String> = Vec::new(),

@@ -3504,7 +3504,11 @@ mod tests {
         let (panel, _, cx) = beside(cx);
         let mac = cfg!(target_os = "macos");
         cx.update(|_, cx| {
-            cx.bind_keys(gitviber_ui::keymap::key_bindings(&Default::default(), mac))
+            cx.bind_keys(gitviber_ui::keymap::key_bindings(
+                Default::default(),
+                &Default::default(),
+                mac,
+            ))
         });
         let dir = std::env::temp_dir();
         for _ in 0..3 {

@@ -450,7 +450,7 @@ impl Run {
         let first = self.model.active;
         for i in (0..tabs).map(|i| (first + i) % tabs) {
             if i != self.model.active {
-                key(&mut self.cx, self.window, &format!("cmd-{}", i + 1));
+                key(&mut self.cx, self.window, &format!("ctrl-{}", i + 1));
                 self.model.active = i;
                 self.pump(400);
                 self.observe();
@@ -972,7 +972,7 @@ fn panes_get_only_their_input_and_paint_their_grid() {
         panes.push(vec![pane.clone()]);
         record(&mut run, &mut seen, &[pane]);
     }
-    key(&mut run.cx, window, "cmd-2");
+    key(&mut run.cx, window, "ctrl-2");
     run.pump(100);
     let _ = run.cx.update_window(window, |_, w, cx| {
         panel.update(cx, |p, cx| p.split(Dir::Row, None, w, cx))

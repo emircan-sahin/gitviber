@@ -80,6 +80,7 @@ pub(super) fn send_on(root: Stateful<Div>) -> Stateful<Div> {
         view::FocusGitPanel,
         view::FocusCode,
         view::ShowExplorer,
+        terminal::Focus,
         changes::FocusMessage,
         view::FocusNextPanel,
         view::FocusPrevPanel,

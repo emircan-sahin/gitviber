@@ -146,8 +146,9 @@ them, to see only what they changed. See why a check failed and copy it for the 
 
 ## The terminal
 
-A real terminal sits under the diff (`⌘J`), with tabs and splits. Run the tests, start the dev
-server or talk to the agent without leaving the change you're reading.
+A real terminal sits under the diff (`⌘J` shows it, `⌃` `` ` `` goes into it), with tabs and
+splits. Run the tests, start the dev server or talk to the agent without leaving the change you're
+reading.
 
 ### Splits and panes
 
@@ -208,7 +209,7 @@ arguments, if you turned those on.
 
 ## The browser
 
-Open a browser tab beside the code with `⇧⌘B` or View → Open Browser, and check the agent's work
+Open a browser tab beside the code with View → Open Browser (`⇧⌘B` in the classic shortcuts), and check the agent's work
 where you read it. Browser tabs are macOS only for now: on Linux a tab says it can't open the page
 there, and one opened from a link offers Open in your browser.
 
@@ -474,12 +475,16 @@ worktree.
   for it unless you choose one; drag a row onto a folder or header to move it, or right-click it.
 - **Settings** (`⌘,`) has one search over every setting.
 - **Shortcuts.** Most actions have one, every one can be rebound in Settings (`⌘,`), and holding `⌘`
-  shows the ones that work where you are. A shortcut looks the same wherever it shows: keycaps in
-  menus, tooltips, the palette and pickers. See [Shortcuts](SHORTCUTS.md).
+  shows the ones that work where you are. Settings → Keyboard Shortcuts picks the preset they start
+  from: VS Code's keys (`⌘B` `⌘E` `⌘J` show or hide the git panel, the explorer and the terminal,
+  `⌘0` `⇧⌘E` `⌃` `` ` `` focus them, `⌃⇧G` Changes, `⌃1`–`⌃8` tabs), the default, or GitViber's
+  classic ones; your own rebindings stay on top of either. A shortcut looks the same wherever it
+  shows: keycaps in menus, tooltips, the palette and pickers. See [Shortcuts](SHORTCUTS.md).
 - **Command palette** (`⇧⌘P`). Each command has an icon of what it does, recently used ones are
   listed under their own heading, and the foot says the keys it takes.
-- **Keyboard all the way.** A focus shortcut pressed again gives focus back where it was, and every
-  picker opened by a key or the palette takes the keys: arrows, Home/End, `↵` to pick, `Esc` to close.
+- **Keyboard all the way.** A panel's focus key pressed again gives focus back where it came from,
+  even when a click took it there, and every picker opened by a key or the palette takes the keys:
+  arrows, Home/End, `↵` to pick, `Esc` to close.
 - **Updates.** GitViber checks at launch, every few hours and when Settings → Updates opens. A newer
   version shows as a badge in the top bar: click it for the release notes and the download, then
   again to restart into it. Nothing downloads until you choose to.
