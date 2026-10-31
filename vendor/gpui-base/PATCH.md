@@ -1,6 +1,6 @@
 # gpui-base 0.8.0, patched
 
-The crates.io release of gpui-base 0.8.0, byte for byte, except seven changes and this file:
+The crates.io release of gpui-base 0.8.0, byte for byte, except eight changes and this file:
 1. `src/text/inline.rs`: closed markdown documents' shaped text is swept (below). Drop it once
    an upstream release sweeps the table itself.
 2. Line blocks in the code editor (the second half of this file). Drop it once upstream has
@@ -15,6 +15,8 @@ The crates.io release of gpui-base 0.8.0, byte for byte, except seven changes an
    time on every frame (the end of this file). Drop it once upstream combines them once.
 7. A prose measure for the text view (the end of this file). Drop it once upstream can cap a
    document's prose narrower than its code blocks and tables.
+8. Task statuses past done and to do (`- [/]`, `- [-]`), as notes write them (the end of this
+   file). Drop it once upstream reads them.
 
 Wired in through `[patch.crates-io]` in the workspace Cargo.toml (and excluded from the
 workspace). The whole patch: `diff -ru ~/.cargo/registry/src/index.crates.io-*/gpui-base-0.8.0
@@ -186,3 +188,22 @@ reach past a narrow column: the column has to be the wide one and the prose capp
 `src/text/document.rs` (`render_root`, `in_measure`): with a measure set, each top-level block but
 code blocks, tables and custom blocks is wrapped in a centered box at most that wide; custom blocks
 cap themselves. Without one nothing changes.
+
+## 8. Task statuses: why and the change
+
+Obsidian notes mark tasks with more than `[ ]` and `[x]`: `[/]` in progress, `[-]` dropped, and
+`[>]`, `[!]`, `[?]` and the like. GFM reads those as text, so a numbered one showed its number,
+then its status as text.
+
+- `src/text/markdown_ext.rs`: `MarkdownExtensions::task_statuses()` asks for them (off by
+  default: GitHub reads only its two).
+- `src/text/format/markdown.rs`: with it, a list item whose first paragraph opens with `[c]` and
+  a blank, written so (not `\[`), is a task of status `c`, the `[c] ` taken off its text
+  (`take_task_status`).
+- `src/text/node.rs`: `BlockNode::ListItem::checked` is the status character (`Option<char>`,
+  was `Option<bool>`); copying a selection as markdown writes it back. A task's box: done filled
+  with a check, `/` half filled, `-` a dash with its text dimmed and struck through, any other
+  its character in the link color.
+
+Tested here (`markdown::tests::task_statuses_past_done_are_read_only_when_asked_for`), run as in
+part 4; and from crates/markdown and crates/obsidian (a note's tasks).

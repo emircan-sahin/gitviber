@@ -77,8 +77,9 @@ pub enum BlockNode {
     ListItem {
         children: Vec<BlockNode>,
         spread: bool,
-        /// Whether the list item is checked, if None, it's not a checkbox
-        checked: Option<bool>,
+        /// A task's status, what its brackets hold: ' ' to do, 'x' done, any other
+        /// character with `MarkdownExtensions::task_statuses`. None: not a task.
+        checked: Option<char>,
         span: Option<Span>,
     },
     CodeBlock(CodeBlock),
@@ -1318,11 +1319,8 @@ fn list_selected_source(
         } else {
             "- ".to_string()
         };
-        let checkbox = match checked {
-            Some(true) => "[x] ",
-            Some(false) => "[ ] ",
-            None => "",
-        };
+        let checkbox = checked.map(|c| format!("[{c}] ")).unwrap_or_default();
+        let checkbox = checkbox.as_str();
         let child_indent = format!("{}{}", indent, " ".repeat(marker.len()));
 
         // Split the item into its own content and any nested lists, so the
@@ -3493,11 +3491,7 @@ impl BlockNode {
             BlockNode::ListItem {
                 children, checked, ..
             } => {
-                let checkbox = if let Some(checked) = checked {
-                    if *checked { "[x] " } else { "[ ] " }
-                } else {
-                    ""
-                };
+                let checkbox = checked.map(|c| format!("[{c}] ")).unwrap_or_default();
                 format!(
                     "{}{}",
                     checkbox,
@@ -3549,7 +3543,7 @@ impl BlockNode {
         content: AnyElement,
         ix: usize,
         options: NodeRenderOptions,
-        checked: Option<bool>,
+        checked: Option<char>,
         style: &TextViewStyle,
         line_height: Pixels,
         indent: Pixels,
@@ -3583,12 +3577,47 @@ impl BlockNode {
                         ),
                 )
             })
-            .when_some(checked, |this, checked| {
-                // Todo list checkbox
-                let check_svg = if style.is_dark() {
-                    CHECK_SVG_DARK
-                } else {
-                    CHECK_SVG_LIGHT
+            .when_some(checked, |this, status| {
+                let (link, muted) = (style.link(), style.muted_foreground());
+                let checkbox = div()
+                    .flex()
+                    .size(rems(0.9375))
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.))
+                    .border(px(1.5))
+                    .border_color(muted);
+                // Notes mark more than done: half full in progress, a dash dropped, any
+                // other status its own character.
+                let checkbox = match status {
+                    ' ' => checkbox,
+                    'x' | 'X' => {
+                        let check_svg = if style.is_dark() {
+                            CHECK_SVG_DARK
+                        } else {
+                            CHECK_SVG_LIGHT
+                        };
+                        checkbox.bg(link).border_color(link).child(
+                            img(Arc::new(Image::from_bytes(
+                                ImageFormat::Svg,
+                                check_svg.to_vec(),
+                            )))
+                            .size(rems(0.75)),
+                        )
+                    }
+                    '/' => checkbox
+                        .justify_start()
+                        .overflow_hidden()
+                        .border_color(link)
+                        .child(div().h_full().w_1_2().bg(link)),
+                    '-' => checkbox.child(div().w(rems(0.5)).h(px(1.5)).bg(muted)),
+                    c => checkbox
+                        .border_color(link)
+                        .text_color(link)
+                        .text_size(rems(0.625))
+                        .line_height(relative(1.))
+                        .font_weight(FontWeight::BOLD)
+                        .child(c.to_string()),
                 };
                 this.child(
                     div()
@@ -3598,25 +3627,7 @@ impl BlockNode {
                         .flex_none()
                         .items_center()
                         .justify_center()
-                        .child(
-                            div()
-                                .flex()
-                                .size(rems(0.9375))
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(4.))
-                                .border(px(1.5))
-                                .border_color(style.muted_foreground())
-                                .when(checked, |this| {
-                                    this.bg(style.link()).border_color(style.link()).child(
-                                        img(Arc::new(Image::from_bytes(
-                                            ImageFormat::Svg,
-                                            check_svg.to_vec(),
-                                        )))
-                                        .size(rems(0.75)),
-                                    )
-                                }),
-                        ),
+                        .child(checkbox),
                 )
             })
             .child(
@@ -3624,10 +3635,11 @@ impl BlockNode {
                     .flex_1()
                     .min_w_0()
                     .overflow_hidden()
-                    // A done task steps back so the open ones stand out.
-                    .when(checked == Some(true), |this| {
+                    // A done or dropped task steps back so the open ones stand out.
+                    .when(matches!(checked, Some('x' | 'X' | '-')), |this| {
                         this.text_color(style.muted_foreground())
                     })
+                    .when(checked == Some('-'), |this| this.line_through())
                     .child(content),
             )
     }
@@ -5360,13 +5372,13 @@ mod tests {
                 BlockNode::ListItem {
                     children: vec![BlockNode::Paragraph(selected_paragraph("done"))],
                     spread: false,
-                    checked: Some(true),
+                    checked: Some('x'),
                     span: None,
                 },
                 BlockNode::ListItem {
                     children: vec![BlockNode::Paragraph(selected_paragraph("todo"))],
                     spread: false,
-                    checked: Some(false),
+                    checked: Some(' '),
                     span: None,
                 },
             ],

@@ -597,13 +597,14 @@ pub fn to_markdown(front: &str, source: &str, cx: &Context) -> String {
     let mut math = false;
     let mut prev_blank = true;
     let mut in_list = false;
+    let mut nesting = Nesting::default();
     let mut indented = false;
+    let mut depth = 0;
     for line in source.split_inclusive('\n') {
         let (body, eol) = match line.strip_suffix('\n') {
             Some(b) => (b, "\n"),
             None => (line, ""),
         };
-        let blank = body.trim().is_empty();
         if fences.code(body) {
             out.push_str(line);
             prev_blank = false;
@@ -616,12 +617,22 @@ pub fn to_markdown(front: &str, source: &str, cx: &Context) -> String {
             out.push_str(line);
             continue;
         }
+        // A quote's or callout's lines are read past their `>`s, as a block of their own.
+        let (quote, from, levels) = quoted(body);
+        if levels != depth {
+            depth = levels;
+            (in_list, indented, prev_blank) = (false, false, true);
+            nesting = Nesting::default();
+        }
+        let body = &body[quote.len()..];
+        let blank = body.trim().is_empty();
         let indent = body.len() - body.trim_start_matches([' ', '\t']).len();
         let deep = indent >= 4 || body.starts_with('\t');
         if indent < 4 && is_list_item(body.trim_start()) {
             in_list = true;
         } else if !blank && indent == 0 && prev_blank {
             in_list = false;
+            nesting = Nesting::default();
         }
         // Indented code: after a blank line and outside a list, on while lines stay indented.
         indented = if indented {
@@ -634,30 +645,30 @@ pub fn to_markdown(front: &str, source: &str, cx: &Context) -> String {
             prev_blank = blank;
             continue;
         }
-        prev_blank = blank;
+        let after_blank = std::mem::replace(&mut prev_blank, blank);
+        let text = body.trim_start_matches([' ', '\t']);
+        // Its text's column past the quote's, a tab counted from where it is on the line.
+        let start = columns(quote, 0);
+        let at = columns(&body[..body.len() - text.len()], start) + start - from;
+        if in_list && nesting.code(blank, at, after_blank) {
+            out.push_str(line);
+            continue;
+        }
         let body = match block_id(body) {
             Some((len, _)) => &body[..len],
             None => body,
         };
-        match task_status(body) {
-            // Its status in a box (Obsidian's themes draw it as an icon); `-` is dropped.
-            Some((lead, status, text)) => {
-                let status = match status {
-                    '<' => "&lt;".to_string(),
-                    '&' => "&amp;".to_string(),
-                    c => c.to_string(),
-                };
-                out.push_str(&format!("{lead}<code>{status}</code> "));
-                let dropped = status == "-";
-                if dropped {
-                    out.push_str("<s>");
-                }
-                inline(text, cx, &mut notes, &mut out);
-                if dropped {
-                    out.push_str("</s>");
-                }
-            }
-            None => inline(body, cx, &mut notes, &mut out),
+        let text = body.trim_start_matches([' ', '\t']);
+        out.push_str(quote);
+        if in_list
+            && is_list_item(text)
+            && let Some(to) = nesting.indent(text, at, from)
+        {
+            // A tab right after the `>` gave the quote one of its columns.
+            out.push_str(&" ".repeat(from - start + to));
+            inline(text, cx, &mut notes, &mut out);
+        } else {
+            inline(body, cx, &mut notes, &mut out);
         }
         out.push_str(eol);
     }
@@ -668,6 +679,30 @@ pub fn to_markdown(front: &str, source: &str, cx: &Context) -> String {
         }
     }
     out
+}
+
+/// A line's quote markers (each `>` with up to three spaces before it and one after), the
+/// column its text is read from past them, and how many there are.
+fn quoted(line: &str) -> (&str, usize, usize) {
+    let (mut end, mut levels) = (0, 0);
+    loop {
+        let rest = &line[end..];
+        let pad = rest.len() - rest.trim_start_matches(' ').len();
+        if pad > 3 || !rest[pad..].starts_with('>') {
+            break;
+        }
+        end += pad + 1;
+        levels += 1;
+        if line[end..].starts_with(' ') {
+            end += 1;
+        }
+    }
+    let mut from = columns(&line[..end], 0);
+    // A tab after the last `>` gives it one column, the rest is the text's indent.
+    if levels > 0 && !line[..end].ends_with(' ') && line[end..].starts_with('\t') {
+        from += 1;
+    }
+    (&line[..end], from, levels)
 }
 
 fn is_list_item(t: &str) -> bool {
@@ -845,23 +880,68 @@ impl Notes {
     }
 }
 
-/// `- [/] item`: a task with a status past done and to do, which GFM leaves as text: the list
-/// marker, the status, the text after it.
-fn task_status(body: &str) -> Option<(&str, char, &str)> {
-    let t = body.trim_start_matches([' ', '\t']);
-    if !is_list_item(t) {
-        return None;
+/// List items nested as Obsidian reads them: an item two columns or more past the one above's
+/// marker is its child. CommonMark wants it at that item's text, so a tab under `10. ` (column 4,
+/// the text at 5) ran into the item's paragraph.
+#[derive(Default)]
+struct Nesting {
+    /// Each item open above, as its marker's column as written and its text's as rewritten.
+    open: Vec<(usize, usize)>,
+    /// Indented code in an item runs on while lines are this deep, or blank.
+    code: Option<usize>,
+}
+
+impl Nesting {
+    /// The line is indented code in the item above: after a blank line, four columns or more
+    /// past the item's text (CommonMark's and Obsidian's reading). It stays as written. `at` is
+    /// its text's column.
+    fn code(&mut self, blank: bool, at: usize, after_blank: bool) -> bool {
+        if blank {
+            return self.code.is_some();
+        }
+        if self.code.is_some_and(|min| at >= min) {
+            return true;
+        }
+        self.code = after_blank
+            .then(|| {
+                self.open
+                    .iter()
+                    .rev()
+                    .find(|&&(marker, _)| at >= marker + 2)
+            })
+            .flatten()
+            .map(|&(_, under)| under + 4)
+            .filter(|&min| at >= min);
+        self.code.is_some()
     }
-    let after = t[t.find([' ', '\t'])?..].trim_start_matches([' ', '\t']);
-    let mut chars = after.chars();
-    let (Some('['), Some(status), Some(']')) = (chars.next(), chars.next(), chars.next()) else {
-        return None;
-    };
-    let rest = chars.as_str();
-    if matches!(status, ' ' | 'x' | 'X') || !(rest.is_empty() || rest.starts_with([' ', '\t'])) {
-        return None;
+
+    /// The column the list item `text`, written at `at`, moves to, when it moves. `from` is
+    /// where the line's columns start, past a quote's `>`s.
+    fn indent(&mut self, text: &str, at: usize, from: usize) -> Option<usize> {
+        while self.open.last().is_some_and(|&(marker, _)| at < marker + 2) {
+            self.open.pop();
+        }
+        let to = match self.open.last() {
+            Some(&(_, under)) if at < under || at >= under + 4 => under,
+            _ => at,
+        };
+        let marker = text.find([' ', '\t']).unwrap_or(text.len());
+        let rest = &text[marker..];
+        let gap = rest.len() - rest.trim_start_matches([' ', '\t']).len();
+        let gap = columns(&rest[..gap], from + to + marker);
+        // Past four columns the text starts one after the marker; the rest is indented code.
+        let gap = if (1..=4).contains(&gap) { gap } else { 1 };
+        self.open.push((at, to + marker + gap));
+        (to != at).then_some(to)
     }
-    Some((&body[..body.len() - after.len()], status, rest.trim_start()))
+}
+
+/// The columns `ws` spans from column `from`, a tab to the next multiple of four.
+fn columns(ws: &str, from: usize) -> usize {
+    ws.chars().fold(
+        from,
+        |at, c| if c == '\t' { at + 4 - at % 4 } else { at + 1 },
+    ) - from
 }
 
 /// Rewrites one line's inline syntax into `out`; inline footnotes go to `notes`.
@@ -1497,18 +1577,68 @@ mod tests {
     }
 
     #[test]
-    fn task_statuses_past_done_show_their_mark() {
+    fn task_statuses_stay_for_the_view_to_draw() {
         let out = md(
             "- [/] half\n- [-] dropped [[Note]]\n- [x] done\n- [ ] open\n  1. [<] later\n- [/]x",
         );
         assert_eq!(
             out,
             format!(
-                "- <code>/</code> half\n- <code>-</code> <s>dropped [Note]({})</s>\n- [x] done\n- [ ] open\n  1. <code>&lt;</code> later\n- [/]x",
+                "- [/] half\n- [-] dropped [Note]({})\n- [x] done\n- [ ] open\n  1. [<] later\n- [/]x",
                 href("Note.md", "")
             )
         );
         assert_eq!(plain("- [/] half\n- [x] done"), "half\ndone\n");
+    }
+
+    #[test]
+    fn items_nest_under_a_numbered_item_as_obsidian_reads_them() {
+        // From a real note: tabs under ` 15. `, whose text starts at column 5.
+        let note = " 14. [ ] pre-rendering\n 15. [/] GEO ve SEO\n\t- [x] xAxios AI\n\t- [ ] Mirkit\n\t\t- [ ] deeper\n\t- [ ] Lexi Translate\n 16. [x] next\n  17. [ ] two spaces is a sibling\n";
+        assert_eq!(
+            md(note),
+            " 14. [ ] pre-rendering\n 15. [/] GEO ve SEO\n     - [x] xAxios AI\n     - [ ] Mirkit\n\t\t- [ ] deeper\n     - [ ] Lexi Translate\n 16. [x] next\n  17. [ ] two spaces is a sibling\n"
+        );
+        // Children already at their parent's text, and lines that aren't items, stay as written.
+        let fine = "1. a\n\t- b\n   - c\n\tnot an item\n\n- [ ] x\n  - [x] y\n";
+        assert_eq!(md(fine), fine);
+        // A tab under a ten-character marker still nests.
+        assert_eq!(md("100. a\n\t- b"), "100. a\n     - b");
+    }
+
+    #[test]
+    fn an_item_four_past_its_parents_text_after_a_blank_line_is_code() {
+        // Indented code in `step`, its lines and blank ones between; less deep ends it.
+        let code = "- step\n\n      - literal\n\n      - more\n  - child\n";
+        assert_eq!(md(code), code);
+        // With no blank line before it, it's a child.
+        assert_eq!(md("- step\n      - deep\n"), "- step\n  - deep\n");
+    }
+
+    #[test]
+    fn where_nesting_reads_otherwise_than_commonmark() {
+        // Two columns past a marker is a child, short of the text (column 3) as it is: CommonMark
+        // would start a list of its own.
+        assert_eq!(md("1. a\n  - b\n"), "1. a\n   - b\n");
+        // A paragraph after a moved child stays as written, while the child's text moved from
+        // column 6 to 7: at 6 Obsidian reads it as `b`'s, the rewrite as `a`'s; at 10 Obsidian
+        // reads indented code in `b`, the rewrite a paragraph.
+        let para = "100. a\n\t- b\n\n\t  more\n\n\t\t  more\n";
+        assert_eq!(md(para), "100. a\n     - b\n\n\t  more\n\n\t\t  more\n");
+    }
+
+    #[test]
+    fn items_in_a_quote_or_callout_nest_as_outside_one() {
+        assert_eq!(
+            md("> [!todo] Tasks\n> 15. [ ] a\n> \t- [ ] b\n>\t- [x] c\n"),
+            "> [!todo] Tasks\n> 15. [ ] a\n>     - [ ] b\n>     - [x] c\n"
+        );
+        assert_eq!(md("> > 100. a\n> > \t- b\n"), "> > 100. a\n> >      - b\n");
+        assert_eq!(md("> > 1. a\n> > \t- b\n"), "> > 1. a\n> > \t- b\n");
+        // Already at the parent's text, they stay; a quote's list doesn't run on past it.
+        let fine = "> - a\n> \t- b\n\n1. x\n";
+        assert_eq!(md(fine), fine);
+        assert_eq!(md("> 1. a\n\t- b\n"), "> 1. a\n\t- b\n");
     }
 
     #[test]
