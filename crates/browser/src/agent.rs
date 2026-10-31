@@ -749,7 +749,8 @@ impl Tab {
             .map(|f| control::text_path(Path::new(cwd), f))
             .transpose()?;
         let input = json!({ "cmd": "snapshot", "interactive": snap.interactive, "scope": snap.scope,
-            "depth": snap.depth, "boxes": snap.boxes, "file": file.is_some() });
+            "depth": snap.depth, "urls": snap.urls, "all": snap.all, "boxes": snap.boxes,
+            "file": file.is_some() });
         let found = self.script(input)?;
         let out = found["out"].as_str().unwrap_or_default();
         let Some(path) = file else {
