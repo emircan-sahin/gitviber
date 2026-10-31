@@ -81,6 +81,8 @@ pub struct VaultSection {
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
     listings: HashMap<SharedString, Task<()>>,
+    /// A listing changed the tree since the rows were built.
+    relisted: bool,
     _subs: Vec<Subscription>,
     _live: Live,
 }
@@ -165,6 +167,7 @@ impl VaultSection {
             scroll: UniformListScrollHandle::new(),
             focus,
             listings: HashMap::new(),
+            relisted: false,
             _subs: subs,
             _live: Live::new("VaultSection"),
         };
@@ -193,6 +196,7 @@ impl VaultSection {
         self.error = None;
         self.selected = None;
         self.listings.clear();
+        self.relisted = false;
         if let Some(v) = want.as_ref().filter(|_| open) {
             self.hold = Some(self.model.update(cx, |m, cx| m.hold(&v.path, cx)));
             for dir in self.model.read(cx).open_folders(&v.path) {
@@ -286,15 +290,20 @@ impl VaultSection {
             _ = this.update(cx, |this, cx| {
                 this.listings.remove(&key);
                 match this.tree.listed(&key, id, listed) {
-                    Listed::Changed | Listed::Closed => this.rebuild(cx),
+                    Listed::Changed | Listed::Closed => this.relisted = true,
                     Listed::RootFailed(e) => {
                         this.error = Some(e.into());
-                        this.rebuild(cx);
+                        this.relisted = true;
                     }
                     Listed::Same | Listed::Stale => {}
                 }
                 if key.is_empty() && this.error.is_some() && this.tree.children("").is_some() {
                     this.error = None;
+                }
+                // The rows wait for every folder being listed: an opening section lists its
+                // root and each folder it had open, and drawn as each came in, it grew in steps.
+                if this.listings.is_empty() && std::mem::take(&mut this.relisted) {
+                    this.rebuild(cx);
                 }
             });
         });
@@ -521,7 +530,11 @@ impl VaultSection {
         let me = cx.weak_entity();
         div()
             .id(("vault-row", ix))
+            .debug_selector(move || format!("vault-row-{ix}"))
             .relative()
+            // The list lays a row out at its content's width otherwise: the hover and the
+            // click would end at a short name.
+            .w_full()
             .h(px(ROW_HEIGHT))
             .flex()
             .items_center()
@@ -719,6 +732,7 @@ impl Render for VaultSection {
         let t = cx.app_theme();
         let base = div()
             .id("vault-section")
+            .debug_selector(|| "vault-section".into())
             .key_context("Explorer")
             .track_focus(&self.focus)
             .w_full()

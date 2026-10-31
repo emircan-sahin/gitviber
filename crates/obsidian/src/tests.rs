@@ -889,3 +889,40 @@ fn a_long_note_scrolls_from_the_keyboard_but_not_from_its_find_box(cx: &mut Test
     cx.simulate_keystrokes("home");
     assert_eq!(scrolled(cx).0, 0.);
 }
+
+#[gpui_kit::test]
+fn the_sections_rows_span_its_width_and_open_whole(cx: &mut TestAppContext) {
+    setup("panel-rows", cx);
+    let (host, cx) = cx.add_window_view(|_, _| Host(None));
+    let ctx = PanelContext {
+        workspace: WeakEntity::new_invalid(),
+        project: None,
+    };
+    let room = std::rc::Rc::new(std::cell::Cell::new(gpui_kit::px(400.)));
+    let panel = cx.update(|window, cx| cx.new(|cx| VaultSection::new(&ctx, room, window, cx)));
+    show(&host, Some(panel.clone().into()), cx);
+    // Every row is as wide as the section, a short name's ("Home") too: its hover and click.
+    let width = cx.debug_bounds("vault-section").unwrap().size.width;
+    for row in ["vault-row-0", "vault-row-3"] {
+        assert_eq!(cx.debug_bounds(row).unwrap().size.width, width, "{row}");
+    }
+    // Opened again with folders it had open: the rows come in whole, not a folder at a time
+    // (unbatched they went 0, 5, 6, 7).
+    cx.update(|_, cx| {
+        panel.update(cx, |p, cx| {
+            p.open_folder("Folder", cx);
+            p.open_folder("assets", cx)
+        })
+    });
+    show(&host, Some(panel.clone().into()), cx);
+    let whole = cx.update(|_, cx| panel.read(cx).row_paths().len());
+    cx.update(|_, cx| panel.update(cx, |p, cx| p.toggle(cx)));
+    show(&host, Some(panel.clone().into()), cx);
+    cx.update(|_, cx| panel.update(cx, |p, cx| p.toggle(cx)));
+    let mut seen = vec![cx.update(|_, cx| panel.read(cx).row_paths().len())];
+    while cx.executor().tick() {
+        seen.push(cx.update(|_, cx| panel.read(cx).row_paths().len()));
+    }
+    seen.dedup();
+    assert_eq!(seen, [0, whole]);
+}
