@@ -39,6 +39,8 @@ mod mouse;
 mod pane;
 mod panel;
 mod scan;
+#[cfg(all(test, target_os = "macos"))]
+mod scroll_tests;
 mod session;
 #[cfg(all(test, target_os = "macos"))]
 mod stress;

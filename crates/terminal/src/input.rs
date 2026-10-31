@@ -15,6 +15,35 @@ pub fn wheel_rows(pending: f32, pixels: f32, row_height: f32, max_rows: i32) -> 
     (rows, total - whole * row_height)
 }
 
+/// Where a swipe of `pixels` (positive goes back in history) leaves the scrollback, which shows
+/// `offset` rows up from the bottom less `frac` of a row, within `0..=history` rows. A view between
+/// rows is drawn shifted up from a whole offset, so any view off the bottom has an offset of at
+/// least one and stays put as output arrives. Returns (offset, frac), frac in `0..1`.
+pub fn smooth_scroll(
+    offset: usize,
+    frac: f32,
+    pixels: f32,
+    row_height: f32,
+    history: usize,
+) -> (usize, f32) {
+    if row_height.is_nan() || row_height <= 0. || !pixels.is_finite() {
+        return (offset, if offset == 0 { 0. } else { frac });
+    }
+    // f64: ten thousand rows of history still place the view to a fraction of a pixel.
+    let frac = if offset == 0 || !frac.is_finite() {
+        0.
+    } else {
+        frac.clamp(0., 1.) as f64
+    };
+    let at = (offset as f64 - frac + pixels as f64 / row_height as f64).clamp(0., history as f64);
+    // A hair off a row is that row: the f32 fraction kept between events rounds, and a view a
+    // millionth past a row would be drawn a whole row lower.
+    let near = at.round();
+    let at = if (at - near).abs() < 1e-4 { near } else { at };
+    let whole = at.ceil();
+    (whole as usize, (whole - at) as f32)
+}
+
 /// Escaped, a path is one word to a shell, and an AI CLI still finds the file. None when it holds
 /// a control character: a name with a newline or ESC in it could run a command or end the
 /// bracketed paste early.
@@ -138,6 +167,45 @@ mod tests {
             pending = p;
         }
         assert_eq!(rows, 300 / 17);
+    }
+
+    #[test]
+    fn a_swipe_moves_the_scrollback_by_its_pixels_between_rows() {
+        // 5 px up from the bottom of 20 px rows: a row up, shown a quarter row short of it.
+        assert_eq!(smooth_scroll(0, 0., 5., 20., 100), (1, 0.75));
+        // On to exactly a row: no fraction left.
+        assert_eq!(smooth_scroll(1, 0.75, 15., 20., 100), (1, 0.));
+        assert_eq!(smooth_scroll(1, 0., 30., 20., 100), (3, 0.5));
+        // Back down a part of a row, then past the bottom: the bottom, never below it.
+        assert_eq!(smooth_scroll(3, 0.5, -10., 20., 100), (2, 0.));
+        assert_eq!(smooth_scroll(3, 0., -100., 20., 100), (0, 0.));
+        // Not past the oldest row either.
+        assert_eq!(smooth_scroll(99, 0.5, 400., 20., 100), (100, 0.));
+        // A stale fraction at the bottom counts for nothing.
+        assert_eq!(smooth_scroll(0, 0.4, 0., 20., 100), (0, 0.));
+    }
+
+    #[test]
+    fn many_small_moves_add_up_to_the_swipe_and_back() {
+        let (mut offset, mut frac) = (0, 0.);
+        for _ in 0..1000 {
+            (offset, frac) = smooth_scroll(offset, frac, 0.7, 17.3, 10_000);
+        }
+        let at = offset as f32 - frac;
+        assert!((at - 700. / 17.3).abs() < 1e-3, "{at}");
+        assert!((0. ..1.).contains(&frac));
+        for _ in 0..1000 {
+            (offset, frac) = smooth_scroll(offset, frac, -0.7, 17.3, 10_000);
+        }
+        assert_eq!((offset, frac), (0, 0.));
+    }
+
+    #[test]
+    fn a_pane_with_no_row_height_keeps_its_scrollback_where_it_is() {
+        assert_eq!(smooth_scroll(4, 0.5, 40., 0., 100), (4, 0.5));
+        assert_eq!(smooth_scroll(4, 0.5, f32::NAN, 20., 100), (4, 0.5));
+        assert_eq!(smooth_scroll(0, 0.5, 40., f32::NAN, 100), (0, 0.));
+        assert_eq!(smooth_scroll(2, f32::NAN, 0., 20., 100), (2, 0.));
     }
 
     #[test]
