@@ -214,7 +214,11 @@ fn setup_with(
     preset: Preset,
     cx: &mut TestAppContext,
 ) -> (Entity<Shell>, Log, &mut VisualTestContext) {
-    let dir = gitviber_ui::test_support::config_dir("app-keys");
+    // Plain `cargo test` runs these on threads of one process, which share the config folder's
+    // variable: a folder per preset, and one setup at a time reading it.
+    static SETUP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let one = SETUP.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = gitviber_ui::test_support::config_dir(&format!("app-keys-{}", preset.as_str()));
     // In the file, as a launch reads it: the keymap is built from it before the feature crates'.
     let settings = format!(r#"{{"keymapPreset": "{}"}}"#, preset.as_str());
     std::fs::write(dir.join("settings.json"), settings).unwrap();
@@ -225,6 +229,7 @@ fn setup_with(
         gitviber_terminal::init(cx);
         gitviber_files::init(cx);
     });
+    drop(one);
     let log = Log::default();
     let mut shell = None;
     let window = cx.add_window(|window, cx| {
@@ -702,6 +707,7 @@ fn the_vscode_presets_keys_run_where_they_should(cx: &mut TestAppContext) {
             ("f1", &["workbench.showCommands"]),
             ("ctrl-1", &["tab.goto1"]),
             ("ctrl-0", &["tab.last"]),
+            ("ctrl-9", &["tab.last"]),
             ("cmd-1", &["view.focusCode"]),
             ("cmd-0", &["view.focusGitPanel"]),
             ("alt-cmd-right", &["tab.next"]),
@@ -752,4 +758,67 @@ fn the_vscode_presets_keys_run_where_they_should(cx: &mut TestAppContext) {
             ("f7", &["diff.nextChange"]),
         ],
     );
+    // Typing in the code view or the commit box: the keys a field doesn't edit with still run.
+    for at in [At::Code, At::Summary, At::Description] {
+        expect(
+            cx,
+            &shell,
+            &log,
+            at,
+            &[
+                ("ctrl-shift-g", &["view.changes"]),
+                ("ctrl-r", &["file.switchProject"]),
+                ("alt-cmd-right", &["tab.next"]),
+                ("alt-cmd-left", &["tab.prev"]),
+                ("ctrl-1", &["tab.goto1"]),
+                ("ctrl-0", &["tab.last"]),
+                ("shift-cmd-p", &["workbench.showCommands"]),
+                ("ctrl-k", &[]),
+            ],
+        );
+    }
+    expect(
+        cx,
+        &shell,
+        &log,
+        At::Browser,
+        &[
+            ("ctrl-shift-g", &["view.changes"]),
+            ("ctrl-r", &["file.switchProject"]),
+            ("alt-cmd-right", &["tab.next"]),
+            ("ctrl-1", &["tab.goto1"]),
+            ("cmd-0", &["browser.zoomReset"]),
+            ("cmd-1", &["view.focusCode"]),
+        ],
+    );
+}
+
+/// Off macOS Alt+digit types nothing in a field, so the VS Code tab keys run there; the
+/// terminal keeps it, readline's count (Alt+3 Alt+B: back three words).
+#[gpui::test]
+fn linux_vscode_tab_keys_run_from_fields_not_the_terminal(cx: &mut TestAppContext) {
+    let (shell, log, cx) = setup_with(Preset::VsCode, cx);
+    cx.update(|_, cx| {
+        cx.clear_key_bindings();
+        cx.bind_keys(keymap::key_bindings(
+            Preset::VsCode,
+            &Overrides::new(),
+            false,
+        ));
+    });
+    let cases: &[(At, &str, &[&str])] = &[
+        (At::Root, "alt-1", &["tab.goto1"]),
+        (At::Summary, "alt-1", &["tab.goto1"]),
+        (At::Description, "alt-0", &["tab.last"]),
+        (At::Browser, "alt-9", &["tab.last"]),
+        (At::Pane, "alt-1", &[]),
+        (At::Pane, "ctrl-shift-g", &["view.changes"]),
+    ];
+    for (at, keys, want) in cases {
+        assert_eq!(
+            press(cx, &shell, &log, *at, keys),
+            *want,
+            "{keys} at {at:?}"
+        );
+    }
 }
