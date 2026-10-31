@@ -120,6 +120,13 @@ test("the style takes the app's light colors, its dark ones in dark, and the tex
   assert.match(css, /font-size:19px;line-height:1\.6/);
   assert.match(css, /font-family:ui-serif/);
   assert.match(css, /max-width:68ch/);
+  // The page's own rules for the host can't move or show through it.
+  for (const rule of ["display:block", "position:fixed", "inset:0", "z-index:2147483647", "visibility:visible"]) {
+    assert.ok(css.includes(`${rule}!important`), rule);
+  }
+  // The reader's header has its rule, not one the article brings.
+  assert.match(css, /\.reader>header\{margin:0 0 2em/);
+  assert.doesNotMatch(css, /(^|[\n}])header\{/);
   const sans: string = reader.css({ ...LOOK, size: 24, font: "sans" });
   assert.match(sans, /font-family:-apple-system[^;]*;font-size:24px/);
   // What isn't a color or a size can't reach the style.
@@ -130,29 +137,40 @@ test("the style takes the app's light colors, its dark ones in dark, and the tex
 });
 
 /** reader.js on a stand-in live page: its document a fixture's, with the bits the overlay uses. */
-function live(fixture: string) {
+function live(fixture: string, Parser: unknown = Readability) {
   const html = read(`fixtures/${fixture}`);
   const own = new scope.JSDOMParser().parse(html, URL_);
   const props = new Map<string, [string, string]>([["visibility", ["visible", ""]]]);
-  const body = {
-    style: {
-      getPropertyValue: (n: string) => props.get(n)?.[0] ?? "",
-      getPropertyPriority: (n: string) => props.get(n)?.[1] ?? "",
-      setProperty: (n: string, v: string, p = "") => void props.set(n, [v, p]),
-      removeProperty: (n: string) => void props.delete(n),
-    },
+  const body = own.createElement("body");
+  body.style = {
+    getPropertyValue: (n: string) => props.get(n)?.[0] ?? "",
+    getPropertyPriority: (n: string) => props.get(n)?.[1] ?? "",
+    setProperty: (n: string, v: string, p = "") => void props.set(n, [v, p]),
+    removeProperty: (n: string) => void props.delete(n),
   };
+  const head = own.createElement("head");
+  head.setAttribute("inert", "");
+  const documentElement = own.createElement("html");
+  documentElement.appendChild(head);
+  documentElement.appendChild(body);
   const listeners: Record<string, () => void> = {};
   const document = {
     baseURI: URL_,
+    URL: URL_,
     body,
-    documentElement: own.createElement("html"),
+    documentElement,
     cloneNode: () => new scope.JSDOMParser().parse(html, URL_),
     createTextNode: (t: string) => own.createTextNode(t),
     createElement: (tag: string) => {
       const el = own.createElement(tag);
       el.focus = () => {};
-      el.attachShadow = () => (el.shadow = Object.assign(own.createElement("shadow"), { addEventListener() {} }));
+      el.attachShadow = () => {
+        const on: Record<string, (e: unknown) => void> = {};
+        return (el.shadow = Object.assign(own.createElement("shadow"), {
+          on,
+          addEventListener: (type: string, fn: (e: unknown) => void) => void (on[type] = fn),
+        }));
+      };
       return el;
     },
   };
@@ -163,15 +181,15 @@ function live(fixture: string) {
     }
   }
   const window: Record<string, any> = { addEventListener: (type: string, fn: () => void) => void (listeners[type] = fn) };
-  new Function("window", "document", "Readability", "CSSStyleSheet", read("../../src/scripts/reader.js"))(window, document, Readability, Sheet);
-  return { reader: window.__gvReader, document, props, listeners };
+  new Function("window", "document", "Readability", "CSSStyleSheet", read("../../src/scripts/reader.js"))(window, document, Parser, Sheet);
+  return { reader: window.__gvReader, document, body, head, props, listeners };
 }
 
 test("shown, the article lies over the page, which is hidden beneath; hidden, the page is as it was", () => {
-  const { reader, document, props, listeners } = live("reader-article.html");
+  const { reader, document, body, head, props, listeners } = live("reader-article.html");
   assert.equal(reader.style(LOOK), "hidden");
   assert.equal(reader.show(LOOK), "shown");
-  const host = document.documentElement.firstChild;
+  const host = document.documentElement.lastChild;
   assert.equal(host.localName, "gitviber-reader");
   const [sheet] = host.shadow.adoptedStyleSheets;
   assert.match(sheet.text, /font-size:19px/);
@@ -179,18 +197,80 @@ test("shown, the article lies over the page, which is hidden beneath; hidden, th
   assert.equal(page.className, "page");
   assert.match(page.innerHTML, /<h1 class="title">Why tide pools glow at night<\/h1>/);
   assert.deepEqual(props.get("visibility"), ["hidden", "important"]);
+  // Inert beneath, for Find in Page and VoiceOver: the reader's host isn't.
+  assert.ok(body.hasAttribute("inert"));
+  assert.ok(!host.hasAttribute("inert"));
   // Restyled in place, no second article.
   assert.equal(reader.style({ ...LOOK, size: 24 }), "shown");
   assert.match(sheet.text, /font-size:24px/);
   // Shown again: the one before goes first.
   assert.equal(reader.show(LOOK), "shown");
-  assert.equal(document.documentElement.childNodes.length, 1);
+  assert.equal(document.documentElement.childNodes.length, 3);
   assert.equal(reader.hide(), "hidden");
-  assert.equal(document.documentElement.childNodes.length, 0);
+  assert.equal(document.documentElement.childNodes.length, 2);
   assert.deepEqual(props.get("visibility"), ["visible", ""]);
+  // What the page had inert stays so; what the reader made inert is let go.
+  assert.ok(!body.hasAttribute("inert"));
+  assert.ok(head.hasAttribute("inert"));
   assert.equal(reader.hide(), "hidden");
   // Leaving the page takes it down too.
   reader.show(LOOK);
   listeners.pagehide();
-  assert.equal(document.documentElement.childNodes.length, 0);
+  assert.equal(document.documentElement.childNodes.length, 2);
+});
+
+test("the page's key handlers don't hear keys meant for the reader, which still scrolls", () => {
+  const { reader, document } = live("reader-article.html");
+  reader.show(LOOK);
+  const { on } = document.documentElement.lastChild.shadow;
+  for (const type of ["keydown", "keypress", "keyup"]) {
+    let stopped = false;
+    let prevented = false;
+    on[type]({ stopPropagation: () => (stopped = true), preventDefault: () => (prevented = true) });
+    assert.ok(stopped && !prevented, type);
+  }
+});
+
+test("a parse that throws (a page enforcing Trusted Types) answers none and leaves the page as it was", () => {
+  class Blocked {
+    parse(): never {
+      throw new TypeError("This assignment requires a TrustedHTML");
+    }
+  }
+  const { reader, document, body, props } = live("reader-article.html", Blocked);
+  assert.equal(reader.show(LOOK), "none");
+  assert.equal(document.documentElement.childNodes.length, 2);
+  assert.deepEqual(props.get("visibility"), ["visible", ""]);
+  assert.ok(!body.hasAttribute("inert"));
+  assert.equal(reader.style(LOOK), "hidden");
+});
+
+test("a srcset's URLs may hold commas: candidates part at a comma after a descriptor or a URL's end", () => {
+  const doc = new scope.JSDOMParser().parse(
+    `<html><body><div id="c"><img srcset="/i/w_400,h_300/a.jpg 1x, /i/w_800,h_600/a.jpg 2x"/>` +
+      `<img srcset="/b.jpg,/c.jpg 2x,/d.jpg 3x"/><img srcset="/e.jpg,, /f.jpg 2x"/></div></body></html>`,
+    URL_,
+  );
+  const body = reader.build({ title: "T", content: doc.getElementById("c"), textContent: "" }, doc, URL_).childNodes[1];
+  const sets = body.childNodes.map((img: any) => img.getAttribute("srcset"));
+  assert.deepEqual(sets, [
+    "https://news.example.com/i/w_400,h_300/a.jpg 1x, https://news.example.com/i/w_800,h_600/a.jpg 2x",
+    "https://news.example.com/b.jpg,/c.jpg 2x, https://news.example.com/d.jpg 3x",
+    "https://news.example.com/e.jpg, https://news.example.com/f.jpg 2x",
+  ]);
+});
+
+test("a link to a place in the page stays a jump, behind a <base> unlike the page's address too", () => {
+  const base = "https://cdn.example.com/";
+  const doc = new scope.JSDOMParser().parse(
+    `<html><body><div id="c"><a href="${base}#note-1">1</a> <a href="${URL_}#note-2">2</a> ` +
+      `<a href="${URL_}?page=2#top">next</a> <a href="${base}guide#install">guide</a></div></body></html>`,
+    URL_,
+  );
+  const body = reader.build({ title: "T", content: doc.getElementById("c"), textContent: "" }, doc, base, URL_).childNodes[1];
+  assert.equal(
+    body.innerHTML,
+    `<a href="#note-1">1</a> <a href="#note-2">2</a> ` +
+      `<a href="${URL_}?page=2#top">next</a> <a href="${base}guide#install">guide</a>`,
+  );
 });
