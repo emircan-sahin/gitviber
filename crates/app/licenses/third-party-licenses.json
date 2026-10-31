@@ -1,6 +1,17 @@
 {
   "packages": [
     {
+      "name": "@mozilla/readability",
+      "version": "0.6.0",
+      "license": "Apache-2.0",
+      "url": "https://github.com/mozilla/readability",
+      "source": "data",
+      "standard": "Apache-2.0",
+      "texts": [
+        16
+      ]
+    },
+    {
       "name": "Geist",
       "version": "1.4",
       "license": "OFL-1.1",
