@@ -6,6 +6,8 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.22] - 2026-11-01
+
 ### Added
 
 - **Reader mode in the browser.** On an article, the book button in the toolbar or ⇧⌘R shows it as a clean page: serif or sans text in a centered column, with the site, title, author and reading time. It follows the app's light or dark theme, keeps your text size and font across pages, and goes back to the page where you left it. Scripts on the page don't run in it.
@@ -14,6 +16,7 @@ on GitHub are its section below.
 
 ### Changed
 
+- **The terminal's history scrolls smoothly.** A trackpad swipe moves it by pixels instead of jumping a row at a time, momentum included; it settles on the prompt when you type. Programs that take the mouse, like vim or a full-screen Claude Code, still scroll by rows. Plain text also draws faster.
 - **Shortcuts follow VS Code by default, and you can pick a preset.** Settings → Keyboard Shortcuts offers VS Code and Classic, with your own bindings on top. With VS Code keys, ⌃1–⌃9 pick a tab, ⌘1 focuses the code, ⌥⌘← and ⌥⌘→ step through tabs, ⌘\\ splits the terminal and ⇧⌘B no longer opens the browser. If you changed shortcuts before, you stay on Classic; either way a notice says what moved, once.
 - **Each panel has a key to show or hide it and a key to focus it.** ⌘E shows or hides the Explorer and ⇧⌘E focuses it; ⌘B and ⌘0 do the same for the git panel, ⌘J and ⌃` for the terminal. Pressing a focus key again gives focus back to where you were, and hiding a panel you're in does the same. The keys work from the code, the commit box, the terminal, a browser page and a preview alike.
 - **Markdown previews read like an article.** A file's preview, a diff's preview and a vault note set their text a little larger than the code, in a centered column with room between the lines; code blocks, tables and diagrams get a wider column. ⌘= and ⌘− size the preview's text alone, diagrams and math included, and the size is kept.
