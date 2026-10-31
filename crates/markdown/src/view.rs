@@ -683,6 +683,10 @@ fn is_open(view: &WeakEntity<MarkdownView>, key: u64, open: bool, cx: &App) -> b
 }
 
 /// A line that opens and shuts what's under it, its chevron in front.
+fn is_reading(view: &WeakEntity<MarkdownView>, cx: &App) -> bool {
+    view.upgrade().is_some_and(|v| v.read(cx).reading)
+}
+
 fn toggle_row(
     id: ElementId,
     view: &WeakEntity<MarkdownView>,
@@ -763,7 +767,12 @@ fn extensions(
                 let Some(block) = node.data::<SourceBlock>() else {
                     return div().into_any_element();
                 };
-                let look = look(window.rem_size(), window, cx);
+                let size = if is_reading(&view, cx) {
+                    reading::text_size(cx)
+                } else {
+                    window.rem_size()
+                };
+                let look = look(size, window, cx);
                 match drawn(&view, block.kind, &block.source, false, look, cx) {
                     Some(Drawn::Ready { image, scale }) => picture(image, scale, block.kind, cx),
                     drawn => source_block(block, matches!(drawn, Some(Drawn::Failed(_))), cx),
@@ -795,7 +804,7 @@ fn extensions(
     let nested_view = {
         let (view, base, nested) = (view.clone(), base.clone(), nested.clone());
         move |id: String, source: &str, cx: &App| {
-            let reading = view.upgrade().is_some_and(|v| v.read(cx).reading);
+            let reading = is_reading(&view, cx);
             text_view(
                 ElementId::Name(id.into()),
                 Some(source.to_string().into()),
@@ -1298,6 +1307,57 @@ mod tests {
             draw(cx);
             let (at, _) = scrolled(&view, cx);
             assert!((at - want).abs() < 0.5, "at {x}: {at}, not {want}");
+        }
+    }
+
+    /// `text` as a file's preview shows it (`inline` false) or a pull request does, and the
+    /// document's height: the inline view's own, the preview's first block's.
+    fn shown(
+        host: &Entity<Host>,
+        text: &str,
+        inline: bool,
+        cx: &mut VisualTestContext,
+    ) -> impl Fn(&mut VisualTestContext) -> f32 + use<> {
+        let view = cx.update(|window, cx| {
+            let base = MarkdownBase::default();
+            let view = cx.new(|cx| match inline {
+                true => MarkdownView::inline(text, base, window, cx),
+                false => MarkdownView::new(text, base, window, cx),
+            });
+            host.update(cx, |h, cx| {
+                h.0 = Some(view.clone().into());
+                cx.notify();
+            });
+            view
+        });
+        move |cx| {
+            draw(cx);
+            view.read_with(cx, |v, cx| {
+                let state = v.state.read(cx);
+                let height = match inline {
+                    true => Some(state.bounds().size.height),
+                    false => state.list_state().bounds_for_item(0).map(|b| b.size.height),
+                };
+                f32::from(height.unwrap_or_default())
+            })
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_diagram_follows_the_reading_size_in_a_preview_only(cx: &mut TestAppContext) {
+        let (host, cx) = window(cx);
+        let doc = "```mermaid\nflowchart LR; A[Start]-->B[End]\n```\n";
+        for inline in [false, true] {
+            let height = shown(&host, doc, inline, cx);
+            let before = height(cx);
+            cx.update(|_, cx| (0..8).for_each(|_| gitviber_ui::Settings::step_reading_size(cx, 1)));
+            let after = height(cx);
+            cx.update(|_, cx| gitviber_ui::Settings::step_reading_size(cx, 0));
+            assert!(before > 40., "{before}");
+            match inline {
+                false => assert!(after > before * 1.1, "{after} after {before}"),
+                true => assert_eq!(after, before),
+            }
         }
     }
 

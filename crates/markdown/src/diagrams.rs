@@ -19,7 +19,7 @@ const KEEP: usize = 64;
 pub struct Look {
     pub dark: bool,
     pub color: Hsla,
-    /// The text size math is set at, in logical pixels.
+    /// The text size math is set at, in logical pixels; a diagram is drawn its own size at 16.
     pub font_size: f32,
     pub scale: f32,
 }
@@ -181,9 +181,10 @@ fn draw_mermaid(
 ) -> Result<Arc<RenderImage>, String> {
     let text = mermaid_svg(source, look)?;
     // At the display's density: gpui's own factor would draw it at twice that, four times the pixels.
+    // Shown at `scale`, it comes out zoomed as the text around it is.
     svg.render_single_frame(
         text.as_bytes(),
-        look.scale / gpui_kit::SMOOTH_SVG_SCALE_FACTOR,
+        look.scale * look.font_size / 16. / gpui_kit::SMOOTH_SVG_SCALE_FACTOR,
     )
     .map_err(|e| e.to_string())
 }
