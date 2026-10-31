@@ -29,6 +29,9 @@ own domain is GitViber's.
 - Snapshot before your first action on a page, then trust refs: an element keeps its ref across
   snapshots. Snapshot again only when a ref fails as stale (its element left, or the page or its
   frame moved on), and then only the part you need (`snapshot -s <ref|css>`).
+- A snapshot shows the viewport and a screen around it, and counts what's past that. For the
+  rest, `find <text>` first, then `scroll down` or `snapshot -s <ref>`; `--all` only when you
+  need the whole page. A cut snapshot's last line names the regions it left out, with refs.
 - Read with `snapshot -i`, `snapshot -s`, `find` and `get` before any screenshot. Take one only
   for layout, colour, canvas and images; `screenshot --refs` when you need to see where refs are,
   `--full` for a whole long page (pictures of 2000 px, one file each).
@@ -71,6 +74,19 @@ own domain is GitViber's.
   they asked for exactly that.
 - Before saying it's done, show evidence: a ref's text, the URL, a console or network line.
 - Close the tabs you opened when finished (`tab close`), unless the user should see them.
+
+## Fast path
+
+Each call costs a turn. Chain commands that need no look in between with `&&`: the chain stops
+at the first one that fails.
+
+- Land and read in one call: `gitviber browser open <url> && gitviber browser snapshot -i`.
+- Fill a form in one call, then check the outcome with `wait`, not a new snapshot:
+  `gitviber browser fill e3 "Ada" && gitviber browser check e5 && gitviber browser click e7 &&
+  gitviber browser wait --text "Saved"`.
+- On a long page, `find <text>` before a bigger snapshot.
+- A link's URL: `get attr href <ref>`, or `snapshot -u` for every link's.
+- An overview picture: `screenshot --scale 0.5`, a quarter of the pixels.
 
 ## Commands (`gitviber browser help`)
 
