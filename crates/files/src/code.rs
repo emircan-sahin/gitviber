@@ -1409,7 +1409,7 @@ impl CodeView {
             .update(cx, |s, cx| s.set_scroll_offset(offset, cx));
     }
 
-    /// ⌘G / ⇧⌘G while the find box is open; otherwise the key goes on (⇧⌘G: the Git panel).
+    /// ⌘G / ⇧⌘G while the find box is open; otherwise the key goes on (classic ⇧⌘G: the Git panel).
     fn find_step(&mut self, next: bool, cx: &mut Context<Self>) {
         if !self.state.read(cx).search_session().open {
             return cx.propagate();

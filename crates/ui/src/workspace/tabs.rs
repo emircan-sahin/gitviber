@@ -324,7 +324,7 @@ impl<T> Tabs<T> {
         self.active = Some(self.tabs[next].key.clone());
     }
 
-    /// ⌘1–⌘8 go to that tab; out of range does nothing.
+    /// Go to Tab 1–8 (⌃1–⌃8, the classic keys' ⌘1–⌘8); out of range does nothing.
     pub fn go_to(&mut self, index: usize) {
         if let Some(tab) = self.tabs.get(index) {
             self.active = Some(tab.key.clone());

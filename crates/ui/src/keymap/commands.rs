@@ -114,8 +114,9 @@ pub static COMMANDS: &[Command] = &[
         General,
         &["shift+cmd+o"],
     ),
-    // ⌘1–⌘9 pick tabs, as in browsers. Listed before the tabs, so a user who bound ⌘1 here keeps it.
-    // Elsewhere "ctrl" is the Super key, which the OS takes; Alt+1–4 is the usual there.
+    // The classic keys (preset.rs has the VS Code ones): ⌃1–⌃4, since ⌘1–⌘9 pick tabs as in
+    // browsers. Listed before the tabs, so a user who bound ⌘1 here keeps it. Elsewhere "ctrl" is
+    // the Super key, which the OS takes; Alt+1–4 is the usual there.
     cmd::<view::Changes>("view.changes", "Focus Changes", View, &["ctrl+1"]).other(&["alt+1"]),
     cmd::<view::History>("view.history", "Focus History", View, &["ctrl+2"]).other(&["alt+2"]),
     cmd::<view::Pulls>("view.pulls", "Focus Pull Requests", View, &["ctrl+3"]).other(&["alt+3"]),
