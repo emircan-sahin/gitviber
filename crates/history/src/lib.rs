@@ -346,6 +346,62 @@ mod tests {
         assert_eq!(first_frame(true, cx), 0);
     }
 
+    /// The rows' right ends (a commit's hash, its files' counts) stay clear of the scrollbar
+    /// that lies over the list, in a panel as wide as the owner's.
+    #[gpui_kit::test]
+    fn rows_end_clear_of_the_scrollbar(cx: &mut TestAppContext) {
+        use gpui_kit::component::scroll::Scrollbar;
+        gitviber_ui::test_support::config_dir("history-test");
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            let core = gitviber_ui::install_core(cx);
+            gitviber_diff::init(cx);
+            gitviber_diff::set_core(core, cx);
+            gitviber_refs::init(cx);
+            super::init(cx);
+        });
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        cx.update(|window, cx| {
+            Workspace::register_window(&ws, window, cx);
+            ws.update(cx, |ws, cx| ws.open_project(repo(), window, cx));
+        });
+        cx.run_until_parked();
+        let project = cx
+            .update(|_, cx| ws.read(cx).project().cloned())
+            .expect("the project opened");
+        let panel = cx.update(|window, cx| {
+            let ctx = PanelContext {
+                workspace: ws.downgrade(),
+                project: Some(project.clone()),
+            };
+            cx.new(|cx| HistoryPanel::new(&ctx, project.clone(), window, cx))
+        });
+        cx.run_until_parked();
+        panel.update_in(cx, |p, window, cx| p.open_first(window, cx));
+        cx.run_until_parked();
+        let draw = |cx: &mut gpui_kit::VisualTestContext| {
+            let panel = panel.clone();
+            cx.draw(
+                gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)),
+                gpui_kit::size(gpui_kit::px(470.), gpui_kit::px(800.)),
+                move |_, _| div().size_full().child(panel),
+            );
+        };
+        draw(cx);
+        cx.run_until_parked();
+        draw(cx);
+        let list = cx.debug_bounds("commit-list").expect("the list drew");
+        for key in ["commit-short-0", "changed-files-counts"] {
+            let end = cx.debug_bounds(key).expect(key).right();
+            assert!(
+                list.right() - end >= Scrollbar::width(),
+                "{key} ends {:?} from the edge",
+                list.right() - end
+            );
+        }
+    }
+
     /// Core reads the repository open now: a page warmed for another root is dropped, not
     /// stored under it.
     #[gpui_kit::test]
