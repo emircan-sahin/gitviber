@@ -1118,6 +1118,43 @@ fn claim_run(source: &str, run: &[Node], cx: &mut NodeContext) -> Option<BlockNo
     })
 }
 
+/// `[c]` and the blank after it opening an item's first paragraph, as written (an escaped
+/// bracket isn't one): taken off its text, and `c` returned.
+fn take_task_status(source: &str, children: &mut [Node]) -> Option<char> {
+    let Some(Node::Paragraph(paragraph)) = children.first_mut() else {
+        return None;
+    };
+    let starts = paragraph.position.as_ref()?.start.offset;
+    let Some(Node::Text(text)) = paragraph.children.first_mut() else {
+        return None;
+    };
+    let position = text.position.as_mut()?;
+    // The text starts later when `\[` opened the paragraph.
+    if position.start.offset != starts {
+        return None;
+    }
+    let written = source.get(position.start.offset..position.end.offset)?;
+    let mut chars = written.chars();
+    let (Some('['), Some(status), Some(']')) = (chars.next(), chars.next(), chars.next()) else {
+        return None;
+    };
+    let rest = chars.as_str();
+    if status.is_whitespace() || !(rest.is_empty() || rest.starts_with([' ', '\t'])) {
+        return None;
+    }
+    let taken = written.len() - rest.trim_start_matches([' ', '\t']).len();
+    if !text.value.starts_with(&written[..taken]) {
+        return None;
+    }
+    text.value.drain(..taken);
+    position.start.offset += taken;
+    position.start.column += written[..taken].chars().count();
+    if text.value.is_empty() {
+        paragraph.children.remove(0);
+    }
+    Some(status)
+}
+
 fn new_span(pos: Option<markdown::unist::Position>, cx: &NodeContext) -> Option<Span> {
     let pos = pos?;
 
@@ -1170,7 +1207,14 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
                 span: new_span(list.position, cx),
             }
         }
-        Node::ListItem(val) => {
+        Node::ListItem(mut val) => {
+            let checked = match val.checked {
+                Some(done) => Some(if done { 'x' } else { ' ' }),
+                None if cx.markdown_extensions.has_task_statuses() => {
+                    take_task_status(source, &mut val.children)
+                }
+                None => None,
+            };
             let children = val
                 .children
                 .into_iter()
@@ -1179,7 +1223,7 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
             BlockNode::ListItem {
                 children,
                 spread: val.spread,
-                checked: val.checked,
+                checked,
                 span: new_span(val.position, cx),
             }
         }
@@ -2239,6 +2283,46 @@ mod tests {
             assert_eq!(paragraph.children[1].text.as_ref(), "\n");
             assert_eq!(paragraph.children[2].text.as_ref(), "Persona: assistant");
         }
+    }
+
+    #[test]
+    fn task_statuses_past_done_are_read_only_when_asked_for() {
+        let source = "- [/] doing **now**\n- [-] dropped\n- [x] done\n- [ ] open\n- [>]\n- [/]x\n- \\[/] escaped";
+        let statuses = |extensions: MarkdownExtensions| {
+            let mut cx = NodeContext {
+                markdown_extensions: extensions.into(),
+                ..NodeContext::default()
+            };
+            let document = parse(source, &mut cx).unwrap();
+            let BlockNode::List { children, .. } = &document.blocks[0] else {
+                panic!("expected a list");
+            };
+            children
+                .iter()
+                .map(|item| {
+                    let BlockNode::ListItem { checked, .. } = item else {
+                        panic!("expected an item");
+                    };
+                    (*checked, item.text().trim().to_string())
+                })
+                .collect::<Vec<_>>()
+        };
+        let read = statuses(MarkdownExtensions::default().task_statuses());
+        assert_eq!(
+            read,
+            [
+                (Some('/'), "doing now".into()),
+                (Some('-'), "dropped".into()),
+                (Some('x'), "done".into()),
+                (Some(' '), "open".into()),
+                (Some('>'), "".into()),
+                (None, "[/]x".into()),
+                (None, "[/] escaped".into()),
+            ]
+        );
+        let gfm = statuses(MarkdownExtensions::default());
+        assert_eq!(gfm[0], (None, "[/] doing now".into()));
+        assert_eq!(gfm[2], (Some('x'), "done".into()));
     }
 
     #[test]

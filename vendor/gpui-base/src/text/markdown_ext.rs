@@ -246,6 +246,7 @@ impl PartialEq for MarkdownNode {
 pub struct MarkdownExtensions {
     enable_mdx: bool,
     enable_frontmatter: bool,
+    enable_task_statuses: bool,
     block_parsers: Vec<Arc<MarkdownBlockParserFn>>,
     block_renderers: HashMap<SharedString, Arc<MarkdownBlockRenderFn>>,
     inline_parsers: Vec<Arc<MarkdownInlineParserFn>>,
@@ -273,6 +274,18 @@ impl MarkdownExtensions {
         self.enable_frontmatter = true;
         self.bump_revision();
         self
+    }
+
+    /// Read any one character between a task's brackets as its status
+    /// (`- [/] doing`, `- [-] dropped`), not only GFM's space and `x`.
+    pub fn task_statuses(mut self) -> Self {
+        self.enable_task_statuses = true;
+        self.bump_revision();
+        self
+    }
+
+    pub(crate) fn has_task_statuses(&self) -> bool {
+        self.enable_task_statuses
     }
 
     /// Enable MDX JSX/expression constructs.
@@ -352,6 +365,7 @@ impl MarkdownExtensions {
         self.parser_revision == other.parser_revision
             && self.enable_mdx == other.enable_mdx
             && self.enable_frontmatter == other.enable_frontmatter
+            && self.enable_task_statuses == other.enable_task_statuses
             && self.block_parsers.len() == other.block_parsers.len()
             && self.block_renderers.len() == other.block_renderers.len()
             && self.inline_parsers.len() == other.inline_parsers.len()
