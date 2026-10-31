@@ -119,16 +119,27 @@ test("a snapshot reads as the tree an agent acts on, refs on what takes clicks a
 test("a snapshot says nothing twice: text runs join, bare wrappers fold, labels go with their field", async () => {
   const named = el("input", { "aria-label": "Search the docs" }, [], { value: "" });
   const hidden = el("input", { type: "checkbox" }, [], { style: { display: "none" }, getClientRects: () => [] });
+  // Laid out, but not shown: the walk skips both, so the label's text is all that says them.
+  const invisible = el("input", { "aria-label": "Newsletter" }, [], { style: { visibility: "hidden" } });
+  const unread = el("input", { "aria-label": "Terms", "aria-hidden": "true" }, [], { closest: (css: string) => (css.includes("aria-hidden") ? unread : null) });
+  const inline = { style: { display: "inline" } };
   const p = around([
-    el("p", {}, ["Read the", el("b", {}, ["whole"]), "guide", el("a", { href: "/g" }, ["here"]), "today"]),
+    el("p", {}, ["Read the", el("b", {}, ["whole"], inline), "guide", el("a", { href: "/g" }, ["here"]), "today"]),
+    // Each card is a block of its own: its text doesn't run into the next card's.
+    el("div", {}, [el("div", {}, ["Product A", el("span", {}, ["$10"], inline)]), el("div", {}, ["Product B", el("span", {}, ["$20"], inline)])]),
     el("ul", {}, [el("li", {}, [el("a", { href: "/a" }, ["A"])]), el("li", {}, []), el("li", {}, ["One", el("a", { href: "/b" }, ["B"])])]),
     el("table", {}, [el("tr", {}, [el("td", {}, ["1"]), el("td", {}, ["2"])])]),
+    // A list with nothing that shows: no line at all.
+    el("ul", {}, [el("li", {}, ["Gone"], { style: { display: "none" } })]),
     el("label", {}, ["Find"], { control: named }),
     named,
     el("label", {}, ["Remember me"], { control: hidden }),
     hidden,
-    el("p", {}, ["x".repeat(195)]),
-    el("p", {}, ["y".repeat(100)]),
+    el("label", {}, ["Newsletter"], { control: invisible }),
+    invisible,
+    el("label", {}, ["Terms"], { control: unread }),
+    unread,
+    el("p", {}, ["x".repeat(195), el("i", {}, ["y".repeat(100)], inline)]),
   ]);
   hidden.labels = [];
   const { out } = await run(p as never, { cmd: "snapshot" });
@@ -138,6 +149,8 @@ test("a snapshot says nothing twice: text runs join, bare wrappers fold, labels 
       '- text "Read the whole guide"',
       '- link "here" [ref=e1]',
       '- text "today"',
+      '- text "Product A $10"',
+      '- text "Product B $20"',
       "- list",
       '  - link "A" [ref=e2]',
       "  - listitem",
@@ -151,6 +164,8 @@ test("a snapshot says nothing twice: text runs join, bare wrappers fold, labels 
       '- text "Find"',
       '- textbox "Search the docs" [ref=e4]',
       '- text "Remember me"',
+      '- text "Newsletter"',
+      '- text "Terms"',
       // Past a line's 200 characters a run starts a line of its own.
       `- text "${"x".repeat(195)}"`,
       `- text "${"y".repeat(100)}"`,
@@ -352,23 +367,64 @@ test("a snapshot reads the viewport and a screen around it, and counts what's pa
   assert.equal(
     out,
     [
-      "- … 2 elements above (≈3 screens): scroll up, -s <ref>, find, or --all",
+      "- … 2 elements above (≈3 screens): 2 in banner [ref=e3]; scroll up, -s <ref>, find, or --all",
       '- heading "Intro" [level=2]',
       '- button "Go" [ref=e1]',
       '- button "Close" [ref=e2]',
       '- text "Later"',
-      "- … 4 elements below (≈3 screens): scroll down, -s <ref>, find, or --all",
+      "- … 4 elements below (≈3 screens): 4 in contentinfo [ref=e4]; scroll down, -s <ref>, find, or --all",
     ].join("\n"),
   );
-  // --all, -s and find read past it; refs given before stay.
+  // A side's region reads with -s; --all and find read past it too; refs given before stay.
+  assert.equal((await run(p as never, { cmd: "snapshot", scope: "e4", interactive: true })).out, ['- link "About" [ref=e5]', '- link "Blog" [ref=e6]', '- link "Contact" [ref=e7]'].join("\n"));
   const all = (await run(p as never, { cmd: "snapshot", all: true, interactive: true })).out;
-  assert.equal(all, ['- link "Home" [ref=e3]', '- button "Go" [ref=e1]', '- button "Close" [ref=e2]', '- link "About" [ref=e4]', '- link "Blog" [ref=e5]', '- link "Contact" [ref=e6]'].join("\n"));
-  assert.equal((await run(p as never, { cmd: "snapshot", scope: "e4" })).out, '- link "About" [ref=e4]');
+  assert.equal(all, ['- link "Home" [ref=e8]', '- button "Go" [ref=e1]', '- button "Close" [ref=e2]', '- link "About" [ref=e5]', '- link "Blog" [ref=e6]', '- link "Contact" [ref=e7]'].join("\n"));
   assert.equal((await run(p as never, { cmd: "find", pattern: "Contact" })).count, 1);
   // Cut on one side only, the other says the page ends there.
   footer.getBoundingClientRect = () => ({ x: 0, y: 700, width: 1000, height: 200 });
   const top = (await run(p as never, { cmd: "snapshot", interactive: true })).out.split("\n");
-  assert.deepEqual([top[0], top.at(-1)], ["- … 2 elements above (≈3 screens): scroll up, -s <ref>, find, or --all", "[end of page]"]);
+  assert.deepEqual([top[0], top.at(-1)], ["- … 2 elements above (≈3 screens): 2 in banner [ref=e3]; scroll up, -s <ref>, find, or --all", "[end of page]"]);
+});
+
+test("what shows on screen is never cut with a box off screen it's in, and a list cut whole says so", async () => {
+  const at = (y: number, height = 100) => ({ getBoundingClientRect: () => ({ x: 0, y, width: 1000, height }) });
+  // A cookie banner fixed to the viewport's bottom, inside a footer far down the page.
+  const banner = el("div", {}, [el("button", {}, ["Accept"], at(690, 30))], at(680, 60));
+  const footer = el("footer", {}, [banner, el("a", { href: "/far" }, ["Far"], at(5000))], at(5000, 400));
+  const rows = Array.from({ length: 12 }, (_, i) => el("li", {}, [`Row ${i}`], at(1700 + 100 * i)));
+  const p = around([el("button", {}, ["Go"], at(100, 30)), el("ul", {}, rows, at(1500, 1400)), footer]);
+  banner.parentElement = footer;
+  footer.parentElement = p.document.body;
+  Object.assign(p.window, { innerWidth: 1280, innerHeight: 800 });
+  Object.assign(p.document, { elementsFromPoint: (_x: number, y: number) => (y > 650 ? [banner, p.document.body] : [p.document.body]) });
+  const { out } = await run(p as never, { cmd: "snapshot" });
+  assert.equal(
+    out,
+    [
+      "[top of page]",
+      '- button "Go" [ref=e1]',
+      "- list (12 below)",
+      "- contentinfo",
+      '  - button "Accept" [ref=e2]',
+      "- … 13 elements below (≈5 screens): 12 in list [ref=e3], 1 in contentinfo [ref=e4]; scroll down, -s <ref>, find, or --all",
+    ].join("\n"),
+  );
+});
+
+test("off screen and past the size limit, each count goes on its own line, and all of it fits", async () => {
+  const at = (y: number) => ({ getBoundingClientRect: () => ({ x: 0, y, width: 1000, height: 50 }) });
+  const long = "Region with a long \"quoted\" name that runs on";
+  const side = (y: number) => ["main", "nav", "aside", "form"].map((tag, k) => el(tag, { "aria-label": `${long} ${k}` }, [el("img", { alt: "x" })], at(y + k)));
+  const shown = Array.from({ length: 1000 }, (_, i) => el("button", {}, [`${"Long name ".repeat(7)}${i}`], at(10)));
+  // What comes after the cut and is off screen is below, not left out.
+  const p = around([...side(-5000), el("div", {}, shown, at(0)), ...side(5000)]);
+  Object.assign(p.window, { innerWidth: 1280, innerHeight: 800 });
+  const { out } = await run(p as never, { cmd: "snapshot" });
+  const lines: string[] = out.split("\n");
+  assert.ok(out.length <= 25000, `${out.length}`);
+  assert.match(lines[0], /^- … 8 elements above \(≈6 screens\): 2 in main "Region with a long \\"quoted\\" n…" \[ref=e\d+\], 2 in navigation .*, 2 elsewhere; scroll up/);
+  assert.match(lines.at(-2), /^- … past the size limit, \d+ elements not shown: narrow it/);
+  assert.match(lines.at(-1), /^- … 8 elements below \(≈5 screens\): .*, 2 elsewhere; scroll down/);
 });
 
 test("a page that fits in the viewport and a screen around it reads as it always did", async () => {

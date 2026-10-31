@@ -17,8 +17,8 @@ const BARE = new Set(["listitem", "row", "cell", "gridcell", "group"]);
 // What a snapshot cut short names, with a ref, as the place to read on with -s.
 const REGIONS = new Set(["main", "navigation", "banner", "contentinfo", "complementary", "region", "search", "form", "dialog", "alertdialog", "article", "list", "table", "grid", "tabpanel", "menu", "listbox", "tree"]);
 
-/** Regions a cut names at most. */
-const NAMED = 4;
+/** Regions a line of what a snapshot left out names at most. */
+const NAMED = 3;
 
 /** Characters a text line holds: runs of text next to each other join up to it. */
 const TEXT = 200;
@@ -71,7 +71,7 @@ function nameOf(el, byText) {
 /** Whether a label's text is the name of a control that shows: its line says it already. */
 function names(label) {
   const control = label.control;
-  return !!control && control.getClientRects().length > 0 && nameOf(control, false).includes(flat(label.textContent));
+  return !!control && shows(control) && !control.closest?.("[hidden], [aria-hidden=true]") && nameOf(control, false).includes(flat(label.textContent));
 }
 
 function valueOf(el) {
@@ -106,7 +106,7 @@ function line(el, role, name, ref, urls) {
  * with a role, refs on what acts, `depth` levels at most. Past `most` lines or `chars` characters
  * nothing more is looked at but counted, by the region it's in (`lost`): a huge page costs little
  * more than a big one. With `viewport`, an element over a screen above or below the viewport is
- * counted too (`off`), not walked.
+ * counted too (`off`, by region), not walked, unless something in it shows on screen.
  */
 function walk({ interactive = false, scope = null, depth = null, boxes = false, urls = false, viewport = false, most = LINES, chars = CHARS - TAIL }) {
   const root = scope ? resolve(scope) : (document.body ?? document.documentElement);
@@ -116,10 +116,13 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
   // The regions the walk is in, innermost last: what a cut names to read on in.
   const open = [];
   const screen = viewport ? window.innerHeight || 0 : 0;
-  const off = { above: 0, below: 0, top: 0, bottom: 0 };
+  const off = { above: 0, below: 0, top: 0, bottom: 0, in: { above: new Map(), below: new Map() } };
+  // A box with something on screen in it is never cut, wherever it is: a fixed banner in a
+  // footer, floats in a box of no height, an inner scroll pane.
+  const kept = screen ? onScreen() : new Set();
   // Where the document being walked is in the top one's viewport: a frame's is lower down.
   let dy = 0;
-  // The last line, while it's text: the next text at its level joins it.
+  // The last line, while it's text: the next text at its level, in the same block, joins it.
   let run = null;
   const emit = (level, text) => {
     const at = `${"  ".repeat(interactive ? 0 : level)}${text}`;
@@ -129,8 +132,8 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
       size += at.length + 1;
     } else full = true;
   };
-  const say = (level, text) => {
-    const joined = run?.level === level ? `${run.text} ${text}` : "";
+  const say = (level, text, block) => {
+    const joined = run?.level === level && run.block === block ? `${run.text} ${text}` : "";
     const at = joined && joined.length <= TEXT ? `${"  ".repeat(level)}- text ${quote(joined)}` : "";
     const grown = at.length - lines.at(-1)?.length;
     if (at && size + grown < chars) {
@@ -140,10 +143,27 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
       return;
     }
     emit(level, `- text ${quote(cut(text, TEXT))}`);
-    if (!full) run = { level, text };
+    if (!full) run = { level, text, block };
   };
   // An element and all its own, counted by the engine rather than walked a node at a time.
   const count = (node) => (node.nodeType === 1 ? node.getElementsByTagName("*").length + 1 : 0);
+  const add = (map, region, n) => map.set(region, (map.get(region) ?? 0) + n);
+  const regionOf = (el) => (REGIONS.has(roleOf(el)) && el.getClientRects().length ? el : (open.at(-1) ?? null));
+  // Over a screen above or below the viewport: counted, not walked.
+  const away = (el) => {
+    if (!screen || el === root || kept.has(el)) return false;
+    const r = el.getBoundingClientRect();
+    const y = r.y + dy;
+    // A box with no size (a wrapper of fixed or floated content) doesn't say where its content is.
+    if (!(r.width > 0 && r.height > 0) || (y <= 2 * screen && y + r.height >= -screen)) return false;
+    const side = y > 0 ? "below" : "above";
+    const n = count(el);
+    off[side] += n;
+    add(off.in[side], regionOf(el), n);
+    if (y > 0) off.bottom = Math.max(off.bottom, y + r.height);
+    else off.top = Math.min(off.top, y);
+    return true;
+  };
   // A same-origin frame's page goes on in the tree; another origin's can't be read from here.
   const frame = (el, level, muted) => {
     const name = nameOf(el, false);
@@ -159,43 +179,34 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
     const body = inner.body ?? inner.documentElement;
     const was = dy;
     dy = above(el, { x: 0, y: dy }).y;
-    if (body) visit(body, interactive ? level : level + 1, false, muted);
+    if (body) visit(body, interactive ? level : level + 1, false, muted, body);
     dy = was;
   };
-  // `muted`: under a title, whose text its name says already.
-  const visit = (node, level, pointer, muted) => {
+  // `muted`: under a title, whose text its name says already. `block`: the box its text is in.
+  const visit = (node, level, pointer, muted, block) => {
     if (full) {
       const n = count(node);
-      if (!n) return;
-      const region = REGIONS.has(roleOf(node)) && node.getClientRects().length ? node : (open.at(-1) ?? null);
-      return void lost.set(region, (lost.get(region) ?? 0) + n);
+      if (n && !away(node)) add(lost, regionOf(node), n);
+      return;
     }
     if (depth !== null && level > depth) return;
     if (node.nodeType === 3) {
       const text = interactive || muted ? "" : flat(node.nodeValue);
-      if (text) say(level, text);
+      if (text) say(level, text, block);
       return;
     }
     if (node.nodeType !== 1 || SKIP.has(node.localName)) return;
     const el = node;
     if (el.hidden || el.getAttribute("aria-hidden") === "true") return;
+    // Before its style: a long list's rows off screen cost a box each, not a style too.
+    if (away(el)) return;
     const style = styleOf(el);
     if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return;
-    if (screen && el !== root) {
-      const r = el.getBoundingClientRect();
-      const y = r.y + dy;
-      // A box with no size (a wrapper of fixed or floated content) doesn't say where its content is.
-      if (r.width > 0 && r.height > 0 && (y > 2 * screen || y + r.height < -screen)) {
-        if (y > 0) [off.below, off.bottom] = [off.below + count(el), Math.max(off.bottom, y + r.height)];
-        else [off.above, off.top] = [off.above + count(el), Math.min(off.top, y)];
-        return;
-      }
-    }
     if (el.localName === "iframe") return frame(el, level, muted);
     // A div that takes clicks (React's onClick) shows only as a pointer where its parent has none.
     const role = roleOf(el) ?? ((style.cursor === "pointer" && !pointer) || el.hasAttribute("onclick") ? "clickable" : null);
     let next = level;
-    let bare = false;
+    let [plain, shown] = [false, false];
     const start = lines.length;
     const leaf = LEAF.has(role) || (role === "clickable" && !el.querySelector(ACTIONABLE));
     if (role) {
@@ -207,35 +218,65 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
         if (boxes && ref) text += ` [box=${boxOf(el).join(",")}]`;
         emit(level, text);
         next = level + 1;
-        bare = BARE.has(role) && text === `- ${role}` && !full;
+        plain = text === `- ${role}`;
+        shown = !full;
       }
       if (leaf) return;
     }
     const said = muted || TITLES.has(role) || (!interactive && el.localName === "label" && names(el));
     const region = REGIONS.has(role) && el !== root;
     if (region) open.push(el);
+    const inline = style.display === "inline" || style.display === "contents";
+    const was = [off.above, off.below];
     const children = el.shadowRoot ? [...el.shadowRoot.childNodes, ...el.childNodes] : [...el.childNodes];
-    for (const child of children) visit(child, next, pointer || style.cursor === "pointer", said);
+    for (const child of children) visit(child, next, pointer || style.cursor === "pointer", said, inline ? block : el);
     if (region) open.pop();
-    // One line under it at most: that line takes its place (none, with -d, may be more past the depth).
+    if (!shown || full) return;
     const under = lines.length - start - 1;
-    if (bare && !full && (under === 1 || (under === 0 && depth === null))) {
+    const gone = off.above + off.below - was[0] - was[1];
+    if (!under && gone) {
+      // All it holds is off screen: a bare `- list` would read as an empty one.
+      const mark = ` (${gone} ${off.below > was[1] ? "below" : "above"})`;
+      if (size + mark.length < chars) [lines[start], size] = [lines[start] + mark, size + mark.length];
+    } else if (plain && ((!under && depth === null) || (under === 1 && BARE.has(role)))) {
+      // Nothing under it says nothing (with -d there may be more past the depth); a bare one's
+      // one line takes its place.
       size -= lines[start].length + 1 + 2 * under;
       lines.splice(start, 1);
       if (under) lines[start] = lines[start].slice(2);
       run = null;
     }
   };
-  visit(root, 0, false, false);
+  visit(root, 0, false, false, root);
   if (full && !lost.size) lost.set(null, 1);
   return { lines, lost: [...lost], off };
+}
+
+/** What shows at a grid of points over the viewport, in same-origin frames too, and all that holds it. */
+function onScreen() {
+  const kept = new Set();
+  const sample = (doc, x, y) => {
+    for (const hit of doc.elementsFromPoint?.(x, y) ?? []) {
+      for (let n = hit; n && !kept.has(n); n = n.parentElement) kept.add(n);
+      const inner = hit.localName === "iframe" && frameDoc(hit);
+      if (!inner) continue;
+      const at = above(hit, { x: 0, y: 0 });
+      sample(inner, x - at.x, y - at.y);
+    }
+  };
+  const [w, h] = [window.innerWidth || 0, window.innerHeight || 0];
+  for (let i = 0.5; i < 4; i++) for (let j = 0.5; j < 4; j++) sample(document, (i * w) / 4, (j * h) / 4);
+  return kept;
 }
 
 /** Lines and characters a snapshot gives at most (an agent's tool cuts its output near 30 000), and one written to a file. */
 const CHARS = 25000;
 
-/** Of those, what the lines after the tree may take: what's above, below or left out. */
-const TAIL = 500;
+/**
+ * Of those, what the lines after the tree may take: what's above, cut and below, each naming
+ * three regions of ~100 characters at most.
+ */
+const TAIL = 1500;
 
 const FILE_LINES = 20000;
 
@@ -248,28 +289,34 @@ const FILE_CHARS = 2000000;
 function snapshot({ file = false, all = false, ...ask }) {
   const whole = file || all || !!ask.scope;
   const { lines, lost, off } = walk(file ? { ...ask, urls: true, most: FILE_LINES, chars: FILE_CHARS } : { ...ask, viewport: !whole });
-  const screens = (px) => {
-    const n = Math.max(1, Math.round(px / window.innerHeight));
-    return `≈${n} screen${n === 1 ? "" : "s"}`;
-  };
-  if (off.above) lines.unshift(`- … ${off.above} elements above (${screens(-off.top)}): scroll up, -s <ref>, find, or --all`);
+  const many = (n, what) => `${n} ${what}${n === 1 ? "" : "s"}`;
+  const screens = (px) => `≈${many(Math.max(1, Math.round(px / window.innerHeight)), "screen")}`;
+  // Each side's regions with a ref, to read on in with -s or scroll <ref>.
+  const where = (side) => regions([...off.in[side]]).map((part, i) => `${i ? ", " : ": "}${part}`).join("");
+  if (off.above) lines.unshift(`- … ${many(off.above, "element")} above (${screens(-off.top)})${where("above")}; scroll up, -s <ref>, find, or --all`);
   else if (off.below) lines.unshift("[top of page]");
   if (lost.length) lines.push(cutShort(lost));
-  if (off.below) lines.push(`- … ${off.below} elements below (${screens(off.bottom - window.innerHeight)}): scroll down, -s <ref>, find, or --all`);
+  if (off.below) lines.push(`- … ${many(off.below, "element")} below (${screens(off.bottom - window.innerHeight)})${where("below")}; scroll down, -s <ref>, find, or --all`);
   else if (off.above) lines.push("[end of page]");
   return { out: lines.length ? lines.join("\n") : "(nothing on the page)", removed: prune() };
 }
 
-/** The line a snapshot past its size ends with: what it left out, by the regions it's in, the biggest first. */
-function cutShort(lost) {
-  const named = lost.filter(([el]) => el).sort((a, b) => b[1] - a[1]).slice(0, NAMED);
-  const rest = lost.reduce((n, [, k]) => n + k, 0) - named.reduce((n, [, k]) => n + k, 0);
+/** The regions of `counts` ([element, count]) with the most, biggest first, each with a ref; then the rest. */
+function regions(counts) {
+  const named = counts.filter(([el]) => el).sort((a, b) => b[1] - a[1]).slice(0, NAMED);
+  const rest = counts.reduce((n, [, k]) => n + k, 0) - named.reduce((n, [, k]) => n + k, 0);
   const parts = named.map(([el, n]) => {
     const name = nameOf(el, false);
-    return `${n} in ${roleOf(el)}${name ? ` ${quote(cut(name, 40))}` : ""} [ref=${refOf(el)}]`;
+    return `${n} in ${roleOf(el)}${name ? ` ${quote(cut(name, 30))}` : ""} [ref=${refOf(el)}]`;
   });
-  if (!parts.length) return `- … past the size limit, ${rest} elements not shown: narrow it with -s, -d, -i or find`;
-  if (rest) parts.push(`${rest} elsewhere`);
+  if (parts.length && rest) parts.push(`${rest} elsewhere`);
+  return parts;
+}
+
+/** The line that says what a snapshot past its size left out, by the regions it's in. */
+function cutShort(lost) {
+  const parts = regions(lost);
+  if (!parts.length) return `- … past the size limit, ${lost.reduce((n, [, k]) => n + k, 0)} elements not shown: narrow it with -s, -d, -i or find`;
   return `- … past the size limit, elements not shown: ${parts.join(", ")}: read one with -s <ref>, or narrow it with -d, -i or find`;
 }
 

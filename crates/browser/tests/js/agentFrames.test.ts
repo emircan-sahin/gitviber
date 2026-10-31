@@ -65,6 +65,7 @@ function el(tag: string, attrs: Record<string, string> = {}, children: (Node | s
     matches: () => false,
     getClientRects: () => [node.box],
     getBoundingClientRect: () => node.box,
+    getElementsByTagName: () => all(node),
     scrollIntoView: () => {},
     focus: () => {},
     click: () => node.events.push({ type: "click" }),
@@ -164,8 +165,37 @@ test("a same-origin frame's page reads as part of the tree, refs and all; anothe
   );
   // -i keeps what acts, and the frame it can't read.
   const interactive = (await run(p, { cmd: "snapshot", interactive: true })).out.split("\n");
-  assert.deepEqual(interactive, ['- link "Use a coupon" [ref=e1]','- button "Pay" [ref=e2]', "- iframe (cross-origin frame https://ads.example.test: not readable from the page)"]);
+  assert.deepEqual(interactive, ['- link "Use a coupon" [ref=e1]', '- button "Pay" [ref=e2]', "- iframe (cross-origin frame https://ads.example.test: not readable from the page)"]);
   assert.match((await run(p, { cmd: "find", pattern: "Pay" })).out, /button "Pay" \[ref=e2\]/);
+});
+
+test("in a frame two down, what's off screen is told by the top viewport, and what shows there is kept", async () => {
+  const p = shop();
+  const inside = (b: Box, x: number, y: number) => x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height;
+  // The pay page starts at y 72 of the top viewport (cart at 50, its border 2, pay at 20): Far,
+  // at 1550 in its own, is past the screen below the 800 px viewport; Near, at 1500, isn't.
+  const near = el("button", {}, ["Near"], { box: { x: 5, y: 1500, width: 40, height: 30 } });
+  const far = el("button", {}, ["Far"], { box: { x: 5, y: 1550, width: 40, height: 30 } });
+  // A toast fixed at the pay page's top, in a box far down it.
+  const toast = el("button", {}, ["Saved"], { box: { x: 40, y: 20, width: 20, height: 20 } });
+  const wrap = el("div", {}, [toast], { box: { x: 0, y: 3000, width: 300, height: 100 } });
+  for (const n of [near, far, wrap, toast]) n.ownerDocument = p.payDoc;
+  wrap.parentElement = p.payDoc.body;
+  p.payDoc.body.childNodes.push(near, far, wrap);
+  // Each document is hit where its frame's offset puts the top viewport's point.
+  p.top.elementsFromPoint = (x: number, y: number) => (inside(p.cartFrame.box, x, y) ? [p.cartFrame] : []);
+  p.cartDoc.elementsFromPoint = (x: number, y: number) => (inside(p.payFrame.box, x, y) ? [p.payFrame] : []);
+  p.payDoc.elementsFromPoint = (x: number, y: number) => (inside(toast.box, x, y) ? [toast] : []);
+  const out = (await run(p, { cmd: "snapshot", interactive: true })).out.split("\n");
+  assert.deepEqual(out, [
+    "[top of page]",
+    '- link "Use a coupon" [ref=e1]',
+    '- button "Pay" [ref=e2]',
+    '- button "Near" [ref=e3]',
+    '- button "Saved" [ref=e4]',
+    "- iframe (cross-origin frame https://ads.example.test: not readable from the page)",
+    "- … 1 element below (≈1 screen); scroll down, -s <ref>, find, or --all",
+  ]);
 });
 
 test("an element two frames down is aimed at in the top viewport, and its box is told there too", async () => {
