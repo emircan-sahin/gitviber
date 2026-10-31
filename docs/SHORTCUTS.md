@@ -7,7 +7,8 @@ Back to the [README](../README.md). Hold `⌘` in the app, or press `⌘/`, to s
 Settings → Keyboard Shortcuts → Preset picks the keys every command starts with: **VS Code**, the default, or **GitViber (classic)**, the keys GitViber had before presets. Keys you rebind stay as you set them under either. The table below lists the VS Code preset; [the classic preset](#the-classic-preset) lists where it differs.
 Someone who used GitViber before presets is moved to the VS Code preset, with a note that offers the classic keys; someone who had rebound keys stays on the classic preset, with a note saying so. The note shows at each launch until you close it or click one of its buttons.
 
-The left panel is the primary side bar (`⌘B` toggles it, `⌘0` focuses it) and the right one, the explorer and search, the secondary side bar (`⌥⌘B`).
+Each panel has a key that shows or hides it and one that focuses it: the git panel `⌘B` and `⌘0`, the explorer `⌘E` (or `⌥⌘B`) and `⇧⌘E` (`⇧⌘F` its Search), the terminal `⌘J` and `⌃` `` ` ``.
+Showing a panel leaves focus where it is, unless nothing has it; hiding one that has focus gives it back where it came from. A focus key shows its panel and moves focus in; pressed again there, focus goes back where it came from, the panel staying open, or to the code view, then the terminal, if that place has closed. They work from text fields, the terminal, a browser page and the palette (which closes) alike.
 Where a place has its own key, that key wins while focus is there: in the terminal `⌥⌘←` `⌥⌘→` focus the pane on that side, while elsewhere they switch tabs; `⌘=` `⌘−` `⌘0` size the terminal's font, a browser page or a rendered document's text instead of the interface and the side bar.
 
 ## Keys
@@ -19,6 +20,7 @@ On Linux `⌘` is Ctrl, tabs are on Alt+1–8 (Alt+0 or Alt+9 the last; they wor
 `⌘D` `⌘K` `⌘W` are Ctrl+Shift+D (or Ctrl+Shift+5), K and W, since Ctrl+letter stays the shell's (split down is Ctrl+Alt+Shift+D,
 zooming a pane Ctrl+Shift+Enter, maximizing Ctrl+Alt+Shift+Enter, the previous / next pane Super+Alt+← / →, copy and paste Ctrl+Shift+C / V; focusing a pane by side has no default there, the shell and the desktop use those keys, and neither has renaming a pane, since Ctrl+R is the shell's history search).
 Revealing the file in the file manager, closing the other tabs, focusing the commit message or the terminal's tabs, and fetch, pull and push have no default there either.
+In the terminal Ctrl with a letter stays the shell's, so Ctrl+B, Ctrl+E and Ctrl+J don't show or hide the panels from there; Ctrl+` still focuses the terminal and goes back.
 
 | Keys | |
 | --- | --- |
@@ -27,7 +29,7 @@ Revealing the file in the file manager, closing the other tabs, focusing the com
 | `⇧⌘P` or `F1`, `⌘P` | Command palette, quick open |
 | `⌃R` | Switch project (not in the terminal, where it is the shell's history search) |
 | `↓` `↑` `Home` `End` `PgUp` `PgDn`, `↵`, `Esc` | Move through a picker or list (project, branch, worktree, Open in…), pick the row, close it with focus back where it was; with text in its search field `Home` `End` stay the field's |
-| `⌘F` `⇧⌘F` | Find where focus is, find in files |
+| `⌘F` `⇧⌘F` | Find where focus is, find in files (pressed again in Search, back where focus was) |
 | `⌥⌘F`, or `/` in the list | Search the history |
 | `⌃⇧G` | Changes; pressed again there, focus goes back where it was (History, PRs and Issues have no default key) |
 | `⌃1` … `⌃8`, `⌃0` `⌃9` | Go to tab 1 to 8, the last tab; the terminal's while it has focus |
@@ -55,10 +57,10 @@ Revealing the file in the file manager, closing the other tabs, focusing the com
 | `⌫` | Remove a project from the list (in the project list) |
 | `←` `→` | Collapse, expand a folder (in the project picker, with nothing typed) |
 | `⇧⌘O`, `⌥⌘R` | Open in the external app you last picked, reveal the file in Finder |
-| `⌘B` `⌥⌘B` | Toggle the git panel, the right panel with the explorer |
-| `⌘0` `⌘1` or `⌘E` `⇧⌘E` | Focus the git panel, the code view, the file explorer (switching the right panel to it from Search); `⌘0` `⇧⌘E` pressed again there give focus back where it was |
+| `⌘B`, `⌘E` or `⌥⌘B`, `⌘J` | Show or hide the git panel, the right panel with the explorer, the terminal; hiding one gives the focus in it back where it came from |
+| `⌘0`, `⇧⌘E`, `⌃` `` ` `` | Focus the git panel, the file explorer (switching the right panel to it from Search), the terminal, showing it; pressed again there, focus goes back where it came from |
+| `⌘1` | Focus the code view |
 | `F6` `⇧F6` | Focus the next / previous panel (not from the terminal, which keeps F-keys for its programs) |
-| `⌃` `` ` `` or `⌘J` | Toggle the terminal; hiding it gives focus back where it was before it showed (`⌘B` `⌥⌘B` too) |
 | `⌃⇧` `` ` `` or `⌘T` | New terminal |
 | `⌃⌘T` | Focus the terminal's tabs, where `←` `→` switch, `⌥←` `⌥→` move one, `⌘W` closes it and `↵`, `Esc` or `⌃⌘T` again goes back (in the terminal) |
 | `⌘\` or `⌘D`, `⇧⌘D`, `⌘K` | Split right, split down, clear (in the terminal) |
@@ -93,13 +95,13 @@ Where **GitViber (classic)** differs from the VS Code preset; every other key is
 | Switch project | `⌃R` | none |
 | Reveal in Finder | `⌥⌘R` | none |
 | Changes, History, PRs, Issues | `⌃⇧G`, none, none, none | `⌃1` `⌃2` `⌃3` `⌃4` |
-| Focus the git panel | `⌘0` | `⇧⌘G` |
-| Focus the code view | `⌘1` `⌘E` | `⌘E` |
+| Focus the git panel | `⌘0` | `⇧⌘G` (in the code and a document it is Find Previous) |
+| Focus the code view | `⌘1` | `⌘E` |
+| Show or hide the explorer | `⌘E` `⌥⌘B` | `⌥⌘B` |
 | Reset the zoom | none | `⌘0` |
 | Go to tab 1–8, the last tab | `⌃1` … `⌃8`, `⌃0` `⌃9` | `⌘1` … `⌘8`, `⌘9` |
 | Next / previous tab | `⌥⌘→` `⌥⌘←`, `⇧⌘]` `⇧⌘[`, `⌃⇥` `⌃⇧⇥` | `⇧⌘]` `⇧⌘[`, `⌘→` `⌘←`, `⌃⇥` `⌃⇧⇥` |
 | Next / previous change | `F7` `⇧F7`, `⌥F5` `⇧⌥F5`, `⌥↓` `⌥↑` | `F7` `⇧F7`, `⌥↓` `⌥↑` |
-| Toggle the terminal | `⌃` `` ` `` `⌘J` | `⌘J` `⌃` `` ` `` |
 | New terminal | `⌃⇧` `` ` `` `⌘T` | `⌘T` |
 | Split the terminal right | `⌘\` `⌘D` | `⌘D` |
 | Open a browser tab | none | `⇧⌘B` |
