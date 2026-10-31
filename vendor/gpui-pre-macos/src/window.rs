@@ -677,6 +677,8 @@ struct MacWindowState {
     frame_source: FrameSource,
     renderer: renderer::Renderer,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
+    /// GitViber: the first frame after a hidden window shows draws in full; see `restore`.
+    redraw_on_show: bool,
     event_callback: Option<Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>>,
     activate_callback: Option<Box<dyn FnMut(bool)>>,
     visibility_callback: Option<Box<dyn FnMut(WindowVisibility)>>,
@@ -1162,6 +1164,7 @@ impl MacWindow {
                     false,
                 ),
                 request_frame_callback: None,
+                redraw_on_show: false,
                 event_callback: None,
                 activate_callback: None,
                 visibility_callback: None,
@@ -3073,8 +3076,11 @@ extern "C" fn window_did_change_occlusion_state(this: &Object, _: Sel, _: id) {
             .occlusionState()
             .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
         {
-            // GitViber: the drawables come back before the display link can draw a frame.
+            // GitViber: the drawables come back before the display link can draw a frame, and
+            // that frame draws everything: after display sleep the front drawable kept through
+            // `trim` showed garbage until something in the window changed.
             lock.renderer.restore();
+            lock.redraw_on_show = true;
             lock.move_traffic_light();
             lock.start_display_link(&window_state);
         } else {
@@ -3432,10 +3438,12 @@ extern "C" fn step(view: *mut c_void) {
             (None, FrameRequestSource::NativeCallback),
             |(at, source)| (Some(at), source),
         );
+        let force_render = mem::take(&mut lock.redraw_on_show);
         drop(lock);
         callback(RequestFrameOptions {
             signal_at,
             signal_source,
+            force_render,
             ..Default::default()
         });
         window_state.lock().request_frame_callback = Some(callback);
@@ -3454,11 +3462,13 @@ fn metal_frame(window_state: &Arc<Mutex<MacWindowState>>, drawable: MetalDrawabl
         return;
     };
     lock.renderer.set_frame_drawable(Some(drawable));
+    let force_render = mem::take(&mut lock.redraw_on_show);
     drop(lock);
     metal_frames.begin_frame();
     callback(RequestFrameOptions {
         signal_at,
         signal_source: FrameRequestSource::NativeCallback,
+        force_render,
         ..Default::default()
     });
     let mut lock = window_state.lock();

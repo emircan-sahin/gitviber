@@ -14,9 +14,12 @@ display asleep), gpui only stopped the display link and kept every drawable and 
 
 The change, in `window_did_change_occlusion_state`: on hidden, after the display link stops,
 `renderer.trim()` (1x1 drawable size, path textures dropped); on visible, `renderer.restore()`
-before the display link starts, in the same handler, so no frame is drawn at 1x1. The front
-drawable stays on screen until the next frame. 1480x920 pt window: 130 -> 62 MB minimized or
-covered, back to the full size on the first frame after it shows.
+before the display link starts, in the same handler, so no frame is drawn at 1x1, and
+`redraw_on_show` makes the first frame after it (`metal_frame`, or `step` before macOS 14) a
+`force_render` one. Without it the window showed the front drawable kept through the trim until
+something in it changed: after display sleep that was garbage (a Claude Code pane stayed
+scrambled until a selection redrew it). 1480x920 pt window: 130 -> 62 MB minimized or covered,
+back to the full size on the first frame after it shows.
 
 ## 2. Deprecation warnings allowed (`Cargo.toml`)
 
