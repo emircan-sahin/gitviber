@@ -82,13 +82,12 @@ own domain is GitViber's.
 
 ## Fast path
 
-Each call costs a turn. Chain commands that need no look in between with `&&`: the chain stops
-at the first one that fails.
+Each call costs a turn. Steps that need no look in between go in one call.
 
-- Land and read in one call: `gitviber browser open <url> && gitviber browser snapshot -i`.
-- Fill a form in one call, then check the outcome with `wait`, not a new snapshot:
-  `gitviber browser fill e3 "Ada" && gitviber browser check e5 && gitviber browser click e7 &&
-  gitviber browser wait --text "Saved"`.
+- Land and read in one call: `gitviber browser open <url> -i`.
+- Fill a form in one call with `batch`; its last click takes `-i` to read the page it lands on:
+  `printf '%s\n' "fill e3 'Ada'" 'check e5' 'click e7 -i' | gitviber browser batch -`.
+- Check an outcome with `wait --text "Saved"`, not a new snapshot.
 - On a long page, `find <text>` before a bigger snapshot.
 - A link's URL: `get attr href <ref>`, or `snapshot -u` for every link's.
 - An overview picture: `screenshot --scale 0.5`, a quarter of the pixels.
