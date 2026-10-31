@@ -19,7 +19,7 @@ const KEEP: usize = 64;
 pub struct Look {
     pub dark: bool,
     pub color: Hsla,
-    /// The text size math is set at, in logical pixels.
+    /// The text size math is set at, in logical pixels; a diagram is drawn its own size at 16.
     pub font_size: f32,
     pub scale: f32,
 }
@@ -45,17 +45,24 @@ type OnReady = Box<dyn Fn(&mut App)>;
 pub struct Diagrams {
     entries: HashMap<u64, Entry>,
     order: VecDeque<u64>,
+    /// Each source's last picture's key, by `source_key`: shown while the source is drawn again
+    /// for another look (a zoom step), rather than its text for a moment.
+    last: HashMap<u64, u64>,
     /// Told when a picture lands, to lay the document out again.
     on_ready: Option<OnReady>,
     me: WeakEntity<Self>,
 }
 
+fn source_key(kind: DiagramKind, source: &str, inline: bool) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (kind as u8, source, inline).hash(&mut h);
+    h.finish()
+}
+
 fn key(kind: DiagramKind, source: &str, inline: bool, look: &Look) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (
-        kind as u8,
-        source,
-        inline,
+        source_key(kind, source, inline),
         look.dark,
         look.font_size.to_bits(),
         look.scale.to_bits(),
@@ -71,6 +78,7 @@ impl Diagrams {
         let diagrams = cx.new(|cx| Diagrams {
             entries: HashMap::new(),
             order: VecDeque::new(),
+            last: HashMap::new(),
             on_ready: None,
             me: cx.weak_entity(),
         });
@@ -91,7 +99,8 @@ impl Diagrams {
         self.on_ready = Some(Box::new(f));
     }
 
-    /// The picture of `source`, once drawn; None while it's being drawn (the first ask starts it).
+    /// The picture of `source`, once drawn; while it's being drawn (the first ask starts it), the
+    /// last one drawn of it for another look, or None.
     pub fn get(
         &mut self,
         kind: DiagramKind,
@@ -101,11 +110,11 @@ impl Diagrams {
         cx: &mut Context<Self>,
     ) -> Option<Drawn> {
         let k = key(kind, source, inline, &look);
-        if let Some(entry) = self.entries.get(&k) {
-            return match entry {
-                Entry::Done(drawn) => Some(drawn.clone()),
-                Entry::Pending(_) => None,
-            };
+        let sk = source_key(kind, source, inline);
+        match self.entries.get(&k) {
+            Some(Entry::Done(drawn)) => return Some(drawn.clone()),
+            Some(Entry::Pending(_)) => return self.previous(sk),
+            None => {}
         }
         let svg = cx.svg_renderer();
         let source = source.to_string();
@@ -127,6 +136,9 @@ impl Diagrams {
                 Err(e) => Drawn::Failed(e),
             };
             _ = me.update(cx, |d, cx| {
+                if matches!(drawn, Drawn::Ready { .. }) {
+                    d.last.insert(sk, k);
+                }
                 d.entries.insert(k, Entry::Done(drawn));
                 if let Some(f) = &d.on_ready {
                     f(cx);
@@ -142,8 +154,16 @@ impl Diagrams {
             if let Some(Entry::Done(Drawn::Ready { image, .. })) = self.entries.remove(&old) {
                 cx.defer(move |cx| cx.drop_image(image, None));
             }
+            self.last.retain(|_, k| *k != old);
         }
-        None
+        self.previous(sk)
+    }
+
+    fn previous(&self, source_key: u64) -> Option<Drawn> {
+        match self.entries.get(self.last.get(&source_key)?)? {
+            Entry::Done(drawn) => Some(drawn.clone()),
+            Entry::Pending(_) => None,
+        }
     }
 }
 
@@ -181,9 +201,10 @@ fn draw_mermaid(
 ) -> Result<Arc<RenderImage>, String> {
     let text = mermaid_svg(source, look)?;
     // At the display's density: gpui's own factor would draw it at twice that, four times the pixels.
+    // Shown at `scale`, it comes out zoomed as the text around it is.
     svg.render_single_frame(
         text.as_bytes(),
-        look.scale / gpui_kit::SMOOTH_SVG_SCALE_FACTOR,
+        look.scale * look.font_size / 16. / gpui_kit::SMOOTH_SVG_SCALE_FACTOR,
     )
     .map_err(|e| e.to_string())
 }
@@ -251,6 +272,30 @@ mod tests {
         assert!(svg.contains("<svg") && svg.contains("Start"));
         assert!(svg.to_lowercase().contains("#dddddd"));
         assert!(mermaid_svg("this is not a diagram ((", &look()).is_err());
+    }
+
+    /// A zoom step draws a formula again; the last picture shows meanwhile, not its source.
+    #[gpui_kit::test]
+    fn a_formula_drawn_again_shows_its_last_picture_meanwhile(cx: &mut gpui_kit::TestAppContext) {
+        let diagrams = cx.update(Diagrams::new);
+        let get = |font_size: f32, cx: &mut gpui_kit::TestAppContext| {
+            let look = Look {
+                font_size,
+                ..look()
+            };
+            let drawn =
+                diagrams.update(cx, |d, cx| d.get(DiagramKind::Math, "x^2", true, look, cx));
+            drawn.map(|d| match d {
+                Drawn::Ready { image, .. } => image.size(0).height.0,
+                Drawn::Failed(e) => panic!("{e}"),
+            })
+        };
+        assert_eq!(get(16., cx), None);
+        cx.run_until_parked();
+        let small = get(16., cx).expect("drawn");
+        assert_eq!(get(24., cx), Some(small));
+        cx.run_until_parked();
+        assert!(get(24., cx).unwrap() > small);
     }
 
     #[test]

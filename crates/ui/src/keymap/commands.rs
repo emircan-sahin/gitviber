@@ -36,6 +36,7 @@ workbench: [ShowCommands, QuickOpen, OpenChange, OpenSettings, ShortcutOverlay],
     editor: [ToggleWrap, ToggleBlame, CopyGitHubLink, OpenOnGitHub, FontZoomIn, FontZoomOut, FontZoomReset, Find, GoToDefinition, PeekDefinition, GoToReferences],
     search: [FindInFiles],
     media: [ZoomIn, ZoomOut, Fit],
+    markdown: [ZoomIn, ZoomOut, ZoomReset],
     terminal: [Toggle, NewInProject, ShowAgents, ResumeConversation, New, Split, SplitDown, Clear, Close, PrevPane, NextPane, FocusLeft, FocusRight, FocusUp, FocusDown, ToggleMaximize, ZoomPane, EqualizePanes, RenamePane, FontZoomIn, FontZoomOut, FontZoomReset, PrevCommand, NextCommand, Hints, FocusTabs],
     browser: [Open, FocusAddress, Reload, Back, Forward, Inspect, Pick, ToggleDevice, ClearData, Find, FindNext, FindPrev, ZoomIn, ZoomOut, ZoomReset, ToggleReader],
     explorer: [Rename, Delete],
@@ -376,6 +377,19 @@ pub static COMMANDS: &[Command] = &[
     cmd::<media::ZoomOut>("media.zoomOut", "Zoom Out Image", Editor, &["-", "cmd+-"])
         .local("ImageView"),
     cmd::<media::Fit>("media.fit", "Fit Image", Editor, &["0", "cmd+0"]).local("ImageView"),
+    // A document being read takes them too, for a text size of its own: the window's zoom
+    // would size the whole interface, the code font every editor and diff.
+    cmd::<markdown::ZoomIn>(
+        "markdown.zoomIn",
+        "Increase Text Size",
+        Editor,
+        &["cmd+=", "shift+cmd+="],
+    )
+    .local("MarkdownReading"),
+    cmd::<markdown::ZoomOut>("markdown.zoomOut", "Decrease Text Size", Editor, &["cmd+-"])
+        .local("MarkdownReading"),
+    cmd::<markdown::ZoomReset>("markdown.zoomReset", "Reset Text Size", Editor, &["cmd+0"])
+        .local("MarkdownReading"),
     // ⌃` and ⌘J. Elsewhere Ctrl+` and Ctrl+J.
     cmd::<terminal::Toggle>(
         "terminal.toggle",

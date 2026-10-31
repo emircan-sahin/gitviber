@@ -29,6 +29,7 @@ enum At {
     Tabs,
     Browser,
     Image,
+    Reading,
     Explorer,
     History,
     Worktrees,
@@ -43,13 +44,14 @@ enum At {
     Address,
 }
 
-const SPOTS: [(At, &str); 11] = [
+const SPOTS: [(At, &str); 12] = [
     (At::Pane, TERMINAL_CONTEXT),
     (At::Changes, "ChangesList"),
     (At::Diff, gitviber_diff::actions::CONTEXT),
     (At::Tabs, "TabStrip"),
     (At::Browser, "Browser"),
     (At::Image, "ImageView"),
+    (At::Reading, "MarkdownView MarkdownReading"),
     (At::Explorer, "Explorer"),
     (At::History, "HistoryList"),
     (At::Worktrees, "WorktreePicker"),
@@ -178,6 +180,7 @@ impl Render for Shell {
                     .child(Input::new(&self.address)),
             )
             .child(self.spot(At::Image, "ImageView"))
+            .child(self.spot(At::Reading, "MarkdownView MarkdownReading"))
             .child(self.spot(At::Explorer, "Explorer"));
         root.child(changes)
             .child(code_area)
@@ -527,6 +530,19 @@ fn each_place_runs_its_own_keys(cx: &mut TestAppContext) {
             ("+", &["media.zoomIn"]),
             ("-", &["media.zoomOut"]),
             ("0", &["media.fit"]),
+        ],
+    );
+    // A rendered document takes the window's zoom keys for its text; the code font's still work.
+    expect(
+        cx,
+        &shell,
+        &log,
+        At::Reading,
+        &[
+            ("cmd-=", &["markdown.zoomIn"]),
+            ("cmd--", &["markdown.zoomOut"]),
+            ("cmd-0", &["markdown.zoomReset"]),
+            ("alt-cmd-=", &["editor.fontZoomIn"]),
         ],
     );
     expect(

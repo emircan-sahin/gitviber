@@ -23,15 +23,16 @@ use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{Selection, Toast, Workspace};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
-    IntoElement, ListAlignment, ListOffset, ListState, ObjectFit, ParentElement as _, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription,
-    Task, WeakEntity, Window, div, image_cache, img, list, prelude::FluentBuilder as _, px,
+    IntoElement, ListAlignment, ListOffset, ListState, ObjectFit, ParentElement as _, Pixels,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
+    Subscription, Task, WeakEntity, Window, div, image_cache, img, list,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::links::{LinkIndex, note_name, split_target};
 use crate::markup::{self, Part, Target};
 use crate::vaults::{Vaults, VaultsEvent};
-use gitviber_markdown::properties;
+use gitviber_markdown::{properties, reading};
 
 /// Notes embedded in notes embedded in…: deeper than this shows a link, as a cycle does.
 const MAX_DEPTH: usize = 4;
@@ -330,9 +331,12 @@ impl Doc {
         if ix > 0 || self.props.is_empty() {
             return part;
         }
+        // Read as the text is; the parts' own views (`MarkdownView::reading`) set theirs, and the
+        // find bar and embeds' labels keep the interface's.
         div()
             .flex()
             .flex_col()
+            .map(|d| reading::typography(d, cx))
             .child(properties::element(&self.props, cx))
             .child(part)
             .into_any_element()
@@ -356,7 +360,7 @@ impl Doc {
             Part::Text { .. } => {
                 let markdown = self.markdown(ix, index);
                 let base = self.note.base();
-                let view = cx.new(|cx| MarkdownView::inline(&markdown, base, window, cx));
+                let view = cx.new(|cx| MarkdownView::inline(&markdown, base, window, cx).reading());
                 let note = self.note.clone();
                 let sub =
                     cx.subscribe_in(&view, window, move |_, _, e: &MarkdownEvent, window, cx| {
@@ -513,6 +517,11 @@ impl Doc {
         )
     }
 
+    /// Whether the part at `ix` is an embed: it lines up with the prose, not the wider code.
+    pub fn embed_at(&self, ix: usize) -> bool {
+        matches!(self.parts.get(ix), Some(Part::Embed { .. }))
+    }
+
     /// The part a #Heading or #^block names (subheadings joined by #: the last counts).
     pub fn find(&self, anchor: &str) -> Option<usize> {
         let last = anchor.split('#').rfind(|s| !s.is_empty())?;
@@ -565,6 +574,8 @@ pub struct NoteView {
     /// A #heading or #^block to show once the vault's files are read.
     pending: Option<String>,
     find: Option<Find>,
+    /// The reading text size the parts were measured at; a zoom measures them again.
+    measured_at: Pixels,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
     _live: Live,
@@ -624,6 +635,7 @@ impl NoteView {
             images: BoundedImageCache::new(BoundedImageCache::display_side(window), cx),
             pending: None,
             find: None,
+            measured_at: Pixels::ZERO,
             focus: cx.focus_handle(),
             _subs: vec![sub],
             _live: Live::new("NoteView"),
@@ -824,6 +836,10 @@ impl NoteView {
         };
         let last = ix + 1 == self.doc.len();
         let part = self.doc.element(ix, &index, window, cx);
+        let width = match self.doc.embed_at(ix) {
+            true => reading::measure(cx),
+            false => reading::wide(cx),
+        };
         div()
             .w_full()
             .flex()
@@ -831,7 +847,7 @@ impl NoteView {
             .child(
                 div()
                     .w_full()
-                    .max_w(px(860. + 64.))
+                    .max_w(width + px(64.))
                     .px_8()
                     .when(ix == 0, |d| d.pt_4())
                     // Each part's markdown drops its first block's margin; a heading keeps it.
@@ -846,16 +862,22 @@ impl NoteView {
 impl Render for NoteView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.doc.begin_frame();
+        let size = reading::text_size(cx);
+        if size != self.measured_at {
+            self.measured_at = size;
+            self.list.remeasure();
+        }
         let empty = self.doc.len() == 0;
         let find = self.find.as_ref().filter(|f| f.open).map(|f| f.bar.clone());
         let t = cx.app_theme();
         div()
             .id("vault-note")
-            .key_context("MarkdownView")
+            .key_context(reading::KEY_CONTEXT)
             .track_focus(&self.focus)
             .relative()
             .size_full()
             .map(|el| scroll::on_keys(el, Self::scroll_key, cx))
+            .map(reading::zoom_keys)
             .on_action(cx.listener(|this, _: &editor::Find, window, cx| this.open_find(window, cx)))
             .on_action(cx.listener(|this, _: &find::Next, _, cx| this.find_key(1, cx)))
             .on_action(cx.listener(|this, _: &find::Prev, _, cx| this.find_key(-1, cx)))

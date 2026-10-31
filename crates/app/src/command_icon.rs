@@ -37,15 +37,18 @@ pub fn command_icon(c: &Command) -> IconName {
         | "editor.fontZoomIn"
         | "terminal.fontZoomIn"
         | "media.zoomIn"
+        | "markdown.zoomIn"
         | "browser.zoomIn" => IconName::ZoomIn,
         "view.zoomOut"
         | "editor.fontZoomOut"
         | "terminal.fontZoomOut"
         | "media.zoomOut"
+        | "markdown.zoomOut"
         | "browser.zoomOut" => IconName::ZoomOut,
         "view.zoomReset"
         | "editor.fontZoomReset"
         | "terminal.fontZoomReset"
+        | "markdown.zoomReset"
         | "browser.zoomReset" => IconName::RotateCcw,
         "media.fit" => IconName::Maximize2,
 
