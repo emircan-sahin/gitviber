@@ -137,7 +137,8 @@ function walk({ interactive = false, scope = null, roots = null, depth = null, b
       const acts = INTERACTIVE.has(role);
       const name = nameOf(el, leaf || TITLES.has(role));
       if (!interactive || acts) {
-        const ref = acts ? refOf(el) : null;
+        // None for a line past the most, which no one reads.
+        const ref = acts && lines.length < most ? refOf(el) : null;
         let text = line(el, role, name, ref);
         if (boxes && ref) text += ` [box=${boxOf(el).join(",")}]`;
         emit(level, text);
@@ -162,7 +163,8 @@ const FILE_CHARS = 2000000;
 function snapshot({ file = false, ...ask }) {
   const { lines, omitted } = walk(file ? { ...ask, most: FILE_LINES, chars: FILE_CHARS } : ask);
   if (omitted) lines.push(`- … omitted ~${omitted} elements: narrow it with --ref, -s, -d or -i`);
-  return { out: lines.length ? lines.join("\n") : "(nothing on the page)", removed: prune() };
+  prune();
+  return { out: lines.length ? lines.join("\n") : "(nothing on the page)", removed: state.gone.splice(0) };
 }
 
 /** An element's box in the viewport, CSS px: x, y, width, height. */
@@ -260,15 +262,13 @@ function refOf(el) {
   return ref;
 }
 
-/** Refs whose element left the page, dropped: what `snapshot --json` reports removed. */
+/** Refs whose element left the page, dropped: what the next `snapshot --json` reports removed. */
 function prune() {
-  const gone = [];
   for (const [ref, weak] of state.refs) {
     if (live(weak.deref())) continue;
     state.refs.delete(ref);
-    gone.push(ref);
+    state.gone.push(ref);
   }
-  return gone;
 }
 
 const shows = (el) => el.getClientRects().length > 0 && styleOf(el).visibility !== "hidden";

@@ -85,7 +85,7 @@ function documents(doc = document) {
   return [doc, ...frames.flatMap((inner) => documents(inner))];
 }
 
-// Nodes an action added (or texts it changed) kept for `revealed`: a flood past them is counted only.
+// Nodes an action added or showed (or texts it changed) kept for `revealed`: a flood past them is counted only.
 const KEPT = 500;
 
 /** Lines `revealed` names past its live regions' texts, then a pointer to the rest. */
@@ -117,6 +117,15 @@ function common(els) {
  * acts under them, refs and all, top to bottom, REVEALED at most and a pointer to the rest.
  */
 function revealed(nodes) {
+  // A bonus to the reply: a page that breaks reading it mustn't make the action read as a load.
+  try {
+    return named(nodes);
+  } catch {
+    return [];
+  }
+}
+
+function named(nodes) {
   const out = [];
   for (const region of new Set(nodes.map(regionOf).filter((r) => live(r) && shows(r)))) {
     const text = flat(region.innerText ?? region.textContent);
@@ -134,23 +143,44 @@ function revealed(nodes) {
     .sort(([a], [b]) => a[1] - b[1] || a[0] - b[0])
     .map(([, el]) => el);
   if (!roots.length) return out;
-  const { lines } = walk({ interactive: true, roots });
+  // One line past those shown says there are more: no ref goes to an element nobody reads.
+  const { lines } = walk({ interactive: true, roots, most: REVEALED + 1 });
   out.push(...lines.slice(0, REVEALED).map((l) => `+ ${l.slice(2)}`));
-  if (lines.length > REVEALED) out.push(`… +${lines.length - REVEALED} more: snapshot -s ${refOf(common(roots))}`);
+  if (lines.length > REVEALED) out.push(`… more: snapshot -s ${refOf(common(roots))}`);
+  // Refs of what an action took away go now, not at the next snapshot a long run may never take.
+  prune();
   return out;
+}
+
+/**
+ * The element an attribute change showed without adding it: hidden or aria-hidden="true"
+ * dropped, open set, an inline style that hid it changed, or what an expanded control controls.
+ */
+function unhidden({ attributeName: name, target: el, oldValue: was }) {
+  if (!el?.getAttribute) return null;
+  const now = el.getAttribute(name);
+  if (name === "hidden") return was !== null && now === null ? el : null;
+  if (name === "aria-hidden") return was === "true" && now !== "true" ? el : null;
+  if (name === "open") return was === null && now !== null ? el : null;
+  if (name === "style") return /display:\s*none|visibility:\s*hidden/.test(was ?? "") ? el : null;
+  const controls = el.getAttribute("aria-controls")?.trim().split(/\s+/)[0];
+  return name === "aria-expanded" && now === "true" && controls ? docOf(el).getElementById(controls) : null;
 }
 
 /** What changes on the page from now, an action's, until `changes` reads it. */
 async function watch() {
-  state.watch?.observer.disconnect();
+  state.watch?.stop();
   const canvases = await pictures();
-  const seen = { added: 0, removed: 0, texts: 0, attributes: 0, at: Date.now(), nodes: [] };
-  const keep = (node) => seen.nodes.length < KEPT && seen.nodes.push(node);
+  // A Set: a ticking counter or typing changes one node over and over.
+  const seen = { added: 0, removed: 0, texts: 0, attributes: 0, at: Date.now(), nodes: new Set() };
+  const keep = (node) => node && seen.nodes.size < KEPT && seen.nodes.add(node);
   const count = (records) => {
     if (records.length) seen.at = Date.now();
     for (const r of records) {
-      if (r.type === "attributes") seen.attributes++;
-      else if (r.type === "characterData") {
+      if (r.type === "attributes") {
+        seen.attributes++;
+        keep(unhidden(r));
+      } else if (r.type === "characterData") {
         seen.texts++;
         keep(r.target);
       } else {
@@ -164,8 +194,18 @@ async function watch() {
     }
   };
   const observer = new MutationObserver(count);
-  for (const doc of documents()) observer.observe(doc, { subtree: true, childList: true, characterData: true, attributes: true });
-  state.watch = { observer, seen, count, dialogs: dialogs(), canvases };
+  // A popover shows with no attribute changing: its toggle event, which doesn't bubble, says so.
+  const toggled = (e) => keep(e.target);
+  const docs = documents();
+  for (const doc of docs) {
+    observer.observe(doc, { subtree: true, childList: true, characterData: true, attributes: true, attributeOldValue: true });
+    doc.addEventListener("toggle", toggled, true);
+  }
+  const stop = () => {
+    observer.disconnect();
+    for (const doc of docs) doc.removeEventListener("toggle", toggled, true);
+  };
+  state.watch = { observer, stop, seen, count, dialogs: dialogs(), canvases };
   return {};
 }
 
@@ -179,11 +219,11 @@ async function changes({ quiet = 100, most = 500 }) {
   const until = Date.now() + most;
   while (Date.now() < until && Date.now() - w.seen.at < quiet) await new Promise((r) => setTimeout(r, 25));
   w.count(w.observer.takeRecords());
-  w.observer.disconnect();
+  w.stop();
   state.watch = null;
   const { added, removed, texts, attributes } = w.seen;
   // A repaint is in the state too, so the loop nudge sees a canvas game move; an animation that
   // runs by itself is not, or no repeated action would ever be nudged.
   const canvas = repainted(w.canvases);
-  return { added, removed, texts, attributes, canvas, dialogs: dialogs() - w.dialogs, revealed: revealed(w.seen.nodes), state: pageState() + (typeof canvas === "number" ? `|canvas:${canvas}` : "") };
+  return { added, removed, texts, attributes, canvas, dialogs: dialogs() - w.dialogs, revealed: revealed([...w.seen.nodes]), state: pageState() + (typeof canvas === "number" ? `|canvas:${canvas}` : "") };
 }
