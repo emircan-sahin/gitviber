@@ -15,6 +15,9 @@ use gpui_kit::{
 /// zoom keys bind in.
 pub const KEY_CONTEXT: &str = "MarkdownView MarkdownReading";
 
+/// Where the zoom keys bind, for a place beside a reading view that's part of it (its find bar).
+pub const ZOOM_CONTEXT: &str = "MarkdownReading";
+
 /// The body over the code font: inline code, drawn at 7/8 of the body, comes out at the code
 /// font's own size, and changing the code font moves the reading along.
 const BODY_PER_CODE: f32 = 8. / 7.;
