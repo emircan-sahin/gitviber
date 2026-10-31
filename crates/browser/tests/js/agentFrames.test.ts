@@ -155,7 +155,7 @@ test("a same-origin frame's page reads as part of the tree, refs and all; anothe
     [
       '- heading "Shop" [level=1]',
       '- iframe "Cart"',
-      '  - link "Use a coupon" [ref=e1] -> /coupon',
+      '  - link "Use a coupon" [ref=e1]',
       '  - iframe "Payment"',
       '    - heading "Card" [level=2]',
       '    - button "Pay" [ref=e2]',
@@ -164,7 +164,7 @@ test("a same-origin frame's page reads as part of the tree, refs and all; anothe
   );
   // -i keeps what acts, and the frame it can't read.
   const interactive = (await run(p, { cmd: "snapshot", interactive: true })).out.split("\n");
-  assert.deepEqual(interactive, ['- link "Use a coupon" [ref=e1] -> /coupon', '- button "Pay" [ref=e2]', "- iframe (cross-origin frame https://ads.example.test: not readable from the page)"]);
+  assert.deepEqual(interactive, ['- link "Use a coupon" [ref=e1]','- button "Pay" [ref=e2]', "- iframe (cross-origin frame https://ads.example.test: not readable from the page)"]);
   assert.match((await run(p, { cmd: "find", pattern: "Pay" })).out, /button "Pay" \[ref=e2\]/);
 });
 

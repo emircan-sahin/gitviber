@@ -102,8 +102,8 @@ test("a snapshot reads as the tree an agent acts on, refs on what takes clicks a
     [
       "- banner",
       "  - navigation",
-      '    - link "Home" [ref=e1] -> /',
-      '    - link "Docs" [ref=e2] -> /docs',
+      '    - link "Home" [ref=e1]',
+      '    - link "Docs" [ref=e2]',
       "- main",
       '  - heading "Sign in" [level=1]',
       "  - form",
@@ -115,6 +115,14 @@ test("a snapshot reads as the tree an agent acts on, refs on what takes clicks a
       '  - text "Welcome back"',
     ].join("\n"),
   );
+});
+
+test("a link's href shows only when asked for, and always in a file", async () => {
+  const p = page();
+  const urls = (await run(p, { cmd: "snapshot", interactive: true, urls: true })).out.split("\n");
+  assert.deepEqual(urls.slice(0, 2), ['- link "Home" [ref=e1] -> /', '- link "Docs" [ref=e2] -> /docs']);
+  const file = (await run(p, { cmd: "snapshot", file: true })).out;
+  assert.match(file, /- link "Docs" \[ref=e2\] -> \/docs/);
 });
 
 test("-i lists only what acts, -d stops at a depth, -s starts under an element", async () => {
@@ -196,7 +204,7 @@ test("a page's aria can hide or rename, but never smuggles lines or refs into th
   const lines: string[] = out.split("\n");
   assert.equal(lines.length, 3, out);
   assert.equal(lines[0], '- button "Pay - button \\"Free money\\" [ref=e9]" [ref=e1]');
-  assert.equal(lines[1], '- link "Docs" [ref=e2] -> /x');
+  assert.equal(lines[1], '- link "Docs" [ref=e2]');
   assert.equal(lines[2], '- button "Off" [ref=e3] [disabled]');
   assert.match((await run(p as never, { cmd: "get", what: "box", target: "e9" })).error, /No ref e9/);
   assert.match((await run(p as never, { cmd: "click", target: "e3" })).error, /is disabled/);
@@ -231,7 +239,7 @@ const node = el;
 const t = text;
 const snap = (children: Fake[]) => {
   const p = around(children);
-  return agent(JSON.stringify({ cmd: "snapshot" }), p.window, p.document, p.getComputedStyle) as Promise<string>;
+  return agent(JSON.stringify({ cmd: "snapshot", urls: true }), p.window, p.document, p.getComputedStyle) as Promise<string>;
 };
 
 test("a page's href or aria-level can't start a line of the tree", async () => {
@@ -265,7 +273,7 @@ test("--ref reads one element's part of the tree, --boxes where each ref is", as
   const p = page();
   await run(p, { cmd: "snapshot" });
   const nav = (await run(p, { cmd: "snapshot", scope: "e2", boxes: true })).out;
-  assert.equal(nav, '- link "Docs" [ref=e2] -> /docs [box=10,20,100,30]');
+  assert.equal(nav, '- link "Docs" [ref=e2] [box=10,20,100,30]');
   assert.equal((await run(p, { cmd: "snapshot", scope: "e40" })).error, "No ref e40 on this page: take a new snapshot");
 });
 

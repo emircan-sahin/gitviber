@@ -62,8 +62,8 @@ function valueOf(el) {
   return "value" in el && typeof el.value === "string" ? el.value : flat(el.textContent);
 }
 
-/** One line of the tree: role, name, ref, and what an agent needs to know of its state. */
-function line(el, role, name, ref) {
+/** One line of the tree: role, name, ref, and what an agent needs to know of its state; with `urls` a link's href. */
+function line(el, role, name, ref, urls) {
   let out = `- ${role}${name ? ` ${quote(cut(name))}` : ""}`;
   if (role === "heading") {
     const level = el.getAttribute("aria-level");
@@ -76,7 +76,7 @@ function line(el, role, name, ref) {
   if (expanded) out += expanded === "true" ? " [expanded]" : " [collapsed]";
   if (el.getAttribute("aria-selected") === "true") out += " [selected]";
   if (role === "textbox" || role === "searchbox" || role === "combobox" || role === "spinbutton" || role === "slider") out += ` value=${quote(cut(valueOf(el)))}`;
-  if (role === "link") out += ` -> ${cut(flat(el.getAttribute("href")), 120)}`;
+  if (urls && role === "link") out += ` -> ${cut(flat(el.getAttribute("href")), 120)}`;
   return out;
 }
 
@@ -85,7 +85,7 @@ function line(el, role, name, ref) {
  * with a role, refs on what acts, `depth` levels at most. Past `most` lines or `chars` characters
  * nothing more is looked at but counted: a huge page costs little more than a big one.
  */
-function walk({ interactive = false, scope = null, depth = null, boxes = false, most = LINES, chars = CHARS }) {
+function walk({ interactive = false, scope = null, depth = null, boxes = false, urls = false, most = LINES, chars = CHARS }) {
   const root = scope ? resolve(scope) : (document.body ?? document.documentElement);
   const lines = [];
   let [full, size, omitted] = [false, 0, 0];
@@ -109,7 +109,7 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
       } catch {}
       return emit(level, `- iframe${name ? ` ${quote(cut(name))}` : ""} (cross-origin frame ${origin}: not readable from the page)`);
     }
-    if (!interactive) emit(level, line(el, "iframe", name, null));
+    if (!interactive) emit(level, line(el, "iframe", name, null, urls));
     const body = inner.body ?? inner.documentElement;
     if (body) visit(body, interactive ? level : level + 1, false, muted);
   };
@@ -137,7 +137,7 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
       const name = nameOf(el, leaf || TITLES.has(role));
       if (!interactive || acts) {
         const ref = acts ? refOf(el) : null;
-        let text = line(el, role, name, ref);
+        let text = line(el, role, name, ref, urls);
         if (boxes && ref) text += ` [box=${boxOf(el).join(",")}]`;
         emit(level, text);
         next = level + 1;
@@ -158,8 +158,9 @@ const FILE_LINES = 20000;
 
 const FILE_CHARS = 2000000;
 
+// A file keeps the hrefs: it's searched, not read whole into an agent's context.
 function snapshot({ file = false, ...ask }) {
-  const { lines, omitted } = walk(file ? { ...ask, most: FILE_LINES, chars: FILE_CHARS } : ask);
+  const { lines, omitted } = walk(file ? { ...ask, urls: true, most: FILE_LINES, chars: FILE_CHARS } : ask);
   if (omitted) lines.push(`- … omitted ~${omitted} elements: narrow it with --ref, -s, -d or -i`);
   return { out: lines.length ? lines.join("\n") : "(nothing on the page)", removed: prune() };
 }
@@ -190,7 +191,7 @@ function find({ pattern }) {
     const low = pattern.toLowerCase();
     test = (s) => s.toLowerCase().includes(low);
   }
-  const { lines } = walk({ most: FILE_LINES, chars: FILE_CHARS });
+  const { lines } = walk({ urls: true, most: FILE_LINES, chars: FILE_CHARS });
   const hits = lines.flatMap((l, i) => (test(l.trimStart()) ? [i] : []));
   if (!hits.length) throw new Error(`Nothing on the page matches ${pattern}`);
   const kept = [...new Set(hits.slice(0, MATCHES).flatMap((i) => [i - 1, i, i + 1]))].filter((i) => i >= 0 && i < lines.length);
