@@ -12,7 +12,9 @@ use objc2::{sel, DefinedClass, Message as _};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
 };
-use objc2_foundation::{NSError, NSNumber, NSObjectProtocol, NSString};
+use objc2_foundation::{
+    NSError, NSNumber, NSObjectNSDelayedPerforming, NSObjectProtocol, NSString,
+};
 use objc2_web_kit::{WKFindConfiguration, WKFindResult, WKWebView};
 use std::cell::Cell;
 use std::ptr::NonNull;
@@ -109,24 +111,34 @@ pub(super) fn show_as(id: &str, web: &WKWebView, dark: Option<bool>) {
     ask(id, |a| a.dark = dark);
 }
 
-/// Reader mode on with `look`, or off (None). Its answer comes back as the page's state.
-pub fn reader_mode(id: &str, look: Option<&Look>) -> Res<()> {
+/// A page that said it had no article asks again after this, as its scripts may draw one late.
+const RECHECK_SECS: f64 = 1.5;
+
+/// Reader mode on with `look`, or off (None); `done` hears whether it shows. Its answer comes
+/// back as the page's state too.
+pub fn reader_mode(id: &str, look: Option<&Look>, done: impl FnOnce(bool) + 'static) -> Res<()> {
     let mtm = main_thread()?;
     let v = view(id).ok_or(GONE)?;
     let script = look.map_or_else(|| reader::HIDE.to_string(), reader::show_script);
     let delegate = v.delegate.clone();
-    let done = RcBlock::new(move |answer: *mut AnyObject, _error: *mut NSError| {
+    let on = super::url_text(unsafe { v.web.URL() });
+    let done = Cell::new(Some(done));
+    let block = RcBlock::new(move |answer: *mut AnyObject, _error: *mut NSError| {
         // SAFETY: WebKit's answer, an object or nil, alive for this call.
         let answer = unsafe { answer.as_ref() }
             .and_then(|a| a.downcast_ref::<NSString>())
             .map(|a| a.to_string());
+        let shown = answer.as_deref() == Some("shown");
         let d = delegate.ivars();
-        d.reader.set(answer.as_deref() == Some("shown"));
+        *d.reader.borrow_mut() = shown.then(|| on.clone());
         // Readability found less than its check promised: the button goes too.
         if answer.as_deref() == Some("none") {
             d.readerable.set(false);
         }
         delegate.changed();
+        if let Some(done) = done.take() {
+            done(shown);
+        }
     });
     unsafe {
         v.web
@@ -134,7 +146,7 @@ pub fn reader_mode(id: &str, look: Option<&Look>) -> Res<()> {
                 &NSString::from_str(&script),
                 None,
                 &ours(mtm),
-                Some(&done),
+                Some(&block),
             )
     };
     Ok(())
@@ -156,6 +168,33 @@ pub fn reader_style(id: &str, look: &Look) -> Res<()> {
     Ok(())
 }
 
+/// The page moved on without a load (pushState, an app's own route): a reader over the address
+/// it left goes. Another fragment of the same document keeps it.
+pub(super) fn follow_reader(delegate: &Delegate, web: &WKWebView, state: &mut PageState) {
+    let d = delegate.ivars();
+    let left = d
+        .reader
+        .borrow()
+        .as_deref()
+        .is_some_and(|on| !reader::same_document(on, &state.url));
+    if !left {
+        return;
+    }
+    let Ok(mtm) = main_thread() else {
+        return;
+    };
+    d.reader.take();
+    state.reader = false;
+    unsafe {
+        web.evaluateJavaScript_inFrame_inContentWorld_completionHandler(
+            &NSString::from_str(reader::HIDE),
+            None,
+            &ours(mtm),
+            None,
+        )
+    };
+}
+
 /// Whether a loaded page has an article, once for each address it shows; not in an agent's tab,
 /// whose agent reads the page its own way.
 pub(super) fn check_reader(delegate: &Delegate, web: &WKWebView, state: &PageState) {
@@ -167,11 +206,28 @@ pub(super) fn check_reader(delegate: &Delegate, web: &WKWebView, state: &PageSta
     if agent::routed(&d.id) {
         return;
     }
+    *d.reader_checked.borrow_mut() = state.url.clone();
+    ask_readerable(delegate, web, state.url.clone(), true);
+}
+
+/// `check_reader` again for an address it said no to, still shown (gvRecheckReader).
+pub(super) fn recheck_reader(delegate: &Delegate) {
+    let d = delegate.ivars();
+    let Some(web) = d.web.load() else {
+        return;
+    };
+    let url = super::url_text(unsafe { web.URL() });
+    let same = *d.reader_checked.borrow() == url;
+    if same && d.reader.borrow().is_none() && !d.readerable.get() && !agent::routed(&d.id) {
+        ask_readerable(delegate, &web, url, false);
+    }
+}
+
+fn ask_readerable(delegate: &Delegate, web: &WKWebView, url: String, again: bool) {
     let Ok(mtm) = main_thread() else {
         return;
     };
-    *d.reader_checked.borrow_mut() = state.url.clone();
-    let (this, url) = (delegate.retain(), state.url.clone());
+    let this = delegate.retain();
     let done = RcBlock::new(move |answer: *mut AnyObject, _error: *mut NSError| {
         // SAFETY: as in `reader_mode`.
         let yes = unsafe { answer.as_ref() }
@@ -179,8 +235,20 @@ pub(super) fn check_reader(delegate: &Delegate, web: &WKWebView, state: &PageSta
             .is_some_and(|n| n.boolValue());
         let d = this.ivars();
         // Moved on meanwhile: the answer was the last page's.
-        if *d.reader_checked.borrow() == url && d.readerable.replace(yes) != yes {
+        if *d.reader_checked.borrow() != url {
+            return;
+        }
+        if d.readerable.replace(yes) != yes {
             this.changed();
+        }
+        if !yes && again {
+            unsafe {
+                this.performSelector_withObject_afterDelay(
+                    sel!(gvRecheckReader),
+                    None,
+                    RECHECK_SECS,
+                )
+            };
         }
     });
     unsafe {

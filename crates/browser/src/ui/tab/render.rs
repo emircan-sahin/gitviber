@@ -386,7 +386,7 @@ impl BrowserTab {
                 .on_click(cx.listener(|this, _, window, cx| this.zoom_by(0, window, cx)))
         });
         let reading = state.as_ref().is_some_and(|s| s.reader);
-        let reader = reader_next(state.as_ref()).map(|on| {
+        let reader = reader_next(state.as_ref(), false).map(|on| {
             icon_button(
                 "reader",
                 IconName::BookOpenText,

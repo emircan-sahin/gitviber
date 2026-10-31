@@ -99,6 +99,11 @@ pub(crate) fn style_script(look: &Look) -> String {
 /// Back to the page beneath, as it was.
 pub(crate) const HIDE: &str = "window.__gvReader ? window.__gvReader.hide() : \"hidden\";";
 
+/// Whether two addresses are one document: the same but for their fragments.
+pub(crate) fn same_document(a: &str, b: &str) -> bool {
+    a.split('#').next() == b.split('#').next()
+}
+
 /// Whether the page likely has an article: a few paragraphs' worth of text, not the whole parse.
 pub(crate) fn check_script() -> String {
     format!("{READERABLE}\nisProbablyReaderable(document);")
@@ -134,6 +139,19 @@ mod tests {
         assert_eq!(serde_json::from_str::<Text>(&kept).unwrap(), text);
         let partial: Text = serde_json::from_str(r#"{"font":"sans"}"#).unwrap();
         assert_eq!(partial.size, 19);
+    }
+
+    #[test]
+    fn another_fragment_is_the_same_document_another_path_or_query_is_not() {
+        let page = "https://example.com/post";
+        assert!(same_document(page, page));
+        assert!(same_document(page, "https://example.com/post#notes"));
+        assert!(same_document(
+            "https://example.com/post#a",
+            "https://example.com/post#b"
+        ));
+        assert!(!same_document(page, "https://example.com/next"));
+        assert!(!same_document(page, "https://example.com/post?page=2"));
     }
 
     #[test]

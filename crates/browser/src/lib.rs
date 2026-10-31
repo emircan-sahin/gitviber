@@ -472,7 +472,11 @@ mod other {
     pub fn snapshot_then(_: &str, done: impl FnOnce(Option<String>) + 'static) {
         done(None)
     }
-    pub fn reader_mode(_: &str, _: Option<&crate::reader::Look>) -> Res<()> {
+    pub fn reader_mode(
+        _: &str,
+        _: Option<&crate::reader::Look>,
+        _: impl FnOnce(bool) + 'static,
+    ) -> Res<()> {
         Err(UNSUPPORTED.into())
     }
     pub fn reader_style(_: &str, _: &crate::reader::Look) -> Res<()> {

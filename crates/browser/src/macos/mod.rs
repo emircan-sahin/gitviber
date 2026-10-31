@@ -659,9 +659,10 @@ struct DelegateIvars {
     /// none (native.rs).
     upload: RefCell<Option<Vec<std::path::PathBuf>>>,
     chosen: RefCell<Option<Res<usize>>>,
-    /// Reader mode shows over the page, which likely has an article: checked once for each
-    /// address the page shows (`reader_checked`), as an app's own navigation keeps its document.
-    reader: Cell<bool>,
+    /// Reader mode shows over the page (the address it opened on), which likely has an article:
+    /// checked for each address the page shows (`reader_checked`), as an app's own navigation
+    /// keeps its document.
+    reader: RefCell<Option<String>>,
     readerable: Cell<bool>,
     reader_checked: RefCell<String>,
 }
@@ -696,6 +697,13 @@ define_class!(
             if PARK_AFTER.get() > 0 && VIEWS.with_borrow(|r| r.still_hidden(id, since)) {
                 begin_park(id, since);
             }
+        }
+
+        /// A while after a page said it had no article (`check_reader`): its scripts may have
+        /// drawn one since.
+        #[unsafe(method(gvRecheckReader))]
+        fn recheck_reader(&self) {
+            page_view::recheck_reader(self);
         }
 
         /// No agent's command touched the tab for a while (agent.rs `restart_idle`).
@@ -746,7 +754,8 @@ define_class!(
         fn send_state(&self) {
             self.ivars().pending.set(false);
             if let Some(web) = self.ivars().web.load() {
-                let state = self.state(&web);
+                let mut state = self.state(&web);
+                page_view::follow_reader(self, &web, &mut state);
                 page_view::check_reader(self, &web, &state);
                 emit(&self.ivars().app, "browser-state", state);
             }
@@ -832,7 +841,7 @@ define_class!(
             self.ivars().failed.take();
             self.ivars().committed.set(true);
             // The reader went with the document it lay over.
-            self.ivars().reader.set(false);
+            self.ivars().reader.take();
             self.ivars().readerable.set(false);
             self.ivars().reader_checked.take();
             let url = url_text(unsafe { web.URL() });
@@ -1045,7 +1054,7 @@ impl Delegate {
             pointer: Cell::new(None),
             upload: RefCell::default(),
             chosen: RefCell::default(),
-            reader: Cell::new(false),
+            reader: RefCell::default(),
             readerable: Cell::new(false),
             reader_checked: RefCell::default(),
         });
@@ -1128,7 +1137,7 @@ impl Delegate {
             insecure,
             failed: self.ivars().failed.borrow().clone(),
             committed: self.ivars().committed.get(),
-            reader: self.ivars().reader.get(),
+            reader: self.ivars().reader.borrow().is_some(),
             readerable: self.ivars().readerable.get(),
         }
     }

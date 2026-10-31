@@ -258,13 +258,14 @@ fn handle() -> Option<&'static crate::Handle> {
 }
 
 /// What reader mode's toggle does on the page now: show its article (true), go back to the page
-/// (false), or nothing where the page has no article.
-fn reader_next(state: Option<&crate::PageState>) -> Option<bool> {
+/// (false), or nothing. Its button waits for the page's check to find an article; `asked` (⇧⌘R,
+/// the palette) tries any loaded page, whose scripts may draw one the check missed.
+fn reader_next(state: Option<&crate::PageState>, asked: bool) -> Option<bool> {
     let s = state?;
     if s.reader {
         Some(false)
     } else {
-        (s.readerable && !s.loading && s.failed.is_none()).then_some(true)
+        ((s.readerable || asked) && !s.loading && s.failed.is_none()).then_some(true)
     }
 }
 
@@ -358,8 +359,14 @@ impl BrowserTab {
                 crate::focus(&this.saved.id, false)
             }),
             cx.on_release(|this, cx| this.released(cx)),
-            // Show agents' tabs switched: the strip asks `hidden` again.
-            cx.observe_global::<gitviber_ui::Settings>(|_, cx| cx.notify()),
+            // Show agents' tabs switched: the strip asks `hidden` again. A theme changed: the
+            // reader showing takes its colors.
+            cx.observe_global::<gitviber_ui::Settings>(|this, cx| {
+                if this.state(cx).is_some_and(|s| s.reader) {
+                    let _ = crate::reader_style(&this.saved.id, &reader_look(cx));
+                }
+                cx.notify()
+            }),
         ];
         if let Some(hub) = &hub {
             subscriptions.push(cx.subscribe_in(hub, window, Self::on_hub));
@@ -976,13 +983,31 @@ impl BrowserTab {
     }
 
     fn toggle_reader(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(on) = reader_next(self.state(cx)) else {
+        // An agent reads its tab's page its own way.
+        let agents = self
+            .page_info(cx)
+            .is_some_and(|p| p.agent.is_some() && !p.released);
+        let Some(on) = reader_next(self.state(cx), true).filter(|_| !agents) else {
             return;
         };
         let look = on.then(|| reader_look(cx));
-        match crate::reader_mode(&self.saved.id, look.as_ref()) {
-            // Into the page: Space and the arrows scroll the article.
-            Ok(()) if on => self.keys_to_page(window, cx),
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let done = move |shown| {
+            let _ = tx.send(shown);
+        };
+        match crate::reader_mode(&self.saved.id, look.as_ref(), done) {
+            Ok(()) if on => {
+                // Into the page: Space and the arrows scroll the article.
+                self.keys_to_page(window, cx);
+                cx.spawn_in(window, async move |this, cx| {
+                    if rx.await == Ok(false) {
+                        let _ = this.update_in(cx, |this, window, cx| {
+                            this.toast(Toast::info("No article found on this page"), window, cx)
+                        });
+                    }
+                })
+                .detach();
+            }
             Ok(()) => {}
             Err(e) => self.toast(
                 Toast::error(e).title("Could not show the article"),

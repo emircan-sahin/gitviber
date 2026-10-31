@@ -429,8 +429,8 @@ fn a_titled_pages_tab_shows_its_host_beside_the_title(cx: &mut TestAppContext) {
     assert_eq!(tab(None, cx), ("localhost:5173/docs".into(), None));
 }
 
-/// Reader mode's toggle: on where the loaded page has an article, back to the page while it
-/// shows, else nothing.
+/// Reader mode's button: on where the loaded page has an article, back to the page while it
+/// shows, else none. Asked for (⇧⌘R, the palette), it tries any loaded page.
 #[test]
 fn the_reader_toggles_only_on_a_page_with_an_article() {
     let page = |change: fn(&mut crate::PageState)| {
@@ -441,25 +441,31 @@ fn the_reader_toggles_only_on_a_page_with_an_article() {
         change(&mut s);
         s
     };
-    assert_eq!(reader_next(None), None);
-    assert_eq!(reader_next(Some(&page(|_| {}))), Some(true));
-    assert_eq!(reader_next(Some(&page(|s| s.reader = true))), Some(false));
-    assert_eq!(reader_next(Some(&page(|s| s.readerable = false))), None);
-    assert_eq!(reader_next(Some(&page(|s| s.loading = true))), None);
+    for asked in [false, true] {
+        assert_eq!(reader_next(None, asked), None);
+        assert_eq!(reader_next(Some(&page(|_| {})), asked), Some(true));
+        let shown = page(|s| s.reader = true);
+        assert_eq!(reader_next(Some(&shown), asked), Some(false));
+        assert_eq!(reader_next(Some(&page(|s| s.loading = true)), asked), None);
+    }
+    // A page drawn by its scripts after the check: only the key or the palette tries it.
+    let unchecked = page(|s| s.readerable = false);
+    assert_eq!(reader_next(Some(&unchecked), false), None);
+    assert_eq!(reader_next(Some(&unchecked), true), Some(true));
     let failed = |s: &mut crate::PageState| {
         s.failed = Some(crate::Failed {
             url: "http://localhost:5173/".into(),
             message: "Could not connect to the server.".into(),
         })
     };
-    assert_eq!(reader_next(Some(&page(failed))), None);
+    assert_eq!(reader_next(Some(&page(failed)), true), None);
     // Shown, it always goes back, whatever the page does meanwhile.
     let busy = |s: &mut crate::PageState| {
         s.reader = true;
         s.readerable = false;
         s.loading = true;
     };
-    assert_eq!(reader_next(Some(&page(busy))), Some(false));
+    assert_eq!(reader_next(Some(&page(busy)), false), Some(false));
 }
 
 /// The reader takes the light and dark themes Settings name, and the text kept for every tab.
