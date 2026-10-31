@@ -417,7 +417,7 @@ pub(crate) mod generate {
     }
 
     /// What the app ships that isn't a crate: the bundled fonts, the file icons, the browser's
-    /// device table.
+    /// device table and its reader mode's extractor.
     fn data() -> Vec<(Package, Vec<String>)> {
         let ui = root().join("crates/ui/assets");
         let entry = |name: &str, version: &str, license: &str, url: &str, files: &[PathBuf]| {
@@ -471,6 +471,14 @@ pub(crate) mod generate {
                 "BSD-3-Clause",
                 "https://chromium.googlesource.com/devtools/devtools-frontend/+/a23d72d27dd00adef0dd7130fcc0b2a99e5495bc/front_end/models/emulation/EmulatedDevices.ts",
                 &[root().join("crates/app/licenses/standard/chrome-devtools-frontend.txt")],
+            ),
+            // Reader mode's article extraction (crates/browser/src/scripts/vendor), unchanged.
+            entry(
+                "@mozilla/readability",
+                "0.6.0",
+                "Apache-2.0",
+                "https://github.com/mozilla/readability",
+                &[],
             ),
         ]
     }

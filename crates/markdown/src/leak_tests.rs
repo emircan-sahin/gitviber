@@ -166,13 +166,13 @@ fn prose(i: usize) -> String {
         .collect()
 }
 
-/// gpui-base keeps each painted paragraph's shaped text for the next frame. Unpatched it swept a
-/// closed document's only past 4096 entries: these 200 documents' 2400 paragraphs all stayed
-/// (vendor/gpui-base/PATCH.md): 12 MB of them stayed. Shaped by the real text system and drawn
-/// by the real renderer, off screen: the test platform's keeps nothing worth measuring.
+/// A window drawn by the real text system and renderer, off screen, with a host to show views in.
 #[cfg(target_os = "macos")]
-#[test]
-fn closed_documents_leave_no_shaped_text_behind() {
+fn headless() -> (
+    gpui_kit::HeadlessAppContext,
+    gpui_kit::WindowHandle<gpui_kit::base::Root>,
+    gpui_kit::Entity<Host>,
+) {
     use gpui_kit::{HeadlessAppContext, px, size};
     gitviber_ui::test_support::config_dir("markdown-test");
     let text_system = std::sync::Arc::new(gpui_apple::AppleTextSystem::new());
@@ -192,13 +192,28 @@ fn closed_documents_leave_no_shaped_text_behind() {
         })
         .unwrap();
     let host = slot.borrow_mut().take().unwrap();
-    let frame = |cx: &mut HeadlessAppContext| {
-        cx.run_until_parked();
-        cx.advance_clock(std::time::Duration::from_millis(16));
-        _ = cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx));
-    };
+    (cx, window, host)
+}
+
+#[cfg(target_os = "macos")]
+fn frame(cx: &mut gpui_kit::HeadlessAppContext, window: gpui_kit::AnyWindowHandle) {
+    cx.run_until_parked();
+    cx.advance_clock(std::time::Duration::from_millis(16));
+    _ = cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx));
+}
+
+/// gpui-base keeps each painted paragraph's shaped text for the next frame. Unpatched it swept a
+/// closed document's only past 4096 entries: these 200 documents' 2400 paragraphs all stayed
+/// (vendor/gpui-base/PATCH.md): 12 MB of them stayed. Shaped by the real text system and drawn
+/// by the real renderer, off screen: the test platform's keeps nothing worth measuring.
+#[cfg(target_os = "macos")]
+#[test]
+fn closed_documents_leave_no_shaped_text_behind() {
+    use gpui_kit::HeadlessAppContext;
+    let (mut cx, window, host) = headless();
+    let window = window.into();
     let cycle = |i: usize, cx: &mut HeadlessAppContext| {
-        _ = cx.update_window(window.into(), |_, window, cx| {
+        _ = cx.update_window(window, |_, window, cx| {
             let view =
                 cx.new(|cx| MarkdownView::new(&prose(i), MarkdownBase::default(), window, cx));
             host.update(cx, |h, cx| {
@@ -206,17 +221,17 @@ fn closed_documents_leave_no_shaped_text_behind() {
                 cx.notify();
             });
         });
-        frame(cx);
-        frame(cx);
+        frame(cx, window);
+        frame(cx, window);
         // Drawn to pixels as an app's frame is.
-        _ = cx.capture_screenshot(window.into());
+        _ = cx.capture_screenshot(window);
         cx.update(|cx| {
             host.update(cx, |h, cx| {
                 h.0 = None;
                 cx.notify();
             })
         });
-        frame(cx);
+        frame(cx, window);
     };
     for i in 0..20 {
         cycle(i, &mut cx);
@@ -232,4 +247,36 @@ fn closed_documents_leave_no_shaped_text_behind() {
         grew < 3_000_000,
         "120 closed documents left {grew} bytes behind"
     );
+}
+
+/// Zooming a document's text again and again draws its text, diagrams and formulas at each size,
+/// and keeps no more of them once every size has been seen.
+#[cfg(target_os = "macos")]
+#[test]
+fn zooming_a_document_keeps_its_memory_flat() {
+    let (mut cx, window, host) = headless();
+    let window = window.into();
+    _ = cx.update_window(window, |_, window, cx| {
+        let text = format!("{DOC}\nInline $a^2 + b^2$ math.\n\n{}", prose(0));
+        let view = cx.new(|cx| MarkdownView::new(&text, MarkdownBase::default(), window, cx));
+        host.update(cx, |h, _| h.0 = Some(view.into()));
+    });
+    let round = |cx: &mut gpui_kit::HeadlessAppContext| {
+        for dir in [1; 6].into_iter().chain([-1; 6]) {
+            cx.update(|cx| gitviber_ui::Settings::step_reading_size(cx, dir));
+            frame(cx, window);
+            frame(cx, window);
+            _ = cx.capture_screenshot(window);
+        }
+    };
+    round(&mut cx);
+    round(&mut cx);
+    let before = LIVE.load(std::sync::atomic::Ordering::Relaxed);
+    for _ in 0..8 {
+        round(&mut cx);
+    }
+    let grew = LIVE.load(std::sync::atomic::Ordering::Relaxed) - before;
+    eprintln!("8 rounds of zoom steps: {grew} bytes still allocated");
+    assert!(grew < 1_000_000, "zooming left {grew} bytes behind");
+    cx.update(|cx| gitviber_ui::Settings::step_reading_size(cx, 0));
 }

@@ -522,6 +522,7 @@ fn each_place_runs_its_own_keys(cx: &mut TestAppContext) {
             ("cmd-=", &["browser.zoomIn"]),
             ("cmd-0", &["browser.zoomReset"]),
             ("shift-cmd-c", &["browser.pick"]),
+            ("shift-cmd-r", &["browser.toggleReader"]),
         ],
     );
     // Its address bar types, and the page's keys reach past it.
@@ -617,11 +618,12 @@ fn each_place_runs_its_own_keys(cx: &mut TestAppContext) {
 #[gpui::test]
 fn a_rebinding_replaces_the_default_key(cx: &mut TestAppContext) {
     let (shell, log, cx) = setup(cx);
+    // Set, not saved: under plain `cargo test` the save would land in another case's folder.
     cx.update(|_, cx| {
-        gitviber_ui::Settings::update(cx, |s| {
-            s.keybindings
-                .insert("review.nextFile".into(), vec!["n".into()]);
-        })
+        let mut s = gitviber_ui::Settings::get(cx).clone();
+        s.keybindings
+            .insert("review.nextFile".into(), vec!["n".into()]);
+        cx.set_global(s);
     });
     cx.run_until_parked();
     assert_eq!(press(cx, &shell, &log, At::Root, "n"), ["review.nextFile"]);
@@ -745,6 +747,7 @@ fn the_vscode_presets_keys_run_where_they_should(cx: &mut TestAppContext) {
         At::Reading,
         &[
             ("cmd-=", &["markdown.zoomIn"]),
+            ("cmd--", &["markdown.zoomOut"]),
             ("cmd-0", &["markdown.zoomReset"]),
         ],
     );
@@ -789,6 +792,7 @@ fn the_vscode_presets_keys_run_where_they_should(cx: &mut TestAppContext) {
             ("ctrl-1", &["tab.goto1"]),
             ("cmd-0", &["browser.zoomReset"]),
             ("cmd-1", &["view.focusCode"]),
+            ("shift-cmd-r", &["browser.toggleReader"]),
         ],
     );
 }

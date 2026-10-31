@@ -29,6 +29,10 @@ own domain is GitViber's.
 - Snapshot before your first action on a page, then trust refs: an element keeps its ref across
   snapshots. Snapshot again only when a ref fails as stale (its element left, or the page or its
   frame moved on), and then only the part you need (`snapshot -s <ref|css>`).
+- A snapshot shows the viewport and a screen around it, and counts what's past that. For the
+  rest, `find <text>` first, then `scroll down` or `snapshot -s <ref>`; `--all` only when you
+  need the whole page. Its `- …` lines (off screen, past the size limit) name the regions they
+  left out, each with a ref for `snapshot -s <ref>` or `scroll <ref>`.
 - Read with `snapshot -i`, `snapshot -s`, `find` and `get` before any screenshot. Take one only
   for layout, colour, canvas and images; `screenshot --refs` when you need to see where refs are,
   `--full` for a whole long page (pictures of 2000 px, one file each).
@@ -39,6 +43,10 @@ own domain is GitViber's.
   change` means no element changed: on a canvas game look for `canvas repainted`, or take a
   screenshot (fill and check read their field back instead). A failed action
   says why (covered, disabled, not visible): fix that, don't force it with `eval`.
+- Save calls: `open <url> -i` brings the page's `snapshot -i` along; the `+` lines under `→` give
+  refs for what an action added (a menu, a dialog, an error), so act on them without a snapshot;
+  several steps go as one `batch`, which stops at a failure or a new page and says where:
+  `printf '%s\n' "fill e3 'Ada Lovelace'" 'check e5' 'click e9 -i' | gitviber browser batch -`.
 - Clicks, typing, keys, hover, drag and scroll reach the page as the user's own input (trusted).
   Only if a page ignores one, try once with `--synthetic` where the command takes it. A refusal
   (a `<select>`'s menu, a draggable start, a line break in a single-line field) names what to use.
@@ -71,6 +79,18 @@ own domain is GitViber's.
   they asked for exactly that.
 - Before saying it's done, show evidence: a ref's text, the URL, a console or network line.
 - Close the tabs you opened when finished (`tab close`), unless the user should see them.
+
+## Fast path
+
+Each call costs a turn. Steps that need no look in between go in one call.
+
+- Land and read in one call: `gitviber browser open <url> -i`.
+- Fill a form in one call with `batch`; its last click takes `-i` to read the page it lands on:
+  `printf '%s\n' "fill e3 'Ada'" 'check e5' 'click e7 -i' | gitviber browser batch -`.
+- Check an outcome with `wait --text "Saved"`, not a new snapshot.
+- On a long page, `find <text>` before a bigger snapshot.
+- A link's URL: `get attr href <ref>`, or `snapshot -u` for every link's.
+- An overview picture: `screenshot --scale 0.5`, a quarter of the pixels.
 
 ## Commands (`gitviber browser help`)
 

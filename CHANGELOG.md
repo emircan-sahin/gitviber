@@ -6,6 +6,21 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+### Added
+
+- **Reader mode in the browser.** On an article, the book button in the toolbar or ⇧⌘R shows it as a clean page: serif or sans text in a centered column, with the site, title, author and reading time. It follows the app's light or dark theme, keeps your text size and font across pages, and goes back to the page where you left it. Scripts on the page don't run in it.
+- **Agents fill a form in one call.** `gitviber browser batch` runs several steps in one turn on the tab and stops at a failure or a new page. `open`, `back`, `forward`, `reload` and a click that loads a page take `-i` to bring the new page's snapshot in the same reply.
+- **An agent's action names what it opened.** After a click opens a menu, a dialog or an error, its reply lists the new buttons and fields with their refs, so the agent acts on them without reading the page again.
+
+### Changed
+
+- **Markdown previews read like an article.** A file's preview, a diff's preview and a vault note set their text a little larger than the code, in a centered column with room between the lines; code blocks, tables and diagrams get a wider column. ⌘= and ⌘− size the preview's text alone, diagrams and math included, and the size is kept.
+- **Agents' page snapshots are much smaller.** A snapshot reads what's on screen and a screen around it, and counts the rest by region with a ref to read on in. Link addresses come only with `-u`, and lines are leaner. On long articles a snapshot takes about a third to a sixth of the tokens it did, and it no longer cuts off before the main content.
+
+### Fixed
+
+- **The History list's right edge has room.** Commit hashes, line counts and status letters keep clear of the panel's edge and of the scrollbar, which no longer covers them. Pull request and issue rows have the same space on both sides.
+
 ## [0.1.21] - 2026-10-31
 
 ### Fixed

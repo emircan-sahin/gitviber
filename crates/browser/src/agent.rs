@@ -94,6 +94,8 @@ pub fn run(app: &Handle, req: Request) -> Reply {
 }
 
 fn command(app: &Handle, req: Request) -> Res<Reply> {
+    // When the CLI's own wait for the reply began, near enough: a batch keeps inside it.
+    let started = Instant::now();
     if let Some(op) = control::parse_pane(&req.cmd, &req.args) {
         let op = op?;
         let (pty, root) = pane(app, &req)?;
@@ -124,11 +126,16 @@ fn command(app: &Handle, req: Request) -> Res<Reply> {
         };
         return Ok(output::finish(reply, &ctx));
     }
-    let cmd = control::parse(&req.cmd, &req.args)?;
+    let batched = req.cmd == "batch";
+    let mut steps = if batched {
+        control::batch(&req.args)?
+    } else {
+        vec![control::step(&req.cmd, &req.args)?]
+    };
     let (pty, root) = pane(app, &req)?;
     let name = target(req.tab)?;
-    let first = match &cmd {
-        Command::Open(url) => Some(url.clone()),
+    let first = match steps.first() {
+        Some((Command::Open(url), _)) => Some(url.clone()),
         _ => None,
     };
     let (id, found) = main(app, move |app| {
@@ -136,37 +143,25 @@ fn command(app: &Handle, req: Request) -> Res<Reply> {
     })?;
     // Made: just made, at the address an open asks for.
     let made = found == Found::Made;
-    if let Command::FillSecret(_, name) = &cmd {
-        let value = req
-            .secret
-            .clone()
-            .ok_or("No value came with --secret: run it as `gitviber browser`.")?;
-        if value.chars().count() < output::SHORTEST_SECRET {
-            return Err(format!(
-                "${name} is shorter than {} characters, too short to hide in replies: fill it \
-                 as text if it isn't secret.",
-                output::SHORTEST_SECRET
-            ));
-        }
+    for (cmd, _) in &steps {
+        let Command::FillSecret(_, name) = cmd else {
+            continue;
+        };
+        let value = secret_of(req.secret.as_deref(), &req.secrets, name)?;
         remember(&id, |m| {
             m.secrets.retain(|(n, _)| n != name);
             m.secrets.push((name.clone(), value));
         });
     }
     let said = format!("{} {}", req.cmd, req.args.join(" "));
-    let acts = cmd.acts();
     drive(app, id, found, |tab| {
-        let ran = if acts {
-            tab.yours().and_then(|()| {
-                let ran = tab.run(cmd, made, &req.cwd, req.reveal);
-                // Taken while it ran: whatever it did or didn't do, the page isn't what it saw.
-                match tab.users()? {
-                    Some(name) => Err(control::interrupted(&name)),
-                    None => ran,
-                }
+        let ran = if batched {
+            batch(steps, started, |i, cmd, then| {
+                tab.step(cmd, then, made && i == 0, &req.cwd, req.reveal)
             })
         } else {
-            tab.run(cmd, made, &req.cwd, req.reveal)
+            let (cmd, then) = steps.remove(0);
+            tab.step(cmd, then, made, &req.cwd, req.reveal)
         };
         tab.finish(ran, &said, req.reveal, pty)
     })
@@ -438,10 +433,113 @@ fn hash(s: &str) -> u64 {
     h.finish()
 }
 
-/// What a command leaves besides its reply: the page as it left it, for the loop nudge.
+/// What a command leaves besides its reply: the page as it left it, for the loop nudge, and
+/// whether it went to another document or to another address (`--snapshot`, and a batch stops
+/// unless only the #fragment changed).
 #[derive(Default)]
 struct Meta {
     state: Option<String>,
+    new_page: bool,
+    moved: bool,
+    fragment: bool,
+}
+
+/// A step's reply, ending with the page's tree once it went somewhere and `then` asks for it.
+fn snapshot_after(
+    (mut reply, meta): (Reply, Meta),
+    then: Option<control::Snap>,
+    snapshot: impl FnOnce(control::Snap) -> Res<(Reply, Meta)>,
+) -> (Reply, Meta) {
+    if let Some(snap) = then.filter(|_| meta.moved) {
+        let tree = match snapshot(snap) {
+            Ok((tree, _)) => tree.out.unwrap_or_default(),
+            Err(e) => format!("(no snapshot: {e})"),
+        };
+        let did = reply.out.take().unwrap_or_default();
+        reply.out = Some(format!("{did}\n{tree}"));
+    }
+    (reply, meta)
+}
+
+/// How long a batch may run: the CLI's wait, less what the reply takes to reach it.
+const BATCH_TIME: Duration = Duration::from_secs(control::CLI_WAIT.as_secs() - 10);
+
+/// The most a step may take on a slow page: a batch doesn't start one that could outlast it.
+fn longest(cmd: &Command, then: bool) -> Duration {
+    let ran = match cmd {
+        Command::Wait(_, timeout) | Command::WaitDownload(timeout) => *timeout + SCRIPT,
+        Command::Screenshot(_) => FULL_PAGE,
+        Command::Press {
+            hold: Some(hold), ..
+        } => *hold + SCRIPT + LOAD,
+        _ => SCRIPT + LOAD,
+    };
+    if then {
+        ran + SCRIPT
+    } else {
+        ran
+    }
+}
+
+/// `batch`'s steps, each run by `step`, in a request that came `started` (output::batch says
+/// where it stops). The loop nudge goes by the last step's page; --json gives each step's data
+/// (null for one with none) when any has some.
+fn batch(
+    steps: Vec<(Command, Option<control::Snap>)>,
+    started: Instant,
+    mut step: impl FnMut(usize, Command, Option<control::Snap>) -> Res<(Reply, Meta)>,
+) -> Res<(Reply, Meta)> {
+    let mut last = Meta::default();
+    let mut data = vec![];
+    let said = output::batch(steps, |i, (cmd, then)| {
+        if started.elapsed() + longest(&cmd, then.is_some()) > BATCH_TIME {
+            return output::Ran::Late;
+        }
+        let (reply, meta) = match step(i, cmd, then) {
+            Ok(ran) => ran,
+            Err(e) => return output::Ran::Failed(e),
+        };
+        if let Some(error) = reply.error {
+            return output::Ran::Failed(error);
+        }
+        let stale = if meta.new_page {
+            output::Stale::NewPage
+        } else if meta.moved && !meta.fragment {
+            output::Stale::Moved
+        } else {
+            output::Stale::No
+        };
+        data.push(reply.data.unwrap_or(Value::Null));
+        last = meta;
+        output::Ran::Did(reply.out.unwrap_or_default(), stale)
+    })?;
+    let reply = if data.iter().any(|d| !d.is_null()) {
+        Reply::data(&said, json!({ "out": said, "steps": data }))
+    } else {
+        Reply::out(said)
+    };
+    Ok((reply, last))
+}
+
+/// The value of a fill's `--secret <name>`: the one fill's, or its batch's of that name.
+fn secret_of(one: Option<&str>, batched: &[(String, String)], name: &str) -> Res<String> {
+    let value = one
+        .or_else(|| {
+            batched
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v.as_str())
+        })
+        .map(String::from)
+        .ok_or("No value came with --secret: run it as `gitviber browser`.")?;
+    if value.chars().count() < output::SHORTEST_SECRET {
+        return Err(format!(
+            "${name} is shorter than {} characters, too short to hide in replies: fill it as \
+             text if it isn't secret.",
+            output::SHORTEST_SECRET
+        ));
+    }
+    Ok(value)
 }
 
 /// A reply with no page state to compare.
@@ -451,8 +549,21 @@ fn plain(reply: Reply) -> (Reply, Meta) {
 
 /// A reply, and the page as the agent read it in it.
 fn read(reply: Reply, state: &str) -> (Reply, Meta) {
-    let state = Some(state.to_string());
-    (reply, Meta { state })
+    let meta = Meta {
+        state: Some(state.to_string()),
+        ..Meta::default()
+    };
+    (reply, meta)
+}
+
+/// A reply on the page a load just brought.
+fn went(reply: Reply) -> (Reply, Meta) {
+    let meta = Meta {
+        new_page: true,
+        moved: true,
+        ..Meta::default()
+    };
+    (reply, meta)
 }
 
 /// No nonce, no reply: page text unmarked, or marked by one the page could guess, is worse.
@@ -612,6 +723,32 @@ impl Tab {
         }
     }
 
+    /// A command, refused on a tab the user has if it acts, and failed if they took it
+    /// meanwhile; with `then`, the page's tree after it once it went to another page.
+    fn step(
+        &self,
+        cmd: Command,
+        then: Option<control::Snap>,
+        made: bool,
+        cwd: &str,
+        reveal: bool,
+    ) -> Res<(Reply, Meta)> {
+        let acts = cmd.acts();
+        if acts {
+            self.yours()?;
+        }
+        let ran = self.run(cmd, made, cwd, reveal);
+        // Taken while it ran: whatever it did or didn't do, the page isn't what it saw.
+        if acts {
+            if let Some(name) = self.users()? {
+                return Err(control::interrupted(&name));
+            }
+        }
+        Ok(snapshot_after(ran?, then, |snap| {
+            self.snapshot(snap, cwd, reveal)
+        }))
+    }
+
     fn run(&self, cmd: Command, made: bool, cwd: &str, reveal: bool) -> Res<(Reply, Meta)> {
         let act = |input: Value| self.acted(|| self.said(input));
         Ok(match cmd {
@@ -620,11 +757,11 @@ impl Tab {
                     let id = self.id.clone();
                     main(&self.app, move |_| super::navigate(&id, &url))?;
                 }
-                plain(self.arrived("Opened")?)
+                went(self.arrived("Opened")?)
             }
-            Command::Back => plain(self.go(Go::Back, "Back at")?),
-            Command::Forward => plain(self.go(Go::Forward, "Forward at")?),
-            Command::Reload => plain(self.go(Go::Reload, "Reloaded")?),
+            Command::Back => went(self.go(Go::Back, "Back at")?),
+            Command::Forward => went(self.go(Go::Forward, "Forward at")?),
+            Command::Reload => went(self.go(Go::Reload, "Reloaded")?),
             Command::Url => {
                 let id = self.id.clone();
                 // A page that can't say whether it plays leaves the line out.
@@ -749,7 +886,8 @@ impl Tab {
             .map(|f| control::text_path(Path::new(cwd), f))
             .transpose()?;
         let input = json!({ "cmd": "snapshot", "interactive": snap.interactive, "scope": snap.scope,
-            "depth": snap.depth, "boxes": snap.boxes, "file": file.is_some() });
+            "depth": snap.depth, "urls": snap.urls, "all": snap.all, "boxes": snap.boxes,
+            "file": file.is_some() });
         let found = self.script(input)?;
         let out = found["out"].as_str().unwrap_or_default();
         let Some(path) = file else {
@@ -867,14 +1005,20 @@ impl Tab {
         let at = super::epoch_ms();
         self.script(json!({ "cmd": "watch" }))?;
         let did = act()?;
-        let (line, state) = self.changed(&before, at, request)?;
-        Ok(read(Reply::out(format!("{did}\n{line}")), &state))
+        let (c, state) = self.changed(&before, at, request)?;
+        let meta = Meta {
+            state: Some(state),
+            new_page: c.new_page,
+            moved: c.new_page || c.url != c.url_before,
+            fragment: !c.new_page && output::fragment_only(&c.url_before, &c.url),
+        };
+        Ok((Reply::out(format!("{did}\n{}", output::changed(&c))), meta))
     }
 
     /// Once an action's loads, requests (past id `request`) and redraws have landed, or SETTLE
     /// has gone, a load LOAD: what changed since `at` on the page as it was `before`, and the
     /// page as it is now.
-    fn changed(&self, before: &PageState, at: f64, request: u32) -> Res<(String, String)> {
+    fn changed(&self, before: &PageState, at: f64, request: u32) -> Res<(output::Changes, String)> {
         let until = Instant::now() + SETTLE;
         std::thread::sleep(POLL / 2);
         loop {
@@ -920,9 +1064,10 @@ impl Tab {
                 .collect(),
             requests: self.requests(request)?,
             url: page.url.clone(),
+            revealed: serde_json::from_value(seen["revealed"].clone()).unwrap_or_default(),
         };
         let state = seen["state"].as_str().unwrap_or(&page.url).to_string();
-        Ok((output::changed(&c), state))
+        Ok((c, state))
     }
 
     /// The requests past id `after` in the tab's network log.
@@ -1871,7 +2016,7 @@ pub(super) fn ago(idle: Duration) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::control::TabState;
+    use super::control::{Snap, TabState};
     use super::*;
     use crate::control::Owner;
 
@@ -2051,5 +2196,155 @@ mod tests {
         drop(queue);
         let _ = super::queue("tab-3");
         assert!(kept.upgrade().is_none(), "a closed tab's turn doesn't stay");
+    }
+
+    #[test]
+    fn a_fills_secret_is_its_own_flags_or_else_its_batchs_of_that_name() {
+        let batched = [("PW".to_string(), "hunter2!".to_string())];
+        assert_eq!(secret_of(None, &batched, "PW"), Ok("hunter2!".into()));
+        assert_eq!(
+            secret_of(Some("own-one"), &batched, "PW"),
+            Ok("own-one".into())
+        );
+        assert!(secret_of(None, &batched, "TOKEN")
+            .unwrap_err()
+            .starts_with("No value came with --secret"));
+        let short = [("PIN".to_string(), "123".to_string())];
+        assert!(secret_of(None, &short, "PIN")
+            .unwrap_err()
+            .contains("too short to hide"));
+    }
+
+    /// A step's reply, and where it left the page: moved to `url` from `from`, a load if `load`.
+    fn landed(out: &str, from: &str, url: &str, load: bool) -> (Reply, Meta) {
+        let meta = Meta {
+            new_page: load,
+            moved: load || from != url,
+            fragment: !load && output::fragment_only(from, url),
+            ..Meta::default()
+        };
+        (Reply::out(out), meta)
+    }
+
+    #[test]
+    fn a_steps_snapshot_comes_only_when_asked_and_once_it_went_somewhere() {
+        let at = "http://localhost:3000/";
+        let unasked = |_| -> Res<(Reply, Meta)> { panic!("no snapshot taken") };
+        let stayed = snapshot_after(
+            landed("Clicked", at, at, false),
+            Some(Snap::default()),
+            unasked,
+        );
+        assert_eq!(stayed.0.out.as_deref(), Some("Clicked"));
+        let went = landed("Clicked", at, "http://localhost:3000/post", false);
+        assert_eq!(
+            snapshot_after(went, None, unasked).0.out.as_deref(),
+            Some("Clicked")
+        );
+        let tree = |snap: Snap| {
+            assert!(snap.interactive);
+            Ok(plain(Reply::out("- button \"Post\" [ref=e4]")))
+        };
+        let asked = || Snap {
+            interactive: true,
+            ..Snap::default()
+        };
+        let (reply, meta) = snapshot_after(landed("Opened", at, at, true), Some(asked()), tree);
+        assert_eq!(
+            reply.out.as_deref(),
+            Some("Opened\n- button \"Post\" [ref=e4]")
+        );
+        assert!(meta.new_page);
+        let failed = snapshot_after(landed("Back at", at, at, true), Some(asked()), |_| {
+            Err("The page didn't answer in time.".into())
+        });
+        assert_eq!(
+            failed.0.out.as_deref(),
+            Some("Back at\n(no snapshot: The page didn't answer in time.)")
+        );
+    }
+
+    #[test]
+    fn a_batch_stops_after_a_load_or_a_move_but_not_a_fragments_and_keeps_inside_the_clis_wait() {
+        let at = "http://localhost:3000/list";
+        let steps = |n: usize| (0..n).map(|_| (Command::Url, None)).collect::<Vec<_>>();
+        let ran = |lands: Vec<(Reply, Meta)>, started: Instant| {
+            let mut lands = lands.into_iter();
+            let mut seen = vec![];
+            let out = batch(steps(3), started, |i, _, _| {
+                seen.push(i);
+                Ok(lands.next().unwrap())
+            });
+            (out.map(|(reply, _)| reply), seen)
+        };
+        let now = Instant::now();
+        // A pushState to another list page: refs taken before may name other items.
+        let (reply, seen) = ran(
+            vec![landed("Clicked", at, &format!("{at}?page=2"), false)],
+            now,
+        );
+        assert_eq!(seen, [0]);
+        assert!(reply
+            .unwrap()
+            .out
+            .unwrap()
+            .contains("it went to another address"));
+        let (reply, seen) = ran(vec![landed("Clicked", at, at, true)], now);
+        assert_eq!(seen, [0]);
+        assert!(reply
+            .unwrap()
+            .out
+            .unwrap()
+            .contains("it loaded another page"));
+        // A #fragment alone, or no move: on to the end.
+        let (reply, seen) = ran(
+            vec![
+                landed("Clicked", at, &format!("{at}#faq"), false),
+                landed("Filled", at, at, false),
+                (
+                    Reply::data("1 match", json!({ "count": 1 })),
+                    Meta::default(),
+                ),
+            ],
+            now,
+        );
+        assert_eq!(seen, [0, 1, 2]);
+        let reply = reply.unwrap();
+        let said = "[1] Clicked\n[2] Filled\n[3] 1 match";
+        assert_eq!(reply.out.as_deref(), Some(said));
+        assert_eq!(
+            reply.data,
+            Some(json!({ "out": said, "steps": [null, null, { "count": 1 }] }))
+        );
+        // A failed step's reply fails the batch.
+        let (reply, seen) = ran(vec![(Reply::error("Timed out"), Meta::default())], now);
+        assert_eq!(seen, [0]);
+        assert!(reply
+            .unwrap_err()
+            .starts_with("[1] Timed out\nStopped at step 1 of 3"));
+
+        // A step that could run past the CLI's wait doesn't start.
+        let late = now
+            .checked_sub(BATCH_TIME - longest(&Command::Url, false))
+            .unwrap();
+        let (reply, seen) = ran(vec![], late);
+        assert!(seen.is_empty());
+        assert!(reply.unwrap_err().starts_with("Out of time at step 1 of 3"));
+        let mut seen = vec![];
+        let waits = vec![
+            (Command::Url, None),
+            (Command::Wait(Wait::Load, control::LONGEST_WAIT), None),
+        ];
+        let started = now.checked_sub(BATCH_TIME - 2 * SCRIPT - LOAD).unwrap();
+        let out = batch(waits, started, |i, _, _| {
+            seen.push(i);
+            Ok(plain(Reply::out("ok")))
+        });
+        assert_eq!(seen, [0]);
+        assert!(out
+            .err()
+            .unwrap()
+            .contains("Out of time at step 2 of 2: step 2 didn't run"));
+        assert!(longest(&Command::Url, true) > longest(&Command::Url, false));
     }
 }

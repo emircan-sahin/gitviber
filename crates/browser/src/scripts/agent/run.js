@@ -11,7 +11,7 @@ try {
   if (!Object.hasOwn(run, cmd)) throw new Error(`No ${cmd} here`);
   return JSON.stringify({ ...(await run[cmd](a)), last: state.next - 1 }, wellFormed);
 } catch (e) {
-  state.watch?.observer.disconnect();
+  state.watch?.stop();
   state.watch = null;
   return JSON.stringify({ error: String(e?.message ?? e), last: state.next - 1 }, wellFormed);
 }

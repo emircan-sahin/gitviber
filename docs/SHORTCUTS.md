@@ -73,6 +73,7 @@ Revealing the file in the file manager, closing the other tabs, focusing the com
 | `⌘L` `⌘R` `⌘[` `⌘]` | Address bar, reload, back, forward (in a browser tab) |
 | `⌘F` `⌘G` `⇧⌘G` | Find in the page, next / previous match (in a browser tab) |
 | `⇧⌘C` `⇧⌘M` `⌥⌘I` | Pick an element for the agent, device mode, Web Inspector (in a browser tab) |
+| `⇧⌘R` | Reader mode: the page's article set for reading; again, the page as it was (in a browser tab) |
 | `⌘=` `⌘−` | Zoom the interface; in the terminal, its font size (a pinch or Ctrl+scroll too); in a browser tab, the page; in a rendered document, its text |
 | `⌘0` | In the terminal, a browser tab or a rendered document: back to the normal size (elsewhere it focuses the git panel) |
 | `⌥⌘=` `⌥⌘−` `⌥⌘0` | Code font size |

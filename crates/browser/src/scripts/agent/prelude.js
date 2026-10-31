@@ -10,7 +10,7 @@ const { cmd, floor = 0, ...a } = JSON.parse(input);
 // An element keeps its ref across snapshots. `floor` is the highest ref the tab ever handed out
 // (agent.rs keeps it): a new document, or one back from the back-forward cache, numbers past it,
 // so an old page's e5 can never name an element of this one.
-const state = (window.__gvAgent ??= { refs: new Map(), ids: new WeakMap(), next: floor + 1 });
+const state = (window.__gvAgent ??= { refs: new Map(), ids: new WeakMap(), gone: [], next: floor + 1 });
 
 state.next = Math.max(state.next, floor + 1);
 

@@ -782,8 +782,7 @@ fn pull_row(
         .flex()
         .gap(px(10.))
         .py(px(6.))
-        .pl(px(12.))
-        .pr(px(8.))
+        .px_3()
         .cursor_pointer()
         .when(on, |d| {
             d.bg(t.primary.opacity(0.15)).child(
