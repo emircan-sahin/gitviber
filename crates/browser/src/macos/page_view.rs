@@ -1,15 +1,18 @@
 //! What a tab's tools do to its page besides loading it: find in it, zoom it (outside device
-//! mode, which sets its own zoom to fit), and show it light or dark.
+//! mode, which sets its own zoom to fit), show it light or dark, and its reader mode.
 
-use super::{ask, main_thread, view, Delegate, GONE};
-use crate::Handle;
+use super::page_tools::ours;
+use super::{agent, ask, main_thread, view, Delegate, GONE};
+use crate::reader::{self, Look};
+use crate::{Handle, PageState};
 use block2::RcBlock;
 use gitviber_core::Res;
-use objc2::{sel, DefinedClass};
+use objc2::runtime::AnyObject;
+use objc2::{sel, DefinedClass, Message as _};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
 };
-use objc2_foundation::{NSObjectProtocol, NSString};
+use objc2_foundation::{NSError, NSNumber, NSObjectProtocol, NSString};
 use objc2_web_kit::{WKFindConfiguration, WKFindResult, WKWebView};
 use std::cell::Cell;
 use std::ptr::NonNull;
@@ -104,4 +107,88 @@ pub(super) fn show_as(id: &str, web: &WKWebView, dark: Option<bool>) {
     });
     web.setAppearance(named.as_deref());
     ask(id, |a| a.dark = dark);
+}
+
+/// Reader mode on with `look`, or off (None). Its answer comes back as the page's state.
+pub fn reader_mode(id: &str, look: Option<&Look>) -> Res<()> {
+    let mtm = main_thread()?;
+    let v = view(id).ok_or(GONE)?;
+    let script = look.map_or_else(|| reader::HIDE.to_string(), reader::show_script);
+    let delegate = v.delegate.clone();
+    let done = RcBlock::new(move |answer: *mut AnyObject, _error: *mut NSError| {
+        // SAFETY: WebKit's answer, an object or nil, alive for this call.
+        let answer = unsafe { answer.as_ref() }
+            .and_then(|a| a.downcast_ref::<NSString>())
+            .map(|a| a.to_string());
+        let d = delegate.ivars();
+        d.reader.set(answer.as_deref() == Some("shown"));
+        // Readability found less than its check promised: the button goes too.
+        if answer.as_deref() == Some("none") {
+            d.readerable.set(false);
+        }
+        delegate.changed();
+    });
+    unsafe {
+        v.web
+            .evaluateJavaScript_inFrame_inContentWorld_completionHandler(
+                &NSString::from_str(&script),
+                None,
+                &ours(mtm),
+                Some(&done),
+            )
+    };
+    Ok(())
+}
+
+/// The reader's look changed (its text, the app's theme) while it shows.
+pub fn reader_style(id: &str, look: &Look) -> Res<()> {
+    let mtm = main_thread()?;
+    let v = view(id).ok_or(GONE)?;
+    unsafe {
+        v.web
+            .evaluateJavaScript_inFrame_inContentWorld_completionHandler(
+                &NSString::from_str(&reader::style_script(look)),
+                None,
+                &ours(mtm),
+                None,
+            )
+    };
+    Ok(())
+}
+
+/// Whether a loaded page has an article, once for each address it shows; not in an agent's tab,
+/// whose agent reads the page its own way.
+pub(super) fn check_reader(delegate: &Delegate, web: &WKWebView, state: &PageState) {
+    let d = delegate.ivars();
+    let web_page = state.url.starts_with("http:") || state.url.starts_with("https:");
+    if state.loading || state.reader || !web_page || *d.reader_checked.borrow() == state.url {
+        return;
+    }
+    if agent::routed(&d.id) {
+        return;
+    }
+    let Ok(mtm) = main_thread() else {
+        return;
+    };
+    *d.reader_checked.borrow_mut() = state.url.clone();
+    let (this, url) = (delegate.retain(), state.url.clone());
+    let done = RcBlock::new(move |answer: *mut AnyObject, _error: *mut NSError| {
+        // SAFETY: as in `reader_mode`.
+        let yes = unsafe { answer.as_ref() }
+            .and_then(|a| a.downcast_ref::<NSNumber>())
+            .is_some_and(|n| n.boolValue());
+        let d = this.ivars();
+        // Moved on meanwhile: the answer was the last page's.
+        if *d.reader_checked.borrow() == url && d.readerable.replace(yes) != yes {
+            this.changed();
+        }
+    });
+    unsafe {
+        web.evaluateJavaScript_inFrame_inContentWorld_completionHandler(
+            &NSString::from_str(&reader::check_script()),
+            None,
+            &ours(mtm),
+            Some(&done),
+        )
+    };
 }

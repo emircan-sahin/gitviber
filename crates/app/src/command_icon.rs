@@ -110,6 +110,7 @@ pub fn command_icon(c: &Command) -> IconName {
         "browser.inspect" | "help.reportBug" => IconName::Bug,
         "browser.pick" => IconName::SquareDashedMousePointer,
         "browser.toggleDevice" => IconName::TabletSmartphone,
+        "browser.toggleReader" => IconName::BookOpenText,
         "browser.clearData" | "explorer.delete" | "git.discard" | "worktree.remove" => {
             IconName::Trash
         }

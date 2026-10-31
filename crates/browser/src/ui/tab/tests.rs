@@ -428,3 +428,72 @@ fn a_titled_pages_tab_shows_its_host_beside_the_title(cx: &mut TestAppContext) {
     );
     assert_eq!(tab(None, cx), ("localhost:5173/docs".into(), None));
 }
+
+/// Reader mode's toggle: on where the loaded page has an article, back to the page while it
+/// shows, else nothing.
+#[test]
+fn the_reader_toggles_only_on_a_page_with_an_article() {
+    let page = |change: fn(&mut crate::PageState)| {
+        let mut s = crate::PageState {
+            readerable: true,
+            ..Default::default()
+        };
+        change(&mut s);
+        s
+    };
+    assert_eq!(reader_next(None), None);
+    assert_eq!(reader_next(Some(&page(|_| {}))), Some(true));
+    assert_eq!(reader_next(Some(&page(|s| s.reader = true))), Some(false));
+    assert_eq!(reader_next(Some(&page(|s| s.readerable = false))), None);
+    assert_eq!(reader_next(Some(&page(|s| s.loading = true))), None);
+    let failed = |s: &mut crate::PageState| {
+        s.failed = Some(crate::Failed {
+            url: "http://localhost:5173/".into(),
+            message: "Could not connect to the server.".into(),
+        })
+    };
+    assert_eq!(reader_next(Some(&page(failed))), None);
+    // Shown, it always goes back, whatever the page does meanwhile.
+    let busy = |s: &mut crate::PageState| {
+        s.reader = true;
+        s.readerable = false;
+        s.loading = true;
+    };
+    assert_eq!(reader_next(Some(&page(busy))), Some(false));
+}
+
+/// The reader takes the light and dark themes Settings name, and the text kept for every tab.
+#[gpui::test]
+fn the_reader_looks_like_the_apps_themes(cx: &mut TestAppContext) {
+    use gitviber_ui::theme::ThemeId;
+    setup(cx);
+    let look = cx.update(|cx| {
+        let mut s = gitviber_ui::Settings::get(cx).clone();
+        s.light_theme = ThemeId::SolarizedLight;
+        s.dark_theme = ThemeId::Nord;
+        cx.set_global(s);
+        super::super::store::set_reader_text(reader::Text::default().step(1), cx);
+        reader_look(cx)
+    });
+    let (light, dark) = (ThemeId::SolarizedLight.palette(), ThemeId::Nord.palette());
+    assert_eq!(look.light.bg, light.background);
+    assert_eq!(look.light.link, light.primary);
+    assert_eq!(look.dark.fg, dark.foreground);
+    assert_eq!(look.dark.code, dark.elevated);
+    assert_eq!(look.text.size, 21);
+}
+
+/// ⇧⌘R is reader mode from a page; ⌘R still reloads it.
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn reader_mode_has_its_key_in_a_page(cx: &mut TestAppContext) {
+    setup(cx);
+    let ran = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|cx| {
+        record::<act::ToggleReader>("reader", &ran, cx);
+        record::<act::Reload>("reload", &ran, cx);
+    });
+    let cx = typing_in_a_page(cx);
+    cx.simulate_keystrokes("shift-cmd-r cmd-r");
+    assert_eq!(*ran.borrow(), ["reader", "reload"]);
+}

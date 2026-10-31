@@ -28,7 +28,7 @@ pub use native::{
 pub use page_tools::{
     agent_dialog, agent_picture, agent_stitch, console_clear, console_entries, network_log, pick,
 };
-pub use page_view::{appearance, find, zoom};
+pub use page_view::{appearance, find, reader_mode, reader_style, zoom};
 
 use super::console::Log;
 use super::keys::{self, Edit, Key};
@@ -659,6 +659,11 @@ struct DelegateIvars {
     /// none (native.rs).
     upload: RefCell<Option<Vec<std::path::PathBuf>>>,
     chosen: RefCell<Option<Res<usize>>>,
+    /// Reader mode shows over the page, which likely has an article: checked once for each
+    /// address the page shows (`reader_checked`), as an app's own navigation keeps its document.
+    reader: Cell<bool>,
+    readerable: Cell<bool>,
+    reader_checked: RefCell<String>,
 }
 
 define_class!(
@@ -741,7 +746,9 @@ define_class!(
         fn send_state(&self) {
             self.ivars().pending.set(false);
             if let Some(web) = self.ivars().web.load() {
-                emit(&self.ivars().app, "browser-state", self.state(&web));
+                let state = self.state(&web);
+                page_view::check_reader(self, &web, &state);
+                emit(&self.ivars().app, "browser-state", state);
             }
         }
     }
@@ -824,6 +831,10 @@ define_class!(
         fn did_commit(&self, web: &WKWebView, _navigation: Option<&WKNavigation>) {
             self.ivars().failed.take();
             self.ivars().committed.set(true);
+            // The reader went with the document it lay over.
+            self.ivars().reader.set(false);
+            self.ivars().readerable.set(false);
+            self.ivars().reader_checked.take();
             let url = url_text(unsafe { web.URL() });
             page_tools::loaded(self, &url);
             if let Some(web) = self.ivars().web.load() {
@@ -1034,6 +1045,9 @@ impl Delegate {
             pointer: Cell::new(None),
             upload: RefCell::default(),
             chosen: RefCell::default(),
+            reader: Cell::new(false),
+            readerable: Cell::new(false),
+            reader_checked: RefCell::default(),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -1114,6 +1128,8 @@ impl Delegate {
             insecure,
             failed: self.ivars().failed.borrow().clone(),
             committed: self.ivars().committed.get(),
+            reader: self.ivars().reader.get(),
+            readerable: self.ivars().readerable.get(),
         }
     }
 }

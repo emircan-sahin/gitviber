@@ -37,7 +37,7 @@ workbench: [ShowCommands, QuickOpen, OpenChange, OpenSettings, ShortcutOverlay],
     search: [FindInFiles],
     media: [ZoomIn, ZoomOut, Fit],
     terminal: [Toggle, NewInProject, ShowAgents, ResumeConversation, New, Split, SplitDown, Clear, Close, PrevPane, NextPane, FocusLeft, FocusRight, FocusUp, FocusDown, ToggleMaximize, ZoomPane, EqualizePanes, RenamePane, FontZoomIn, FontZoomOut, FontZoomReset, PrevCommand, NextCommand, Hints, FocusTabs],
-    browser: [Open, FocusAddress, Reload, Back, Forward, Inspect, Pick, ToggleDevice, ClearData, Find, FindNext, FindPrev, ZoomIn, ZoomOut, ZoomReset],
+    browser: [Open, FocusAddress, Reload, Back, Forward, Inspect, Pick, ToggleDevice, ClearData, Find, FindNext, FindPrev, ZoomIn, ZoomOut, ZoomReset, ToggleReader],
     explorer: [Rename, Delete],
     git: [SwitchBranch, NewBranch, CompareBranches, SwitchWorktree, NewWorktree, Fetch, Pull, Push, Sync, ApplyPatch, Undo, Redo, ToggleStage, Discard, Commit, RenameBranch, SelectAllChanges, CreateTag, SuggestMessage],
     worktree: [OpenTerminal, Merge, Rename, Remove],
@@ -613,6 +613,14 @@ pub static COMMANDS: &[Command] = &[
         "Toggle Device Mode",
         Browser,
         &["shift+cmd+m"],
+    )
+    .local("Browser"),
+    // The page's article as a page of its own, set for reading; again, the page as it was.
+    cmd::<browser::ToggleReader>(
+        "browser.toggleReader",
+        "Toggle Reader Mode",
+        Browser,
+        &["shift+cmd+r"],
     )
     .local("Browser"),
     cmd::<browser::ClearData>("browser.clearData", "Clear Browsing Data…", Browser, &[]),

@@ -10,13 +10,15 @@ use super::url::{self, BLANK};
 use crate::console::Entry;
 use crate::keys::Chord;
 use crate::ports::Port;
+use crate::reader::{self, Colors, Text};
 use crate::{Go, Look, Screen};
 use gitviber_ui::actions::browser as act;
 use gitviber_ui::memory::Live;
+use gitviber_ui::theme::Palette;
 use gitviber_ui::workspace::{
     page_host, page_label, Selection, TabIcon, TabItem, Toast, Workspace, WorkspaceEvent,
 };
-use gitviber_ui::{ActiveAppTheme as _, AppTheme};
+use gitviber_ui::{ActiveAppTheme as _, AppTheme, Settings};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     canvas, div, img, px, relative, AnyElement, App, AppContext as _, Bounds, ClickEvent, Context,
@@ -253,6 +255,36 @@ pub struct BrowserTab {
 
 fn handle() -> Option<&'static crate::Handle> {
     crate::installed()
+}
+
+/// What reader mode's toggle does on the page now: show its article (true), go back to the page
+/// (false), or nothing where the page has no article.
+fn reader_next(state: Option<&crate::PageState>) -> Option<bool> {
+    let s = state?;
+    if s.reader {
+        Some(false)
+    } else {
+        (s.readerable && !s.loading && s.failed.is_none()).then_some(true)
+    }
+}
+
+/// The reader in the app's light and dark themes (the page picks by its appearance, which
+/// follows the app's or the tab's own), with the text kept for every tab.
+fn reader_look(cx: &App) -> reader::Look {
+    let colors = |p: &Palette| Colors {
+        bg: p.background.into(),
+        fg: p.foreground.into(),
+        muted: p.muted_foreground.into(),
+        link: p.primary.into(),
+        rule: p.border.into(),
+        code: p.elevated.into(),
+    };
+    let settings = Settings::get(cx);
+    reader::Look {
+        light: colors(settings.light_theme.palette()),
+        dark: colors(settings.dark_theme.palette()),
+        text: super::store::reader_text(cx),
+    }
 }
 
 /// A picture out of every window's atlas once the update running now is over: the window being
@@ -941,6 +973,31 @@ impl BrowserTab {
     pub fn set_scheme(&mut self, dark: Option<bool>, window: &mut Window, cx: &mut Context<Self>) {
         self.saved.scheme = dark.map(|d| if d { Scheme::Dark } else { Scheme::Light });
         self.save(window, cx);
+    }
+
+    fn toggle_reader(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(on) = reader_next(self.state(cx)) else {
+            return;
+        };
+        let look = on.then(|| reader_look(cx));
+        match crate::reader_mode(&self.saved.id, look.as_ref()) {
+            // Into the page: Space and the arrows scroll the article.
+            Ok(()) if on => self.keys_to_page(window, cx),
+            Ok(()) => {}
+            Err(e) => self.toast(
+                Toast::error(e).title("Could not show the article"),
+                window,
+                cx,
+            ),
+        }
+    }
+
+    /// Reader mode's text changed: kept for every tab, and shown at once in this one.
+    fn reader_text(&mut self, change: impl FnOnce(Text) -> Text, cx: &mut Context<Self>) {
+        let text = change(super::store::reader_text(cx));
+        super::store::set_reader_text(text, cx);
+        let _ = crate::reader_style(&self.saved.id, &reader_look(cx));
+        cx.notify();
     }
 
     fn choose_device(
