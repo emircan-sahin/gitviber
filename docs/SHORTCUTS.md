@@ -5,7 +5,7 @@ Back to the [README](../README.md). Hold `⌘` in the app, or press `⌘/`, to s
 ## Presets
 
 Settings → Keyboard Shortcuts → Preset picks the keys every command starts with: **VS Code**, the default, or **GitViber (classic)**, the keys GitViber had before presets. Keys you rebind stay as you set them under either. The table below lists the VS Code preset; [the classic preset](#the-classic-preset) lists where it differs.
-Someone who used GitViber before presets is moved to the VS Code preset once, with a note that offers the classic keys; it doesn't come back.
+Someone who used GitViber before presets is moved to the VS Code preset, with a note that offers the classic keys; someone who had rebound keys stays on the classic preset, with a note saying so. The note shows at each launch until you close it or click one of its buttons.
 
 The left panel is the primary side bar (`⌘B` toggles it, `⌘0` focuses it) and the right one, the explorer and search, the secondary side bar (`⌥⌘B`).
 Where a place has its own key, that key wins while focus is there: in the terminal `⌥⌘←` `⌥⌘→` focus the pane on that side, while elsewhere they switch tabs; `⌘=` `⌘−` `⌘0` size the terminal's font, a browser page or a rendered document's text instead of the interface and the side bar.
@@ -13,9 +13,9 @@ Where a place has its own key, that key wins while focus is there: in the termin
 ## Keys
 
 Every shortcut below can be rebound in Settings (`⌘,`), except moving around a list or view (arrows, `Home` `End` `PgUp` `PgDn`, `↵`, `Space`, `Esc`), `⌃G`, and `⌘G` `⇧⌘G` in the terminal.
-While you type, only shortcuts with `⌘`, `⌃` or an F-key apply. `⌘` with an arrow and `⌃` with a letter edit the text instead, and the git actions on `⌘Z` `⇧⌘Z` `⌘⌫` `⌥⌘S` `⌥⌘N` `⇧⌘⌫` don't run there.
+While you type, only shortcuts with `⌘`, `⌃` or an F-key apply. `⌘` with an arrow (but `⌥⌘←` `⌥⌘→`) and the `⌃` letters macOS edits with (`⌃A` `⌃E` `⌃K` and the like, `⌃⇧A` `⌃⇧E` to select) edit the text instead, and the git actions on `⌘Z` `⇧⌘Z` `⌘⌫` `⌥⌘S` `⌥⌘N` `⇧⌘⌫` don't run there.
 
-On Linux `⌘` is Ctrl, tabs are on Alt+1–8 (Alt+0 the last), Ctrl+PageDown / Ctrl+PageUp and Ctrl+Tab / Ctrl+Shift+Tab switch tabs, Changes is Ctrl+Shift+G, a new terminal Ctrl+Shift+`, link labels are Ctrl+Shift+Space, and the terminal's
+On Linux `⌘` is Ctrl, tabs are on Alt+1–8 (Alt+0 or Alt+9 the last; they work in text fields, but not in the terminal, where Alt+digit is the shell's repeat count), Ctrl+PageDown / Ctrl+PageUp and Ctrl+Tab / Ctrl+Shift+Tab switch tabs, Changes is Ctrl+Shift+G, a new terminal Ctrl+Shift+`, link labels are Ctrl+Shift+Space, and the terminal's
 `⌘D` `⌘K` `⌘W` are Ctrl+Shift+D (or Ctrl+Shift+5), K and W, since Ctrl+letter stays the shell's (split down is Ctrl+Alt+Shift+D,
 zooming a pane Ctrl+Shift+Enter, maximizing Ctrl+Alt+Shift+Enter, the previous / next pane Super+Alt+← / →, copy and paste Ctrl+Shift+C / V; focusing a pane by side has no default there, the shell and the desktop use those keys, and neither has renaming a pane, since Ctrl+R is the shell's history search).
 Revealing the file in the file manager, closing the other tabs, focusing the commit message or the terminal's tabs, and fetch, pull and push have no default there either.
@@ -25,12 +25,12 @@ Revealing the file in the file manager, closing the other tabs, focusing the com
 | `⌘,` | Settings |
 | Hold `⌘`, or `⌘/` | Show the shortcuts that work where you are (the hold can be turned off in Settings) |
 | `⇧⌘P` or `F1`, `⌘P` | Command palette, quick open |
-| `⌃R` | Switch project |
+| `⌃R` | Switch project (not in the terminal, where it is the shell's history search) |
 | `↓` `↑` `Home` `End` `PgUp` `PgDn`, `↵`, `Esc` | Move through a picker or list (project, branch, worktree, Open in…), pick the row, close it with focus back where it was; with text in its search field `Home` `End` stay the field's |
 | `⌘F` `⇧⌘F` | Find where focus is, find in files |
 | `⌥⌘F`, or `/` in the list | Search the history |
 | `⌃⇧G` | Changes; pressed again there, focus goes back where it was (History, PRs and Issues have no default key) |
-| `⌃1` … `⌃8`, `⌃0` | Go to tab 1 to 8, the last tab; the terminal's while it has focus |
+| `⌃1` … `⌃8`, `⌃0` `⌃9` | Go to tab 1 to 8, the last tab; the terminal's while it has focus |
 | `⌥⌘→` `⌥⌘←`, `⇧⌘]` `⇧⌘[`, `⌃⇥` `⌃⇧⇥` | Next / previous tab; the terminal's while it has focus, though in a terminal pane `⌥⌘←` `⌥⌘→` focus the pane on that side |
 | `⇧⌘T` `⌥⌘T` | Reopen the closed tab, close the other tabs |
 | `J` `K` | Next / previous changed file |
@@ -95,7 +95,7 @@ Where **GitViber (classic)** differs from the VS Code preset; every other key is
 | Focus the git panel | `⌘0` | `⇧⌘G` |
 | Focus the code view | `⌘1` `⌘E` | `⌘E` |
 | Reset the zoom | none | `⌘0` |
-| Go to tab 1–8, the last tab | `⌃1` … `⌃8`, `⌃0` | `⌘1` … `⌘8`, `⌘9` |
+| Go to tab 1–8, the last tab | `⌃1` … `⌃8`, `⌃0` `⌃9` | `⌘1` … `⌘8`, `⌘9` |
 | Next / previous tab | `⌥⌘→` `⌥⌘←`, `⇧⌘]` `⇧⌘[`, `⌃⇥` `⌃⇧⇥` | `⇧⌘]` `⇧⌘[`, `⌘→` `⌘←`, `⌃⇥` `⌃⇧⇥` |
 | Next / previous change | `F7` `⇧F7`, `⌥F5` `⇧⌥F5`, `⌥↓` `⌥↑` | `F7` `⇧F7`, `⌥↓` `⌥↑` |
 | Toggle the terminal | `⌃` `` ` `` `⌘J` | `⌘J` `⌃` `` ` `` |
