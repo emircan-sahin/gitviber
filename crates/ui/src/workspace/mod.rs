@@ -1243,7 +1243,7 @@ impl Workspace {
         !inside
     }
 
-    /// ⇧⌘G, ⇧⌘E: focus into `slot`'s panel, or with focus already there, back where it was.
+    /// Focus Git Panel: into `slot`'s panel as it is, or from inside it, back where focus was.
     pub fn toggle_slot_focus(&mut self, slot: Slot, window: &mut Window, cx: &mut Context<Self>) {
         let part = Part::Slot(slot);
         let inside = self.focused_part(window, cx) == Some(part);
