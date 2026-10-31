@@ -354,10 +354,15 @@ fn space_pages_read_only_code(cx: &mut TestAppContext) {
 }
 
 /// ⌘G / ⇧⌘G (F3 / ⇧F3 elsewhere) step through the code's find while its box is open; with none
-/// open ⇧⌘G is still Focus Git Panel's.
+/// open ⇧⌘G is still Focus Git Panel's (the classic preset's key for it).
 #[gpui_kit::test]
 fn find_keys_step_in_the_code_and_leave_the_git_panel_alone(cx: &mut TestAppContext) {
     setup(cx);
+    cx.update(|cx| {
+        gitviber_ui::Settings::update(cx, |s| {
+            s.keymap_preset = gitviber_ui::keymap::Preset::Classic
+        })
+    });
     let text: String = (0..30).map(|i| format!("let v{i} = {i};\n")).collect();
     let (code, git, cx) = code_view(cx, "src/lib.rs", &text, true);
     let (next, prev) = (key("cmd-g", "f3"), key("shift-cmd-g", "shift-f3"));

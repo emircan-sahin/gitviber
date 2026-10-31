@@ -104,20 +104,34 @@ pub fn is_reserved(chord: &str, mac: bool) -> bool {
 }
 
 /// Whether a chord still runs its command while focus is in a text field. Letters and ⌥ chords
-/// type characters there, ⌃+letter edits the line on macOS (⌃A, ⌃K), and "cmd"-arrows move the
-/// cursor. Other "cmd" chords, ⌃ with anything else (⌃Tab, ⌃1), the Super key and F-keys are free.
+/// type characters there, macOS edits the line on some ⌃ letters (⌃A, ⌃K, ⇧⌃E), and "cmd"-arrows
+/// move the cursor (⌥⌘↑/↓ add one). Other "cmd" chords, ⌥⌘←/→, ⌃ with anything else (⌃R, ⇧⌃G,
+/// ⌃1), the Super key, F-keys and, off macOS, Alt+digit (no layout types with it) are free.
 pub fn runs_while_typing(chord: &str, command: &Command, mac: bool) -> bool {
     if command.outside_text {
         return false;
     }
     let (mods, key) = split(chord);
     if mods.contains(&"cmd") {
-        return !matches!(key, "left" | "right" | "up" | "down");
+        let by_tab = mods.contains(&"alt") && matches!(key, "left" | "right");
+        return by_tab || !is_arrow(key);
     }
     if mods.contains(&"ctrl") {
-        return !mac || !is_letter(key);
+        return !mac
+            || !is_letter(key)
+            || (!mods.contains(&"alt") && !edits_line(key, mods.contains(&"shift")));
+    }
+    if !mac && mods == ["alt"] && is_digit(key) {
+        return true;
     }
     is_fkey(key) && !mods.contains(&"alt")
+}
+
+/// The ⌃ letters a macOS text field edits with (Cocoa's standard key bindings, which
+/// gpui-component's fields follow): ⌃A to ⌃Y, and with ⇧ the ones that move, to select.
+fn edits_line(letter: &str, shift: bool) -> bool {
+    let keys = if shift { "abefnp" } else { "abdefhklnoptvy" };
+    keys.contains(letter)
 }
 
 /// Whether an `in_editor` command's chord runs in a code editor too, where its key would type a
@@ -142,9 +156,13 @@ pub fn taken_from_terminal(chord: &str, command: &Command, mac: bool) -> bool {
 }
 
 /// Whether a chord runs its command while the terminal has focus: only what the terminal doesn't
-/// read itself, so a key never goes to both. F-keys stay the shell's (htop, mc use them).
+/// read itself, so a key never goes to both. F-keys stay the shell's (htop, mc use them), and so
+/// does Alt+digit, readline's count; "cmd"-arrows are the terminal's pane keys.
 pub fn runs_in_terminal(chord: &str, command: &Command, mac: bool) -> bool {
-    let (mods, _) = split(chord);
+    let (mods, key) = split(chord);
+    if mods.contains(&"cmd") && is_arrow(key) {
+        return false;
+    }
     if mods.contains(&if mac { "cmd" } else { "ctrl" }) {
         return runs_while_typing(chord, command, mac);
     }
@@ -153,6 +171,14 @@ pub fn runs_in_terminal(chord: &str, command: &Command, mac: bool) -> bool {
 
 fn is_letter(key: &str) -> bool {
     key.len() == 1 && key.as_bytes()[0].is_ascii_lowercase()
+}
+
+fn is_digit(key: &str) -> bool {
+    key.len() == 1 && key.as_bytes()[0].is_ascii_digit()
+}
+
+fn is_arrow(key: &str) -> bool {
+    matches!(key, "left" | "right" | "up" | "down")
 }
 
 fn is_fkey(key: &str) -> bool {
@@ -313,6 +339,25 @@ mod tests {
         assert!(!runs_while_typing("cmd+z", &command(true), true));
     }
 
+    /// The VS Code keys a macOS text field doesn't edit with: ⌃R, ⇧⌃G, ⌥⌘←/→. Its own ⌃ letters,
+    /// ⇧⌃E and ⌥⌘↑/↓ (a cursor above or below) stay the field's.
+    #[test]
+    fn vscode_keys_run_while_typing_on_macos() {
+        let c = command(false);
+        for chord in ["ctrl+r", "ctrl+shift+g", "alt+cmd+left", "alt+cmd+right"] {
+            assert!(runs_while_typing(chord, &c, true), "{chord}");
+        }
+        for chord in [
+            "ctrl+k",
+            "ctrl+shift+e",
+            "ctrl+alt+r",
+            "alt+cmd+up",
+            "shift+cmd+right",
+        ] {
+            assert!(!runs_while_typing(chord, &c, true), "{chord}");
+        }
+    }
+
     /// Off macOS "cmd" is the physical Ctrl: Ctrl chords run from a field but Ctrl+arrows, which
     /// move by word, and Alt chords, which type characters on some layouts.
     #[test]
@@ -322,7 +367,11 @@ mod tests {
         assert!(runs_while_typing("cmd+1", &c, false));
         assert!(runs_while_typing("cmd+b", &c, false));
         assert!(!runs_while_typing("cmd+right", &c, false));
-        assert!(!runs_while_typing("alt+1", &c, false));
+        // Alt+digit types nothing there: the VS Code tab keys run from a field.
+        assert!(runs_while_typing("alt+1", &c, false));
+        assert!(!runs_while_typing("alt+1", &c, true));
+        assert!(!runs_while_typing("alt+s", &c, false));
+        assert!(!runs_while_typing("alt+shift+1", &c, false));
         // The Super key ("ctrl" there) with a letter is free: no line editing on it.
         assert!(runs_while_typing("ctrl+a", &c, false));
         assert!(!runs_while_typing("cmd+z", &command(true), false));
@@ -352,8 +401,13 @@ mod tests {
         assert!(runs_in_terminal("cmd+j", &c, true));
         assert!(runs_in_terminal("ctrl+`", &c, true));
         assert!(!runs_in_terminal("ctrl+r", &c, true));
+        assert!(runs_in_terminal("ctrl+shift+g", &c, true));
         assert!(!runs_in_terminal("f6", &c, true));
         assert!(!runs_in_terminal("alt+s", &c, true));
+        // ⌥⌘arrows move between panes there; Alt+digit is readline's count.
+        assert!(!runs_in_terminal("alt+cmd+left", &c, true));
+        assert!(!runs_in_terminal("alt+cmd+left", &c, false));
+        assert!(!runs_in_terminal("alt+1", &c, false));
         // Elsewhere "cmd" is Ctrl: Ctrl+J is the shell's unless it comes with Shift.
         assert!(!runs_in_terminal("cmd+r", &c, false));
         assert!(runs_in_terminal("shift+cmd+t", &c, false));

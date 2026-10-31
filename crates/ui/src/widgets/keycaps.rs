@@ -11,7 +11,6 @@ use gpui_kit::{
 use crate::keymap::chord::to_keystroke;
 use crate::keymap::edit::chord_of;
 use crate::keymap::{self, IS_MAC, chord_keys};
-use crate::settings::Settings;
 use crate::theme::ActiveAppTheme;
 
 #[derive(IntoElement, Clone, Default)]
@@ -100,9 +99,7 @@ impl RenderOnce for Keycaps {
 
 fn command_chord(id: &str, cx: &App) -> Option<String> {
     let command = keymap::command(id)?;
-    keymap::bindings_for(command, &Settings::get(cx).keybindings, IS_MAC)
-        .into_iter()
-        .next()
+    keymap::current_bindings(command, cx).into_iter().next()
 }
 
 /// A chord as gpui-kit's `Kbd`, for a tooltip's keys (`Tooltip::key_binding`,

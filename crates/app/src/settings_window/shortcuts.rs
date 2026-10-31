@@ -1,12 +1,12 @@
-//! Settings → Keyboard Shortcuts: every command by category, its keys as keycaps, filtered by a
-//! name or a key and by category. A click on a key records a new one in its place, + adds one;
-//! Esc cancels. Rebinds are kept in settings'
-//! `keybindings` (command id → chords, an empty list unbinds), only while they differ from the
-//! default, as the old app kept them.
+//! Settings → Keyboard Shortcuts: the preset the keys start from, then every command by category,
+//! its keys as keycaps, filtered by a name or a key and by category. A click on a key records a
+//! new one in its place, + adds one; Esc cancels. Rebinds are kept in settings' `keybindings`
+//! (command id → chords, an empty list unbinds), only while they differ from the preset's.
 
 use gitviber_ui::keymap::edit::{clash_note, recorded, with_binding};
-use gitviber_ui::keymap::{self, IS_MAC, bindings_for, format_chord};
+use gitviber_ui::keymap::{self, IS_MAC, Preset, SwitchNotice, bindings_for, format_chord};
 use gitviber_ui::widgets::Keycaps;
+use gitviber_ui::workspace::Toast;
 use gitviber_ui::{ActiveAppTheme, Settings};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -15,11 +15,11 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _};
 use gpui_kit::{
     AnyElement, App, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _, WeakEntity, div, prelude::FluentBuilder as _, px,
-    rems,
+    StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
+    prelude::FluentBuilder as _, px, rems,
 };
 
-use super::fields::{note, segments, switch, with_keys};
+use super::fields::{note, segmented, segments, switch, with_keys};
 use super::shell::{Group, HINT_TEXT, Page, Row, TITLE_TEXT};
 use super::{Recording, SettingsWindow};
 
@@ -99,12 +99,13 @@ fn recorder(
 
 fn row(c: &'static keymap::Command, w: &WeakEntity<SettingsWindow>, cx: &App) -> AnyElement {
     let t = cx.app_theme().clone();
-    let overrides = &Settings::get(cx).keybindings;
-    let keys = bindings_for(c, overrides, IS_MAC);
+    let s = Settings::get(cx);
+    let (preset, overrides) = (s.keymap_preset, &s.keybindings);
+    let keys = bindings_for(c, preset, overrides, IS_MAC);
     let recording = w.upgrade().and_then(|w| w.read(cx).recording.clone());
     let clashes: Vec<String> = keys
         .iter()
-        .filter_map(|k| clash_note(c, k, overrides, IS_MAC))
+        .filter_map(|k| clash_note(c, k, preset, overrides, IS_MAC))
         .collect();
     let overridden = overrides.contains_key(c.id);
     let mut caps: Vec<AnyElement> = keys
@@ -218,15 +219,46 @@ fn matches(c: &keymap::Command, keys: &[String], q: &str) -> bool {
 
 /// Binds command `id` to `keys`; None goes back to its defaults.
 pub fn set_keys(id: &str, keys: Option<Vec<String>>, cx: &mut App) {
-    let next = with_binding(&Settings::get(cx).keybindings, id, keys, IS_MAC);
+    let s = Settings::get(cx);
+    let next = with_binding(s.keymap_preset, &s.keybindings, id, keys, IS_MAC);
     Settings::update(cx, |s| s.keybindings = next);
 }
 
 /// A recorded chord, put in place of key `index` of command `id` (or after its last).
 pub fn record(id: &str, index: usize, chord: &str, cx: &mut App) {
     let Some(c) = keymap::command(id) else { return };
-    let keys = bindings_for(c, &Settings::get(cx).keybindings, IS_MAC);
+    let keys = keymap::current_bindings(c, cx);
     set_keys(id, Some(recorded(&keys, index, chord)), cx);
+}
+
+/// For a user from before presets (`keymap::switch_notice`): where their keys went. It stays
+/// until a button or its close button, and comes back at the next launch until then.
+pub fn preset_toast(notice: SwitchNotice, cx: &mut App) {
+    let open_settings =
+        |_: &mut Window, cx: &mut App| super::open(Some(super::Section::Shortcuts), cx);
+    let key = |id| keymap::shortcut_label(id, cx).unwrap_or_default();
+    let toast = match notice {
+        SwitchNotice::Moved => Toast::info(format!(
+            "Shortcuts now follow VS Code: tabs are {}–{}, {} focuses the code, {} shows or hides \
+             the Explorer, {} opens the palette.",
+            key("tab.goto1"),
+            key("tab.goto8"),
+            key("view.focusCode"),
+            key("view.toggleExplorer"),
+            key("workbench.showCommands"),
+        ))
+        .title("Keyboard shortcuts changed")
+        .action("Use Classic Keys", |_, cx| {
+            Settings::update(cx, |s| s.keymap_preset = Preset::Classic)
+        })
+        .action("Open Settings", open_settings),
+        SwitchNotice::KeptClassic => Toast::info(
+            "Your custom shortcuts stay on the Classic keys; switch in Settings → Keyboard.",
+        )
+        .title("Keyboard shortcuts")
+        .action("Open Settings", open_settings),
+    };
+    crate::help::toast(toast.on_close(|_, cx| keymap::notice_closed(cx)), cx);
 }
 
 /// Why a chord can't be recorded: macOS takes it before the app sees it.
@@ -246,17 +278,29 @@ pub fn page(w: &SettingsWindow, cx: &App) -> Page {
     };
     let q = w.shortcut_filter.read(cx).value().trim().to_lowercase();
     let picked = w.shortcut_category;
-    let mut groups = vec![Group::new().item(switch(
-        &format!("Hold {hold} to show shortcuts"),
-        with_keys(
-            "Hold it by itself for a second to see the shortcuts that work where you are. The \
-             key beside the title shows them too.",
-            &["workbench.shortcutOverlay"],
-        ),
-        |s| s.shortcut_overlay,
-        |s, v| s.shortcut_overlay = v,
-    ))];
-    let overrides = &Settings::get(cx).keybindings;
+    let presets: Vec<(String, String)> = Preset::ALL
+        .iter()
+        .map(|p| (p.as_str().to_string(), p.label().to_string()))
+        .collect();
+    let mut groups = vec![Group::new()
+        .item(segmented(
+            "keymap-preset",
+            "Preset",
+            "The keys every command starts with. Keys you changed stay as you set them.",
+            presets,
+            |s| s.keymap_preset.as_str().to_string(),
+            |s, v| s.keymap_preset = Preset::parse(v).unwrap_or(s.keymap_preset),
+        ))
+        .item(switch(
+            &format!("Hold {hold} to show shortcuts"),
+            with_keys(
+                "Hold it by itself for a second to see the shortcuts that work where you are. The \
+                 key beside the title shows them too.",
+                &["workbench.shortcutOverlay"],
+            ),
+            |s| s.shortcut_overlay,
+            |s, v| s.shortcut_overlay = v,
+        ))];
     for category in categories()
         .into_iter()
         .filter(|c| picked.is_none_or(|p| p == *c))
@@ -264,7 +308,7 @@ pub fn page(w: &SettingsWindow, cx: &App) -> Page {
         let rows: Vec<Row> = keymap::all_commands()
             .filter(|c| c.category == category)
             .filter_map(|c| {
-                let keys = bindings_for(c, overrides, IS_MAC);
+                let keys = keymap::current_bindings(c, cx);
                 if !matches(c, &keys, &q) {
                     return None;
                 }

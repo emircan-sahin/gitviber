@@ -15,14 +15,14 @@ use gitviber_core::git::{FileChange, GitInfo};
 use gitviber_core::{Core, api};
 use gitviber_files::quick_open::{self, QuickOpenFiles, QuickOpenStatus};
 use gitviber_ui::fuzzy::{self, Candidate, Candidates, Match, prepare_query};
-use gitviber_ui::keymap::{self, Category, IS_MAC, ROOT_CONTEXT, bindings_for};
+use gitviber_ui::keymap::{self, Category, ROOT_CONTEXT};
 use gitviber_ui::memory::Live;
 use gitviber_ui::state::bump;
 use gitviber_ui::widgets::{
     ChangeKind, FileIcon, Keycaps, PAGE, StatusLetter, key_hint, key_hints,
 };
 use gitviber_ui::workspace::{PanelContext, QuickOpen, Registry, Selection, Slot, Workspace};
-use gitviber_ui::{ActiveAppTheme, Settings, UiState, actions::workbench, store};
+use gitviber_ui::{ActiveAppTheme, UiState, actions::workbench, store};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
@@ -44,6 +44,22 @@ const LIMIT: usize = 200;
 const MATCH_ON_UI_THREAD: usize = 2_000;
 /// Files remembered per repository.
 const RECENT_FILES: usize = 20;
+/// The panels' show/hide and focus keys, which work from the palette too: it closes and the
+/// key runs where focus was before it.
+const PANEL_KEYS: [&str; 12] = [
+    "view.toggleGitPanel",
+    "view.focusGitPanel",
+    "view.changes",
+    "view.history",
+    "view.pulls",
+    "view.issues",
+    "view.toggleExplorer",
+    "view.showExplorer",
+    "search.findInFiles",
+    "terminal.toggle",
+    "terminal.focus",
+    "view.focusCode",
+];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -489,7 +505,6 @@ impl Palette {
         let query = self.query.to_string();
         if let Some(q) = query.strip_prefix('>') {
             let recent = &UiState::get(cx).recent_commands;
-            let overrides = &Settings::get(cx).keybindings;
             self.rows = rank(
                 q,
                 &self.commands,
@@ -506,7 +521,7 @@ impl Palette {
                     label: label.clone(),
                     hits: listed.label_hits(m.hits),
                     hint: None,
-                    keys: bindings_for(c, overrides, IS_MAC)
+                    keys: keymap::current_bindings(c, cx)
                         .into_iter()
                         .next()
                         .map(Into::into),
@@ -642,20 +657,12 @@ impl Palette {
         let Some(row) = self.rows.get(row) else {
             return;
         };
-        let focus = self.focus_return.clone();
         window.close_dialog(cx);
         match &row.run {
             Run::Command { id, action } => {
                 let id = *id;
                 UiState::update(cx, |s| s.add_recent_command(id));
-                let action = action.boxed_clone();
-                window.defer(cx, move |window, cx| match focus {
-                    Some(focus) => {
-                        focus.focus(window, cx);
-                        focus.dispatch_action(action.as_ref(), window, cx);
-                    }
-                    None => window.dispatch_action(action, cx),
-                });
+                self.run_where_focus_was(action.as_ref(), window, cx);
             }
             Run::File { path } => {
                 if let Some(root) = &self.root {
@@ -693,6 +700,24 @@ impl Palette {
                 });
             }
         }
+    }
+
+    /// `action` with focus back where it was before the palette, which has closed.
+    fn run_where_focus_was(&self, action: &dyn Action, window: &mut Window, cx: &mut App) {
+        let (focus, action) = (self.focus_return.clone(), action.boxed_clone());
+        window.defer(cx, move |window, cx| match focus {
+            Some(focus) => {
+                focus.focus(window, cx);
+                focus.dispatch_action(action.as_ref(), window, cx);
+            }
+            None => window.dispatch_action(action, cx),
+        });
+    }
+
+    /// A panel key pressed in the palette (`PANEL_KEYS`).
+    fn pass_on(&mut self, action: &dyn Action, window: &mut Window, cx: &mut Context<Self>) {
+        window.close_dialog(cx);
+        self.run_where_focus_was(action, window, cx);
     }
 
     /// PgUp / PgDn: a page of rows at a time, as every list steps, stopping at the ends.
@@ -934,6 +959,12 @@ impl Render for Palette {
             // The palette's own keys switch it over, and the app's other keys stay out.
             .key_context(ROOT_CONTEXT)
             .on_key_down(cx.listener(Self::page))
+            .map(|mut d| {
+                for c in PANEL_KEYS.iter().filter_map(|id| keymap::command(id)) {
+                    d = d.on_boxed_action(&*c.action(), cx.listener(Self::pass_on));
+                }
+                d
+            })
             .on_action(
                 cx.listener(|this, _: &workbench::ShowCommands, window, cx| {
                     this.switch(Mode::Commands, window, cx)

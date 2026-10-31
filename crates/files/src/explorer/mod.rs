@@ -50,7 +50,8 @@ pub fn set_history_handler(cx: &mut App, handler: HistoryHandler) {
 
 /// A section under the files that another crate draws (Obsidian's vault): built once per
 /// explorer with the files' height as last drawn, so its divider leaves them `MIN_FILES`. Its
-/// view sets its own height; `panel_focus` is None while it isn't shown.
+/// view sets its own height (growing by `SECTION_FIRST`); `panel_focus` is None while it isn't
+/// shown.
 pub type SectionBuilder =
     Rc<dyn Fn(&PanelContext, Rc<Cell<Pixels>>, &mut Window, &mut App) -> PanelHandle>;
 
@@ -63,6 +64,9 @@ pub fn set_section(cx: &mut App, build: SectionBuilder) {
 
 /// The files' least height beside a section.
 pub const MIN_FILES: f32 = 80.;
+/// Flex weight of the files' shrink and an open section's grow: the files give up room first
+/// and the section takes spare room first, so neither is clipped while the other shows blank.
+pub const SECTION_FIRST: f32 = 1e4;
 
 /// The filter (⌘F in the explorer): every file git lists and the ignored ones, matched by path.
 struct Filter {
@@ -1714,7 +1718,9 @@ impl Render for ExplorerPanel {
             .key_context("Explorer")
             .track_focus(&self.focus)
             .w_full()
-            .flex_1()
+            // As tall as its rows, the rest going to a section under them (`SECTION_FIRST`).
+            .flex_grow_1()
+            .flex_shrink(SECTION_FIRST)
             .min_h(px(MIN_FILES))
             .flex()
             .flex_col()
@@ -1814,14 +1820,19 @@ impl Render for ExplorerPanel {
                     }),
                 )
                 .track_scroll(&self.scroll)
-                .flex_1()
-                .py_1(),
+                .with_sizing_behavior(gpui_kit::ListSizingBehavior::Infer)
+                .debug_selector(|| "explorer-rows".into())
+                .flex_grow_1()
+                .pt_1()
+                // Room past the last row for the repo root's menu, scrolled to like a row.
+                .pb(px(48.)),
             )
             .when(
                 self.filtering() && self.filter.as_ref().is_some_and(|f| f.capped),
                 |d| {
                     d.child(
                         div()
+                            .flex_none()
                             .px_4()
                             .py_2()
                             .text_center()
@@ -1850,17 +1861,11 @@ impl Render for ExplorerPanel {
                 )
                 .with_priority(1)
             }))
-            // The space below the rows: the repo root's menu.
-            .child(
-                div()
-                    .id("explorer-blank")
-                    .h(px(48.))
-                    .flex_none()
-                    .context_menu(move |menu, window, cx| match me.upgrade() {
-                        Some(this) => Self::build_menu(&this, None, menu, window, cx),
-                        None => menu,
-                    }),
-            );
+            // Anywhere off a row: the repo root's menu.
+            .context_menu(move |menu, window, cx| match me.upgrade() {
+                Some(this) => Self::build_menu(&this, None, menu, window, cx),
+                None => menu,
+            });
         div()
             .size_full()
             .flex()

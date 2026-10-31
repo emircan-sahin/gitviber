@@ -1015,3 +1015,90 @@ fn a_refresh_while_opening_doesnt_put_the_rows_off(cx: &mut TestAppContext) {
     cx.executor().advance_clock(step);
     assert_eq!(rows(&panel, cx).len(), WHOLE.len() - 1);
 }
+
+/// The explorer over a repo of `files` files, its vault section open at `size` (as dragged).
+fn stacked<'a>(
+    name: &str,
+    files: usize,
+    size: f32,
+    cx: &'a mut TestAppContext,
+) -> (AnyView, &'a mut VisualTestContext) {
+    setup(name, cx);
+    let repo = gitviber_ui::test_support::temp_dir(&format!("obsidian-{name}-repo"));
+    for i in 0..files {
+        std::fs::write(repo.join(format!("f{i:02}.txt")), "hi").unwrap();
+    }
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    cx.update(|cx| Vaults::global(cx).update(cx, |m, cx| m.set_size(size, cx)));
+    let (_, cx) = cx.add_window_view(|_, _| Host(None));
+    let ws = cx.update(|window, cx| {
+        let ws = cx.new(Workspace::new);
+        Workspace::register_window(&ws, window, cx);
+        ws.update(cx, |ws, cx| ws.open_project(repo.clone(), window, cx));
+        ws
+    });
+    cx.run_until_parked();
+    let explorer = cx.update(|window, cx| {
+        Workspace::ensure_panel(&ws, gitviber_files::explorer::PANEL_ID, window, cx)
+    });
+    (explorer.unwrap().view(), cx)
+}
+
+/// Draws the explorer in a panel as wide as the owner's and `height` tall: the files' list,
+/// the vault's header and the vault section, top and bottom.
+fn stack(explorer: &AnyView, height: f32, cx: &mut VisualTestContext) -> [(f32, f32); 3] {
+    for _ in 0..2 {
+        let e = explorer.clone();
+        cx.draw(
+            gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)),
+            gpui_kit::size(gpui_kit::px(470.), gpui_kit::px(height)),
+            move |_, _| div().size_full().child(e),
+        );
+        cx.run_until_parked();
+    }
+    ["explorer-rows", "vault-header", "vault-section"].map(|key| {
+        let b = cx.debug_bounds(key).expect(key);
+        (f32::from(b.top()), f32::from(b.bottom()))
+    })
+}
+
+/// The open vault's header, its five rows and the room under them for its menu.
+const VAULT_ROWS: f32 = 28. + 4. + 6. * 24.;
+
+#[gpui_kit::test]
+fn the_files_reach_the_vault_header_and_a_short_vault_takes_only_its_rows(cx: &mut TestAppContext) {
+    let (explorer, cx) = stacked("stack-short-vault", 40, 400., cx);
+    for height in [700., 400.] {
+        let [files, header, section] = stack(&explorer, height, cx);
+        // The clipped files' list runs down to the header: no blank between (48pt was left).
+        assert_eq!(files.1, header.0, "{height}");
+        // Shorter than its size, the section is as tall as its rows; the files have the rest.
+        assert_eq!(section, (height - VAULT_ROWS, height), "{height}");
+    }
+    // A size dragged under its rows is kept.
+    cx.update(|_, cx| Vaults::global(cx).update(cx, |m, cx| m.set_size(100., cx)));
+    let [files, header, section] = stack(&explorer, 700., cx);
+    assert_eq!((files.1, header.0, section), (600., 600., (600., 700.)));
+    // Too short a window takes the files down to their least, then the section.
+    cx.update(|_, cx| Vaults::global(cx).update(cx, |m, cx| m.set_size(400., cx)));
+    let [files, _, section] = stack(&explorer, 220., cx);
+    assert_eq!((files, section), ((0., 80.), (80., 220.)));
+}
+
+#[gpui_kit::test]
+fn short_files_leave_their_room_to_the_vault(cx: &mut TestAppContext) {
+    let (explorer, cx) = stacked("stack-short-files", 1, 84., cx);
+    // One file's row and the root menu's room under it: the files' least height. The vault, at
+    // its least size, takes what they leave, and all its rows show.
+    let [files, header, section] = stack(&explorer, 700., cx);
+    assert_eq!((files, header.0, section), ((0., 80.), 80., (80., 700.)));
+    assert!(f32::from(cx.debug_bounds("vault-row-4").unwrap().bottom()) <= 700.);
+    // Closed, its header sits at the bottom, the files over all the rest.
+    cx.update(|_, cx| Vaults::global(cx).update(cx, |m, cx| m.set_collapsed(true, cx)));
+    let [files, header, _] = stack(&explorer, 700., cx);
+    assert_eq!((files.1, header), (672., (672., 700.)));
+}

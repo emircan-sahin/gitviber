@@ -409,7 +409,7 @@ impl DiffView {
     }
 
     /// ⌘G / ⇧⌘G: the next or previous match of an open find. With none open the key goes on,
-    /// so ⇧⌘G still focuses the Git panel.
+    /// so ⇧⌘G still runs its command (the classic keys' Focus Git Panel).
     fn find_key(&mut self, forward: bool, cx: &mut Context<Self>) {
         if self.find.is_some() {
             self.find_step(forward, cx);

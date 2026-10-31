@@ -32,6 +32,18 @@ pub struct Toast {
     pub more: Vec<ToastAction>,
     /// Long output (a hook's, git's own words), folded under Details.
     pub detail: Option<SharedString>,
+    /// Run once it goes, by a button or its close button; not when the window goes with it.
+    pub closed: Option<ToastClosed>,
+}
+
+/// `Toast::on_close`'s hook.
+#[derive(Clone)]
+pub struct ToastClosed(pub ToastRun);
+
+impl std::fmt::Debug for ToastClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ToastClosed")
+    }
 }
 
 /// What a toast's button does.
@@ -61,6 +73,7 @@ impl Toast {
             action: None,
             more: Vec::new(),
             detail: None,
+            closed: None,
         }
     }
     pub fn info(message: impl Into<SharedString>) -> Self {
@@ -83,6 +96,12 @@ impl Toast {
     /// Text shown folded under Details: a hook's output, git's own words under an explanation.
     pub fn detail(mut self, detail: impl Into<SharedString>) -> Self {
         self.detail = Some(detail.into()).filter(|d| !d.is_empty());
+        self
+    }
+
+    /// What to do once it's closed, by a button or by hand.
+    pub fn on_close(mut self, run: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.closed = Some(ToastClosed(Rc::new(run)));
         self
     }
 
@@ -114,6 +133,10 @@ impl Toast {
         };
         let note = match self.title {
             Some(title) => note.title(title),
+            None => note,
+        };
+        let note = match self.closed {
+            Some(ToastClosed(run)) => note.on_close(move |window, cx| run(window, cx)),
             None => note,
         };
         let note = match self.action {
