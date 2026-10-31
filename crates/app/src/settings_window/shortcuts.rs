@@ -239,11 +239,12 @@ pub fn preset_toast(notice: SwitchNotice, cx: &mut App) {
     let key = |id| keymap::shortcut_label(id, cx).unwrap_or_default();
     let toast = match notice {
         SwitchNotice::Moved => Toast::info(format!(
-            "Shortcuts now follow VS Code: tabs are {}–{}, {} focuses the code, {} opens the \
-             palette.",
+            "Shortcuts now follow VS Code: tabs are {}–{}, {} focuses the code, {} shows or hides \
+             the Explorer, {} opens the palette.",
             key("tab.goto1"),
             key("tab.goto8"),
             key("view.focusCode"),
+            key("view.toggleExplorer"),
             key("workbench.showCommands"),
         ))
         .title("Keyboard shortcuts changed")
