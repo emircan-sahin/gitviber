@@ -100,26 +100,24 @@ Pages
 
 Reading
   snapshot [-i] [-s <ref|css>] [-d <n>] [-u] [--all] [--boxes] [-o <file>]
-                               The page as a tree, with refs (e1, e2, ...) to act on: what is
-                               in the viewport and a screen above and below it, each side past
-                               that one line (`- … 412 elements below (≈5 screens)`), and
-                               [top of page] or [end of page] on a side it reaches when the
-                               other is cut. --all the whole page, -i only what can be clicked
-                               or typed in, -s all under one element, -d so many levels deep, -u
-                               each link's href too (one link's: get attr href <ref>), --boxes
-                               each ref's x,y,w,h in the viewport (CSS px), -o all the page,
-                               hrefs too, into a .txt, .md, .yml or .yaml file, over none but an
-                               earlier snapshot (its path and line count printed). A field
-                               shows its value only when it has one; a label's text goes with
-                               its field's name. Past 1500 lines or 25 000 characters it stops
-                               and names the regions it left out, each with a ref for -s. Refs
-                               (also @e1 or ref=e1) stay with their element; one whose element
-                               left, or from another page or a frame that moved on, fails as
-                               stale. A frame of the page's origin reads as part of it, its refs
-                               acted on as any, and a CSS selector looks in its own page as
-                               `frame=<ref|css> >> <css>` (frames nest: `frame=a >> frame=b >>
-                               <css>`); another origin's frame is named only. --json: also the
-                               refs gone since the last snapshot
+                               The page as a tree, with refs (e1, e2, ...) to act on: the
+                               viewport and a screen above and below it, and what shows on
+                               screen wherever it sits; each side past that one line naming its
+                               biggest regions with refs (`- … 412 elements below (≈5 screens):
+                               300 in list [ref=e9]`), or [top of page] or [end of page] when
+                               only the other side is cut. --all the whole page, -i only what
+                               can be clicked or typed in, -s all under one element, -d so many
+                               levels deep, -u each link's href too, --boxes each ref's x,y,w,h
+                               in the viewport (CSS px), -o all the page into a text file (its
+                               path and line count printed). Past 1500 lines or 25 000
+                               characters it stops and names the regions it left out, each with
+                               a ref for -s. Refs (also @e1 or ref=e1) stay with their element;
+                               one whose element left, or from another page or a frame that
+                               moved on, fails as stale. A frame of the page's origin reads as
+                               part of it, its refs acted on as any, and a CSS selector looks
+                               in its own page as `frame=<ref|css> >> <css>` (frames nest:
+                               `frame=a >> frame=b >> <css>`); another origin's frame is named
+                               only. --json: also the refs gone since the last snapshot
   find <text|/regex/>          The whole page's tree lines with the text (any case) or matching
                                the regex, hrefs too, each with the line before and after it; 30
                                at most

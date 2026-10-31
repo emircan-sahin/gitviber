@@ -31,7 +31,8 @@ own domain is GitViber's.
   frame moved on), and then only the part you need (`snapshot -s <ref|css>`).
 - A snapshot shows the viewport and a screen around it, and counts what's past that. For the
   rest, `find <text>` first, then `scroll down` or `snapshot -s <ref>`; `--all` only when you
-  need the whole page. A cut snapshot's last line names the regions it left out, with refs.
+  need the whole page. Its `- …` lines (off screen, past the size limit) name the regions they
+  left out, each with a ref for `snapshot -s <ref>` or `scroll <ref>`.
 - Read with `snapshot -i`, `snapshot -s`, `find` and `get` before any screenshot. Take one only
   for layout, colour, canvas and images; `screenshot --refs` when you need to see where refs are,
   `--full` for a whole long page (pictures of 2000 px, one file each).
