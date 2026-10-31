@@ -201,8 +201,9 @@ Acting by the page's script, setting what a person would and reading it back
   its drawing buffer, or a small sprite on a big canvas, goes unseen (screenshot shows what it
   drew). Under it, + lines name what the action added: the text of an alert or live region
   (`+ alert \"Email is required\"`), then what can be acted on, with refs, top to bottom
-  (`+ button \"Confirm\" [ref=e41]`), 15 at most, then `… +N more: snapshot -s <ref>`. The same
-  command a third time on an unchanged page says so.
+  (`+ button \"Confirm\" [ref=e41]`), 15 at most, then `… more: snapshot -s <ref>`; shown by
+  an attribute too (hidden or aria-hidden dropped, open set, an aria-expanded control's
+  aria-controls) or a popover's toggle. The same command a third time on an unchanged page says so.
 
 Waiting
   wait <css> | --text <text> | --url <glob> | --fn <js> | --load | --download | --ms <n>
@@ -220,14 +221,16 @@ Waiting
                                page (<css> or --text only), as `frame=<ref|css> >> <css>` does
 
 Batches
-  batch [<command>...]         Commands on the tab in order, as one: no other command on it
-                               comes between them. Each quoted as an argument, or one a line on
-                               stdin (blank lines and # comments skipped, words quoted as in a
-                               shell). One reply, each step's numbered ([1] ...). It stops at a
-                               step that fails (exit 1), and after one that loads another page,
-                               where refs taken before are stale, and says which steps didn't
-                               run. 50 steps at most, within the CLI's five minutes; not tab,
-                               session or batch
+  batch <command>... | batch -  Commands on the tab in order, as one: no other command on it
+                               comes between them. Each quoted as an argument, or with -, one a
+                               line on stdin (blank lines and # comments skipped, words quoted as
+                               in a shell). One reply, each step's numbered ([1] ...); --json:
+                               the text, and each step's data. It stops at a step that fails
+                               (exit 1), and after one that loads another page or goes to another
+                               address (not a #fragment alone), where refs taken before are
+                               stale, and says which steps didn't run. 50 steps at most; one that
+                               could outlast the CLI's five minutes doesn't start (exit 1). Not
+                               tab, session or batch
 
 Page tools
   eval <js>                    Runs in the page; prints the result as JSON (undefined, NaN,
@@ -750,8 +753,8 @@ pub fn step(cmd: &str, args: &[String]) -> Result<(Command, Option<Snap>), Strin
 /// Steps a batch runs at most.
 pub const MOST_STEPS: usize = 50;
 
-pub const BATCH_USAGE: &str = "Usage: gitviber browser batch <command>... (each quoted), or the \
-                               commands one a line on stdin";
+pub const BATCH_USAGE: &str = "Usage: gitviber browser batch <command>... (each quoted), or \
+                               `batch -` with the commands one a line on stdin";
 
 /// A batch's commands as words: each line of its arguments one, blank lines and `#` comments
 /// skipped, a `gitviber browser` in front dropped.
@@ -2771,7 +2774,7 @@ mod tests {
             "--json",
             "--reveal",
             "--snapshot",
-            "  batch [",
+            "  batch <command>... | batch -",
         ] {
             assert!(HELP.contains(flag), "the help names {flag}");
         }

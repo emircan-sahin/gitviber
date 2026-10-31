@@ -78,18 +78,11 @@ fn run(args: Vec<String>) -> i32 {
     if cmd == "device" && cli.args == ["--list"] {
         return print(&Reply::out(control::device_list()), cli.json);
     }
-    let mut args = cli.args;
-    if cmd == "batch" && args.is_empty() {
-        match piped() {
-            Ok(lines) => args = vec![lines],
-            Err(e) => {
-                eprintln!("{e}");
-                return 1;
-            }
-        }
-    }
-    let found = secret(&cmd, &args).and_then(|one| Ok((one, secrets(&cmd, &args)?)));
-    let (secret, secrets) = match found {
+    let found = batch_args(&cmd, cli.args, piped).and_then(|args| {
+        let one = secret(&cmd, &args)?;
+        Ok((secrets(&cmd, &args)?, one, args))
+    });
+    let (secrets, secret, args) = match found {
         Ok(found) => found,
         Err(e) => {
             eprintln!("{e}");
@@ -170,7 +163,21 @@ fn env_secret(name: &str) -> Result<String, String> {
     std::env::var(name).map_err(|_| format!("${name} isn't set in this shell: export it first"))
 }
 
-/// `batch` with no commands given: its lines from stdin, piped in.
+/// A command's arguments; `batch -`'s, its lines from `stdin`. A batch with none fails at once:
+/// read from a stdin nobody closes, it would never start.
+fn batch_args(
+    cmd: &str,
+    args: Vec<String>,
+    stdin: impl FnOnce() -> Result<String, String>,
+) -> Result<Vec<String>, String> {
+    match (cmd, args.as_slice()) {
+        ("batch", []) => Err(control::BATCH_USAGE.into()),
+        ("batch", [dash]) if dash == "-" => Ok(vec![stdin()?]),
+        _ => Ok(args),
+    }
+}
+
+/// `batch -`'s lines, piped in.
 fn piped() -> Result<String, String> {
     use std::io::{IsTerminal, Read};
     let mut stdin = std::io::stdin();
@@ -274,6 +281,30 @@ mod tests {
         assert_eq!(secret("type", &words("e1 --secret HOME")), Ok(None));
         assert_eq!(secret("fill", &words("e1 hello")), Ok(None));
         assert!(secret("fill", &words("e1 --secret")).is_err());
+    }
+
+    #[test]
+    fn a_batch_reads_stdin_only_when_told_by_a_dash() {
+        let words = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        let stdin = || Ok("url\nclick e1".to_string());
+        let unread = || -> Result<String, String> { panic!("stdin read") };
+        assert_eq!(
+            batch_args("batch", words("-"), stdin),
+            Ok(vec!["url\nclick e1".into()])
+        );
+        assert_eq!(
+            batch_args("batch", vec![], unread),
+            Err(control::BATCH_USAGE.into())
+        );
+        assert_eq!(
+            batch_args("batch", words("url -"), unread),
+            Ok(words("url -"))
+        );
+        assert_eq!(batch_args("fill", words("-"), unread), Ok(words("-")));
+        assert_eq!(
+            batch_args("batch", words("-"), || Err("closed".into())),
+            Err("closed".into())
+        );
     }
 
     #[test]
