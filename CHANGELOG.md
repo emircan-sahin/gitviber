@@ -14,6 +14,7 @@ on GitHub are its section below.
 
 ### Changed
 
+- **Markdown previews read like an article.** A file's preview, a diff's preview and a vault note set their text a little larger than the code, in a centered column with room between the lines; code blocks, tables and diagrams get a wider column. ⌘= and ⌘− size the preview's text alone, diagrams and math included, and the size is kept.
 - **Agents' page snapshots are much smaller.** A snapshot reads what's on screen and a screen around it, and counts the rest by region with a ref to read on in. Link addresses come only with `-u`, and lines are leaner. On long articles a snapshot takes about a third to a sixth of the tokens it did, and it no longer cuts off before the main content.
 
 ### Fixed
