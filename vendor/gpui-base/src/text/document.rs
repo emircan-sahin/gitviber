@@ -1,5 +1,6 @@
 use gpui::{
-    App, IntoElement, ListState, ParentElement as _, SharedString, Styled as _, Window, div,
+    AnyElement, App, IntoElement, ListState, ParentElement as _, SharedString, Styled as _,
+    Window, div,
 };
 
 use std::{
@@ -249,7 +250,7 @@ impl ParsedDocument {
             return div().children(self.blocks.iter().enumerate().map(move |(ix, node)| {
                 let is_last = ix + 1 == blocks_len;
                 let (is_first, prev) = flow_position(&self.blocks, ix);
-                node.render_block(
+                let block = node.render_block(
                     NodeRenderOptions {
                         ix,
                         is_last,
@@ -260,7 +261,8 @@ impl ParsedDocument {
                     node_cx,
                     window,
                     cx,
-                )
+                );
+                in_measure(node, block, node_cx)
             }));
         };
 
@@ -281,24 +283,45 @@ impl ParsedDocument {
                 move |ix, window, cx| {
                     let is_last = ix + 1 == blocks.len();
                     let (is_first, prev) = flow_position(&blocks, ix);
-                    blocks[ix]
-                        .render_block(
-                            NodeRenderOptions {
-                                ix,
-                                is_last,
-                                is_first,
-                                prev,
-                                ..options
-                            },
-                            &node_cx,
-                            window,
-                            cx,
-                        )
-                        .into_any_element()
+                    let block = blocks[ix].render_block(
+                        NodeRenderOptions {
+                            ix,
+                            is_last,
+                            is_first,
+                            prev,
+                            ..options
+                        },
+                        &node_cx,
+                        window,
+                        cx,
+                    );
+                    in_measure(&blocks[ix], block, &node_cx)
                 }
             })
             .size_full(),
         )
+    }
+}
+
+/// A top-level `block` capped at the style's measure, centered: prose reads at
+/// a comfortable width while code blocks, tables and custom blocks (which
+/// cap themselves) take the whole width.
+fn in_measure(node: &BlockNode, block: AnyElement, node_cx: &NodeContext) -> AnyElement {
+    match node_cx.style.measure() {
+        Some(measure)
+            if !matches!(
+                node,
+                BlockNode::CodeBlock(_) | BlockNode::Table(_) | BlockNode::Custom { .. }
+            ) =>
+        {
+            div()
+                .w_full()
+                .flex()
+                .justify_center()
+                .child(div().w_full().min_w_0().max_w(measure).child(block))
+                .into_any_element()
+        }
+        _ => block,
     }
 }
 

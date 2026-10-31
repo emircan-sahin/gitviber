@@ -513,7 +513,8 @@ fn drawn(
     diagrams.update(cx, |d, cx| d.get(kind, source, inline, look, cx))
 }
 
-/// A drawn diagram or formula: its own size, centered; a wide one scrolls sideways.
+/// A drawn diagram or formula: its own size, centered; a wide one starts at the left edge and
+/// scrolls sideways (justify_center would put its left part out of reach).
 fn picture(
     image: Arc<RenderImage>,
     scale: f32,
@@ -534,7 +535,6 @@ fn picture(
         .w_full()
         .overflow_x_scroll()
         .flex()
-        .justify_center()
         .when(kind == DiagramKind::Mermaid, |d| {
             d.p_3().rounded(px(6.)).border_1().border_color(t.border)
         })
@@ -542,7 +542,8 @@ fn picture(
             gpui_kit::img(ImageSource::Render(image))
                 .w(px(w))
                 .h(px(h))
-                .flex_none(),
+                .flex_none()
+                .mx_auto(),
         )
         .into_any_element()
 }
@@ -829,7 +830,7 @@ fn extensions(
                 (!source.trim().is_empty())
                     .then(|| nested_view(format!("gv-details-{at}-{name}"), source, cx))
             };
-            div()
+            let details = div()
                 .flex()
                 .flex_col()
                 .children(part("before", &d.before))
@@ -849,8 +850,8 @@ fn extensions(
                     ),
                 )
                 .children(part("body", &d.body).filter(|_| open))
-                .children(part("after", &d.after))
-                .into_any_element()
+                .children(part("after", &d.after));
+            prose(&view, details, cx)
         }
     });
     ext.block_renderer("gv-callout", move |node, _window, cx| {
@@ -897,7 +898,7 @@ fn extensions(
         } else {
             header.into_any_element()
         };
-        div()
+        let callout = div()
             .my_2()
             .when(github, |d| {
                 d.pl_4().py_1().border_l(px(4.)).border_color(color)
@@ -914,9 +915,17 @@ fn extensions(
             .flex_col()
             .gap_2()
             .child(header)
-            .children(body)
-            .into_any_element()
+            .children(body);
+        prose(&view, callout, cx)
     })
+}
+
+/// A block of ours that's text, at the reading measure as the document's own text is.
+fn prose(view: &WeakEntity<MarkdownView>, el: impl IntoElement, cx: &App) -> gpui_kit::AnyElement {
+    match is_reading(view, cx) {
+        true => reading::in_measure(el, cx),
+        false => el.into_any_element(),
+    }
 }
 
 impl Render for MarkdownView {
@@ -969,7 +978,7 @@ impl Render for MarkdownView {
             .child(
                 image_cache(self.images.clone())
                     .size_full()
-                    .max_w(reading::measure(cx) + COLUMN_PADDING * 2.)
+                    .max_w(reading::wide(cx) + COLUMN_PADDING * 2.)
                     .px(COLUMN_PADDING)
                     .pt_4()
                     .child(view),
@@ -1263,8 +1272,9 @@ mod tests {
         draw(cx);
         let size = cx.update(|_, cx| f32::from(reading::text_size(cx)));
         assert!((size - 13.5 * 8. / 7.).abs() < 0.01, "{size}");
+        // The column is the code blocks' width; the prose in it, 40em (`code_and_tables_…`).
         let (width, middle) = column(&view, cx);
-        assert!((width - size * 40.).abs() < 1., "{width}");
+        assert!((width - size * 56.).abs() < 1., "{width}");
         assert!((middle - 800.).abs() < 1., "{middle}");
         let (_, tall) = scrolled(&view, cx);
 
@@ -1273,7 +1283,7 @@ mod tests {
         draw(cx);
         assert_eq!(sizes(cx), (13.5, 14.));
         let (wider, _) = column(&view, cx);
-        assert!((wider - 14. * 8. / 7. * 40.).abs() < 1., "{wider}");
+        assert!((wider - 14. * 8. / 7. * 56.).abs() < 1., "{wider}");
         let (_, taller) = scrolled(&view, cx);
         assert!(taller > tall, "{taller} after {tall}");
         cx.simulate_keystrokes("secondary-- secondary--");
@@ -1290,6 +1300,36 @@ mod tests {
         draw(cx);
         let (narrow, _) = column(&view, cx);
         assert!((narrow - (500. - 64.)).abs() < 1., "{narrow}");
+    }
+
+    /// In a wide pane the prose stays 40em wide while code blocks and tables take the whole
+    /// column: text wrapped in them takes fewer lines than at the prose's width.
+    #[gpui_kit::test]
+    fn code_and_tables_break_out_of_the_prose_column(cx: &mut TestAppContext) {
+        let (host, cx) = window(cx);
+        let words = "word ".repeat(150);
+        let doc = format!("{words}\n\n```\n{words}\n```\n\n| a |\n|---|\n| {words} |\n");
+        let view = cx.update(|window, cx| {
+            let view = cx.new(|cx| MarkdownView::new(&doc, MarkdownBase::default(), window, cx));
+            host.update(cx, |h, cx| h.0 = Some(view.clone().into()));
+            view
+        });
+        let mut heights = |width: f32, cx: &mut VisualTestContext| {
+            cx.simulate_resize(gpui_kit::size(px(width), px(900.)));
+            draw(cx);
+            view.read_with(cx, |v, cx| {
+                let list = v.state.read(cx).list_state().clone();
+                (0..3)
+                    .map(|ix| f32::from(list.bounds_for_item(ix).unwrap().size.height))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let measure = cx.update(|_, cx| f32::from(reading::measure(cx)));
+        let narrow = heights(measure + 64., cx);
+        let wide = heights(1600., cx);
+        assert_eq!(wide[0], narrow[0], "the paragraph");
+        assert!(wide[1] < narrow[1], "the code block: {wide:?} {narrow:?}");
+        assert!(wide[2] < narrow[2], "the table: {wide:?} {narrow:?}");
     }
 
     #[gpui_kit::test]

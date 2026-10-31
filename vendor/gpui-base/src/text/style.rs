@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use gpui::{HighlightStyle, Hsla, Rems, StyleRefinement, rems};
+use gpui::{HighlightStyle, Hsla, Pixels, Rems, StyleRefinement, rems};
 
 use crate::ColorTokens;
 
@@ -19,6 +19,7 @@ pub struct TextViewStyle {
     code_background: Hsla,
     border: Hsla,
     paragraph_gap: Rems,
+    measure: Option<Pixels>,
     heading: Arc<dyn Fn(u8) -> StyleRefinement + Send + Sync + 'static>,
     code_block: StyleRefinement,
     table: StyleRefinement,
@@ -35,6 +36,7 @@ pub struct TextViewStyle {
 impl PartialEq for TextViewStyle {
     fn eq(&self, other: &Self) -> bool {
         self.paragraph_gap == other.paragraph_gap
+            && self.measure == other.measure
             && self.foreground == other.foreground
             && self.muted_foreground == other.muted_foreground
             && self.link == other.link
@@ -82,6 +84,7 @@ impl TextViewStyle {
             code_background: colors.accent,
             border: colors.border,
             paragraph_gap: rems(0.75),
+            measure: None,
             heading: Arc::new(|_| StyleRefinement::default()),
             code_block: StyleRefinement::default(),
             table: StyleRefinement::default(),
@@ -138,6 +141,13 @@ impl TextViewStyle {
     /// Sets the gap between paragraphs. Defaults to 0.75 rem.
     pub fn with_paragraph_gap(mut self, gap: Rems) -> Self {
         self.paragraph_gap = gap;
+        self
+    }
+
+    /// Caps the document's prose at `measure` wide, centered, while its code
+    /// blocks, tables and custom blocks keep the whole width.
+    pub fn with_measure(mut self, measure: Pixels) -> Self {
+        self.measure = Some(measure);
         self
     }
 
@@ -238,6 +248,11 @@ impl TextViewStyle {
     /// The gap between paragraphs.
     pub fn paragraph_gap(&self) -> Rems {
         self.paragraph_gap
+    }
+
+    /// The widest the document's prose gets, if capped.
+    pub fn measure(&self) -> Option<Pixels> {
+        self.measure
     }
 
     /// The style refinement for a heading at `level` (1-6).
@@ -399,6 +414,7 @@ mod tests {
         assert!(style == style.clone());
         assert_eq!(calls.load(Ordering::Relaxed), 0);
         assert!(style != style.clone().with_paragraph_gap(rems(1.)));
+        assert!(style != style.clone().with_measure(gpui::px(600.)));
         assert!(style != style.clone().with_dark(!style.is_dark()));
         assert_eq!(calls.load(Ordering::Relaxed), 0);
 
