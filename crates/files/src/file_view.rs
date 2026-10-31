@@ -11,7 +11,7 @@ use gitviber_core::git::{DiffPair, FileText};
 use gitviber_core::{Core, api};
 use gitviber_markdown::{
     FindBar, FindBarEvent, FindChanged, FindQuery, MarkdownBase, MarkdownEvent, MarkdownView,
-    is_markdown,
+    is_markdown, reading,
 };
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::keymap::{editor, file, find};
@@ -1109,12 +1109,21 @@ impl Render for FileView {
             }))
             .child(self.header(cx))
             .child(
-                div().relative().flex_1().min_h_0().child(body).children(
-                    self.find
-                        .as_ref()
-                        .filter(|_| self.find_open && self.shown_preview().is_some())
-                        .map(|f| div().absolute().top_2().right_4().child(f.bar.clone())),
-                ),
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    // The find bar sits over the preview, outside it: ⌘= there sizes the text too.
+                    .when(self.shown_preview().is_some(), |d| {
+                        reading::zoom_keys(d.key_context(reading::ZOOM_CONTEXT))
+                    })
+                    .child(body)
+                    .children(
+                        self.find
+                            .as_ref()
+                            .filter(|_| self.find_open && self.shown_preview().is_some())
+                            .map(|f| div().absolute().top_2().right_4().child(f.bar.clone())),
+                    ),
             )
     }
 }

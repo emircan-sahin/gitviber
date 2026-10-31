@@ -1,6 +1,6 @@
 # gpui-base 0.8.0, patched
 
-The crates.io release of gpui-base 0.8.0, byte for byte, except seven changes and this file:
+The crates.io release of gpui-base 0.8.0, byte for byte, except eight changes and this file:
 1. `src/text/inline.rs`: closed markdown documents' shaped text is swept (below). Drop it once
    an upstream release sweeps the table itself.
 2. Line blocks in the code editor (the second half of this file). Drop it once upstream has
@@ -13,7 +13,9 @@ The crates.io release of gpui-base 0.8.0, byte for byte, except seven changes an
    bump to gpui-kit/gpui-base 0.8.1, which has the same fixes.
 6. A long paragraph with many inline code or bold spans combined its highlights in quadratic
    time on every frame (the end of this file). Drop it once upstream combines them once.
-7. Task statuses past done and to do (`- [/]`, `- [-]`), as notes write them (the end of this
+7. A prose measure for the text view (the end of this file). Drop it once upstream can cap a
+   document's prose narrower than its code blocks and tables.
+8. Task statuses past done and to do (`- [/]`, `- [-]`), as notes write them (the end of this
    file). Drop it once upstream reads them.
 
 Wired in through `[patch.crates-io]` in the workspace Cargo.toml (and excluded from the
@@ -177,7 +179,17 @@ a paragraph's spans. A paragraph with inline code is laid out through `inline_fl
 does this on every render. A node's marks lie within its own text, after every earlier node's, so
 they are now combined among themselves and appended: the same ranges, in linear time.
 
-## 7. Task statuses: why and the change
+## 7. Prose measure: why and the change
+
+A rendered document a whole pane shows reads best with its prose about 75 characters a line, while
+code, tables and diagrams want more. A `gpui::list` clips its items to its bounds, so a block can't
+reach past a narrow column: the column has to be the wide one and the prose capped inside it.
+`src/text/style.rs`: `TextViewStyle::with_measure` / `measure()` (part of the style's equality).
+`src/text/document.rs` (`render_root`, `in_measure`): with a measure set, each top-level block but
+code blocks, tables and custom blocks is wrapped in a centered box at most that wide; custom blocks
+cap themselves. Without one nothing changes.
+
+## 8. Task statuses: why and the change
 
 Obsidian notes mark tasks with more than `[ ]` and `[x]`: `[/]` in progress, `[-]` dropped, and
 `[>]`, `[!]`, `[?]` and the like. GFM reads those as text, so a numbered one showed its number,

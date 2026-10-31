@@ -11,6 +11,18 @@ const LEAF = new Set(["link", "button", "textbox", "searchbox", "checkbox", "rad
 // Named by their text too, but what acts inside them (a title's link) still gets a ref.
 const TITLES = new Set(["heading"]);
 
+// With no name or state, around one line at most, these only cost a line and its indent.
+const BARE = new Set(["listitem", "row", "cell", "gridcell", "group"]);
+
+// What a snapshot cut short names, with a ref, as the place to read on with -s.
+const REGIONS = new Set(["main", "navigation", "banner", "contentinfo", "complementary", "region", "search", "form", "dialog", "alertdialog", "article", "list", "table", "grid", "tabpanel", "menu", "listbox", "tree"]);
+
+/** Regions a line of what a snapshot left out names at most. */
+const NAMED = 3;
+
+/** Characters a text line holds: runs of text next to each other join up to it. */
+const TEXT = 200;
+
 const TAGS = { button: "button", select: "combobox", textarea: "textbox", nav: "navigation", main: "main", header: "banner", footer: "contentinfo", aside: "complementary", form: "form", dialog: "dialog", ul: "list", ol: "list", li: "listitem", table: "table", tr: "row", th: "columnheader", td: "cell", summary: "button", progress: "progressbar", meter: "meter", option: "option", fieldset: "group", details: "group", article: "article", iframe: "iframe" };
 
 const INPUTS = { checkbox: "checkbox", radio: "radio", range: "slider", number: "spinbutton", search: "searchbox", button: "button", submit: "button", reset: "button", image: "button", file: "button", color: "button", hidden: null };
@@ -56,14 +68,20 @@ function nameOf(el, byText) {
   return flat(el.textContent) || title || flat(el.querySelector?.("img[alt]")?.getAttribute("alt"));
 }
 
+/** Whether a label's text is the name of a control that shows: its line says it already. */
+function names(label) {
+  const control = label.control;
+  return !!control && shows(control) && !control.closest?.("[hidden], [aria-hidden=true]") && nameOf(control, false).includes(flat(label.textContent));
+}
+
 function valueOf(el) {
   if (el.localName === "select") return flat(el.options?.[el.selectedIndex]?.textContent);
   if ((el.getAttribute("type") ?? "").toLowerCase() === "password") return el.value ? "•".repeat(Math.min(el.value.length, 8)) : "";
   return "value" in el && typeof el.value === "string" ? el.value : flat(el.textContent);
 }
 
-/** One line of the tree: role, name, ref, and what an agent needs to know of its state. */
-function line(el, role, name, ref) {
+/** One line of the tree: role, name, ref, and what an agent needs to know of its state; with `urls` a link's href. */
+function line(el, role, name, ref, urls) {
   let out = `- ${role}${name ? ` ${quote(cut(name))}` : ""}`;
   if (role === "heading") {
     const level = el.getAttribute("aria-level");
@@ -75,29 +93,78 @@ function line(el, role, name, ref) {
   const expanded = el.getAttribute("aria-expanded");
   if (expanded) out += expanded === "true" ? " [expanded]" : " [collapsed]";
   if (el.getAttribute("aria-selected") === "true") out += " [selected]";
-  if (role === "textbox" || role === "searchbox" || role === "combobox" || role === "spinbutton" || role === "slider") out += ` value=${quote(cut(valueOf(el)))}`;
-  if (role === "link") out += ` -> ${cut(flat(el.getAttribute("href")), 120)}`;
+  if (role === "textbox" || role === "searchbox" || role === "combobox" || role === "spinbutton" || role === "slider") {
+    const value = valueOf(el);
+    if (value) out += ` value=${quote(cut(value))}`;
+  }
+  if (urls && role === "link") out += ` -> ${cut(flat(el.getAttribute("href")), 120)}`;
   return out;
 }
 
 /**
- * The page under `scope` (a ref or CSS; the body if none) as lines of the tree: each element
- * with a role, refs on what acts, `depth` levels at most. Past `most` lines or `chars` characters
- * nothing more is looked at but counted: a huge page costs little more than a big one.
+ * The page under `scope` (a ref or CSS; the body if none), or under each of `roots` in turn, as
+ * lines of the tree: each element with a role, refs on what acts, `depth` levels at most. Past `most` lines or `chars` characters
+ * nothing more is looked at but counted, by the region it's in (`lost`): a huge page costs little
+ * more than a big one. With `viewport`, an element over a screen above or below the viewport is
+ * counted too (`off`, by region), not walked, unless something in it shows on screen.
  */
-function walk({ interactive = false, scope = null, depth = null, boxes = false, most = LINES, chars = CHARS }) {
-  const root = scope ? resolve(scope) : (document.body ?? document.documentElement);
+function walk({ interactive = false, scope = null, roots = null, depth = null, boxes = false, urls = false, viewport = false, most = LINES, chars = CHARS - TAIL }) {
+  roots ??= [scope ? resolve(scope) : (document.body ?? document.documentElement)];
+  let root;
   const lines = [];
-  let [full, size, omitted] = [false, 0, 0];
+  let [full, size] = [false, 0];
+  const lost = new Map();
+  // The regions the walk is in, innermost last: what a cut names to read on in.
+  const open = [];
+  const screen = viewport ? window.innerHeight || 0 : 0;
+  const off = { above: 0, below: 0, top: 0, bottom: 0, in: { above: new Map(), below: new Map() } };
+  // A box with something on screen in it is never cut, wherever it is: a fixed banner in a
+  // footer, floats in a box of no height, an inner scroll pane.
+  const kept = screen ? onScreen() : new Set();
+  // Where the document being walked is in the top one's viewport: a frame's is lower down.
+  let dy = 0;
+  // The last line, while it's text: the next text at its level, in the same block, joins it.
+  let run = null;
   const emit = (level, text) => {
     const at = `${"  ".repeat(interactive ? 0 : level)}${text}`;
+    run = null;
     if (lines.length < most && size + at.length < chars) {
       lines.push(at);
       size += at.length + 1;
     } else full = true;
   };
+  const say = (level, text, block) => {
+    const joined = run?.level === level && run.block === block ? `${run.text} ${text}` : "";
+    const at = joined && joined.length <= TEXT ? `${"  ".repeat(level)}- text ${quote(joined)}` : "";
+    const grown = at.length - lines.at(-1)?.length;
+    if (at && size + grown < chars) {
+      size += grown;
+      lines[lines.length - 1] = at;
+      run.text = joined;
+      return;
+    }
+    emit(level, `- text ${quote(cut(text, TEXT))}`);
+    if (!full) run = { level, text, block };
+  };
   // An element and all its own, counted by the engine rather than walked a node at a time.
   const count = (node) => (node.nodeType === 1 ? node.getElementsByTagName("*").length + 1 : 0);
+  const add = (map, region, n) => map.set(region, (map.get(region) ?? 0) + n);
+  const regionOf = (el) => (REGIONS.has(roleOf(el)) && el.getClientRects().length ? el : (open.at(-1) ?? null));
+  // Over a screen above or below the viewport: counted, not walked.
+  const away = (el) => {
+    if (!screen || el === root || kept.has(el)) return false;
+    const r = el.getBoundingClientRect();
+    const y = r.y + dy;
+    // A box with no size (a wrapper of fixed or floated content) doesn't say where its content is.
+    if (!(r.width > 0 && r.height > 0) || (y <= 2 * screen && y + r.height >= -screen)) return false;
+    const side = y > 0 ? "below" : "above";
+    const n = count(el);
+    off[side] += n;
+    add(off.in[side], regionOf(el), n);
+    if (y > 0) off.bottom = Math.max(off.bottom, y + r.height);
+    else off.top = Math.min(off.top, y);
+    return true;
+  };
   // A same-origin frame's page goes on in the tree; another origin's can't be read from here.
   const frame = (el, level, muted) => {
     const name = nameOf(el, false);
@@ -109,59 +176,151 @@ function walk({ interactive = false, scope = null, depth = null, boxes = false, 
       } catch {}
       return emit(level, `- iframe${name ? ` ${quote(cut(name))}` : ""} (cross-origin frame ${origin}: not readable from the page)`);
     }
-    if (!interactive) emit(level, line(el, "iframe", name, null));
+    if (!interactive) emit(level, line(el, "iframe", name, null, urls));
     const body = inner.body ?? inner.documentElement;
-    if (body) visit(body, interactive ? level : level + 1, false, muted);
+    const was = dy;
+    dy = above(el, { x: 0, y: dy }).y;
+    if (body) visit(body, interactive ? level : level + 1, false, muted, body);
+    dy = was;
   };
-  // `muted`: under a title, whose text its name says already.
-  const visit = (node, level, pointer, muted) => {
-    if (full) return void (omitted += count(node));
+  // `muted`: under a title, whose text its name says already. `block`: the box its text is in.
+  const visit = (node, level, pointer, muted, block) => {
+    if (full) {
+      const n = count(node);
+      if (n && !away(node)) add(lost, regionOf(node), n);
+      return;
+    }
     if (depth !== null && level > depth) return;
     if (node.nodeType === 3) {
       const text = interactive || muted ? "" : flat(node.nodeValue);
-      if (text) emit(level, `- text ${quote(cut(text, 200))}`);
+      if (text) say(level, text, block);
       return;
     }
     if (node.nodeType !== 1 || SKIP.has(node.localName)) return;
     const el = node;
     if (el.hidden || el.getAttribute("aria-hidden") === "true") return;
+    // Before its style: a long list's rows off screen cost a box each, not a style too.
+    if (away(el)) return;
     const style = styleOf(el);
     if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return;
     if (el.localName === "iframe") return frame(el, level, muted);
     // A div that takes clicks (React's onClick) shows only as a pointer where its parent has none.
     const role = roleOf(el) ?? ((style.cursor === "pointer" && !pointer) || el.hasAttribute("onclick") ? "clickable" : null);
     let next = level;
+    let [plain, shown] = [false, false];
+    const start = lines.length;
     const leaf = LEAF.has(role) || (role === "clickable" && !el.querySelector(ACTIONABLE));
     if (role) {
       const acts = INTERACTIVE.has(role);
       const name = nameOf(el, leaf || TITLES.has(role));
       if (!interactive || acts) {
-        const ref = acts ? refOf(el) : null;
-        let text = line(el, role, name, ref);
+        // None for a line past the most, which no one reads.
+        const ref = acts && lines.length < most ? refOf(el) : null;
+        let text = line(el, role, name, ref, urls);
         if (boxes && ref) text += ` [box=${boxOf(el).join(",")}]`;
         emit(level, text);
         next = level + 1;
+        plain = text === `- ${role}`;
+        shown = !full;
       }
       if (leaf) return;
     }
+    const said = muted || TITLES.has(role) || (!interactive && el.localName === "label" && names(el));
+    const region = REGIONS.has(role) && el !== root;
+    if (region) open.push(el);
+    const inline = style.display === "inline" || style.display === "contents";
+    const was = [off.above, off.below];
     const children = el.shadowRoot ? [...el.shadowRoot.childNodes, ...el.childNodes] : [...el.childNodes];
-    for (const child of children) visit(child, next, pointer || style.cursor === "pointer", muted || TITLES.has(role));
+    for (const child of children) visit(child, next, pointer || style.cursor === "pointer", said, inline ? block : el);
+    if (region) open.pop();
+    if (!shown || full) return;
+    const under = lines.length - start - 1;
+    const gone = off.above + off.below - was[0] - was[1];
+    if (!under && gone) {
+      // All it holds is off screen: a bare `- list` would read as an empty one.
+      const mark = ` (${gone} ${off.below > was[1] ? "below" : "above"})`;
+      if (size + mark.length < chars) [lines[start], size] = [lines[start] + mark, size + mark.length];
+    } else if (plain && ((!under && depth === null) || (under === 1 && BARE.has(role)))) {
+      // Nothing under it says nothing (with -d there may be more past the depth); a bare one's
+      // one line takes its place.
+      size -= lines[start].length + 1 + 2 * under;
+      lines.splice(start, 1);
+      if (under) lines[start] = lines[start].slice(2);
+      run = null;
+    }
   };
-  visit(root, 0, false, false);
-  return { lines, omitted: full ? Math.max(omitted, 1) : 0 };
+  for (root of roots) visit(root, 0, false, false, root);
+  if (full && !lost.size) lost.set(null, 1);
+  return { lines, lost: [...lost], off };
+}
+
+/** What shows at a grid of points over the viewport, in same-origin frames too, and all that holds it. */
+function onScreen() {
+  const kept = new Set();
+  const sample = (doc, x, y) => {
+    for (const hit of doc.elementsFromPoint?.(x, y) ?? []) {
+      for (let n = hit; n && !kept.has(n); n = n.parentElement) kept.add(n);
+      const inner = hit.localName === "iframe" && frameDoc(hit);
+      if (!inner) continue;
+      const at = above(hit, { x: 0, y: 0 });
+      sample(inner, x - at.x, y - at.y);
+    }
+  };
+  const [w, h] = [window.innerWidth || 0, window.innerHeight || 0];
+  for (let i = 0.5; i < 4; i++) for (let j = 0.5; j < 4; j++) sample(document, (i * w) / 4, (j * h) / 4);
+  return kept;
 }
 
 /** Lines and characters a snapshot gives at most (an agent's tool cuts its output near 30 000), and one written to a file. */
 const CHARS = 25000;
 
+/**
+ * Of those, what the lines after the tree may take: what's above, cut and below, each naming
+ * three regions of ~100 characters at most.
+ */
+const TAIL = 1500;
+
 const FILE_LINES = 20000;
 
 const FILE_CHARS = 2000000;
 
-function snapshot({ file = false, ...ask }) {
-  const { lines, omitted } = walk(file ? { ...ask, most: FILE_LINES, chars: FILE_CHARS } : ask);
-  if (omitted) lines.push(`- … omitted ~${omitted} elements: narrow it with --ref, -s, -d or -i`);
-  return { out: lines.length ? lines.join("\n") : "(nothing on the page)", removed: prune() };
+/**
+ * The tree an agent reads: the viewport and a screen around it, unless `all`, a scope or a file
+ * asks for the whole. A file keeps the hrefs: it's searched, not read whole into a context.
+ */
+function snapshot({ file = false, all = false, ...ask }) {
+  const whole = file || all || !!ask.scope;
+  const { lines, lost, off } = walk(file ? { ...ask, urls: true, most: FILE_LINES, chars: FILE_CHARS } : { ...ask, viewport: !whole });
+  const many = (n, what) => `${n} ${what}${n === 1 ? "" : "s"}`;
+  const screens = (px) => `≈${many(Math.max(1, Math.round(px / window.innerHeight)), "screen")}`;
+  // Each side's regions with a ref, to read on in with -s or scroll <ref>.
+  const where = (side) => regions([...off.in[side]]).map((part, i) => `${i ? ", " : ": "}${part}`).join("");
+  if (off.above) lines.unshift(`- … ${many(off.above, "element")} above (${screens(-off.top)})${where("above")}; scroll up, -s <ref>, find, or --all`);
+  else if (off.below) lines.unshift("[top of page]");
+  if (lost.length) lines.push(cutShort(lost));
+  if (off.below) lines.push(`- … ${many(off.below, "element")} below (${screens(off.bottom - window.innerHeight)})${where("below")}; scroll down, -s <ref>, find, or --all`);
+  else if (off.above) lines.push("[end of page]");
+  prune();
+  return { out: lines.length ? lines.join("\n") : "(nothing on the page)", removed: state.gone.splice(0) };
+}
+
+/** The regions of `counts` ([element, count]) with the most, biggest first, each with a ref; then the rest. */
+function regions(counts) {
+  const named = counts.filter(([el]) => el).sort((a, b) => b[1] - a[1]).slice(0, NAMED);
+  const rest = counts.reduce((n, [, k]) => n + k, 0) - named.reduce((n, [, k]) => n + k, 0);
+  const parts = named.map(([el, n]) => {
+    const name = nameOf(el, false);
+    return `${n} in ${roleOf(el)}${name ? ` ${quote(cut(name, 30))}` : ""} [ref=${refOf(el)}]`;
+  });
+  if (parts.length && rest) parts.push(`${rest} elsewhere`);
+  return parts;
+}
+
+/** The line that says what a snapshot past its size left out, by the regions it's in. */
+function cutShort(lost) {
+  const parts = regions(lost);
+  if (!parts.length) return `- … past the size limit, ${lost.reduce((n, [, k]) => n + k, 0)} elements not shown: narrow it with -s, -d, -i or find`;
+  return `- … past the size limit, elements not shown: ${parts.join(", ")}: read one with -s <ref>, or narrow it with -d, -i or find`;
 }
 
 /** An element's box in the viewport, CSS px: x, y, width, height. */
@@ -190,7 +349,7 @@ function find({ pattern }) {
     const low = pattern.toLowerCase();
     test = (s) => s.toLowerCase().includes(low);
   }
-  const { lines } = walk({ most: FILE_LINES, chars: FILE_CHARS });
+  const { lines } = walk({ urls: true, most: FILE_LINES, chars: FILE_CHARS });
   const hits = lines.flatMap((l, i) => (test(l.trimStart()) ? [i] : []));
   if (!hits.length) throw new Error(`Nothing on the page matches ${pattern}`);
   const kept = [...new Set(hits.slice(0, MATCHES).flatMap((i) => [i - 1, i, i + 1]))].filter((i) => i >= 0 && i < lines.length);
@@ -259,15 +418,13 @@ function refOf(el) {
   return ref;
 }
 
-/** Refs whose element left the page, dropped: what `snapshot --json` reports removed. */
+/** Refs whose element left the page, dropped: what the next `snapshot --json` reports removed. */
 function prune() {
-  const gone = [];
   for (const [ref, weak] of state.refs) {
     if (live(weak.deref())) continue;
     state.refs.delete(ref);
-    gone.push(ref);
+    state.gone.push(ref);
   }
-  return gone;
 }
 
 const shows = (el) => el.getClientRects().length > 0 && styleOf(el).visibility !== "hidden";
@@ -326,7 +483,8 @@ function view({ target = null, clip = null, refs = false }) {
     walk({ interactive: true, most: FILE_LINES, chars: FILE_CHARS });
     for (const [ref, weak] of state.refs) {
       const it = weak.deref();
-      if (!live(it) || !it.getClientRects().length || labels.length === LABELS) continue;
+      // A region's ref (from a cut snapshot's last line) is for -s, not a place to click.
+      if (!live(it) || !it.getClientRects().length || labels.length === LABELS || REGIONS.has(roleOf(it))) continue;
       const b = rectOf(it);
       const at = onTop(it, b);
       if (at.x + b.width <= x0 || at.y + b.height <= y0 || at.x >= x1 || at.y >= y1) continue;

@@ -1,9 +1,10 @@
 //! What the browser remembers across its tabs, in the config folder's browser.json: the device
-//! last shown in device mode (its next toggle in any tab starts there) and the model last picked
-//! to ask about a page with. On the first launch it's taken from the old app's
+//! last shown in device mode (its next toggle in any tab starts there), the model last picked
+//! to ask about a page with, and reader mode's text size and face. On the first launch it's taken from the old app's
 //! `gitviber.browserDevice` and `gitviber.askModel.browser`.
 
 use super::devices::{self, DeviceChoice};
+use crate::reader;
 use gitviber_ui::store::{config_dir, write_in_background};
 use gpui::{App, Global};
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,8 @@ struct Saved {
     device: Option<DeviceChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ask_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reader: Option<reader::Text>,
 }
 
 impl Global for Saved {}
@@ -37,6 +40,7 @@ fn from_legacy(value: impl Fn(&str) -> Option<Value>) -> Saved {
             .and_then(|v| serde_json::from_value(v).ok())
             .and_then(known),
         ask_model: value("gitviber.askModel.browser").and_then(|v| v.as_str().map(String::from)),
+        reader: None,
     }
 }
 
@@ -94,6 +98,16 @@ pub fn ask_model(cx: &App) -> Option<String> {
 
 pub fn set_ask_model(model: &str, cx: &mut App) {
     update(cx, |s| s.ask_model = Some(model.to_string()));
+}
+
+pub fn reader_text(cx: &App) -> reader::Text {
+    cx.try_global::<Saved>()
+        .and_then(|s| s.reader)
+        .unwrap_or_default()
+}
+
+pub fn set_reader_text(text: reader::Text, cx: &mut App) {
+    update(cx, |s| s.reader = Some(text));
 }
 
 #[cfg(test)]

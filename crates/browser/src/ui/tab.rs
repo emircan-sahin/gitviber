@@ -10,13 +10,15 @@ use super::url::{self, BLANK};
 use crate::console::Entry;
 use crate::keys::Chord;
 use crate::ports::Port;
+use crate::reader::{self, Colors, Text};
 use crate::{Go, Look, Screen};
 use gitviber_ui::actions::browser as act;
 use gitviber_ui::memory::Live;
+use gitviber_ui::theme::Palette;
 use gitviber_ui::workspace::{
     page_host, page_label, Selection, TabIcon, TabItem, Toast, Workspace, WorkspaceEvent,
 };
-use gitviber_ui::{ActiveAppTheme as _, AppTheme};
+use gitviber_ui::{ActiveAppTheme as _, AppTheme, Settings};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     canvas, div, img, px, relative, AnyElement, App, AppContext as _, Bounds, ClickEvent, Context,
@@ -255,6 +257,37 @@ fn handle() -> Option<&'static crate::Handle> {
     crate::installed()
 }
 
+/// What reader mode's toggle does on the page now: show its article (true), go back to the page
+/// (false), or nothing. Its button waits for the page's check to find an article; `asked` (⇧⌘R,
+/// the palette) tries any loaded page, whose scripts may draw one the check missed.
+fn reader_next(state: Option<&crate::PageState>, asked: bool) -> Option<bool> {
+    let s = state?;
+    if s.reader {
+        Some(false)
+    } else {
+        ((s.readerable || asked) && !s.loading && s.failed.is_none()).then_some(true)
+    }
+}
+
+/// The reader in the app's light and dark themes (the page picks by its appearance, which
+/// follows the app's or the tab's own), with the text kept for every tab.
+fn reader_look(cx: &App) -> reader::Look {
+    let colors = |p: &Palette| Colors {
+        bg: p.background.into(),
+        fg: p.foreground.into(),
+        muted: p.muted_foreground.into(),
+        link: p.primary.into(),
+        rule: p.border.into(),
+        code: p.elevated.into(),
+    };
+    let settings = Settings::get(cx);
+    reader::Look {
+        light: colors(settings.light_theme.palette()),
+        dark: colors(settings.dark_theme.palette()),
+        text: super::store::reader_text(cx),
+    }
+}
+
 /// A picture out of every window's atlas once the update running now is over: the window being
 /// updated isn't among the app's meanwhile, so dropping it then missed the one that drew it (ten
 /// tabs closed as their pages came back kept 90 MB of them).
@@ -326,8 +359,14 @@ impl BrowserTab {
                 crate::focus(&this.saved.id, false)
             }),
             cx.on_release(|this, cx| this.released(cx)),
-            // Show agents' tabs switched: the strip asks `hidden` again.
-            cx.observe_global::<gitviber_ui::Settings>(|_, cx| cx.notify()),
+            // Show agents' tabs switched: the strip asks `hidden` again. A theme changed: the
+            // reader showing takes its colors.
+            cx.observe_global::<gitviber_ui::Settings>(|this, cx| {
+                if this.state(cx).is_some_and(|s| s.reader) {
+                    let _ = crate::reader_style(&this.saved.id, &reader_look(cx));
+                }
+                cx.notify()
+            }),
         ];
         if let Some(hub) = &hub {
             subscriptions.push(cx.subscribe_in(hub, window, Self::on_hub));
@@ -941,6 +980,49 @@ impl BrowserTab {
     pub fn set_scheme(&mut self, dark: Option<bool>, window: &mut Window, cx: &mut Context<Self>) {
         self.saved.scheme = dark.map(|d| if d { Scheme::Dark } else { Scheme::Light });
         self.save(window, cx);
+    }
+
+    fn toggle_reader(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // An agent reads its tab's page its own way.
+        let agents = self
+            .page_info(cx)
+            .is_some_and(|p| p.agent.is_some() && !p.released);
+        let Some(on) = reader_next(self.state(cx), true).filter(|_| !agents) else {
+            return;
+        };
+        let look = on.then(|| reader_look(cx));
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let done = move |shown| {
+            let _ = tx.send(shown);
+        };
+        match crate::reader_mode(&self.saved.id, look.as_ref(), done) {
+            Ok(()) if on => {
+                // Into the page: Space and the arrows scroll the article.
+                self.keys_to_page(window, cx);
+                cx.spawn_in(window, async move |this, cx| {
+                    if rx.await == Ok(false) {
+                        let _ = this.update_in(cx, |this, window, cx| {
+                            this.toast(Toast::info("No article found on this page"), window, cx)
+                        });
+                    }
+                })
+                .detach();
+            }
+            Ok(()) => {}
+            Err(e) => self.toast(
+                Toast::error(e).title("Could not show the article"),
+                window,
+                cx,
+            ),
+        }
+    }
+
+    /// Reader mode's text changed: kept for every tab, and shown at once in this one.
+    fn reader_text(&mut self, change: impl FnOnce(Text) -> Text, cx: &mut Context<Self>) {
+        let text = change(super::store::reader_text(cx));
+        super::store::set_reader_text(text, cx);
+        let _ = crate::reader_style(&self.saved.id, &reader_look(cx));
+        cx.notify();
     }
 
     fn choose_device(

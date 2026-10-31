@@ -591,6 +591,8 @@ settings! {
     code_font: CodeFont = CodeFont::platform_default(),
     custom_code_font: String = String::new(),
     code_font_size: f32 = DEFAULT_FONT_SIZE,
+    /// Points a rendered document's text (a preview, a vault note) is set above the code font.
+    reading_font_offset: f32 = 0.0,
     /// One of CODE_FONT_WEIGHTS; bold text goes two steps up from it.
     code_font_weight: u16 = 500,
     line_height: f32 = 1.6,
@@ -757,6 +759,9 @@ impl Settings {
             CODE_FONT_MAX,
             d.code_font_size,
         );
+        let span = CODE_FONT_MAX - CODE_FONT_MIN;
+        self.reading_font_offset =
+            clamp_half(self.reading_font_offset, -span, span, d.reading_font_offset);
         self.terminal_font_size = if self.terminal_font_size.is_finite() {
             self.terminal_font_size
                 .round()
@@ -862,6 +867,12 @@ impl Settings {
         } else {
             &self.light_syntax_theme
         }
+    }
+
+    /// The code font size a rendered document reads at: the code font's, moved by its own offset,
+    /// in the code font's range.
+    pub fn reading_code_size(&self) -> f32 {
+        (self.code_font_size + self.reading_font_offset).clamp(CODE_FONT_MIN, CODE_FONT_MAX)
     }
 
     /// The whitespace diffs ignore now, or None.

@@ -221,6 +221,18 @@ there, and one opened from a link offers Open in your browser.
   its picture standing in until it does. Settings → Browser sets how many stay open and for how
   long, and can reload a worktree's pages when its agent finishes.
 
+### Reader mode
+
+On a page with an article, the book button in the toolbar or `⇧⌘R` (also in the command palette)
+shows just the article as a page of its own: its site, title, author and reading time, then the text
+with its images and links, in a serif (or sans-serif) face sized for long reading, a comfortable line
+length and the app's theme colors. It goes light or dark with the app, or with the tab's own switch.
+The Aa button beside it sets the text size and face, kept for every page. Nothing of the page's
+scripts runs in it; links still open. `⇧⌘R` again, or following a link, brings the page back as it
+was, scroll position and all, without loading it again. `⇧⌘R` tries any page, even one whose button
+hasn't shown, and says so when there's no article. The article is found by the open-source
+Readability library, which goes into the page only when you ask for the reader.
+
 ### Device mode
 
 `⇧⌘M` draws a phone or tablet around the page, notch and corners included, and gives the page that
@@ -352,9 +364,11 @@ a terminal) the project turns into a repository in place.
 Markdown renders the way GitHub shows it, in files, pull requests and issues alike: Mermaid
 diagrams and math, drawn by the app itself, `> [!NOTE]` alerts, and a file's frontmatter as a table.
 
-A file's preview and a vault note read like an article: text a step above the code font size, in a
-centered column about 75 characters wide. `⌘=` / `⌘−` / `⌘0` there (or `⌥⌘=` / `⌥⌘−` / `⌥⌘0`
-anywhere) change the code font size, and the text follows it.
+A file's or a diff's preview and a vault note read like an article: text a step above the code
+font size, in a centered column about 75 characters wide, with code blocks, tables and diagrams
+reaching wider on both sides. `⌘=` / `⌘−` / `⌘0` there change that text's size alone, kept between
+launches; `⌥⌘=` / `⌥⌘−` / `⌥⌘0` change the code font size of every editor and diff, and the text
+moves along with it.
 
 ### Obsidian vault
 

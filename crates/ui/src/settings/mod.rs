@@ -68,6 +68,21 @@ impl Settings {
         });
     }
 
+    /// Moves a rendered document's text a half point of the code font, within the code font's
+    /// range; 0 resets it to the code font's. The code font itself stays.
+    pub fn step_reading_size(cx: &mut App, dir: i32) {
+        Settings::update(cx, |s| {
+            s.reading_font_offset = if dir == 0 {
+                0.0
+            } else {
+                (s.reading_font_offset + dir as f32 * 0.5).clamp(
+                    CODE_FONT_MIN - s.code_font_size,
+                    CODE_FONT_MAX - s.code_font_size,
+                )
+            }
+        });
+    }
+
     /// Moves the terminal font a point; 0 resets it.
     pub fn step_terminal_font(cx: &mut App, dir: i32) {
         Settings::update(cx, |s| {
@@ -361,6 +376,34 @@ mod tests {
         cx.run_until_parked();
         cx.update(store::flush);
         assert!(!path.exists());
+    }
+
+    #[gpui_kit::test]
+    fn the_reading_size_steps_alone_and_stays_in_the_code_fonts_range(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        crate::test_support::config_dir("settings-reading");
+        cx.update(init);
+        let get = |cx: &mut gpui_kit::TestAppContext| {
+            cx.update(|cx| {
+                let s = Settings::get(cx);
+                (s.code_font_size, s.reading_code_size())
+            })
+        };
+        cx.update(|cx| Settings::step_reading_size(cx, 1));
+        assert_eq!(get(cx), (DEFAULT_FONT_SIZE, DEFAULT_FONT_SIZE + 0.5));
+        // The code font moves the reading along.
+        cx.update(|cx| Settings::step_code_font(cx, 1));
+        assert_eq!(get(cx), (14.0, 14.5));
+        for _ in 0..40 {
+            cx.update(|cx| Settings::step_reading_size(cx, 1));
+        }
+        assert_eq!(get(cx), (14.0, CODE_FONT_MAX));
+        // The offset stopped at the top: one step down is a visible one.
+        cx.update(|cx| Settings::step_reading_size(cx, -1));
+        assert_eq!(get(cx), (14.0, CODE_FONT_MAX - 0.5));
+        cx.update(|cx| Settings::step_reading_size(cx, 0));
+        assert_eq!(get(cx), (14.0, 14.0));
     }
 
     #[test]

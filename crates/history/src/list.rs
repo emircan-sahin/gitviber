@@ -269,6 +269,9 @@ const DOT_Y: f32 = 13.5;
 const BEND_Y: f32 = DOT_Y + 10.;
 // Past this many lanes the rest are cut off; their commits sit on the last one shown.
 const MAX_LANES: usize = 8;
+// Rows end clear of the scrollbar's whole track: it lies over them and, while shown, takes
+// their clicks. Its thumb covered the changed files' status letters.
+const END: Pixels = Scrollbar::width();
 
 fn lane_of(i: usize) -> usize {
     i.min(MAX_LANES - 1)
@@ -1403,7 +1406,7 @@ impl CommitList {
             .items_start()
             .gap(px(10.))
             .py(px(6.))
-            .pr_2()
+            .pr(END)
             .pl(px(12.))
             .cursor_pointer()
             .when_some(bg, |d, bg| d.bg(bg))
@@ -1489,6 +1492,7 @@ impl CommitList {
                             .child(
                                 div()
                                     .flex_none()
+                                    .debug_selector(move || format!("commit-short-{i}"))
                                     .font_family(t.fonts.code.clone())
                                     .child(commit.short.clone()),
                             ),
@@ -1566,7 +1570,7 @@ impl CommitList {
             .h(px(24.))
             .items_center()
             .gap_2()
-            .pr_2()
+            .pr(END)
             .pl_8()
             .border_t_1()
             .border_color(t.border)
@@ -1602,6 +1606,7 @@ impl CommitList {
                     .ml_auto()
                     .flex()
                     .gap_1()
+                    .debug_selector(|| "changed-files-counts".into())
                     .font_family(t.fonts.code.clone())
                     .child(div().text_color(t.added).child(format!("+{add}")))
                     .child(div().text_color(t.removed).child(format!("-{del}"))),
@@ -1643,7 +1648,7 @@ impl CommitList {
             .h(px(26.))
             .items_center()
             .gap_2()
-            .pr_2()
+            .pr(END)
             .pl_8()
             .text_size(rems(0.75))
             .cursor_pointer()
@@ -1914,6 +1919,7 @@ impl Render for CommitList {
         });
         div()
             .id("commit-list")
+            .debug_selector(|| "commit-list".into())
             .relative()
             .size_full()
             .key_context(CONTEXT)

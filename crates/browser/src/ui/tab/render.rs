@@ -2,6 +2,7 @@
 //! the area the page's view lies over (or its picture, a placeholder, a device's frame).
 
 use super::*;
+use crate::reader::Font;
 use gitviber_ui::widgets::{chord_kbd, command_kbd, find_option_kbd};
 use gitviber_ui::Settings;
 use gpui::{MouseButton, ObjectFit, StyledImage as _};
@@ -75,6 +76,40 @@ fn port_items(
         );
     }
     menu
+}
+
+/// Reader mode's text menu: its size and face, as kept now.
+fn reader_text_items(menu: PopupMenu, tab: &WeakEntity<BrowserTab>, cx: &App) -> PopupMenu {
+    let text = super::super::store::reader_text(cx);
+    let item = |label: &'static str, on: bool, checked: bool, change: fn(Text) -> Text| {
+        let tab = tab.clone();
+        PopupMenuItem::new(label)
+            .disabled(!on)
+            .checked(checked)
+            .on_click(move |_, _, cx| {
+                let _ = tab.update(cx, |this, cx| this.reader_text(change, cx));
+            })
+    };
+    let (bigger, smaller) = (|t: Text| t.step(1), |t: Text| t.step(-1));
+    let reset = |t: Text| Text {
+        size: Text::default().size,
+        ..t
+    };
+    let serif = |t: Text| Text {
+        font: Font::Serif,
+        ..t
+    };
+    let sans = |t: Text| Text {
+        font: Font::Sans,
+        ..t
+    };
+    let custom = text.size != Text::default().size;
+    menu.item(item("Larger Text", !text.largest(), false, bigger))
+        .item(item("Smaller Text", !text.smallest(), false, smaller))
+        .item(item("Default Size", custom, false, reset))
+        .separator()
+        .item(item("Serif", true, text.font == Font::Serif, serif))
+        .item(item("Sans Serif", true, text.font == Font::Sans, sans))
 }
 
 /// A phone's status bar, upright: the time on the left, signal, Wi-Fi and battery on the right,
@@ -350,6 +385,30 @@ impl BrowserTab {
                 .tooltip("Actual Size")
                 .on_click(cx.listener(|this, _, window, cx| this.zoom_by(0, window, cx)))
         });
+        let reading = state.as_ref().is_some_and(|s| s.reader);
+        let reader = reader_next(state.as_ref(), false).map(|on| {
+            icon_button(
+                "reader",
+                IconName::BookOpenText,
+                if on {
+                    "Reader mode"
+                } else {
+                    "Leave reader mode"
+                },
+            )
+            .tooltip_key_binding(command_kbd("browser.toggleReader", cx))
+            .selected(!on)
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_reader(window, cx)))
+        });
+        let weak = cx.weak_entity();
+        let reader_text = reading.then(|| {
+            Button::new("reader-text")
+                .ghost()
+                .xsmall()
+                .icon(Icon::new(IconName::ALargeSmall))
+                .tooltip("Reader text")
+                .dropdown_menu(move |menu, _, cx| reader_text_items(menu, &weak, cx))
+        });
         let width = relative(progress.max(0.05) as f32);
         h_flex()
             .relative()
@@ -431,6 +490,8 @@ impl BrowserTab {
                         })),
                 )
             })
+            .children(reader)
+            .children(reader_text)
             .child(
                 icon_button(
                     "pick",
@@ -1432,6 +1493,11 @@ impl Render for BrowserTab {
             .on_action(
                 cx.listener(|this, _: &act::ToggleDevice, window, cx| {
                     this.toggle_device(window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &act::ToggleReader, window, cx| {
+                    this.toggle_reader(window, cx)
                 }),
             )
             .on_action(cx.listener(|this, _: &act::Find, window, cx| this.show_find(window, cx)))

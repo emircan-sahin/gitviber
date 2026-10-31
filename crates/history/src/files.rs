@@ -126,8 +126,7 @@ impl Render for FileList {
             let text: SharedString = self.error.clone().unwrap_or_else(|| "Loading…".into());
             return div()
                 .py_1()
-                .pl_4()
-                .pr_2()
+                .px_4()
                 .text_size(rems(0.71875))
                 .text_color(t.subtle)
                 .child(text)
@@ -162,8 +161,7 @@ impl Render for FileList {
                             .h(px(26.))
                             .items_center()
                             .gap_2()
-                            .pl_4()
-                            .pr_2()
+                            .px_4()
                             .text_size(rems(0.75))
                             .cursor_pointer()
                             .when(active, |d| {

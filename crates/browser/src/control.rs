@@ -96,25 +96,33 @@ Sessions
 Pages
   open <url>                   Load a page (http or https; localhost:3000 works) and wait for it
   back | forward | reload      Through its history, waiting for the page
+                               These four take --snapshot (or -i): the reply ends with the new
+                               page's snapshot (or snapshot -i)
   url                          The page's address and title, and audio: playing while it makes sound
 
 Reading
-  snapshot [-i] [-s <ref|css>] [-d <n>] [--boxes] [-o <file>]
-                               The page as a tree, with refs (e1, e2, ...) to act on: -i only
-                               what can be clicked or typed in, -s under one element, -d so many
-                               levels deep, --boxes each ref's x,y,w,h in the viewport (CSS px),
-                               -o all of it into a .txt, .md, .yml or .yaml file, over none but
-                               an earlier snapshot (its path and line count printed). Past 1500
-                               lines or 25 000 characters it stops and says how many elements it
-                               left out. Refs (also @e1 or ref=e1) stay with their element; one
-                               whose element left, or from another page or a frame that moved
-                               on, fails as stale. A frame of the page's origin reads as part of
-                               it, its refs acted on as any, and a CSS selector looks in its own
-                               page as `frame=<ref|css> >> <css>` (frames nest: `frame=a >>
-                               frame=b >> <css>`); another origin's frame is named only.
-                               --json: also the refs gone since
-  find <text|/regex/>          The tree's lines with the text (any case) or matching the regex,
-                               each with the line before and after it; 30 at most
+  snapshot [-i] [-s <ref|css>] [-d <n>] [-u] [--all] [--boxes] [-o <file>]
+                               The page as a tree, with refs (e1, e2, ...) to act on: the
+                               viewport and a screen above and below it, and what shows on
+                               screen wherever it sits; each side past that one line naming its
+                               biggest regions with refs (`- … 412 elements below (≈5 screens):
+                               300 in list [ref=e9]`), or [top of page] or [end of page] when
+                               only the other side is cut. --all the whole page, -i only what
+                               can be clicked or typed in, -s all under one element, -d so many
+                               levels deep, -u each link's href too, --boxes each ref's x,y,w,h
+                               in the viewport (CSS px), -o all the page into a text file (its
+                               path and line count printed). Past 1500 lines or 25 000
+                               characters it stops and names the regions it left out, each with
+                               a ref for -s. Refs (also @e1 or ref=e1) stay with their element;
+                               one whose element left, or from another page or a frame that
+                               moved on, fails as stale. A frame of the page's origin reads as
+                               part of it, its refs acted on as any, and a CSS selector looks
+                               in its own page as `frame=<ref|css> >> <css>` (frames nest:
+                               `frame=a >> frame=b >> <css>`); another origin's frame is named
+                               only. --json: also the refs gone since the last snapshot
+  find <text|/regex/>          The whole page's tree lines with the text (any case) or matching
+                               the regex, hrefs too, each with the line before and after it; 30
+                               at most
   get text|html|value|box <ref|css>
   get attr <name> <ref|css>
   get styles [property...] <ref|css>
@@ -138,10 +146,12 @@ Acting with the mouse and keyboard: the page gets them as the user's own (truste
 activation), without the real pointer moving or the user's focus taken. A point x,y is CSS px
 from the viewport's top left, in view. --synthetic, where a command takes it, goes by the page's
 script instead (untrusted events), for a page where native input fails
-  click <ref|css|x,y> [--synthetic]
+  click <ref|css|x,y> [--synthetic] [--snapshot | -i]
                                Click an element once it shows, is enabled, holds still and is
                                on top at its middle (else why not: covered by <div#consent>), or
-                               a point: moved there, pressed, let go. Not a <select>: select
+                               a point: moved there, pressed, let go. Not a <select>: select.
+                               --snapshot (-i): a click that lands on another page or address
+                               ends with its snapshot (snapshot -i)
   dblclick <ref|css|x,y>
   rightclick <ref|css|x,y>     Twice, or with the right button: contextmenu fires, no menu opens
   hover <ref|css|x,y>          The mouse over an element or a point; CSS :hover applies
@@ -195,7 +205,11 @@ Acting by the page's script, setting what a person would and reading it back
   `canvas repainted` when a shown <canvas> painted otherwise, `canvas animating` when it was
   painting by itself already. Each is judged by a small sample: a WebGL canvas that doesn't keep
   its drawing buffer, or a small sprite on a big canvas, goes unseen (screenshot shows what it
-  drew). The same command a third time on an unchanged page says so.
+  drew). Under it, + lines name what the action added: the text of an alert or live region
+  (`+ alert \"Email is required\"`), then what can be acted on, with refs, top to bottom
+  (`+ button \"Confirm\" [ref=e41]`), 15 at most, then `… more: snapshot -s <ref>`; shown by
+  an attribute too (hidden or aria-hidden dropped, open set, an aria-expanded control's
+  aria-controls) or a popover's toggle. The same command a third time on an unchanged page says so.
 
 Waiting
   wait <css> | --text <text> | --url <glob> | --fn <js> | --load | --download | --ms <n>
@@ -211,6 +225,18 @@ Waiting
                                10 s at most unless --timeout says (120 s at most). A timeout says
                                what was still not so. --frame looks in a same-origin frame's own
                                page (<css> or --text only), as `frame=<ref|css> >> <css>` does
+
+Batches
+  batch <command>... | batch -  Commands on the tab in order, as one: no other command on it
+                               comes between them. Each quoted as an argument, or with -, one a
+                               line on stdin (blank lines and # comments skipped, words quoted as
+                               in a shell). One reply, each step's numbered ([1] ...); --json:
+                               the text, and each step's data. It stops at a step that fails
+                               (exit 1), and after one that loads another page or goes to another
+                               address (not a #fragment alone), where refs taken before are
+                               stale, and says which steps didn't run. 50 steps at most; one that
+                               could outlast the CLI's five minutes doesn't start (exit 1). Not
+                               tab, session or batch
 
 Page tools
   eval <js>                    Runs in the page; prints the result as JSON (undefined, NaN,
@@ -272,6 +298,9 @@ pub struct Request {
     /// `fill … --secret <NAME>`: $NAME from the CLI's environment, which no reply says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
+    /// `batch`'s `fill … --secret <NAME>` steps: (NAME, $NAME), as `secret` is for one fill.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<(String, String)>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq)]
@@ -545,6 +574,10 @@ pub struct Snap {
     /// Under this element only: a ref or CSS.
     pub scope: Option<String>,
     pub depth: Option<u32>,
+    /// Each link's href: a file has them anyway.
+    pub urls: bool,
+    /// The whole page, not the viewport and a screen around it.
+    pub all: bool,
     /// Each ref's box in the viewport, CSS px.
     pub boxes: bool,
     /// Written to this file in full, not printed.
@@ -704,6 +737,105 @@ pub fn parse(cmd: &str, args: &[String]) -> Result<Command, String> {
             "No command `{cmd}`: `gitviber browser help` lists them"
         )),
     }
+}
+
+/// A page command, and the snapshot its reply ends with once it lands on another page or
+/// address: `--snapshot` (or `-i`, interactive only) after open, back, forward, reload or click.
+pub fn step(cmd: &str, args: &[String]) -> Result<(Command, Option<Snap>), String> {
+    let mut then = None;
+    let mut rest = args.to_vec();
+    if matches!(cmd, "open" | "back" | "forward" | "reload" | "click") {
+        rest.retain(|a| match a.as_str() {
+            "--snapshot" => {
+                then.get_or_insert_with(Snap::default);
+                false
+            }
+            "-i" => {
+                then.get_or_insert_with(Snap::default).interactive = true;
+                false
+            }
+            _ => true,
+        });
+    }
+    Ok((parse(cmd, &rest)?, then))
+}
+
+/// Steps a batch runs at most.
+pub const MOST_STEPS: usize = 50;
+
+pub const BATCH_USAGE: &str = "Usage: gitviber browser batch <command>... (each quoted), or \
+                               `batch -` with the commands one a line on stdin";
+
+/// A batch's commands as words: each line of its arguments one, blank lines and `#` comments
+/// skipped, a `gitviber browser` in front dropped.
+pub fn batch_lines(args: &[String]) -> Result<Vec<Vec<String>>, String> {
+    let lines = args
+        .iter()
+        .flat_map(|a| a.lines())
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'));
+    let steps = lines
+        .enumerate()
+        .map(|(i, l)| {
+            let l = l.strip_prefix("gitviber browser ").unwrap_or(l);
+            words(l).map_err(|e| format!("Step {} ({l}): {e}", i + 1))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    match steps.len() {
+        0 => Err(BATCH_USAGE.into()),
+        n if n > MOST_STEPS => Err(format!("A batch runs {MOST_STEPS} steps at most, not {n}")),
+        _ => Ok(steps),
+    }
+}
+
+/// A batch's steps, every one parsed before any runs.
+pub fn batch(args: &[String]) -> Result<Vec<(Command, Option<Snap>)>, String> {
+    let steps = batch_lines(args)?
+        .into_iter()
+        .enumerate()
+        .map(|(i, words)| {
+            let parsed = match words.split_first() {
+                Some((cmd, _)) if matches!(cmd.as_str(), "batch" | "tab" | "session" | "help") => {
+                    Err(format!("`{cmd}` runs on its own, not in a batch"))
+                }
+                Some((cmd, rest)) => step(cmd, rest),
+                None => Err(BATCH_USAGE.into()),
+            };
+            parsed.map_err(|e| format!("Step {} ({}): {e}", i + 1, words.join(" ")))
+        });
+    steps.collect()
+}
+
+/// A line split as a shell splits it: words apart by blanks, 'quoted' or "quoted" (\" and \\
+/// inside) kept whole, a \ outside quotes taking the next character as it is.
+fn words(line: &str) -> Result<Vec<String>, String> {
+    let mut out = vec![];
+    // None between words; an empty '' is a word too.
+    let mut word: Option<String> = None;
+    let mut quote = None;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if quote.is_none() && c.is_whitespace() {
+            out.extend(word.take());
+            continue;
+        }
+        let w = word.get_or_insert_with(String::new);
+        match (quote, c) {
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(q), c) if c == q => quote = None,
+            (None, '\\') => w.extend(chars.next()),
+            (Some('"'), '\\') => match chars.next() {
+                Some(e @ ('"' | '\\')) => w.push(e),
+                e => w.extend(std::iter::once('\\').chain(e)),
+            },
+            (_, c) => w.push(c),
+        }
+    }
+    if quote.is_some() {
+        return Err("a quote isn't closed".into());
+    }
+    out.extend(word);
+    Ok(out)
 }
 
 fn value<'a>(it: &mut impl Iterator<Item = &'a String>, flag: &str) -> Result<&'a String, String> {
@@ -932,6 +1064,8 @@ fn snapshot(args: &[String]) -> Result<Command, String> {
             "-s" | "--ref" if snap.scope.is_some() => return Err("snapshot takes one -s".into()),
             "-s" | "--ref" => snap.scope = Some(value(&mut it, arg)?.clone()),
             "-d" | "--depth" => snap.depth = Some(number(value(&mut it, arg)?, arg)?),
+            "-u" | "--urls" => snap.urls = true,
+            "--all" => snap.all = true,
             "--boxes" => snap.boxes = true,
             "-o" | "--output" => snap.file = Some(value(&mut it, arg)?.clone()),
             _ => return Err(format!("snapshot doesn't take {arg:?}")),
@@ -2014,6 +2148,24 @@ mod tests {
                 ..Snap::default()
             }))
         );
+        for urls in ["-u", "--urls"] {
+            assert_eq!(
+                parse("snapshot", &args(&format!("-i {urls}"))),
+                Ok(Command::Snapshot(Snap {
+                    interactive: true,
+                    urls: true,
+                    ..Snap::default()
+                }))
+            );
+        }
+        assert_eq!(
+            parse("snapshot", &args("--all -i")),
+            Ok(Command::Snapshot(Snap {
+                interactive: true,
+                all: true,
+                ..Snap::default()
+            }))
+        );
         assert_eq!(
             parse("find", &args("Sign in")),
             Ok(Command::Find("Sign in".into()))
@@ -2651,11 +2803,96 @@ mod tests {
             "--tab",
             "--json",
             "--reveal",
+            "--snapshot",
+            "  batch <command>... | batch -",
         ] {
             assert!(HELP.contains(flag), "the help names {flag}");
         }
         assert!(HELP.contains("12\n                               tabs a pane at most"));
         assert!(HELP.contains("--- page content\n(untrusted)"));
+    }
+
+    #[test]
+    fn a_page_commands_snapshot_after_is_asked_with_snapshot_or_i() {
+        let interactive = Snap {
+            interactive: true,
+            ..Snap::default()
+        };
+        let open = Command::Open("http://localhost:3000/".into());
+        assert_eq!(
+            step("open", &args("localhost:3000 --snapshot")),
+            Ok((open, Some(Snap::default())))
+        );
+        assert_eq!(
+            step("back", &args("--snapshot -i")),
+            Ok((Command::Back, Some(interactive)))
+        );
+        assert!(
+            step("click", &args("-i e3"))
+                .unwrap()
+                .1
+                .unwrap()
+                .interactive
+        );
+        assert_eq!(step("click", &args("e3")), Ok((clicked("e3"), None)));
+        assert_eq!(step("reload", &args("")), Ok((Command::Reload, None)));
+        // Only the commands that go somewhere take it; snapshot's own -i is its own.
+        assert!(step("fill", &args("e3 --snapshot")).unwrap().1.is_none());
+        assert!(step("hover", &args("e3 --snapshot")).is_err());
+        assert_eq!(
+            step("snapshot", &args("-i")).unwrap(),
+            (
+                Command::Snapshot(Snap {
+                    interactive: true,
+                    ..Snap::default()
+                }),
+                None
+            )
+        );
+        assert!(step("open", &args("--snapshot")).is_err());
+    }
+
+    #[test]
+    fn a_batch_is_its_lines_split_as_a_shell_would_each_parsed_before_any_runs() {
+        let w = |s: &str| super::words(s).unwrap();
+        assert_eq!(
+            w(r#"fill e3 "Ada  Lovelace""#),
+            ["fill", "e3", "Ada  Lovelace"]
+        );
+        assert_eq!(w(r"fill  e3 'it''s' a\ b"), ["fill", "e3", "its", "a b"]);
+        assert_eq!(w(r#"find "/a\d \"x\" \\/""#), ["find", r#"/a\d "x" \/"#]);
+        assert_eq!(w("fill e3 ''"), ["fill", "e3", ""]);
+        assert!(super::words("fill e3 \"Ada").is_err());
+
+        let lines = [
+            "# the sign-up form\nfill e3 'Ada Lovelace'\n\n  check e5  ".to_string(),
+            "gitviber browser click e9 --snapshot".into(),
+        ];
+        let steps = batch(&lines).unwrap();
+        assert_eq!(
+            steps,
+            [
+                (Command::Fill("e3".into(), "Ada Lovelace".into()), None),
+                (Command::Check("e5".into(), true), None),
+                (clicked("e9"), Some(Snap::default())),
+            ]
+        );
+        assert_eq!(
+            batch(&["click e1".into(), "clik e2".into()]),
+            Err("Step 2 (clik e2): No command `clik`: `gitviber browser help` lists them".into())
+        );
+        for alone in ["tab list", "session list", "batch 'url'", "help"] {
+            assert!(batch(&[alone.into()])
+                .unwrap_err()
+                .contains("runs on its own"));
+        }
+        assert_eq!(batch(&["# nothing\n\n".into()]), Err(BATCH_USAGE.into()));
+        assert!(batch(&[]).is_err());
+        let many = vec!["url".to_string(); MOST_STEPS + 1];
+        assert!(batch(&many).unwrap_err().contains("50 steps at most"));
+        assert!(batch(&["fill e1 'x".into()])
+            .unwrap_err()
+            .starts_with("Step 1"));
     }
 
     #[test]

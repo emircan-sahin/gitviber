@@ -849,6 +849,14 @@ fn a_markdown_preview_opened_with_focus_scrolls_with_the_keys(cx: &mut TestAppCo
     cx.simulate_keystrokes("pagedown end");
     draw(cx);
     assert_eq!(top(cx), at, "the box's keys");
+    // ⌘= in the box sizes the preview's text, as in a vault note: not the window, not the code.
+    cx.simulate_keystrokes("secondary-=");
+    let sizes = cx.update(|_, cx| {
+        let s = gitviber_ui::Settings::get(cx);
+        (s.code_font_size, s.reading_code_size())
+    });
+    assert_eq!(sizes, (13.5, 14.));
+    cx.update(|_, cx| gitviber_ui::Settings::step_reading_size(cx, 0));
     cx.simulate_keystrokes("escape");
     draw(cx);
     assert!(focused(cx));

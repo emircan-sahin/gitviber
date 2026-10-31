@@ -17,6 +17,7 @@ pub const LOGO: &str = "app/logo.svg";
 gpui_kit::assets::icon_assets!(
     AppIcons,
     [
+        ALargeSmall,
         Archive,
         ArchiveRestore,
         ArrowDownToLine,
@@ -25,6 +26,7 @@ gpui_kit::assets::icon_assets!(
         ArrowLeftToLine,
         ArrowRightToLine,
         ArrowUpFromLine,
+        BookOpenText,
         Bug,
         Cherry,
         ChevronsDownUp,
