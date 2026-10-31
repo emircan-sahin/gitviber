@@ -5,7 +5,7 @@
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::Settings;
 use gitviber_ui::keymap::markdown;
-use gpui_kit::{App, InteractiveElement, Pixels, Styled, relative};
+use gpui_kit::{App, FontWeight, InteractiveElement, Pixels, Styled, relative};
 
 /// A reading view's key context: a rendered document's (scroll and find keys), and the one the
 /// zoom keys bind in.
@@ -30,10 +30,12 @@ pub fn measure(cx: &App) -> Pixels {
     text_size(cx) * MEASURE_EM
 }
 
-/// The body's size and line height on `el`, which its text inherits.
+/// The body's size, line height and weight on `el`, which its text inherits. Regular, not the
+/// interface's medium: at reading size medium read as bold beside a done task's dimmed text.
 pub fn typography<E: Styled>(el: E, cx: &App) -> E {
     el.text_size(text_size(cx))
         .line_height(relative(LINE_HEIGHT))
+        .font_weight(FontWeight::NORMAL)
 }
 
 /// The zoom keys (bound in [`KEY_CONTEXT`]) step the code font size, which persists.
@@ -41,4 +43,23 @@ pub fn zoom_keys<E: InteractiveElement>(el: E) -> E {
     el.on_action(|_: &markdown::ZoomIn, _, cx| Settings::step_code_font(cx, 1))
         .on_action(|_: &markdown::ZoomOut, _, cx| Settings::step_code_font(cx, -1))
         .on_action(|_: &markdown::ZoomReset, _, cx| Settings::step_code_font(cx, 0))
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::{TestAppContext, div};
+
+    use super::*;
+
+    #[gpui_kit::test]
+    fn the_body_reads_at_the_regular_weight(cx: &mut TestAppContext) {
+        gitviber_ui::test_support::config_dir("markdown-reading-test");
+        cx.update(gitviber_ui::init);
+        let weight = cx.update(|cx| typography(div(), cx).style().text.font_weight);
+        assert_eq!(weight, Some(FontWeight::NORMAL));
+        assert_ne!(
+            cx.update(|cx| cx.app_theme().fonts.ui_weight),
+            FontWeight::NORMAL
+        );
+    }
 }
