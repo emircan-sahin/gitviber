@@ -16,7 +16,7 @@ use gpui_kit::{
     div,
 };
 
-use crate::panel::VaultSection;
+use crate::panel::{OPENING_WAIT, VaultSection};
 use crate::vaults::Vaults;
 use crate::view::{Mode, VaultTab};
 
@@ -886,4 +886,132 @@ fn a_long_note_scrolls_from_the_keyboard_but_not_from_its_find_box(cx: &mut Test
     cx.update(|window, cx| window.focus(&shown, cx));
     cx.simulate_keystrokes("home");
     assert_eq!(scrolled(cx).0, 0.);
+}
+
+/// An open vault section in a window, its vault's path.
+fn section<'a>(
+    name: &str,
+    cx: &'a mut TestAppContext,
+) -> (
+    String,
+    Entity<Host>,
+    Entity<VaultSection>,
+    &'a mut VisualTestContext,
+) {
+    let vault = setup(name, cx);
+    let (host, cx) = cx.add_window_view(|_, _| Host(None));
+    let ctx = PanelContext {
+        workspace: WeakEntity::new_invalid(),
+        project: None,
+    };
+    let room = std::rc::Rc::new(std::cell::Cell::new(gpui_kit::px(400.)));
+    let panel = cx.update(|window, cx| cx.new(|cx| VaultSection::new(&ctx, room, window, cx)));
+    show(&host, Some(panel.clone().into()), cx);
+    (vault, host, panel, cx)
+}
+
+fn rows(panel: &Entity<VaultSection>, cx: &mut VisualTestContext) -> Vec<String> {
+    cx.update(|_, cx| panel.read(cx).row_paths())
+}
+
+/// Closes the section and opens it again, with `Folder` and `assets` open in it, and runs what
+/// needs no time to pass: the row counts it went through.
+fn reopen(
+    host: &Entity<Host>,
+    panel: &Entity<VaultSection>,
+    between: impl FnOnce(&mut VaultSection),
+    cx: &mut VisualTestContext,
+) -> Vec<usize> {
+    cx.update(|_, cx| {
+        panel.update(cx, |p, cx| {
+            p.open_folder("Folder", cx);
+            p.open_folder("assets", cx);
+        })
+    });
+    show(host, Some(panel.clone().into()), cx);
+    cx.update(|_, cx| panel.update(cx, |p, cx| p.toggle(cx)));
+    show(host, Some(panel.clone().into()), cx);
+    cx.update(|_, cx| {
+        panel.update(cx, |p, cx| {
+            between(p);
+            p.toggle(cx)
+        })
+    });
+    let mut seen = vec![rows(panel, cx).len()];
+    while cx.executor().tick() {
+        seen.push(rows(panel, cx).len());
+    }
+    seen.dedup();
+    seen
+}
+
+const WHOLE: [&str; 7] = [
+    "assets",
+    "assets/pic.png",
+    "Folder",
+    "Folder/Deep.md",
+    "Board.canvas",
+    "Home.md",
+    "Plan.md",
+];
+
+#[gpui_kit::test]
+fn the_sections_rows_span_its_width_and_open_whole(cx: &mut TestAppContext) {
+    let (_, host, panel, cx) = section("panel-rows", cx);
+    // Every row is as wide as the section, a short name's ("Home") too: its hover and click.
+    let width = cx.debug_bounds("vault-section").unwrap().size.width;
+    for row in ["vault-row-0", "vault-row-3"] {
+        assert_eq!(cx.debug_bounds(row).unwrap().size.width, width, "{row}");
+    }
+    // Opened again with folders it had open: the rows come in whole, not a folder at a time
+    // (unbatched they went 0, 5, 6, 7).
+    assert_eq!(reopen(&host, &panel, |_| {}, cx), [0, WHOLE.len()]);
+    assert_eq!(rows(&panel, cx), WHOLE);
+}
+
+#[gpui_kit::test]
+fn a_folder_that_fails_to_list_doesnt_hold_the_opening_rows(cx: &mut TestAppContext) {
+    let (vault, host, panel, cx) = section("panel-failed", cx);
+    // Gone while the section was closed (nothing watches it then): its listing fails, and the
+    // rows come in at once, no deadline needed.
+    let folder = Path::new(&vault).join("Folder");
+    let gone = |_: &mut VaultSection| std::fs::remove_dir_all(folder).unwrap();
+    assert_eq!(reopen(&host, &panel, gone, cx), [0, 5]);
+    assert_eq!(
+        rows(&panel, cx),
+        [
+            "assets",
+            "assets/pic.png",
+            "Board.canvas",
+            "Home.md",
+            "Plan.md"
+        ]
+    );
+}
+
+#[gpui_kit::test]
+fn a_folder_that_never_lists_holds_the_opening_rows_only_briefly(cx: &mut TestAppContext) {
+    let (_, host, panel, cx) = section("panel-stalled", cx);
+    assert_eq!(reopen(&host, &panel, |p| p.stall("assets"), cx), [0]);
+    cx.executor().advance_clock(OPENING_WAIT);
+    // The others are drawn; the stalled folder shows open, its files not in yet.
+    let mut want = WHOLE.to_vec();
+    want.retain(|p| *p != "assets/pic.png");
+    assert_eq!(rows(&panel, cx), want);
+}
+
+#[gpui_kit::test]
+fn a_refresh_while_opening_doesnt_put_the_rows_off(cx: &mut TestAppContext) {
+    let (_, host, panel, cx) = section("panel-churn", cx);
+    assert_eq!(reopen(&host, &panel, |p| p.stall("assets"), cx), [0]);
+    // The watcher lists the open folders again, over and over: the wait still ends on time.
+    let step = OPENING_WAIT / 4;
+    for _ in 0..3 {
+        cx.executor().advance_clock(step);
+        cx.update(|_, cx| panel.update(cx, |p, cx| p.refresh(cx)));
+        cx.run_until_parked();
+        assert!(rows(&panel, cx).is_empty());
+    }
+    cx.executor().advance_clock(step);
+    assert_eq!(rows(&panel, cx).len(), WHOLE.len() - 1);
 }

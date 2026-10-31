@@ -731,6 +731,10 @@ fn extensions(
 ) -> MarkdownExtensions {
     let flavor = base.callouts;
     let mut ext = MarkdownExtensions::default().parser_revision(1);
+    // A note's tasks take any status (`[/]`, `[-]`…); GitHub's only `[ ]` and `[x]`.
+    if flavor == Callouts::Obsidian {
+        ext = ext.task_statuses();
+    }
     // GitHub reads no frontmatter in a pull request's text: its `---` is a rule.
     if top && flavor != Callouts::GitHub {
         ext = ext
@@ -1077,6 +1081,26 @@ mod tests {
             let view = show(&host, "[[Note]] ==hi== #tag %%c%%", callouts, cx);
             assert_eq!(rendered(&view, cx).trim_end(), "[[Note]] ==hi== #tag %%c%%");
         }
+    }
+
+    #[gpui_kit::test]
+    fn a_notes_tasks_take_any_status_and_nest_under_numbered_ones(cx: &mut TestAppContext) {
+        let (host, cx) = window(cx);
+        // From a real note, its tabs under ` 15. ` moved to the item's text as the vault does.
+        let text = " 14. [ ] pre-rendering\n 15. [/] GEO ve SEO\n     - [x] xAxios AI\n     - [ ] Mirkit\n 16. [-] dropped\n 17. [?] asked\n";
+        let note = rendered(&show(&host, text, Callouts::Obsidian, cx), cx);
+        assert_eq!(
+            note.trim_end(),
+            "pre-rendering\nGEO ve SEO\nxAxios AI\nMirkit\ndropped\nasked"
+        );
+        // A repo's file has GitHub's two: the rest stay text.
+        let file = rendered(&show(&host, text, Callouts::Repo, cx), cx);
+        assert!(
+            file.contains("[/] GEO ve SEO")
+                && file.contains("[-] dropped")
+                && !file.contains("[ ]"),
+            "{file}"
+        );
     }
 
     #[gpui_kit::test]
