@@ -85,9 +85,10 @@ impl Keys {
     }
 }
 
-/// The left panel is the primary side bar (⌘B, ⌘0 focuses it), the right one the secondary
-/// (⌥⌘B). Tabs go by ⌃1–⌃8 and ⌘1 focuses the code. The terminal's pane keys stay: they only
-/// listen in the terminal, so ⌥⌘←/→ there move between panes and elsewhere between tabs.
+/// Each panel has a key that shows or hides it and one that focuses it: the git panel ⌘B and
+/// ⌘0, the explorer ⌘E (and VS Code's ⌥⌘B) and ⇧⌘E, the terminal ⌘J and ⌃`. Tabs go by ⌃1–⌃8
+/// and ⌘1 focuses the code. The terminal's pane keys stay: they only listen in the terminal, so
+/// ⌥⌘←/→ there move between panes and elsewhere between tabs.
 static VSCODE: &[Keys] = &[
     keys("workbench.showCommands", &["shift+cmd+p", "f1"]),
     keys("file.switchProject", &["ctrl+r"]).other(&["cmd+r"]),
@@ -97,7 +98,8 @@ static VSCODE: &[Keys] = &[
     keys("view.pulls", &[]),
     keys("view.issues", &[]),
     keys("view.focusGitPanel", &["cmd+0"]),
-    keys("view.focusCode", &["cmd+1", "cmd+e"]),
+    keys("view.toggleExplorer", &["cmd+e", "alt+cmd+b"]),
+    keys("view.focusCode", &["cmd+1"]),
     keys("view.zoomReset", &[]),
     keys("tab.goto1", &["ctrl+1"]).other(&["alt+1"]),
     keys("tab.goto2", &["ctrl+2"]).other(&["alt+2"]),
@@ -118,7 +120,6 @@ static VSCODE: &[Keys] = &[
     keys("tab.reopenClosed", &["shift+cmd+t"]),
     keys("diff.nextChange", &["f7", "alt+f5", "alt+down"]),
     keys("diff.prevChange", &["shift+f7", "alt+shift+f5", "alt+up"]),
-    keys("terminal.toggle", &["ctrl+`", "cmd+j"]).other(&["cmd+`", "cmd+j"]),
     keys("terminal.new", &["ctrl+shift+`", "cmd+t"]).other(&["shift+cmd+`"]),
     keys("terminal.split", &["cmd+\\", "cmd+d"]).other(&["shift+cmd+5", "shift+cmd+d"]),
     keys("browser.open", &[]),

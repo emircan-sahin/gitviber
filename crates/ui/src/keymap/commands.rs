@@ -37,7 +37,7 @@ workbench: [ShowCommands, QuickOpen, OpenChange, OpenSettings, ShortcutOverlay],
     search: [FindInFiles],
     media: [ZoomIn, ZoomOut, Fit],
     markdown: [ZoomIn, ZoomOut, ZoomReset],
-    terminal: [Toggle, NewInProject, ShowAgents, ResumeConversation, New, Split, SplitDown, Clear, Close, PrevPane, NextPane, FocusLeft, FocusRight, FocusUp, FocusDown, ToggleMaximize, ZoomPane, EqualizePanes, RenamePane, FontZoomIn, FontZoomOut, FontZoomReset, PrevCommand, NextCommand, Hints, FocusTabs],
+    terminal: [Toggle, Focus, NewInProject, ShowAgents, ResumeConversation, New, Split, SplitDown, Clear, Close, PrevPane, NextPane, FocusLeft, FocusRight, FocusUp, FocusDown, ToggleMaximize, ZoomPane, EqualizePanes, RenamePane, FontZoomIn, FontZoomOut, FontZoomReset, PrevCommand, NextCommand, Hints, FocusTabs],
     browser: [Open, FocusAddress, Reload, Back, Forward, Inspect, Pick, ToggleDevice, ClearData, Find, FindNext, FindPrev, ZoomIn, ZoomOut, ZoomReset, ToggleReader],
     explorer: [Rename, Delete],
     git: [SwitchBranch, NewBranch, CompareBranches, SwitchWorktree, NewWorktree, Fetch, Pull, Push, Sync, ApplyPatch, Undo, Redo, ToggleStage, Discard, Commit, RenameBranch, SelectAllChanges, CreateTag, SuggestMessage],
@@ -391,14 +391,11 @@ pub static COMMANDS: &[Command] = &[
         .local("MarkdownReading"),
     cmd::<markdown::ZoomReset>("markdown.zoomReset", "Reset Text Size", Editor, &["cmd+0"])
         .local("MarkdownReading"),
-    // ⌃` and ⌘J. Elsewhere Ctrl+` and Ctrl+J.
-    cmd::<terminal::Toggle>(
-        "terminal.toggle",
-        "Toggle Terminal",
-        Terminal,
-        &["cmd+j", "ctrl+`"],
-    )
-    .other(&["cmd+j", "cmd+`"]),
+    // ⌘J shows or hides it, ⌃` goes into it (elsewhere Ctrl+J and Ctrl+`). Listed after the
+    // toggle, so a user who bound ⌃` there keeps it.
+    cmd::<terminal::Toggle>("terminal.toggle", "Toggle Terminal", Terminal, &["cmd+j"]),
+    cmd::<terminal::Focus>("terminal.focus", "Focus Terminal", Terminal, &["ctrl+`"])
+        .other(&["cmd+`"]),
     cmd::<terminal::NewInProject>(
         "terminal.newInProject",
         "New Terminal in Project…",

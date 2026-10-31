@@ -607,7 +607,11 @@ mod tests {
             "markdown.zoomReset",
             // Reader mode is new here.
             "browser.toggleReader",
+            // ⌃` from Toggle Terminal (TAKEN_BY_FOCUS): a panel's focus key is its own command.
+            "terminal.focus",
         ];
+        // Keys a focus command took over from the toggle that had them.
+        const TAKEN_BY_FOCUS: &[(&str, &str)] = &[("terminal.toggle", "ctrl+`")];
         // The old app's Linux "ctrl+alt" was Super+Alt, not the Ctrl+Alt its docs named.
         const MOVED_OFF_SUPER: &[(&str, &str)] = &[
             ("terminal.prevPane", "alt+cmd+left"),
@@ -631,11 +635,21 @@ mod tests {
             if let Some((_, added)) = ADDED.iter().find(|(a, _)| *a == id) {
                 keys.extend(added.iter().map(|k| k.to_string()));
             }
+            let taken = TAKEN_BY_FOCUS.iter().find(|(t, _)| *t == id).map(|t| t.1);
+            keys.retain(|k| Some(k.as_str()) != taken);
             assert_eq!(c.keys, keys.as_slice(), "{id} keys");
-            let other = match MOVED_OFF_SUPER.iter().find(|(m, _)| *m == id) {
+            let mut other = match MOVED_OFF_SUPER.iter().find(|(m, _)| *m == id) {
                 Some((_, key)) => Some(vec![key.to_string()]),
                 None => o.keys_other.clone(),
             };
+            // Off macOS the taken key is the same one with Ctrl (`cmd`); what's left may be the
+            // macOS keys, which then need no list of their own.
+            if let (Some(o), Some(taken)) = (other.as_mut(), taken) {
+                o.retain(|k| *k != taken.replace("ctrl", "cmd"));
+                if *o == keys {
+                    other = None;
+                }
+            }
             let ours = c
                 .keys_other
                 .map(|k| k.iter().map(|k| k.to_string()).collect::<Vec<_>>());
@@ -894,7 +908,7 @@ mod tests {
                 .size_full()
                 .on_action(log::<view::ZoomIn>(&self.ran, "zoom in"))
                 .on_action(log::<view::ZoomOut>(&self.ran, "zoom out"))
-                .on_action(log::<terminal::Toggle>(&self.ran, "terminal"))
+                .on_action(log::<terminal::Focus>(&self.ran, "terminal"))
                 .on_action(log::<editor::ToggleWrap>(&self.ran, "wrap"))
                 .child(
                     gpui_kit::div()

@@ -334,7 +334,8 @@ pub fn reveal_in_explorer(
     }
 }
 
-/// Find in Files: the Search panel shown, its box focused with `seed` in it.
+/// Find in Files, a focus key: the Search panel shown, its box focused with `seed` in it;
+/// pressed with focus already in Search, back where focus came from.
 pub fn find_in_files(
     workspace: &WeakEntity<Workspace>,
     seed: Option<String>,
@@ -344,7 +345,14 @@ pub fn find_in_files(
     let Some(ws) = workspace.upgrade() else {
         return;
     };
-    ws.update(cx, |ws, cx| ws.show_panel(search::PANEL_ID, cx));
+    // Built outside the workspace's update: a panel may read the workspace as it's made.
+    Workspace::ensure_panel(&ws, search::PANEL_ID, window, cx);
+    let went_in = ws.update(cx, |ws, cx| {
+        ws.focus_panel(Slot::Right, Some(search::PANEL_ID), window, cx)
+    });
+    if !went_in {
+        return;
+    }
     let panel = Workspace::ensure_panel(&ws, search::PANEL_ID, window, cx);
     if let Some(panel) = panel.and_then(|p| p.view().downcast::<SearchPanel>().ok()) {
         panel.update(cx, |p, cx| p.ask(seed, window, cx));

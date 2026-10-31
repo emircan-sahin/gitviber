@@ -20,7 +20,13 @@ use gpui_kit::{
     Window, div, px,
 };
 
+mod panels;
+
 type Log = Rc<RefCell<Vec<String>>>;
+
+/// Plain `cargo test` runs these on threads of one process, which share the config folder's
+/// variable: a folder per setup, and one setup at a time reading it.
+static SETUP: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum At {
@@ -214,9 +220,6 @@ fn setup_with(
     preset: Preset,
     cx: &mut TestAppContext,
 ) -> (Entity<Shell>, Log, &mut VisualTestContext) {
-    // Plain `cargo test` runs these on threads of one process, which share the config folder's
-    // variable: a folder per preset, and one setup at a time reading it.
-    static SETUP: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let one = SETUP.lock().unwrap_or_else(|e| e.into_inner());
     let dir = gitviber_ui::test_support::config_dir(&format!("app-keys-{}", preset.as_str()));
     // In the file, as a launch reads it: the keymap is built from it before the feature crates'.
@@ -334,7 +337,7 @@ fn the_terminal_keeps_the_shells_keys_and_takes_its_own(cx: &mut TestAppContext)
             // ⌃ with a non-letter is the app's; letters, ⌥, F-keys and ⌘-arrows stay the shell's.
             ("ctrl-tab", &["tab.next"]),
             ("ctrl-1", &["view.changes"]),
-            ("ctrl-`", &["terminal.toggle"]),
+            ("ctrl-`", &["terminal.focus"]),
             ("cmd-j", &["terminal.toggle"]),
             ("j", &[]),
             ("ctrl-r", &[]),
@@ -699,11 +702,12 @@ fn the_vscode_presets_keys_run_where_they_should(cx: &mut TestAppContext) {
         At::Root,
         &[
             ("cmd-b", &["view.toggleGitPanel"]),
+            ("cmd-e", &["view.toggleExplorer"]),
             ("alt-cmd-b", &["view.toggleExplorer"]),
             ("shift-cmd-e", &["view.showExplorer"]),
             ("shift-cmd-f", &["search.findInFiles"]),
             ("ctrl-shift-g", &["view.changes"]),
-            ("ctrl-`", &["terminal.toggle"]),
+            ("ctrl-`", &["terminal.focus"]),
             ("cmd-j", &["terminal.toggle"]),
             ("ctrl-~", &["terminal.new"]),
             ("f1", &["workbench.showCommands"]),
@@ -735,7 +739,7 @@ fn the_vscode_presets_keys_run_where_they_should(cx: &mut TestAppContext) {
             ("cmd-d", &["terminal.split"]),
             ("cmd-k", &["terminal.clear"]),
             ("ctrl-1", &["terminal: tab 1"]),
-            ("ctrl-`", &["terminal.toggle"]),
+            ("ctrl-`", &["terminal.focus"]),
             ("ctrl-r", &[]),
         ],
     );

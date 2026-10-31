@@ -158,6 +158,7 @@ pub fn build(cx: &App) -> Vec<Menu> {
         item(view::FocusGitPanel, "Focus Git Panel"),
         item(view::FocusCode, "Focus Code View"),
         item(view::ShowExplorer, "Focus Explorer"),
+        item(terminal::Focus, "Focus Terminal"),
         item(changes::FocusMessage, "Focus Commit Message"),
         item(view::FocusNextPanel, "Focus Next Panel"),
         item(view::FocusPrevPanel, "Focus Previous Panel"),

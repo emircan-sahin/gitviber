@@ -5,7 +5,7 @@ use super::*;
 #[cfg(target_os = "macos")]
 use gitviber_ui::actions::{changes, terminal, window};
 #[cfg(target_os = "macos")]
-use gitviber_ui::actions::{git, review, tab as tabs};
+use gitviber_ui::actions::{git, review, search, tab as tabs, view};
 use gitviber_ui::keymap::ROOT_CONTEXT;
 #[cfg(target_os = "macos")]
 use gitviber_ui::Settings;
@@ -329,7 +329,7 @@ fn a_bound_ctrl_chord_reaches_the_app_from_a_page(cx: &mut TestAppContext) {
     cx.update(|cx| {
         record::<tabs::Goto1>("first tab", &ran, cx);
         record::<tabs::Next>("next tab", &ran, cx);
-        record::<terminal::Toggle>("terminal", &ran, cx);
+        record::<terminal::Focus>("terminal", &ran, cx);
         record::<changes::FocusMessage>("message", &ran, cx);
     });
     let cx = typing_in_a_page(cx);
@@ -355,6 +355,43 @@ fn a_bound_ctrl_chord_reaches_the_app_from_a_page(cx: &mut TestAppContext) {
     assert_eq!(
         *ran.borrow(),
         ["first tab", "next tab", "terminal", "message"]
+    );
+}
+
+/// Every panel's show/hide and focus key leaves a page (a reader view is the same page area),
+/// as does Find in Files; ⌘0 stays the page's Actual Size.
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn the_panel_keys_leave_a_page(cx: &mut TestAppContext) {
+    setup(cx);
+    let ran = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|cx| {
+        record::<view::ToggleExplorer>("explorer", &ran, cx);
+        record::<view::ShowExplorer>("focus explorer", &ran, cx);
+        record::<search::FindInFiles>("search", &ran, cx);
+        record::<view::ToggleGitPanel>("git panel", &ran, cx);
+        record::<view::Changes>("changes", &ran, cx);
+        record::<terminal::Toggle>("terminal", &ran, cx);
+        record::<terminal::Focus>("focus terminal", &ran, cx);
+        record::<act::ZoomReset>("actual size", &ran, cx);
+    });
+    let cx = typing_in_a_page(cx);
+    cx.simulate_keystrokes(
+        "cmd-e alt-cmd-b shift-cmd-e shift-cmd-f cmd-b ctrl-shift-g cmd-j ctrl-` cmd-0",
+    );
+    assert_eq!(
+        *ran.borrow(),
+        [
+            "explorer",
+            "explorer",
+            "focus explorer",
+            "search",
+            "git panel",
+            "changes",
+            "terminal",
+            "focus terminal",
+            "actual size",
+        ]
     );
 }
 
