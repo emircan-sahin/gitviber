@@ -576,7 +576,8 @@ mod tests {
         // The page's reload: there's no page to reload in the native app.
         const DROPPED: &[&str] = &["window.reload"];
         // The old app's terminal tabs were a Tab stop of the page; here a pane's Tab is the shell's.
-        const NEW: &[&str] = &["terminal.focusTabs"];
+        // Reader mode is new here.
+        const NEW: &[&str] = &["terminal.focusTabs", "browser.toggleReader"];
         // The old app's Linux "ctrl+alt" was Super+Alt, not the Ctrl+Alt its docs named.
         const MOVED_OFF_SUPER: &[(&str, &str)] = &[
             ("terminal.prevPane", "alt+cmd+left"),

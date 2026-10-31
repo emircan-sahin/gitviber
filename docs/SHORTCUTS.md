@@ -63,6 +63,7 @@ Reopening a closed tab, closing the other tabs, focusing the commit message or t
 | `⌘L` `⌘R` `⌘[` `⌘]` | Address bar, reload, back, forward (in a browser tab) |
 | `⌘F` `⌘G` `⇧⌘G` | Find in the page, next / previous match (in a browser tab) |
 | `⇧⌘C` `⇧⌘M` `⌥⌘I` | Pick an element for the agent, device mode, Web Inspector (in a browser tab) |
+| `⇧⌘R` | Reader mode: the page's article set for reading; again, the page as it was (in a browser tab) |
 | `⌘=` `⌘−` `⌘0` | Zoom the interface; in the terminal, its font size (a pinch or Ctrl+scroll too); in a browser tab, the page |
 | `⌥⌘=` `⌥⌘−` `⌥⌘0` | Code font size |
 | `⌘W` | Close tab, or the terminal pane in focus |

@@ -28,6 +28,7 @@ mod output;
 pub mod picks;
 mod popups;
 pub mod ports;
+pub mod reader;
 mod registry;
 pub mod server;
 mod sessions;
@@ -45,8 +46,8 @@ pub use macos::{
     agent_shown, agent_stitch, agent_tab, agent_tabs, agent_text, agent_upload, agent_upload_done,
     agent_users, appearance, attach_window, cancel_download, clear_data, close, close_all,
     close_root, configure, console_clear, console_entries, create, find, focus, go, hide, inspect,
-    keep_data_in_memory, key_to_page, navigate, network_log, pick, place, set_agent, snapshot,
-    snapshot_then, zoom,
+    keep_data_in_memory, key_to_page, navigate, network_log, pick, place, reader_mode,
+    reader_style, set_agent, snapshot, snapshot_then, zoom,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
@@ -57,8 +58,8 @@ pub use other::{
     agent_shown, agent_stitch, agent_tab, agent_tabs, agent_text, agent_upload, agent_upload_done,
     agent_users, appearance, attach_window, cancel_download, clear_data, close, close_all,
     close_root, configure, console_clear, console_entries, create, find, focus, go, hide, inspect,
-    keep_data_in_memory, key_to_page, navigate, network_log, pick, place, set_agent, snapshot,
-    snapshot_then, zoom,
+    keep_data_in_memory, key_to_page, navigate, network_log, pick, place, reader_mode,
+    reader_style, set_agent, snapshot, snapshot_then, zoom,
 };
 pub use sessions::Shelf;
 pub use ui::init;
@@ -86,6 +87,10 @@ pub struct PageState {
     pub failed: Option<Failed>,
     /// The page has loaded something since its view was made: a parked page's picture can go.
     pub committed: bool,
+    /// Reader mode shows the page's article over it (reader.rs).
+    pub reader: bool,
+    /// The page likely has an article to show in reader mode.
+    pub readerable: bool,
 }
 
 /// How a tab shows its page from its first load: its device's user agent and whether it has
@@ -466,6 +471,16 @@ mod other {
     }
     pub fn snapshot_then(_: &str, done: impl FnOnce(Option<String>) + 'static) {
         done(None)
+    }
+    pub fn reader_mode(
+        _: &str,
+        _: Option<&crate::reader::Look>,
+        _: impl FnOnce(bool) + 'static,
+    ) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn reader_style(_: &str, _: &crate::reader::Look) -> Res<()> {
+        Err(UNSUPPORTED.into())
     }
 }
 
