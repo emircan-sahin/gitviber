@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use gitviber_core::obsidian::Vault;
 use gitviber_core::{Core, api};
-use gitviber_files::explorer::MIN_FILES;
 use gitviber_files::explorer::tree::{LazyTree, Listed, Node, Row, TreeKey, tree_key};
+use gitviber_files::explorer::{MIN_FILES, SECTION_FIRST};
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::FileIcon;
@@ -36,6 +36,9 @@ use crate::note::open_in_tab;
 use crate::vaults::{Vaults, VaultsEvent};
 
 const ROW_HEIGHT: f32 = 24.;
+const HEADER_HEIGHT: f32 = 28.;
+/// The rows' inset from the header.
+const LIST_TOP: f32 = 4.;
 const INDENT: f32 = 12.;
 /// The open section's least height (its header and two rows), and its height until dragged.
 const MIN_SECTION: f32 = 84.;
@@ -698,8 +701,9 @@ impl VaultSection {
             .child("OBSIDIAN")
             .on_click(cx.listener(|this, _, _, cx| this.toggle(cx)));
         div()
+            .debug_selector(|| "vault-header".into())
             .flex_none()
-            .h(px(28.))
+            .h(px(HEADER_HEIGHT))
             .flex()
             .items_center()
             .gap_1()
@@ -782,10 +786,10 @@ impl Render for VaultSection {
             );
         // Nothing to show: the files have the whole explorer.
         let Some(vault) = self.vault.clone().filter(|_| self.shown(cx)) else {
-            return base.flex_none();
+            return base.flex_none().into_any_element();
         };
         if !self.open {
-            return base.flex_none().child(self.header(cx));
+            return base.flex_none().child(self.header(cx)).into_any_element();
         }
         // The open tab's file, when it's one of this vault's (selection_key's "vault:" form).
         let prefix = format!("vault:{}:", vault.path);
@@ -801,11 +805,15 @@ impl Render for VaultSection {
         let handle = resize_handle::<VaultSplit, VaultSplit>("vault-split", Axis::Vertical)
             .inside(HandleEdge::Leading)
             .on_drag(VaultSplit, |d, _, _, cx| cx.new(|_| d.clone()));
-        // Too short a window shrinks it first down to MIN_SECTION, then the files.
+        // Its rows' height (a notice's as laid out) up to its size; more only from room the files
+        // leave. Too short a window takes the files down to MIN_FILES first, then this.
+        let notice_shown = self.error.is_some() || empty;
+        let rows = HEADER_HEIGHT + LIST_TOP + (count + 1) as f32 * ROW_HEIGHT;
+        let fit = if notice_shown { size } else { size.min(rows) };
         base.relative()
-            .h(px(size))
-            .min_h(px(MIN_SECTION))
-            .flex_shrink(1.)
+            .when(!notice_shown, |d| d.h(px(fit)))
+            .flex_grow(SECTION_FIRST)
+            .min_h(px(fit.min(MIN_SECTION)))
             .on_drag_move(cx.listener(|this, e: &DragMoveEvent<VaultSplit>, _, cx| {
                 let want = f32::from(e.bounds.bottom() - e.event.position.y);
                 let most = f32::from(e.bounds.size.height + this.room.get()) - MIN_FILES;
@@ -829,19 +837,16 @@ impl Render for VaultSection {
                 )
                 .track_scroll(&self.scroll)
                 .flex_1()
-                .py_1(),
-            )
-            // The space below the rows: the vault's own menu.
-            .child(
-                div()
-                    .id("vault-blank")
-                    .h(px(ROW_HEIGHT))
-                    .flex_none()
-                    .context_menu(move |menu, _, cx| match me.upgrade() {
-                        Some(this) => this.update(cx, |this, cx| this.menu(None, menu, cx)),
-                        None => menu,
-                    }),
+                .pt(px(LIST_TOP))
+                // A row's room past the last row for the vault's menu, scrolled to like a row.
+                .pb(px(ROW_HEIGHT)),
             )
             .child(handle)
+            // Anywhere off a row: the vault's own menu.
+            .context_menu(move |menu, _, cx| match me.upgrade() {
+                Some(this) => this.update(cx, |this, cx| this.menu(None, menu, cx)),
+                None => menu,
+            })
+            .into_any_element()
     }
 }
