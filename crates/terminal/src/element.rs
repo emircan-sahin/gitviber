@@ -96,6 +96,8 @@ pub(crate) struct Frame {
     link: Vec<Bounds<Pixels>>,
     link_color: Hsla,
     font_size: f32,
+    /// Where the rows show: between rows, the grid's own height, so the rows slide under its edges.
+    clip: Bounds<Pixels>,
 }
 
 /// FNV-1a over a row's cells: what decides whether its shape can be reused.
@@ -321,6 +323,7 @@ fn build_row(
         shape.texts.push((seg.start, line));
     };
     let mut col = 0;
+    let mut gap = 0;
     while col < cols {
         let cell = &row[Column(col)];
         if cell
@@ -375,6 +378,13 @@ fn build_row(
         }
         let c = cell.c;
         let blank = c == ' ' || c == '\t' || cell.flags.contains(Flags::HIDDEN);
+        // A word's spaces stay in its line: a line a word, each painted as a layer of its own,
+        // made painting the rows most of a frame's time.
+        if blank && width == 1 {
+            gap += 1;
+            col += 1;
+            continue;
+        }
         let boxed = if blank { None } else { boxdraw::glyph(c) };
         if (blank || boxed.is_some() || width == 2)
             && let Some(s) = seg.take()
@@ -385,11 +395,20 @@ fn build_row(
             shape.boxes.push((col, width, g, fg));
         } else if !blank {
             let font = fonts.for_flags(cell.flags);
+            if seg.is_none() {
+                gap = 0;
+            }
             let s = seg.get_or_insert_with(|| Segment {
                 start: col,
                 text: String::new(),
                 runs: Vec::new(),
             });
+            // The spaces before it, styled as the glyph before them: nothing of them shows.
+            if let Some(r) = s.runs.last_mut().filter(|_| gap > 0) {
+                s.text.extend(std::iter::repeat_n(' ', gap));
+                r.len += gap;
+            }
+            gap = 0;
             let before = s.text.len();
             s.text.push(c);
             for z in cell.zerowidth().into_iter().flatten() {
@@ -519,7 +538,10 @@ impl Element for TerminalElement {
             cols: (room_w / f32::from(cell_w)).floor().max(0.) as usize,
             rows: (room_h / f32::from(cell_h)).floor().max(0.) as usize,
         };
-        self.pane.update(cx, |p, cx| p.fit(metrics, cx));
+        self.pane.update(cx, |p, cx| {
+            p.fit(metrics, cx);
+            p.settle_scroll();
+        });
 
         let pane = self.pane.read(cx);
         let emu = pane.session.emu.lock();
@@ -529,6 +551,17 @@ impl Element for TerminalElement {
         let cols = term.columns();
         let screen = term.screen_lines();
         let offset = grid.display_offset() as i32;
+        // A view between rows draws them higher by that part of a row, whole device pixels so no
+        // edge blurs, and the row below it too. Checked under this lock: output since the pane
+        // settled may have reset the view, and there's no row below the bottom.
+        let frac = if offset > 0 && !mode.contains(TermMode::ALT_SCREEN) {
+            pane.scroll_frac
+        } else {
+            0.
+        };
+        let shift = px((frac * f32::from(cell_h) * scale).round() / scale);
+        let shown = screen + (shift > px(0.)) as usize;
+        let top = origin.y - shift;
         let palette = Palette {
             theme: &theme,
             colors: *term.colors(),
@@ -549,16 +582,16 @@ impl Element for TerminalElement {
             cache.clear();
             cache.key = key;
         }
-        let mut next: HashMap<u64, Rc<RowShape>> = HashMap::with_capacity(screen);
-        let mut rows: Vec<(Pixels, Option<Rc<RowShape>>)> = Vec::with_capacity(screen);
+        let mut next: HashMap<u64, Rc<RowShape>> = HashMap::with_capacity(shown);
+        let mut rows: Vec<(Pixels, Option<Rc<RowShape>>)> = Vec::with_capacity(shown);
         // Rows to shape, copied out: the reader thread waits on the lock while it's held.
         let mut missed = Vec::new();
         let mut marks = Vec::new();
-        for r in 0..screen {
+        for r in 0..shown {
             let line = Line(r as i32 - offset);
             let row = &grid[line];
             let h = hash_row(row, cols);
-            let y = origin.y + cell_h * r as f32;
+            let y = top + cell_h * r as f32;
             match next.get(&h).cloned().or_else(|| cache.rows.remove(&h)) {
                 Some(shape) => {
                     next.insert(h, shape.clone());
@@ -588,15 +621,12 @@ impl Element for TerminalElement {
         let mut highlights = Vec::new();
         let row_bounds = |r: usize, from: usize, to: usize| {
             Bounds::new(
-                point(
-                    origin.x + cell_w * from as f32,
-                    origin.y + cell_h * r as f32,
-                ),
+                point(origin.x + cell_w * from as f32, top + cell_h * r as f32),
                 size(cell_w * (to + 1 - from) as f32, cell_h),
             )
         };
         if let Some(find) = pane.find.as_ref() {
-            let (top, bottom) = (-offset, screen as i32 - 1 - offset);
+            let (first, last) = (-offset, shown as i32 - 1 - offset);
             // Found before the rows that came since scrolled them up.
             let delta = emu.scrolled - find.scanned_at;
             for (i, m) in find.window.matches.iter().enumerate() {
@@ -604,7 +634,7 @@ impl Element for TerminalElement {
                     crate::pane::shifted(*m.start(), delta),
                     crate::pane::shifted(*m.end(), delta),
                 );
-                if end.line.0 < top || start.line.0 > bottom {
+                if end.line.0 < first || start.line.0 > last {
                     continue;
                 }
                 let color = if find.current == Some(i) {
@@ -612,7 +642,7 @@ impl Element for TerminalElement {
                 } else {
                     theme.find_match
                 };
-                for l in start.line.0.max(top)..=end.line.0.min(bottom) {
+                for l in start.line.0.max(first)..=end.line.0.min(last) {
                     if let Some((a, b)) = spans(start, end, false, Line(l), cols) {
                         highlights.push((row_bounds((l + offset) as usize, a, b), color));
                     }
@@ -620,7 +650,7 @@ impl Element for TerminalElement {
             }
         }
         if let Some(sel) = term.selection.as_ref().and_then(|s| s.to_range(term)) {
-            for r in 0..screen {
+            for r in 0..shown {
                 let line = Line(r as i32 - offset);
                 if let Some((a, b)) = spans(sel.start, sel.end, sel.is_block, line, cols) {
                     highlights.push((row_bounds(r, a, b), theme.selection));
@@ -628,7 +658,7 @@ impl Element for TerminalElement {
             }
         }
 
-        let on_screen = |l: i32| (0..screen as i32).contains(&(l + offset));
+        let on_screen = |l: i32| (0..shown as i32).contains(&(l + offset));
         // Each hinted link's box, under its label.
         if let Some(h) = pane.hints.as_ref() {
             for (_, link) in h
@@ -653,7 +683,7 @@ impl Element for TerminalElement {
                 link.spans(cols)
                     .filter(|s| on_screen(s.0) && s.2 > s.1)
                     .map(|(l, from, to)| {
-                        let y = origin.y + cell_h * (l + offset) as f32 + cell_h - px(2.);
+                        let y = top + cell_h * (l + offset) as f32 + cell_h - px(2.);
                         Bounds::new(
                             point(origin.x + cell_w * from as f32, y),
                             size(cell_w * (to - from) as f32, px(1.)),
@@ -669,7 +699,7 @@ impl Element for TerminalElement {
         let blink_off = style.blinking && config.cursor_blink && !pane.blink_visible;
         let mut cursor = None;
         if mode.contains(TermMode::SHOW_CURSOR)
-            && (0..screen as i32).contains(&cursor_row)
+            && (0..shown as i32).contains(&cursor_row)
             && !blink_off
             && pane.ime.is_none()
         {
@@ -677,7 +707,7 @@ impl Element for TerminalElement {
             let wide = cell.flags.contains(Flags::WIDE_CHAR);
             let at = point(
                 origin.x + cell_w * cursor_point.column.0 as f32,
-                origin.y + cell_h * cursor_row as f32,
+                top + cell_h * cursor_row as f32,
             );
             let w = if wide { cell_w * 2. } else { cell_w };
             let shape = if pane.focused {
@@ -728,7 +758,7 @@ impl Element for TerminalElement {
                     .shape_line(text.clone().into(), font_size, &[run], None);
             let at = point(
                 origin.x + cell_w * cursor_point.column.0 as f32,
-                origin.y + cell_h * cursor_row.max(0) as f32,
+                top + cell_h * cursor_row.max(0) as f32,
             );
             (Bounds::new(at, size(line.width, cell_h)), line)
         });
@@ -738,15 +768,24 @@ impl Element for TerminalElement {
             let track = cell_h * screen as f32;
             let total = (history + screen) as f32;
             let thumb = (track * (screen as f32 / total)).max(px(20.));
-            let top = origin.y + (track - thumb) * (1. - offset as f32 / history as f32);
+            let at = offset as f32 - frac;
+            let y = origin.y + (track - thumb) * (1. - at / history as f32);
             let x = bounds.origin.x + bounds.size.width - px(7.);
             (
-                Bounds::new(point(x, top), size(px(5.), thumb)),
+                Bounds::new(point(x, y), size(px(5.), thumb)),
                 theme.foreground.opacity(0.3),
             )
         });
 
         let takes_mouse = mode.intersects(TermMode::MOUSE_MODE);
+        let clip = if shift > px(0.) {
+            Bounds::new(
+                point(bounds.origin.x, origin.y),
+                size(bounds.size.width, cell_h * screen as f32),
+            )
+        } else {
+            bounds
+        };
         drop(emu);
         for (i, h, row) in missed {
             let shape = match next.get(&h) {
@@ -782,6 +821,7 @@ impl Element for TerminalElement {
             link,
             link_color: theme.foreground,
             font_size: config.font_size,
+            clip,
         }
     }
 
@@ -808,7 +848,7 @@ impl Element for TerminalElement {
             },
             &frame.hitbox,
         );
-        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+        window.with_content_mask(Some(gpui::ContentMask { bounds: frame.clip }), |window| {
             for (y, row) in &frame.rows {
                 for &(from, to, color) in &row.backgrounds {
                     let b = Bounds::new(
@@ -884,17 +924,17 @@ impl Element for TerminalElement {
             for b in &frame.link {
                 window.paint_quad(fill(*b, frame.link_color));
             }
+            for (b, color) in &frame.marks {
+                window.paint_quad(gpui::quad(
+                    *b,
+                    px(2.5),
+                    *color,
+                    px(0.),
+                    gpui::transparent_black(),
+                    BorderStyle::Solid,
+                ));
+            }
         });
-        for (b, color) in &frame.marks {
-            window.paint_quad(gpui::quad(
-                *b,
-                px(2.5),
-                *color,
-                px(0.),
-                gpui::transparent_black(),
-                BorderStyle::Solid,
-            ));
-        }
         if let Some((b, color)) = frame.scrollbar {
             window.paint_quad(gpui::quad(
                 b,

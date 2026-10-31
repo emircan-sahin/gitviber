@@ -197,6 +197,9 @@ pub struct TerminalPane {
     pub(crate) ime: Option<String>,
     drag: Option<Drag>,
     wheel_pending: f32,
+    /// How far short of `display_offset` a swipe left the scrollback, in rows (`0..1`): the view
+    /// is drawn that much higher. Zero at the bottom and on the alternate screen.
+    pub(crate) scroll_frac: f32,
     pinch: f32,
     last_hover_cell: Option<(usize, usize)>,
     pub(crate) focused: bool,
@@ -344,6 +347,7 @@ impl TerminalPane {
             ime: None,
             drag: None,
             wheel_pending: 0.,
+            scroll_frac: 0.,
             pinch: 0.,
             last_hover_cell: None,
             focused: false,
@@ -379,6 +383,12 @@ impl TerminalPane {
         };
         pane.apply_theme_answers();
         pane
+    }
+
+    /// Drawn without a shell: what it writes stays to be read.
+    #[cfg(test)]
+    pub(crate) fn without_shell(&mut self) {
+        self.started = true;
     }
 
     pub fn id(&self) -> PaneId {
@@ -645,6 +655,7 @@ impl TerminalPane {
         if emu.term.grid().display_offset() != 0 {
             emu.term.scroll_display(Scroll::Bottom);
         }
+        self.scroll_frac = 0.;
     }
 
     fn on_wake(&mut self, cx: &mut Context<Self>) {
@@ -1202,7 +1213,17 @@ impl TerminalPane {
         mode.intersects(TermMode::MOUSE_MODE) && !force
     }
 
-    /// The cell under `pos`, its side, and whether it's inside the grid.
+    /// The view between rows only where a swipe left it in the history: typing, a clear or a
+    /// program's alternate screen puts it back on a row. Before each frame.
+    pub(crate) fn settle_scroll(&mut self) {
+        let emu = self.session.emu.lock();
+        if emu.term.grid().display_offset() == 0 || emu.mode().contains(TermMode::ALT_SCREEN) {
+            self.scroll_frac = 0.;
+        }
+    }
+
+    /// The cell under `pos`, its side, and whether it's inside the grid. Between rows the view
+    /// shows a row more: the one below, as row `rows`.
     fn cell_at(&self, pos: Point<Pixels>) -> Option<(usize, usize, Side, bool)> {
         let m = self.metrics?;
         let (cw, ch) = (f32::from(m.cell.width), f32::from(m.cell.height));
@@ -1214,9 +1235,10 @@ impl TerminalPane {
             m.cols.min(self.size.cols as usize),
             m.rows.min(self.size.rows as usize),
         );
+        let shown = rows + (self.scroll_frac > 0.) as usize;
         let inside = x >= 0. && y >= 0. && (x as usize) < cols && (y as usize) < rows;
         let col = (x.max(0.) as usize).min(cols.saturating_sub(1));
-        let row = (y.max(0.) as usize).min(rows.saturating_sub(1));
+        let row = ((y + self.scroll_frac).max(0.) as usize).min(shown.saturating_sub(1));
         let side = if x.fract() < 0.5 || x < 0. {
             Side::Left
         } else {
@@ -1242,6 +1264,7 @@ impl TerminalPane {
         m: &Modifiers,
         mode: TermMode,
     ) {
+        let row = row.min((self.size.rows as usize).saturating_sub(1));
         if let Some((data, binary)) = mouse::report(button, kind, col, row, Self::mods(m), mode) {
             if binary {
                 self.session.write_binary(data);
@@ -1403,15 +1426,16 @@ impl TerminalPane {
         if pos.x > m.origin.x || pos.x < m.bounds.origin.x {
             return None;
         }
-        let row = (f32::from(pos.y - m.origin.y) / f32::from(m.cell.height)).floor();
-        if row < 0. || row as usize >= m.rows {
+        let y = f32::from(pos.y - m.origin.y) / f32::from(m.cell.height);
+        if y < 0. || y as usize >= m.rows {
             return None;
         }
+        let row = (y + self.scroll_frac).floor();
         let emu = self.session.emu.lock();
         let line = Line(row as i32 - emu.term.grid().display_offset() as i32);
         let id = crate::marks::mark_on(&emu.term, line)?;
         emu.marks.command(id)?.end.as_ref()?;
-        let top = m.origin.y + m.cell.height * row;
+        let top = m.origin.y + m.cell.height * (row - self.scroll_frac);
         Some((
             id,
             Bounds::new(
@@ -1472,6 +1496,31 @@ impl TerminalPane {
         }
         let line_h = f32::from(m.cell.height);
         let mode = self.mode();
+        // The history itself follows a swipe pixel by pixel: stepped by rows, most events of a
+        // slow swipe moved nothing and the view jumped a row every few frames.
+        if let ScrollDelta::Pixels(p) = e.delta
+            && !self.program_takes_mouse(&e.modifiers, mode)
+            && !mode.contains(TermMode::ALT_SCREEN)
+        {
+            self.wheel_pending = 0.;
+            let mut emu = self.session.emu.lock();
+            let offset = emu.term.grid().display_offset();
+            let history = emu.term.history_size();
+            let (to, frac) =
+                input::smooth_scroll(offset, self.scroll_frac, f32::from(p.y), line_h, history);
+            if (to, frac) != (offset, self.scroll_frac) {
+                if to != offset {
+                    emu.term
+                        .scroll_display(Scroll::Delta(to as i32 - offset as i32));
+                }
+                drop(emu);
+                self.scroll_frac = frac;
+                cx.notify();
+                self.rehover(cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
         let rows = match e.delta {
             // A swipe moves a row for each row's height of pixels, the rest kept for the next one.
             ScrollDelta::Pixels(p)
@@ -1893,10 +1942,15 @@ impl TerminalPane {
         let Some(m) = self.metrics else { return vec![] };
         let offset = self.session.emu.lock().term.grid().display_offset() as i32;
         let (cw, ch) = (m.cell.width, m.cell.height);
+        let frac = self.scroll_frac;
         let at = |line: i32, col: usize| {
             let r = line + offset;
-            ((0..m.rows as i32).contains(&r))
-                .then(|| (px(PAD_LEFT) + cw * col as f32, px(PAD_TOP) + ch * r as f32))
+            ((0..m.rows as i32 + (frac > 0.) as i32).contains(&r)).then(|| {
+                (
+                    px(PAD_LEFT) + cw * col as f32,
+                    px(PAD_TOP) + ch * (r as f32 - frac),
+                )
+            })
         };
         let t = &self.theme;
         let mut out = vec![];
@@ -2082,7 +2136,7 @@ impl EntityInputHandler for TerminalPane {
         let origin = m.origin
             + gpui::point(
                 m.cell.width * cursor.column.0 as f32,
-                m.cell.height * row as f32,
+                m.cell.height * (row as f32 - self.scroll_frac),
             );
         Some(Bounds::new(origin, m.cell))
     }
@@ -2184,7 +2238,123 @@ mod tests {
             assert_eq!((col, row, inside), (79, 23, false));
             let (col, row, _, inside) = p.cell_at(at(70., 10.)).unwrap();
             assert_eq!((col, row, inside), (70, 10, true));
+
+            // Half a row short of a whole offset, each row is drawn half a row higher, and the
+            // row below the screen shows under its bottom edge.
+            p.scroll_frac = 0.5;
+            let y = |px_y: f32| gpui::point(px(25.), px(px_y));
+            assert_eq!(p.cell_at(y(5.)).map(|c| (c.1, c.3)), Some((0, true)));
+            assert_eq!(p.cell_at(y(15.)).map(|c| (c.1, c.3)), Some((1, true)));
+            assert_eq!(p.cell_at(y(475.)).map(|c| (c.1, c.3)), Some((24, true)));
+            // The padding above the grid isn't in it, and nothing lies past the extra row.
+            assert_eq!(p.cell_at(y(-5.)).map(|c| (c.1, c.3)), Some((0, false)));
+            assert_eq!(p.cell_at(y(590.)).map(|c| (c.1, c.3)), Some((24, false)));
         });
+    }
+
+    /// A slow swipe through the history moves it by its pixels, not a row at a time; what's
+    /// drawn at the pointer is what a drag selects; typing goes back to the prompt on a row, and
+    /// a program's alternate screen is never drawn between rows.
+    #[gpui::test]
+    fn a_swipe_scrolls_the_history_between_rows(cx: &mut TestAppContext) {
+        use gpui::TouchPhase;
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
+            crate::init(cx);
+        });
+        let core = Arc::new(Core::new(Arc::new(|_| {})));
+        let (one, cx) = cx.add_window_view(|window, cx| {
+            let pane = new_pane(
+                1,
+                core,
+                std::env::temp_dir(),
+                None,
+                None,
+                TerminalConfig::default(),
+                TerminalTheme::dark(),
+                window,
+                cx,
+            );
+            pane.update(cx, |p, _| p.started = true);
+            One(pane)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let pane = one.read_with(cx, |o, _| o.0.clone());
+        let text: String = (0..300).map(|i| format!("line {i}\r\n")).collect();
+        pane.update(cx, |p, _| p.session.emu.lock().feed(text.as_bytes()));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let m = pane.read_with(cx, |p, _| p.metrics.expect("laid out"));
+        let row_h = f32::from(m.cell.height);
+        let none = gpui::Modifiers::none();
+        let middle = m.bounds.center();
+        cx.simulate_mouse_move(middle, None, none);
+        let view = |cx: &mut VisualTestContext| {
+            pane.read_with(cx, |p, _| {
+                let offset = p.session.emu.lock().term.grid().display_offset();
+                (offset, p.scroll_frac)
+            })
+        };
+        let swipe = |dy: f32, cx: &mut VisualTestContext| {
+            cx.simulate_event(ScrollWheelEvent {
+                position: middle,
+                delta: ScrollDelta::Pixels(gpui::point(px(0.), px(dy))),
+                modifiers: gpui::Modifiers::none(),
+                touch_phase: TouchPhase::Moved,
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+
+        // Each fifth of a row moves the view.
+        let mut seen = vec![view(cx)];
+        for _ in 0..5 {
+            swipe(row_h / 5., cx);
+            seen.push(view(cx));
+        }
+        seen.dedup();
+        assert_eq!(seen.len(), 6, "{seen:?}");
+        assert_eq!(view(cx).0, 1);
+        assert!(view(cx).1 < 1e-3, "{:?}", view(cx));
+        swipe(row_h * 1.5, cx);
+        let (offset, frac) = view(cx);
+        assert_eq!(offset, 3);
+        assert!((frac - 0.5).abs() < 1e-3, "{frac}");
+
+        // A quarter row down the grid is the bottom half of the screen's first row, drawn half a
+        // row up: the history's line two above the screen, as offset 3 puts its top at -3.
+        let at = |rows: f32| m.origin + gpui::point(px(4.), px(rows * row_h));
+        cx.simulate_mouse_down(at(0.75), MouseButton::Left, none);
+        cx.simulate_mouse_move(
+            at(0.85) + gpui::point(px(60.), px(0.)),
+            MouseButton::Left,
+            none,
+        );
+        cx.simulate_mouse_up(at(0.85), MouseButton::Left, none);
+        let (selected, expected) = pane.read_with(cx, |p, _| {
+            let emu = p.session.emu.lock();
+            let range = emu
+                .term
+                .selection
+                .as_ref()
+                .and_then(|s| s.to_range(&emu.term));
+            drop(emu);
+            (range.map(|r| r.start.line.0), p.row_text(-2))
+        });
+        assert_eq!(selected, Some(-2));
+        assert!(expected.is_some_and(|t| t.starts_with("line ")));
+
+        pane.update_in(cx, |p, window, cx| p.focus(window, cx));
+        cx.simulate_keystrokes("a");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(view(cx), (0, 0.));
+
+        swipe(row_h * 2.5, cx);
+        assert!(view(cx).1 > 0.);
+        pane.update(cx, |p, _| p.session.emu.lock().feed(b"\x1b[?1049h"));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(view(cx).1, 0.);
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
     }
 
     /// Focus reports go out on real changes only. GPUI tells a pane of its window going to the
