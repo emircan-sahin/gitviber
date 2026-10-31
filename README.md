@@ -121,7 +121,7 @@ No extra account: it runs the `claude` or `codex` CLI you're already signed in t
 
 ## A browser for you, too
 
-**Check the agent's work where you read it.** `⇧⌘B` opens a tab beside the code (macOS for now;
+**Check the agent's work where you read it.** View → Open Browser opens a tab beside the code (macOS for now;
 on Linux a tab offers to open its page in your browser).
 
 - **Your dev server, one click away.** Beside the address, a list of every port your worktree's
