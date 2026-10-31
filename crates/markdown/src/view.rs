@@ -804,7 +804,7 @@ fn extensions(
     let nested = (top).then(|| extensions(view.clone(), base.clone(), false));
     let nested_view = {
         let (view, base, nested) = (view.clone(), base.clone(), nested.clone());
-        move |id: String, source: &str, cx: &App| {
+        move |id: String, source: &str, window: &Window, cx: &App| {
             let reading = is_reading(&view, cx);
             text_view(
                 ElementId::Name(id.into()),
@@ -814,12 +814,12 @@ fn extensions(
                 &base,
                 nested.clone().unwrap_or_default(),
             )
-            .when(reading, |v| v.style(reading::style(cx)))
+            .when(reading, |v| v.style(reading::style(window, cx)))
         }
     };
     ext = ext.block_renderer("gv-details", {
         let (view, nested_view) = (view.clone(), nested_view.clone());
-        move |node, _window, cx| {
+        move |node, window, cx| {
             let Some(d) = node.data::<Details>() else {
                 return div().into_any_element();
             };
@@ -828,7 +828,7 @@ fn extensions(
             let open = is_open(&view, key, d.open, cx);
             let part = |name: &str, source: &str| {
                 (!source.trim().is_empty())
-                    .then(|| nested_view(format!("gv-details-{at}-{name}"), source, cx))
+                    .then(|| nested_view(format!("gv-details-{at}-{name}"), source, window, cx))
             };
             let details = div()
                 .flex()
@@ -854,7 +854,7 @@ fn extensions(
             prose(&view, details, cx)
         }
     });
-    ext.block_renderer("gv-callout", move |node, _window, cx| {
+    ext.block_renderer("gv-callout", move |node, window, cx| {
         let Some(callout) = node.data::<Callout>() else {
             return div().into_any_element();
         };
@@ -867,9 +867,10 @@ fn extensions(
         let folds = !callout.fold.is_empty();
         let open = !folds || is_open(&view, key, callout.fold == "+", cx);
         let body = (open && !callout.body.trim().is_empty())
-            .then(|| nested_view(format!("gv-callout-{at}"), &callout.body, cx));
+            .then(|| nested_view(format!("gv-callout-{at}"), &callout.body, window, cx));
         let title = if !github && has_markup(&callout.title) {
-            nested_view(format!("gv-callout-{at}-title"), &callout.title, cx).into_any_element()
+            nested_view(format!("gv-callout-{at}-title"), &callout.title, window, cx)
+                .into_any_element()
         } else {
             callout.title.clone().into_any_element()
         };
@@ -929,7 +930,7 @@ fn prose(view: &WeakEntity<MarkdownView>, el: impl IntoElement, cx: &App) -> gpu
 }
 
 impl Render for MarkdownView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.app_theme();
         let view = text_view(
             ElementId::Name("markdown".into()),
@@ -939,7 +940,7 @@ impl Render for MarkdownView {
             &self.base,
             self.extensions.clone(),
         )
-        .when(self.reading, |v| v.style(reading::style(cx)))
+        .when(self.reading, |v| v.style(reading::style(window, cx)))
         .scrollable(!self.inline)
         .selectable(true)
         .when_some(
@@ -1300,6 +1301,20 @@ mod tests {
         draw(cx);
         let (narrow, _) = column(&view, cx);
         assert!((narrow - (500. - 64.)).abs() < 1., "{narrow}");
+    }
+
+    /// Paragraphs are spaced by 3/4 of the body's size, at any zoom: a line and a gap, 2.35em.
+    #[gpui_kit::test]
+    fn the_paragraph_gap_follows_the_reading_size(cx: &mut TestAppContext) {
+        let (host, cx) = window(cx);
+        let first = shown(&host, "One line.\n\nAnother.\n", false, cx);
+        for _ in 0..3 {
+            let size = cx.update(|_, cx| f32::from(reading::text_size(cx)));
+            let height = first(cx);
+            assert!((height - size * 2.35).abs() < 1., "{height} at {size}");
+            cx.update(|_, cx| (0..4).for_each(|_| gitviber_ui::Settings::step_reading_size(cx, 1)));
+        }
+        cx.update(|_, cx| gitviber_ui::Settings::step_reading_size(cx, 0));
     }
 
     /// In a wide pane the prose stays 40em wide while code blocks and tables take the whole

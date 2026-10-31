@@ -8,7 +8,7 @@ use gitviber_ui::keymap::markdown;
 use gpui_kit::base::text::TextViewStyle;
 use gpui_kit::{
     AnyElement, App, InteractiveElement, IntoElement, ParentElement as _, Pixels, StyleRefinement,
-    Styled, div, px, relative,
+    Styled, Window, div, px, relative, rems,
 };
 
 /// A reading view's key context: a rendered document's (scroll and find keys), and the one the
@@ -23,6 +23,9 @@ pub const ZOOM_CONTEXT: &str = "MarkdownReading";
 const BODY_PER_CODE: f32 = 8. / 7.;
 
 const LINE_HEIGHT: f32 = 1.6;
+
+/// Between paragraphs, in ems of the body: the text view's is in rems, the interface's size.
+const PARAGRAPH_GAP_EM: f32 = 0.75;
 
 /// The column in ems of the body: about 75 characters of prose a line, at any zoom.
 const MEASURE_EM: f32 = 40.;
@@ -61,11 +64,14 @@ pub fn typography<E: Styled>(el: E, cx: &App) -> E {
         .line_height(relative(LINE_HEIGHT))
 }
 
-/// A reading view's text style: prose at [`measure`], code blocks at the size its inline code is.
-pub fn style(cx: &App) -> TextViewStyle {
-    let code = text_size(cx) / BODY_PER_CODE;
+/// A reading view's text style: prose at [`measure`], paragraphs spaced for the body's size, code
+/// blocks at the size its inline code is.
+pub fn style(window: &Window, cx: &App) -> TextViewStyle {
+    let size = text_size(cx);
+    let code = size / BODY_PER_CODE;
     TextViewStyle::from_theme(&gpui_kit::base::Theme::global(cx))
         .with_measure(measure(cx))
+        .with_paragraph_gap(rems(PARAGRAPH_GAP_EM * (size / window.rem_size())))
         .with_code_block(StyleRefinement::default().text_size(code))
 }
 
