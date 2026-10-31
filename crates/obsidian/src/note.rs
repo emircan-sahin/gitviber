@@ -331,9 +331,12 @@ impl Doc {
         if ix > 0 || self.props.is_empty() {
             return part;
         }
+        // Read as the text is; the parts' own views (`MarkdownView::reading`) set theirs, and the
+        // find bar and embeds' labels keep the interface's.
         div()
             .flex()
             .flex_col()
+            .map(|d| reading::typography(d, cx))
             .child(properties::element(&self.props, cx))
             .child(part)
             .into_any_element()
@@ -879,7 +882,6 @@ impl Render for NoteView {
             .on_action(cx.listener(|this, _: &find::Next, _, cx| this.find_key(1, cx)))
             .on_action(cx.listener(|this, _: &find::Prev, _, cx| this.find_key(-1, cx)))
             .bg(t.code(t.background))
-            .map(|d| reading::typography(d, cx))
             .when(empty, |d| {
                 d.flex()
                     .items_center()
