@@ -21,6 +21,7 @@ on GitHub are its section below.
 
 - **Obsidian notes show every task state.** `[/]`, `[-]` and the other states draw their own box (half filled, crossed out, or their sign), also in numbered lists, and tasks indented with a tab under a numbered item nest under it instead of running into its line. Open tasks are no longer drawn heavier than done ones.
 - **The vault section's rows highlight across the whole width,** and opening the section shows its rows at once instead of growing as each folder is read; a slow folder, like one still in iCloud, no longer holds the rest back.
+- **The files list reaches the vault section's header,** with no blank band between them, and a short vault takes only the height of its rows, leaving the rest to the files.
 - **The History list's right edge has room.** Commit hashes, line counts and status letters keep clear of the panel's edge and of the scrollbar, which no longer covers them. Pull request and issue rows have the same space on both sides.
 
 ## [0.1.21] - 2026-10-31
