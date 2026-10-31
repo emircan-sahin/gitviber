@@ -21,9 +21,9 @@ use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     App, AppContext as _, Bounds, ClipboardItem, Context, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, Hsla, ImageSource, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, Render, RenderImage, Resource, ScrollHandle, SharedString,
-    SharedUri, StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div,
-    image_cache, point, prelude::FluentBuilder as _, px, rems,
+    ParentElement as _, Pixels, Render, RenderImage, Resource, ScrollHandle, ScrollWheelEvent,
+    SharedString, SharedUri, StatefulInteractiveElement as _, Styled as _, Subscription,
+    WeakEntity, Window, div, image_cache, point, prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::blocks::{self, Callout, Callouts, Details, DiagramKind, SourceBlock};
@@ -32,6 +32,7 @@ use crate::find::{self, FindQuery};
 use crate::images::BoundedImageCache;
 use crate::links::{self, Link};
 use crate::properties::{self, Value};
+use crate::reading;
 
 /// Where a document is, for its links and images.
 #[derive(Clone, Debug, Default)]
@@ -125,7 +126,8 @@ impl EventEmitter<MarkdownEvent> for MarkdownView {}
 impl EventEmitter<FindChanged> for MarkdownView {}
 
 impl MarkdownView {
-    /// A document filling its place: it scrolls, on the code background, centered.
+    /// A document filling its place: it scrolls, on the code background, set for reading
+    /// ([`reading`]).
     pub fn new(
         source: &str,
         base: MarkdownBase,
@@ -921,25 +923,39 @@ impl Render for MarkdownView {
                 .w_full()
                 .child(image_cache(self.images.clone()).w_full().child(view));
         }
+        let list = self.state.read(cx).list_state().clone();
+        let column = self.state.read(cx).bounds();
         div()
             .id("markdown-view")
-            .key_context("MarkdownView")
+            .key_context(reading::KEY_CONTEXT)
             .track_focus(&self.focus)
             .map(|el| scroll::on_keys(el, Self::scroll_key, cx))
+            .map(reading::zoom_keys)
+            // The column leaves the sides of a wide pane empty; the wheel there still scrolls.
+            .on_scroll_wheel(cx.listener(move |_, e: &ScrollWheelEvent, window, cx| {
+                if !column.contains(&e.position) {
+                    list.scroll_by(-e.delta.pixel_delta(window.line_height()).y);
+                    cx.notify();
+                }
+            }))
             .size_full()
             .bg(t.code(t.background))
+            .map(|el| reading::typography(el, cx))
             .flex()
             .justify_center()
             .child(
                 image_cache(self.images.clone())
                     .size_full()
-                    .max_w(px(860. + 64.))
-                    .px_8()
+                    .max_w(reading::measure(cx) + COLUMN_PADDING * 2.)
+                    .px(COLUMN_PADDING)
                     .pt_4()
                     .child(view),
             )
     }
 }
+
+/// Room on each side of the text column.
+const COLUMN_PADDING: Pixels = px(32.);
 
 /// Brings `line` (window coordinates) into `handle`'s view a third of the way down, only when
 /// it's off screen.
@@ -1198,6 +1214,67 @@ mod tests {
             draw(cx);
             let (at, _) = scrolled(&view, cx);
             assert!((at - want).abs() < 0.5, "{keys}: at {at}, not {want}");
+        }
+    }
+
+    /// The text column's width and the middle of it, in the window.
+    fn column(view: &Entity<MarkdownView>, cx: &mut VisualTestContext) -> (f32, f32) {
+        view.read_with(cx, |v, cx| {
+            let b = v.state.read(cx).bounds();
+            (f32::from(b.size.width), f32::from(b.center().x))
+        })
+    }
+
+    fn code_size(cx: &mut VisualTestContext) -> f32 {
+        cx.update(|_, cx| gitviber_ui::Settings::get(cx).code_font_size)
+    }
+
+    #[gpui_kit::test]
+    fn a_preview_reads_in_a_centered_column_that_zooms_with_the_code_font(cx: &mut TestAppContext) {
+        let (view, cx) = long_page(cx);
+        cx.simulate_resize(gpui_kit::size(px(1600.), px(900.)));
+        draw(cx);
+        let size = cx.update(|_, cx| f32::from(reading::text_size(cx)));
+        assert!((size - 13.5 * 8. / 7.).abs() < 0.01, "{size}");
+        let (width, middle) = column(&view, cx);
+        assert!((width - size * 40.).abs() < 1., "{width}");
+        assert!((middle - 800.).abs() < 1., "{middle}");
+        let (_, tall) = scrolled(&view, cx);
+
+        cx.simulate_keystrokes("secondary-=");
+        draw(cx);
+        assert_eq!(code_size(cx), 14.);
+        let (wider, _) = column(&view, cx);
+        assert!((wider - 14. * 8. / 7. * 40.).abs() < 1., "{wider}");
+        let (_, taller) = scrolled(&view, cx);
+        assert!(taller > tall, "{taller} after {tall}");
+        cx.simulate_keystrokes("secondary-- secondary--");
+        assert_eq!(code_size(cx), 13.);
+        cx.simulate_keystrokes("secondary-0");
+        assert_eq!(code_size(cx), 13.5);
+
+        // A pane narrower than the column: the text takes it, less its sides.
+        cx.simulate_resize(gpui_kit::size(px(500.), px(900.)));
+        draw(cx);
+        let (narrow, _) = column(&view, cx);
+        assert!((narrow - (500. - 64.)).abs() < 1., "{narrow}");
+    }
+
+    #[gpui_kit::test]
+    fn the_wheel_beside_the_column_scrolls_the_document(cx: &mut TestAppContext) {
+        let (view, cx) = long_page(cx);
+        cx.simulate_resize(gpui_kit::size(px(1600.), px(900.)));
+        draw(cx);
+        // Beside the column, then over it, where the document's own scrolling is the only one.
+        for (x, want) in [(40., 120.), (800., 240.)] {
+            cx.simulate_event(ScrollWheelEvent {
+                position: point(px(x), px(400.)),
+                delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-120.))),
+                ..Default::default()
+            });
+            draw(cx);
+            let (at, _) = scrolled(&view, cx);
+            assert!((at - want).abs() < 0.5, "at {x}: {at}, not {want}");
         }
     }
 

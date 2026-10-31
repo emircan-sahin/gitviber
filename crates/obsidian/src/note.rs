@@ -23,15 +23,16 @@ use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{Selection, Toast, Workspace};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
-    IntoElement, ListAlignment, ListOffset, ListState, ObjectFit, ParentElement as _, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription,
-    Task, WeakEntity, Window, div, image_cache, img, list, prelude::FluentBuilder as _, px,
+    IntoElement, ListAlignment, ListOffset, ListState, ObjectFit, ParentElement as _, Pixels,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
+    Subscription, Task, WeakEntity, Window, div, image_cache, img, list,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::links::{LinkIndex, note_name, split_target};
 use crate::markup::{self, Part, Target};
 use crate::vaults::{Vaults, VaultsEvent};
-use gitviber_markdown::properties;
+use gitviber_markdown::{properties, reading};
 
 /// Notes embedded in notes embedded in…: deeper than this shows a link, as a cycle does.
 const MAX_DEPTH: usize = 4;
@@ -565,6 +566,8 @@ pub struct NoteView {
     /// A #heading or #^block to show once the vault's files are read.
     pending: Option<String>,
     find: Option<Find>,
+    /// The reading text size the parts were measured at; a zoom measures them again.
+    measured_at: Pixels,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
     _live: Live,
@@ -624,6 +627,7 @@ impl NoteView {
             images: BoundedImageCache::new(BoundedImageCache::display_side(window), cx),
             pending: None,
             find: None,
+            measured_at: Pixels::ZERO,
             focus: cx.focus_handle(),
             _subs: vec![sub],
             _live: Live::new("NoteView"),
@@ -831,7 +835,7 @@ impl NoteView {
             .child(
                 div()
                     .w_full()
-                    .max_w(px(860. + 64.))
+                    .max_w(reading::measure(cx) + px(64.))
                     .px_8()
                     .when(ix == 0, |d| d.pt_4())
                     // Each part's markdown drops its first block's margin; a heading keeps it.
@@ -846,20 +850,27 @@ impl NoteView {
 impl Render for NoteView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.doc.begin_frame();
+        let size = reading::text_size(cx);
+        if size != self.measured_at {
+            self.measured_at = size;
+            self.list.remeasure();
+        }
         let empty = self.doc.len() == 0;
         let find = self.find.as_ref().filter(|f| f.open).map(|f| f.bar.clone());
         let t = cx.app_theme();
         div()
             .id("vault-note")
-            .key_context("MarkdownView")
+            .key_context(reading::KEY_CONTEXT)
             .track_focus(&self.focus)
             .relative()
             .size_full()
             .map(|el| scroll::on_keys(el, Self::scroll_key, cx))
+            .map(reading::zoom_keys)
             .on_action(cx.listener(|this, _: &editor::Find, window, cx| this.open_find(window, cx)))
             .on_action(cx.listener(|this, _: &find::Next, _, cx| this.find_key(1, cx)))
             .on_action(cx.listener(|this, _: &find::Prev, _, cx| this.find_key(-1, cx)))
             .bg(t.code(t.background))
+            .map(|d| reading::typography(d, cx))
             .when(empty, |d| {
                 d.flex()
                     .items_center()

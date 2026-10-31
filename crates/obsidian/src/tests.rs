@@ -656,6 +656,41 @@ fn a_link_to_a_block_scrolls_to_the_block(cx: &mut TestAppContext) {
     assert!(top.offset_in_item > gpui_kit::px(1000.), "{top:?}");
 }
 
+/// The zoom keys in a note size its text (the code font's setting), and its parts are measured
+/// again at the new size.
+#[gpui_kit::test]
+fn the_zoom_keys_size_a_notes_text(cx: &mut TestAppContext) {
+    let vault = setup("zoom", cx);
+    let (host, cx) = cx.add_window_view(|_, _| Host(None));
+    let view = cx.update(|window, cx| tab(&vault, "Home.md", window, cx));
+    show(&host, Some(view.clone().into()), cx);
+    let note = cx.update(|_, cx| view.read(cx).note().expect("the note"));
+    let shown = cx.update(|_, cx| TabItem::tab_focus(view.read(cx), cx).unwrap());
+    cx.update(|window, cx| window.focus(&shown, cx));
+    let state = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            let list = note.read(cx).list();
+            let height: gpui_kit::Pixels = (0..list.item_count())
+                .filter_map(|ix| list.bounds_for_item(ix))
+                .map(|b| b.size.height)
+                .sum();
+            (
+                gitviber_ui::Settings::get(cx).code_font_size,
+                f32::from(height),
+            )
+        })
+    };
+    let (size, height) = state(cx);
+    assert_eq!(size, 13.5);
+    cx.simulate_keystrokes("secondary-= secondary-=");
+    show(&host, Some(view.clone().into()), cx);
+    let (bigger, taller) = state(cx);
+    assert_eq!(bigger, 14.5);
+    assert!(taller > height, "{taller} after {height}");
+    cx.simulate_keystrokes("secondary-0");
+    assert_eq!(state(cx).0, 13.5);
+}
+
 #[gpui_kit::test]
 fn an_svgs_preview_shows_what_was_typed(cx: &mut TestAppContext) {
     let vault = setup("svg", cx);
