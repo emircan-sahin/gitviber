@@ -47,9 +47,83 @@ pub fn zoom_keys<E: InteractiveElement>(el: E) -> E {
 
 #[cfg(test)]
 mod tests {
-    use gpui_kit::{TestAppContext, div};
+    use std::borrow::Cow;
+    use std::sync::{Arc, Mutex};
+
+    use gpui_kit::{
+        AppContext as _, Bounds, Context, DevicePixels, Entity, Font, FontId, FontMetrics, FontRun,
+        GlyphId, IntoElement, LineLayout, NoopTextSystem, ParentElement as _, PlatformTextSystem,
+        Render, RenderGlyphParams, Size, TestAppContext, TestDispatcher, TextRenderingMode, Window,
+        div,
+    };
 
     use super::*;
+    use crate::{MarkdownBase, MarkdownView};
+
+    /// The test platform's text system, keeping the weight of each line's runs as shaped.
+    #[derive(Default)]
+    struct Shaped {
+        fonts: Mutex<Vec<FontWeight>>,
+        lines: Mutex<Vec<(String, Vec<FontWeight>)>>,
+    }
+
+    impl PlatformTextSystem for Shaped {
+        fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> gpui_kit::Result<()> {
+            NoopTextSystem.add_fonts(fonts)
+        }
+        fn all_font_names(&self) -> Vec<String> {
+            NoopTextSystem.all_font_names()
+        }
+        fn font_id(&self, font: &Font) -> gpui_kit::Result<FontId> {
+            let mut fonts = self.fonts.lock().unwrap();
+            fonts.push(font.weight);
+            Ok(FontId(fonts.len() - 1))
+        }
+        fn font_metrics(&self, id: FontId) -> FontMetrics {
+            NoopTextSystem.font_metrics(id)
+        }
+        fn typographic_bounds(&self, id: FontId, glyph: GlyphId) -> gpui_kit::Result<Bounds<f32>> {
+            NoopTextSystem.typographic_bounds(id, glyph)
+        }
+        fn advance(&self, id: FontId, glyph: GlyphId) -> gpui_kit::Result<Size<f32>> {
+            NoopTextSystem.advance(id, glyph)
+        }
+        fn glyph_for_char(&self, id: FontId, ch: char) -> Option<GlyphId> {
+            NoopTextSystem.glyph_for_char(id, ch)
+        }
+        fn glyph_raster_bounds(
+            &self,
+            params: &RenderGlyphParams,
+        ) -> gpui_kit::Result<Bounds<DevicePixels>> {
+            NoopTextSystem.glyph_raster_bounds(params)
+        }
+        fn rasterize_glyph(
+            &self,
+            params: &RenderGlyphParams,
+            bounds: Bounds<DevicePixels>,
+        ) -> gpui_kit::Result<(Size<DevicePixels>, Vec<u8>)> {
+            NoopTextSystem.rasterize_glyph(params, bounds)
+        }
+        fn recommended_rendering_mode(&self, id: FontId, size: Pixels) -> TextRenderingMode {
+            NoopTextSystem.recommended_rendering_mode(id, size)
+        }
+        fn layout_line(&self, text: &str, size: Pixels, runs: &[FontRun]) -> LineLayout {
+            let fonts = self.fonts.lock().unwrap();
+            let weights = runs.iter().map(|r| fonts[r.font_id.0]).collect();
+            self.lines.lock().unwrap().push((text.into(), weights));
+            NoopTextSystem.layout_line(text, size, runs)
+        }
+    }
+
+    /// At the interface's weight, as the workspace's view is.
+    struct Workspace(Entity<MarkdownView>);
+
+    impl Render for Workspace {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let weight = cx.app_theme().fonts.ui_weight;
+            div().size_full().font_weight(weight).child(self.0.clone())
+        }
+    }
 
     #[gpui_kit::test]
     fn the_body_reads_at_the_regular_weight(cx: &mut TestAppContext) {
@@ -61,5 +135,29 @@ mod tests {
             cx.update(|cx| cx.app_theme().fonts.ui_weight),
             FontWeight::NORMAL
         );
+    }
+
+    /// The text as drawn, not only the style it inherits: a task's too, an open and a done one.
+    #[test]
+    fn a_documents_text_is_drawn_at_the_regular_weight() {
+        let shaped = Arc::new(Shaped::default());
+        let mut cx =
+            TestAppContext::build_with_text_system(TestDispatcher::new(0), None, shaped.clone());
+        gitviber_ui::test_support::config_dir("markdown-reading-drawn");
+        cx.update(gitviber_ui::init);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let doc = "Plain words\n\n- [ ] open task\n- [x] done task\n";
+            Workspace(cx.new(|cx| MarkdownView::new(doc, MarkdownBase::default(), window, cx)))
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+        let lines = shaped.lines.lock().unwrap();
+        for text in ["Plain words", "open task", "done task"] {
+            let (_, weights) = lines
+                .iter()
+                .find(|(line, _)| line.contains(text))
+                .unwrap_or_else(|| panic!("{text:?} wasn't drawn: {lines:?}"));
+            assert_eq!(weights, &[FontWeight::NORMAL], "{text}");
+        }
     }
 }
