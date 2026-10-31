@@ -1208,9 +1208,15 @@ impl TerminalPane {
         let (cw, ch) = (f32::from(m.cell.width), f32::from(m.cell.height));
         let x = f32::from(pos.x - m.origin.x) / cw;
         let y = f32::from(pos.y - m.origin.y) / ch;
-        let inside = x >= 0. && y >= 0. && (x as usize) < m.cols && (y as usize) < m.rows;
-        let col = (x.max(0.) as usize).min(m.cols.saturating_sub(1));
-        let row = (y.max(0.) as usize).min(m.rows.saturating_sub(1));
+        // The grid's size, not the box's: columns held back while a pane narrows leave the grid
+        // smaller than the box, and a hover past its edge indexed out of the row.
+        let (cols, rows) = (
+            m.cols.min(self.size.cols as usize),
+            m.rows.min(self.size.rows as usize),
+        );
+        let inside = x >= 0. && y >= 0. && (x as usize) < cols && (y as usize) < rows;
+        let col = (x.max(0.) as usize).min(cols.saturating_sub(1));
+        let row = (y.max(0.) as usize).min(rows.saturating_sub(1));
         let side = if x.fract() < 0.5 || x < 0. {
             Side::Left
         } else {
@@ -2137,6 +2143,48 @@ mod tests {
             wait > Duration::ZERO && wait <= BACKGROUND_FRAME,
             "{wait:?}"
         );
+    }
+
+    /// The pointer maps onto the grid even while the grid is behind the box (columns held as
+    /// a pane narrows, or not yet grown): a hover there indexed past the row and aborted the app.
+    #[gpui::test]
+    fn the_pointer_stays_on_the_grid_when_the_box_is_bigger(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
+            crate::init(cx);
+        });
+        let core = Arc::new(Core::new(Arc::new(|_| {})));
+        let (_, cx) = cx.add_window_view(|_, _| Host);
+        let pane = cx.update(|window, cx| {
+            new_pane(
+                1,
+                core,
+                std::env::temp_dir(),
+                None,
+                None,
+                TerminalConfig::default(),
+                TerminalTheme::dark(),
+                window,
+                cx,
+            )
+        });
+        pane.update(cx, |p, _| {
+            let cell = gpui::size(px(10.), px(20.));
+            p.metrics = Some(Metrics {
+                bounds: Bounds::new(gpui::point(px(0.), px(0.)), gpui::size(px(1000.), px(600.))),
+                origin: gpui::point(px(0.), px(0.)),
+                cell,
+                cols: 100,
+                rows: 30,
+            });
+            assert_eq!((p.size.cols, p.size.rows), (80, 24));
+            let at = |col: f32, row: f32| gpui::point(px(col * 10. + 5.), px(row * 20. + 5.));
+            let (col, row, _, inside) = p.cell_at(at(90., 27.)).unwrap();
+            assert_eq!((col, row, inside), (79, 23, false));
+            let (col, row, _, inside) = p.cell_at(at(70., 10.)).unwrap();
+            assert_eq!((col, row, inside), (70, 10, true));
+        });
     }
 
     /// Focus reports go out on real changes only. GPUI tells a pane of its window going to the
