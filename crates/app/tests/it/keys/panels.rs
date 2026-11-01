@@ -393,13 +393,27 @@ fn init(preset: Preset, cx: &mut TestAppContext) -> PathBuf {
     let dir = gitviber_ui::test_support::config_dir(&format!("app-panels-{}", preset.as_str()));
     let settings = format!(r#"{{"keymapPreset": "{}"}}"#, preset.as_str());
     std::fs::write(dir.join("settings.json"), settings).unwrap();
+    // git's config as a fresh machine has it, CI's: none of this one's.
+    let global = dir.join("gitconfig");
+    std::fs::write(&global, "").unwrap();
+    // SAFETY: nextest runs each test in a process of its own; nothing else reads these meanwhile.
+    unsafe {
+        std::env::set_var("GIT_CONFIG_GLOBAL", &global);
+        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+    }
     let project = dir.join("project");
     std::fs::create_dir_all(&project).unwrap();
-    let git = std::process::Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(&project)
-        .status();
-    assert!(git.is_ok_and(|s| s.success()), "git init");
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&project)
+            .status();
+        assert!(status.is_ok_and(|s| s.success()), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    // With no name and email the window asks for them in a dialog, which would take the keys.
+    git(&["config", "user.name", "Test"]);
+    git(&["config", "user.email", "test@example.com"]);
     cx.update(|cx| {
         gitviber_ui::init(cx);
         gitviber_ui::install_core(cx);
@@ -650,7 +664,7 @@ fn run(preset: Preset, keys: &[Key], cx: &mut TestAppContext) -> usize {
                     failed.push(format!(
                         "{} from {start:?}, {state:?}: got {got:?}{}, want {want:?}",
                         key.keys,
-                        if dialog { " with the palette open" } else { "" },
+                        if dialog { " with a dialog open" } else { "" },
                     ));
                 }
                 close(window);
