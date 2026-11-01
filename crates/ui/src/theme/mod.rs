@@ -509,7 +509,7 @@ fn resolve_fonts(s: &Settings, cx: &mut App) -> Fonts {
         UiFont::Custom => ".SystemUIFont".into(),
         preset => first_installed(&[preset.as_str(), ".SystemUIFont"], cx),
     };
-    let reading = match s.reading_font {
+    let reading = match s.markdown_font {
         ReadingFont::Interface => ui.clone(),
         ReadingFont::Custom if !s.custom_reading_font.trim().is_empty() => {
             first_installed(&[s.custom_reading_font.trim(), &ui], cx)

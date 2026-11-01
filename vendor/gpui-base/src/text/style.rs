@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use gpui::{HighlightStyle, Hsla, Pixels, Rems, StyleRefinement, rems};
+use gpui::{HighlightStyle, Hsla, Length, Pixels, Rems, StyleRefinement, rems};
 
 use crate::ColorTokens;
 
@@ -19,7 +19,7 @@ pub struct TextViewStyle {
     code_background: Hsla,
     border: Hsla,
     paragraph_gap: Rems,
-    measure: Option<(Pixels, Pixels)>,
+    measure: Option<(Length, Pixels)>,
     inline_code_scale: f32,
     heading: Arc<dyn Fn(u8) -> StyleRefinement + Send + Sync + 'static>,
     code_block: StyleRefinement,
@@ -147,11 +147,12 @@ impl TextViewStyle {
         self
     }
 
-    /// Caps each of the document's top-level blocks at `measure` wide,
-    /// centered, with at least `gutter` on both sides. The view keeps its whole
-    /// width, so it scrolls (and shows its scrollbar) at its own edge.
-    pub fn with_measure(mut self, measure: Pixels, gutter: Pixels) -> Self {
-        self.measure = Some((measure, gutter));
+    /// Caps each of the document's top-level blocks at `measure` wide (a
+    /// fraction is of the view's width less its gutters), centered, with at
+    /// least `gutter` on both sides. The view keeps its whole width, so it
+    /// scrolls (and shows its scrollbar) at its own edge.
+    pub fn with_measure(mut self, measure: impl Into<Length>, gutter: Pixels) -> Self {
+        self.measure = Some((measure.into(), gutter));
         self
     }
 
@@ -261,7 +262,7 @@ impl TextViewStyle {
     }
 
     /// The widest the document's blocks get and the room beside them, if capped.
-    pub fn measure(&self) -> Option<(Pixels, Pixels)> {
+    pub fn measure(&self) -> Option<(Length, Pixels)> {
         self.measure
     }
 

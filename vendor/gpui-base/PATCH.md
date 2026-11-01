@@ -204,10 +204,12 @@ A document a whole pane shows reads best in a column about 70 characters wide. C
 view itself put its `gpui::list`, and so its scrollbar, at the column's edge, over the right side
 of code blocks and callouts. The view keeps the pane's width and each block is capped instead.
 `src/text/style.rs`: `TextViewStyle::with_measure(measure, gutter)` / `measure()` (part of the
-style's equality). `src/text/document.rs` (`render_root`, `in_measure`): with a measure set, each
+style's equality); `measure` is a length, so a fraction of the view's width works too.
+`src/text/document.rs` (`render_root`, `in_measure`): with a measure set, each
 top-level block is wrapped in a box at most `measure` wide, centered, with `gutter` on both sides.
 Without one nothing changes.
 
-Inline code was drawn at a fixed 0.875 of the text around it, which beside a serif body read as
-heavy. `TextViewStyle::with_inline_code_scale` / `inline_code_scale()` (default 0.875, part of the
+Inline code was drawn at a fixed 0.875 of the text around it; a reading view, its body larger
+than the code font, draws it at the code font's own size.
+`TextViewStyle::with_inline_code_scale` / `inline_code_scale()` (default 0.875, part of the
 style's equality) set it; `src/text/node.rs` (`mark_highlight`) reads it.

@@ -838,7 +838,12 @@ impl NoteView {
             .child(
                 div()
                     .w_full()
-                    .max_w(reading::measure(cx) + px(64.))
+                    .map(
+                        |d| match gitviber_ui::Settings::get(cx).markdown_width.fraction() {
+                            Some(share) => d.max_w(gpui_kit::relative(share)),
+                            None => d.max_w(reading::measure(cx) + px(64.)),
+                        },
+                    )
                     .px_8()
                     .when(ix == 0, |d| d.pt_4())
                     // Each part's markdown drops its first block's margin; a heading keeps it.

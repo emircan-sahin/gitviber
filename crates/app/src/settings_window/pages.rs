@@ -357,36 +357,6 @@ pub fn editor(w: &SettingsWindow, cx: &App) -> Page {
             |s, v| s.ligatures = v,
         ),
     ]);
-    let mut markdown = vec![font_choice(
-        "Reading font",
-        "The text of a Markdown preview and a vault note. Headings, tables and code keep the \
-         interface and code fonts.",
-        names(ReadingFont::choices(), ReadingFont::as_str),
-        |v, cx| match ReadingFont::parse(v)? {
-            ReadingFont::Interface => Some(cx.app_theme().fonts.ui.clone()),
-            ReadingFont::Custom => None,
-            f => Some(f.as_str().into()),
-        },
-        |s| s.reading_font.as_str().into(),
-        |s, v| s.reading_font = ReadingFont::parse(v).unwrap_or(s.reading_font),
-    )];
-    if s.reading_font == ReadingFont::Custom {
-        markdown.push(text(
-            "custom-reading-font",
-            "Custom reading font",
-            font_hint(&s.custom_reading_font, &t.fonts.reading),
-            "Installed font name",
-            true,
-            |s| s.custom_reading_font.clone(),
-            |s, v| s.custom_reading_font = clean_font_name(v),
-        ));
-    }
-    markdown.push(switch(
-        "Open Markdown as preview",
-        "Opening a .md file shows it rendered. Diffs of Markdown files always start on the diff.",
-        |s| s.markdown_preview,
-        |s, v| s.markdown_preview = v,
-    ));
     let dark = cx.app_theme().dark;
     let in_use = |on: bool| if on { " The preview shows it." } else { "" };
     Page::new().groups([
@@ -420,7 +390,51 @@ pub fn editor(w: &SettingsWindow, cx: &App) -> Page {
             |s| s.word_wrap,
             |s, v| s.word_wrap = v,
         )]),
-        Group::new().title("Markdown").items(markdown),
+    ])
+}
+
+/// A Markdown preview's and a vault note's reading: its font and how wide its text runs.
+pub fn markdown(cx: &App) -> Page {
+    let s = Settings::get(cx);
+    let t = cx.app_theme();
+    let mut markdown = vec![font_choice(
+        "Reading font",
+        with_keys(
+            "The text of a Markdown preview and a vault note; code keeps the code font. A pinch \
+             sizes it too.",
+            &["markdown.zoomIn", "markdown.zoomOut", "markdown.zoomReset"],
+        ),
+        names(ReadingFont::choices(), ReadingFont::as_str),
+        |v, cx| match ReadingFont::parse(v)? {
+            ReadingFont::Interface => Some(cx.app_theme().fonts.ui.clone()),
+            ReadingFont::Custom => None,
+            f => Some(f.as_str().into()),
+        },
+        |s| s.markdown_font.as_str().into(),
+        |s, v| s.markdown_font = ReadingFont::parse(v).unwrap_or(s.markdown_font),
+    )];
+    if s.markdown_font == ReadingFont::Custom {
+        markdown.push(text(
+            "custom-reading-font",
+            "Custom reading font",
+            font_hint(&s.custom_reading_font, &t.fonts.reading),
+            "Installed font name",
+            true,
+            |s| s.custom_reading_font.clone(),
+            |s, v| s.custom_reading_font = clean_font_name(v),
+        ));
+    }
+    let layout = segmented(
+        "markdown-width",
+        "Width",
+        "Readable keeps lines near 70 characters; a share of the pane follows its width.",
+        names(MarkdownWidth::ALL.iter().copied(), MarkdownWidth::as_str),
+        |s| s.markdown_width.as_str().into(),
+        |s, v| s.markdown_width = MarkdownWidth::parse(v).unwrap_or(s.markdown_width),
+    );
+    Page::new().groups([
+        Group::new().title("Font").items(markdown),
+        Group::new().title("Layout").items([layout]),
     ])
 }
 

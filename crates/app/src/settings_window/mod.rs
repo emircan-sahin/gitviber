@@ -47,6 +47,7 @@ pub use shortcuts::preset_toast;
 pub enum Section {
     Appearance,
     Editor,
+    Markdown,
     Diff,
     Terminal,
     Git,
@@ -67,6 +68,7 @@ pub const GROUPS: [(&str, &[Section]); 3] = [
         &[
             Section::Appearance,
             Section::Editor,
+            Section::Markdown,
             Section::Diff,
             Section::Terminal,
         ],
@@ -86,9 +88,10 @@ pub const GROUPS: [(&str, &[Section]); 3] = [
 ];
 
 impl Section {
-    pub const ALL: [Section; 13] = [
+    pub const ALL: [Section; 14] = [
         Section::Appearance,
         Section::Editor,
+        Section::Markdown,
         Section::Diff,
         Section::Terminal,
         Section::Git,
@@ -111,6 +114,7 @@ impl Section {
             Section::Notifications => "notifications",
             Section::Updates => "updates",
             Section::Editor => "editor",
+            Section::Markdown => "markdown",
             Section::Diff => "diff",
             Section::Terminal => "terminal",
             Section::Obsidian => "obsidian",
@@ -129,6 +133,7 @@ impl Section {
             Section::Notifications => "Notifications",
             Section::Updates => "Updates",
             Section::Editor => "Editor",
+            Section::Markdown => "Markdown",
             Section::Diff => "Diff",
             Section::Terminal => "Terminal",
             Section::Obsidian => "Obsidian",
@@ -147,6 +152,7 @@ impl Section {
             Section::Notifications => IconName::Bell,
             Section::Updates => IconName::CircleArrowUp,
             Section::Editor => IconName::Code,
+            Section::Markdown => IconName::BookOpenText,
             Section::Diff => IconName::GitCompareArrows,
             Section::Terminal => IconName::SquareTerminal,
             Section::Obsidian => IconName::Gem,
@@ -1159,6 +1165,7 @@ impl SettingsWindow {
         match section {
             Section::Appearance => pages::appearance(self, cx),
             Section::Editor => pages::editor(self, cx),
+            Section::Markdown => pages::markdown(cx),
             Section::Diff => pages::diff(),
             Section::Terminal => pages::terminal(cx),
             Section::Git => git::git(self, cx),
