@@ -6,6 +6,23 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.24] - 2026-11-02
+
+### Added
+
+- **Settings → Markdown.** The reading font now lives in its own section, next to a width for the text: a readable column about 70 characters wide, or half, three quarters or all of the pane. It applies to previews and vault notes alike.
+- **Pinch to zoom a preview.** A trackpad pinch sizes a Markdown preview's or a vault note's text, as ⌘= and ⌘− do.
+
+### Changed
+
+- **Markdown reads in the interface font by default.** Charter and the other book fonts are still one pick away in Settings → Markdown. The body text is a little softer than the headings, so long prose no longer glares on a dark theme.
+- **Properties are easier to read.** Each one has an icon for what it holds (text, date, link, number, checkbox, list or tags), links open on a click, and a list of sources with a `url` and a `title` shows as titled links with their site beside them. Long values end in an ellipsis instead of running past the column.
+- **A Markdown file opens the way you last switched one.** Switch to Code or Preview and the next file opens the same way; the "Open Markdown as preview" setting is gone.
+
+### Fixed
+
+- **Code in a preview looks like code in the editor.** Code blocks and inline code use the editor's font weight, line height and ligature setting, and inline code is the code font's own size. Changing them in Settings updates an open preview at once.
+
 ## [0.1.23] - 2026-11-01
 
 ### Changed
