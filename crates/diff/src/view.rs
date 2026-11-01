@@ -31,9 +31,9 @@ use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::scroll::Scrollbar;
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Bounds, ClipboardItem, Context, Entity, EventEmitter,
-    FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, ParentElement as _, Pixels, Render, ScrollHandle, SharedString,
+    AnyElement, App, AppContext as _, Bounds, ClipboardItem, Context, Entity, EntityId,
+    EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, ParentElement as _, Pixels, Render, ScrollHandle, SharedString,
     StatefulInteractiveElement as _, Styled as _, StyledText, Subscription, Task, WeakEntity,
     Window, canvas, div, prelude::FluentBuilder as _, px,
 };
@@ -226,6 +226,8 @@ pub struct DiffView {
     body_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// The header bar's sideways scroll in a narrow center, for the fade at its end.
     header_scroll: ScrollHandle,
+    /// Some(width the labeled bar needs, for which buttons) while they go without their labels.
+    header_fit: Rc<Cell<Option<(Pixels, HeaderShape)>>>,
     /// The overview's marks; None once the lines, their heights or find's matches change.
     overview: Option<Rc<Marks>>,
     _edit: Option<Subscription>,
@@ -309,6 +311,7 @@ impl DiffView {
             web: None,
             body_bounds: Rc::default(),
             header_scroll: ScrollHandle::new(),
+            header_fit: Rc::default(),
             overview: None,
             _edit: None,
             _load: Task::ready(()),
@@ -400,6 +403,16 @@ impl DiffView {
     pub fn set_header(&mut self, header: bool, cx: &mut Context<Self>) {
         self.header = header;
         cx.notify();
+    }
+
+    /// The header bar is short of room: its buttons show icons, their labels as tooltips.
+    fn header_compact(&self) -> bool {
+        matches!(self.header_fit.get(), Some((_, shape)) if shape == self.header_shape())
+    }
+
+    /// What decides which buttons the header holds: another set is measured again.
+    fn header_shape(&self) -> HeaderShape {
+        (self.previewing(), self.edit.is_some())
     }
 
     /// Lines take review notes: C and the line buttons emit `DiffEvent::AddNote`.
@@ -2013,6 +2026,7 @@ impl DiffView {
     fn render_header(&self, style: &DiffStyle, cx: &mut Context<Self>) -> AnyElement {
         let c = &style.colors;
         let o = self.options;
+        let compact = self.header_compact();
         let counts = self.counts();
         let status = self.source.file.status.clone();
         let note = self.data.as_ref().and_then(|d| d.note.clone());
@@ -2035,7 +2049,7 @@ impl DiffView {
                         .ghost()
                         .xsmall()
                         .icon(Lucide::Rows2)
-                        .label("Unified")
+                        .map(|b| labeled(b, "Unified", compact))
                         .toggle(o.layout == Layout::Unified, cx)
                         .on_click(cx.listener(|_, _, _, cx| {
                             DiffOptions::update(cx, |o| o.layout = Layout::Unified)
@@ -2044,7 +2058,7 @@ impl DiffView {
                         .ghost()
                         .xsmall()
                         .icon(Lucide::Columns2)
-                        .label("Split")
+                        .map(|b| labeled(b, "Split", compact))
                         .toggle(o.layout == Layout::Split, cx)
                         .tooltip("Unified / split")
                         .tooltip_key_binding(command_kbd("diff.toggleSplit", cx))
@@ -2057,8 +2071,8 @@ impl DiffView {
         };
         let svg_controls = self.svg_controls(style, cx);
         let preview_switch = self.preview_switch(cx);
-        // In a narrow center the folder gives way first, then the bar scrolls sideways (the
-        // wheel too): the file's name stays whole and the buttons never spill over the code.
+        // In a narrow center the folder gives way first, then the buttons' labels, and only
+        // then does the bar scroll sideways (the wheel too): the file's name stays whole.
         let gap = px(8.);
         let (dir, name) = match self.source.path.rsplit_once('/') {
             Some((d, n)) => (Some(format!("{d}/")), n.to_string()),
@@ -2157,7 +2171,7 @@ impl DiffView {
                         .ghost()
                         .xsmall()
                         .icon(Lucide::Pencil)
-                        .label("Edit")
+                        .map(|b| labeled(b, "Edit", compact))
                         .toggle(self.edit.is_some(), cx)
                         .tooltip(if save.is_some() {
                             "Edit the new side; save with"
@@ -2193,7 +2207,7 @@ impl DiffView {
                     Button::new("open-file")
                         .xsmall()
                         .icon(Lucide::FileCode)
-                        .label("Open file")
+                        .map(|b| labeled(b, "Open file", compact))
                         .on_click(cx.listener(|this, _, _, cx| {
                             cx.emit(DiffEvent::OpenFile(this.source.path.clone()))
                         })),
@@ -2208,7 +2222,7 @@ impl DiffView {
                         } else {
                             Lucide::Square
                         })
-                        .label("Viewed")
+                        .map(|b| labeled(b, "Viewed", compact))
                         .toggle(viewed, cx)
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(DiffEvent::ToggleViewed))),
                 )
@@ -2219,6 +2233,12 @@ impl DiffView {
             .flex_none()
             .w_full()
             .child(bar)
+            .child(fit_header(
+                self.header_scroll.clone(),
+                self.header_fit.clone(),
+                self.header_shape(),
+                cx.entity_id(),
+            ))
             .child(more_right(self.header_scroll.clone(), c.background))
             .into_any_element()
     }
@@ -2264,6 +2284,38 @@ impl DiffView {
             )
             .into_any_element()
     }
+}
+
+/// Whether the view previews, and whether it edits.
+type HeaderShape = (bool, bool);
+
+/// Takes the header's labels away once the labeled bar overflows, and gives them back once the
+/// bar is as wide as that bar needed: no back and forth at any one width.
+fn fit_header(
+    scroll: ScrollHandle,
+    fit: Rc<Cell<Option<(Pixels, HeaderShape)>>>,
+    shape: HeaderShape,
+    me: EntityId,
+) -> impl IntoElement {
+    canvas(
+        move |_, _, cx| {
+            let width = scroll.bounds().size.width;
+            let over = scroll.max_offset().x;
+            let next = match fit.get() {
+                Some((need, s)) if s == shape => (width < need).then_some((need, s)),
+                _ if over > px(1.) => Some((width + over, shape)),
+                _ => None,
+            };
+            if next != fit.get() {
+                fit.set(next);
+                // Past the frame: a view told during one isn't drawn again.
+                cx.defer(move |cx| cx.notify(me));
+            }
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .size_0()
 }
 
 /// A fade over the header's end while more of it is to the right. Painted, not laid out: the
@@ -2345,6 +2397,16 @@ fn toggle_whitespace(cx: &mut App) {
 
 fn icon_button(id: &'static str, icon: Lucide, tip: &'static str) -> Button {
     Button::new(id).ghost().xsmall().icon(icon).tooltip(tip)
+}
+
+/// A header button's label, or in a short bar the label as its tooltip; a tooltip set after
+/// this one wins.
+fn labeled(button: Button, label: &'static str, compact: bool) -> Button {
+    if compact {
+        button.tooltip(label)
+    } else {
+        button.label(label)
+    }
 }
 
 impl Render for DiffView {
@@ -2779,5 +2841,42 @@ mod tests {
         cx.dispatch_action(find_keys::Prev);
         assert_eq!(current(cx), Some((2, 3)), "round the first match");
         assert_eq!(went_on.get(), 1, "an open find takes them");
+    }
+
+    /// A short bar drops its buttons' labels instead of scrolling; a wide one has them back.
+    #[gpui_kit::test]
+    fn a_short_header_drops_its_labels_and_fits(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            gitviber_ui::test_support::install_theme(cx);
+            crate::set_core(Arc::new(Core::new(Arc::new(|_| {}))), cx);
+        });
+        let source = DiffSource::new(Compare::Unstaged, "docs/guide/notes.md");
+        let data = DiffData::from_texts("a\n", "b\n", &source);
+        let mut view = None;
+        let handle = cx.add_window(|window, cx| {
+            let v = cx.new(|cx| DiffView::with_data(source.clone(), data, cx));
+            view = Some(v.clone());
+            gpui_kit::base::Root::new(v, window, cx)
+        });
+        let view = view.unwrap();
+        let cx = gpui_kit::VisualTestContext::from_window(*handle, cx).into_mut();
+        let at = |width: f32, cx: &mut gpui_kit::VisualTestContext| {
+            cx.simulate_resize(gpui_kit::size(px(width), px(400.)));
+            cx.run_until_parked();
+            view.read_with(cx, |v, _| {
+                (v.header_compact(), v.header_scroll.max_offset().x)
+            })
+        };
+        assert_eq!(at(1400., cx), (false, px(0.)));
+        assert_eq!(at(600., cx), (true, px(0.)), "icons only, and the bar fits");
+        // The preview's bar holds fewer buttons: measured again, it has room for their labels.
+        view.update(cx, |v, cx| v.set_preview(true, cx));
+        assert_eq!(at(600., cx), (false, px(0.)), "the preview's labels");
+        view.update(cx, |v, cx| v.set_preview(false, cx));
+        assert_eq!(at(600., cx), (true, px(0.)), "the diff's icons again");
+        let (compact, over) = at(300., cx);
+        assert!(compact && over > px(0.), "too narrow even so: it scrolls");
+        assert_eq!(at(1400., cx), (false, px(0.)));
     }
 }

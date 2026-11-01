@@ -308,19 +308,20 @@ impl DiffView {
     pub(super) fn preview_switch(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         self.preview_kind()?;
         let on = self.previewing();
+        let compact = self.header_compact();
         let segments = [
             Button::new("show-diff")
                 .ghost()
                 .xsmall()
                 .icon(Lucide::GitCompareArrows)
-                .label("Diff")
+                .map(|b| labeled(b, "Diff", compact))
                 .toggle(!on, cx)
                 .on_click(cx.listener(|this, _, _, cx| this.set_preview(false, cx))),
             Button::new("show-preview")
                 .ghost()
                 .xsmall()
                 .icon(Lucide::Eye)
-                .label("Preview")
+                .map(|b| labeled(b, "Preview", compact))
                 .toggle(on, cx)
                 .on_click(cx.listener(|this, _, _, cx| this.set_preview(true, cx))),
         ];
