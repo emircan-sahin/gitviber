@@ -3530,11 +3530,21 @@ mod tests {
             draw(cx);
             groups(cx).1
         };
-        assert_eq!(press("cmd-1", cx), Some(ids[0]));
-        assert_eq!(press("cmd-2", cx), Some(ids[1]));
-        assert_eq!(press("ctrl-3", cx), Some(ids[1]), "⌃3 is the code area's");
-        assert_eq!(press("ctrl-0", cx), Some(ids[1]));
-        assert_eq!(press("cmd-9", cx), Some(ids[2]));
+        // The terminal's digits are ⌘ on macOS and Ctrl on Linux; the code area's are ⌃ and Alt.
+        let (term, code) = if cfg!(target_os = "macos") {
+            ("cmd", "ctrl")
+        } else {
+            ("ctrl", "alt")
+        };
+        assert_eq!(press(&format!("{term}-1"), cx), Some(ids[0]));
+        assert_eq!(press(&format!("{term}-2"), cx), Some(ids[1]));
+        assert_eq!(
+            press(&format!("{code}-3"), cx),
+            Some(ids[1]),
+            "the code area's"
+        );
+        assert_eq!(press(&format!("{code}-0"), cx), Some(ids[1]));
+        assert_eq!(press(&format!("{term}-9"), cx), Some(ids[2]));
         panel.update(cx, |p, cx| p.close_all(cx));
         cx.update(|window, _| window.remove_window());
         cx.run_until_parked();
