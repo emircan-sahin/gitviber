@@ -364,13 +364,21 @@ a terminal) the project turns into a repository in place.
 
 Markdown renders the way GitHub shows it, in files, pull requests and issues alike: Mermaid
 diagrams and math, drawn by the app itself, `> [!NOTE]` alerts, and a file's frontmatter as a table.
+A Markdown file opens as Code or Preview, whichever the last one was switched to.
 
-A file's or a diff's preview and a vault note read like an article: a book serif (Charter on
-macOS; Settings → Editor → Reading font picks another, or the interface font) at 18px by default,
-with headings and tables in the interface font, in one centered column about 70 characters wide
-that code blocks, tables and diagrams share. `⌘=` / `⌘−` / `⌘0` there change that text's size
-alone, kept between launches; `⌥⌘=` / `⌥⌘−` / `⌥⌘0` change the code font size of every editor and
-diff, and the text moves along with it.
+A file's or a diff's preview and a vault note read like an article: the interface font at 18px by
+default, the body a step under the theme's text color so long prose doesn't glare, with headings
+at the full color and code drawn as the code editor draws it (its font, size, weight, line height
+and ligatures). Settings → Markdown picks the reading font (a book serif such as Charter, or one
+by name) and the width: a readable column about 70 characters wide that code blocks, tables and
+diagrams share, or half, three quarters or all of the pane. `⌘=` / `⌘−` / `⌘0` or a trackpad pinch
+there change that text's size alone, kept between launches; `⌥⌘=` / `⌥⌘−` / `⌥⌘0` change the code
+font size of every editor and diff, and the text moves along with it.
+
+A document's properties (its frontmatter) show above it, each with an icon for its kind (text,
+date, link, number, checkbox, list, tags): links open, a list of `url` and `title` maps reads as
+titled links with their site beside them, and a value too long for the column ends in an ellipsis
+rather than running past it.
 
 ### Obsidian vault
 
