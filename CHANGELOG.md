@@ -6,6 +6,18 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.23] - 2026-11-01
+
+### Changed
+
+- **Markdown reads like a book.** A file's or a diff's preview and a vault note set their text in Charter at 18px with roomier lines and paragraphs, headings and tables in the interface font, and lighter inline code. Settings → Editor → Reading font picks Iowan Old Style, Georgia, the interface font or any installed font.
+- **One column for the whole page.** Code blocks, tables and diagrams line up with the text instead of reaching past it on both sides, and the scrollbar sits at the pane's edge instead of over the right side of code blocks.
+
+### Fixed
+
+- **The diff header fits a narrow pane.** When its buttons don't fit, Unified, Split, Edit, Open file, Viewed and Diff/Preview show as icons with their names as tooltips, instead of Preview being cut off at the edge.
+- **Every shortcut category is in reach.** In Settings → Keyboard Shortcuts the category buttons wrap onto a second line, so GitHub and Help no longer hide past the edge.
+
 ## [0.1.22] - 2026-11-01
 
 ### Added
@@ -809,7 +821,10 @@ with `.deb`, `.rpm` and AppImage builds for Linux.
   repository from the welcome screen.
 - Help → Show Logs and Copy Diagnostics for bug reports. No telemetry.
 
-[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.20...HEAD
+[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.23...HEAD
+[0.1.23]: https://github.com/emircan-sahin/gitviber/compare/v0.1.22...v0.1.23
+[0.1.22]: https://github.com/emircan-sahin/gitviber/compare/v0.1.21...v0.1.22
+[0.1.21]: https://github.com/emircan-sahin/gitviber/compare/v0.1.20...v0.1.21
 [0.1.20]: https://github.com/emircan-sahin/gitviber/compare/v0.1.19...v0.1.20
 [0.1.19]: https://github.com/emircan-sahin/gitviber/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/emircan-sahin/gitviber/compare/v0.1.17...v0.1.18
