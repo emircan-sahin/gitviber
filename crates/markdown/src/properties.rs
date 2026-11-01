@@ -1,15 +1,71 @@
-//! A document's properties (its frontmatter) as Obsidian shows them above the text: one row per
-//! key, lists as pills. Read from the YAML Obsidian writes (`key: value`, `key: [a, b]`, and
-//! `key:` with `- item` lines under it); anything fancier shows as written. A repo file's
+//! A document's properties (its frontmatter) above the text: one row per key, each with an icon
+//! for what its value is, lists as pills, links that open. Read from the YAML Obsidian writes
+//! (`key: value`, `key: [a, b]`, `key:` with `- item` lines under it, and items that are maps
+//! such as `- url: …` with `title: …` under it); anything fancier shows as written. A repo file's
 //! frontmatter shows the same way.
 
 use gitviber_ui::ActiveAppTheme as _;
-use gpui_kit::{App, IntoElement, ParentElement as _, SharedString, Styled as _, div, px};
+use gpui_kit::assets::IconName;
+use gpui_kit::component::Icon;
+use gpui_kit::{
+    App, ElementId, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
+    SharedString, StatefulInteractiveElement as _, Styled as _, div, prelude::FluentBuilder as _,
+    px, relative,
+};
+
+use crate::reading;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Value {
     Text(String),
-    List(Vec<String>),
+    List(Vec<Item>),
+}
+
+/// A list's item: its text, and the address it opens when it is or has one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Item {
+    pub text: String,
+    pub link: Option<String>,
+}
+
+impl Item {
+    fn new(text: String) -> Item {
+        let link = is_url(&text).then(|| text.clone());
+        Item { text, link }
+    }
+
+    /// A map in a list (`- url: …` and `title: …` under it): its title, opening its address.
+    fn record(fields: &[(String, String)]) -> Item {
+        let named = |names: &[&str]| {
+            fields
+                .iter()
+                .find(|(k, _)| names.contains(&k.as_str()))
+                .map(|(_, v)| v.clone())
+        };
+        let link = named(&["url", "link", "href"])
+            .filter(|v| is_url(v))
+            .or_else(|| fields.iter().map(|(_, v)| v).find(|v| is_url(v)).cloned());
+        let text = named(&["title", "name", "label"])
+            .or_else(|| link.clone())
+            .unwrap_or_else(|| {
+                let pairs: Vec<_> = fields.iter().map(|(k, v)| format!("{k}: {v}")).collect();
+                pairs.join(", ")
+            });
+        Item { text, link }
+    }
+}
+
+fn is_url(s: &str) -> bool {
+    s.starts_with("https://") || s.starts_with("http://")
+}
+
+/// `2026-10-29`, with or without a time after it.
+fn is_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() >= 10
+        && b[..10].iter().enumerate().all(|(i, c)| {
+            matches!(i, 4 | 7) == (*c == b'-') && (matches!(i, 4 | 7) || c.is_ascii_digit())
+        })
 }
 
 fn unquote(s: &str) -> String {
@@ -30,9 +86,23 @@ fn plain(s: &str) -> String {
     }
 }
 
+/// `key: value` as a map's field, the key a plain word.
+fn field(s: &str) -> Option<(String, String)> {
+    let (key, value) = s.split_once(':')?;
+    let key = key.trim();
+    let plain_key = !key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-');
+    (plain_key && (value.is_empty() || value.starts_with(' ')))
+        .then(|| (key.to_string(), plain(&unquote(value))))
+}
+
 /// The properties in `front` (the block with its `---` lines), in order.
 pub fn parse(front: &str) -> Vec<(String, Value)> {
     let mut out: Vec<(String, Value)> = Vec::new();
+    // The fields of the map the last list item is, while its lines go on.
+    let mut record: Option<Vec<(String, String)>> = None;
     let lines: Vec<&str> = front.lines().collect();
     let body = lines.get(1..lines.len().saturating_sub(1)).unwrap_or(&[]);
     for line in body {
@@ -45,10 +115,23 @@ pub fn parse(front: &str) -> Vec<(String, Value)> {
             && (indented || t.starts_with('-'))
             && let Some((_, Value::List(items))) = out.last_mut()
         {
-            items.push(plain(&unquote(item)));
+            record = field(item).map(|f| vec![f]);
+            items.push(match &record {
+                Some(fields) => Item::record(fields),
+                None => Item::new(plain(&unquote(item))),
+            });
             continue;
         }
         if indented {
+            if let (Some(fields), Some((_, Value::List(items)))) = (&mut record, out.last_mut())
+                && let Some(f) = field(t)
+            {
+                fields.push(f);
+                if let Some(last) = items.last_mut() {
+                    *last = Item::record(fields);
+                }
+                continue;
+            }
             // A nested map or a folded string: shown as it's written, after the key it's under.
             match out.last_mut() {
                 Some((_, Value::Text(v))) => {
@@ -62,6 +145,7 @@ pub fn parse(front: &str) -> Vec<(String, Value)> {
             }
             continue;
         }
+        record = None;
         let Some((key, value)) = t.split_once(':') else {
             continue;
         };
@@ -74,6 +158,7 @@ pub fn parse(front: &str) -> Vec<(String, Value)> {
                     .split(',')
                     .map(|s| plain(&unquote(s)))
                     .filter(|s| !s.is_empty())
+                    .map(Item::new)
                     .collect(),
             )
         } else {
@@ -89,39 +174,122 @@ impl Value {
     pub fn text(&self) -> String {
         match self {
             Value::Text(s) => s.clone(),
-            Value::List(items) => items.join(", "),
+            Value::List(items) => {
+                let texts: Vec<_> = items.iter().map(|i| i.text.as_str()).collect();
+                texts.join(", ")
+            }
+        }
+    }
+
+    /// What the row's icon says the value is.
+    fn icon(&self, key: &str) -> IconName {
+        match self {
+            _ if key == "tags" => IconName::Tag,
+            Value::List(_) => IconName::List,
+            Value::Text(s) if is_url(s) => IconName::Link,
+            Value::Text(s) if is_date(s) => IconName::Calendar,
+            Value::Text(s) if s == "true" || s == "false" => IconName::SquareCheck,
+            Value::Text(s) if s.parse::<f64>().is_ok() => IconName::Hash,
+            Value::Text(_) => IconName::TextAlignStart,
         }
     }
 }
 
-/// The properties as rows above the text.
+/// `https://www.bls.gov/news…` as `bls.gov`, beside a link's title.
+fn host(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    host.strip_prefix("www.").unwrap_or(host)
+}
+
+/// The properties as rows above the text, in the interface font a step under the body.
 pub fn element(props: &[(String, Value)], cx: &App) -> impl IntoElement + use<> {
     let t = cx.app_theme();
-    let rows = props.iter().map(|(key, value)| {
+    let size = reading::text_size(cx) * 0.85;
+    let ink = t.foreground.opacity(0.85);
+    let link_color = t.primary;
+    let link = move |id: ElementId, url: String, label: SharedString| {
+        div()
+            .id(id)
+            .min_w_0()
+            .truncate()
+            .cursor_pointer()
+            .text_color(link_color)
+            .hover(|d| d.underline())
+            .on_click(move |_, _, cx| cx.open_url(&url))
+            .child(label)
+    };
+    let rows = props.iter().enumerate().map(|(row, (key, value))| {
         let value = match value {
+            Value::Text(s) if is_url(s) => link(
+                ElementId::NamedInteger("property".into(), row as u64),
+                s.clone(),
+                SharedString::from(s.clone()),
+            )
+            .into_any_element(),
             Value::Text(s) => div()
                 .min_w_0()
-                .text_color(t.foreground)
-                .child(SharedString::from(s.clone())),
+                .text_color(ink)
+                .child(SharedString::from(s.clone()))
+                .into_any_element(),
+            // Links, one a line: a pill each would run past the column.
+            Value::List(items) if items.iter().any(|i| i.link.is_some()) => div()
+                .flex()
+                .flex_col()
+                .min_w_0()
+                .children(items.iter().enumerate().map(|(ix, item)| {
+                    let row_el = div().flex().items_baseline().gap_2().min_w_0();
+                    match &item.link {
+                        Some(url) => row_el
+                            .child(link(
+                                ElementId::NamedInteger(
+                                    format!("property-{row}").into(),
+                                    ix as u64,
+                                ),
+                                url.clone(),
+                                SharedString::from(item.text.clone()),
+                            ))
+                            .when(item.text != *url, |d| {
+                                d.child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(size * 0.85)
+                                        .text_color(t.subtle)
+                                        .child(SharedString::from(host(url).to_string())),
+                                )
+                            }),
+                        None => row_el.child(
+                            div()
+                                .truncate()
+                                .text_color(ink)
+                                .child(SharedString::from(item.text.clone())),
+                        ),
+                    }
+                }))
+                .into_any_element(),
             Value::List(items) => {
+                let tags = key == "tags";
                 div()
                     .flex()
                     .flex_wrap()
                     .gap_1()
+                    .min_w_0()
                     .children(items.iter().map(|item| {
-                        let tag = key == "tags";
                         div()
+                            .max_w_full()
+                            .truncate()
                             .px_2()
                             .rounded_full()
-                            .text_size(px(12.))
+                            .text_size(size * 0.9)
                             .bg(t.primary.opacity(0.12))
-                            .text_color(if tag { t.primary } else { t.foreground })
-                            .child(SharedString::from(if tag {
-                                format!("#{item}")
+                            .text_color(if tags { t.primary } else { ink })
+                            .child(SharedString::from(if tags {
+                                format!("#{}", item.text)
                             } else {
-                                item.clone()
+                                item.text.clone()
                             }))
                     }))
+                    .into_any_element()
             }
         };
         div()
@@ -131,11 +299,25 @@ pub fn element(props: &[(String, Value)], cx: &App) -> impl IntoElement + use<> 
             .py(px(3.))
             .child(
                 div()
-                    .w(px(140.))
+                    .w(size * 9.)
                     .flex_none()
-                    .truncate()
+                    .flex()
+                    .items_center()
+                    .gap_2()
                     .text_color(t.muted_foreground)
-                    .child(SharedString::from(key.clone())),
+                    // The icon sits on the key's first line.
+                    .h(size * 1.5)
+                    .child(
+                        Icon::new(props[row].1.icon(key))
+                            .size(size * 0.95)
+                            .text_color(t.subtle),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .child(SharedString::from(key.clone())),
+                    ),
             )
             .child(div().flex_1().min_w_0().child(value))
     });
@@ -147,11 +329,14 @@ pub fn element(props: &[(String, Value)], cx: &App) -> impl IntoElement + use<> 
         .border_color(t.border)
         .flex()
         .flex_col()
-        .text_size(px(13.))
+        .font_family(t.fonts.ui.clone())
+        .font_weight(FontWeight::NORMAL)
+        .text_size(size)
+        .line_height(relative(1.5))
         .child(
             div()
                 .pb_1()
-                .text_size(px(11.5))
+                .text_size(size * 0.85)
                 .text_color(t.subtle)
                 .child("Properties"),
         )
@@ -162,6 +347,10 @@ pub fn element(props: &[(String, Value)], cx: &App) -> impl IntoElement + use<> 
 mod tests {
     use super::*;
 
+    fn items(texts: &[&str]) -> Value {
+        Value::List(texts.iter().map(|t| Item::new(t.to_string())).collect())
+    }
+
     #[test]
     fn obsidians_property_forms() {
         let front = "---\ntags: [daily, \"gitviber\"]\naliases:\n  - Start\n  - Home page\nstatus: draft\nup: \"[[Plan|The plan]]\"\nnested:\n  a: 1\n# a comment\nempty:\n---\n";
@@ -169,14 +358,8 @@ mod tests {
         assert_eq!(
             p,
             vec![
-                (
-                    "tags".into(),
-                    Value::List(vec!["daily".into(), "gitviber".into()])
-                ),
-                (
-                    "aliases".into(),
-                    Value::List(vec!["Start".into(), "Home page".into()])
-                ),
+                ("tags".into(), items(&["daily", "gitviber"])),
+                ("aliases".into(), items(&["Start", "Home page"])),
                 ("status".into(), Value::Text("draft".into())),
                 ("up".into(), Value::Text("The plan".into())),
                 ("nested".into(), Value::Text("a: 1".into())),
@@ -184,5 +367,46 @@ mod tests {
             ]
         );
         assert!(parse("---\n---\n").is_empty());
+    }
+
+    /// A list of maps reads as titled links, the key after it a key again.
+    #[test]
+    fn a_list_of_maps_reads_as_titled_links() {
+        let front = "---\nsources:\n  - url: \"https://www.bls.gov/cpi.htm\"\n    title: \"BLS: CPI\"\n  - url: https://example.com/x\n  - note: plain\nlang: tr\n---\n";
+        let link = |text: &str, url: &str| Item {
+            text: text.into(),
+            link: Some(url.into()),
+        };
+        assert_eq!(
+            parse(front),
+            vec![
+                (
+                    "sources".into(),
+                    Value::List(vec![
+                        link("BLS: CPI", "https://www.bls.gov/cpi.htm"),
+                        link("https://example.com/x", "https://example.com/x"),
+                        Item {
+                            text: "note: plain".into(),
+                            link: None
+                        },
+                    ])
+                ),
+                ("lang".into(), Value::Text("tr".into())),
+            ]
+        );
+        assert_eq!(host("https://www.bls.gov/cpi.htm"), "bls.gov");
+    }
+
+    #[test]
+    fn each_kind_of_value_has_its_icon() {
+        let text = |s: &str| Value::Text(s.into());
+        assert_eq!(text("2026-10-29").icon("date"), IconName::Calendar);
+        assert_eq!(text("https://x.com").icon("liveUrl"), IconName::Link);
+        assert_eq!(text("12").icon("n"), IconName::Hash);
+        assert_eq!(text("true").icon("done"), IconName::SquareCheck);
+        assert_eq!(text("draft").icon("status"), IconName::TextAlignStart);
+        assert_eq!(items(&["a"]).icon("tags"), IconName::Tag);
+        assert_eq!(items(&["a"]).icon("aliases"), IconName::List);
+        assert!(!is_date("2026-1-29"));
     }
 }
