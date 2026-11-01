@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use gitviber_ui::keymap::{
-    self, Overrides, Preset, ROOT_CONTEXT, SYSTEM_COMMANDS, TERMINAL_CONTEXT, all_commands, tab,
+    self, Overrides, Preset, ROOT_CONTEXT, SYSTEM_COMMANDS, TERMINAL_CONTEXT, all_commands,
 };
 use gpui_kit::component::input::{Editor, EditorState, Input, InputState, Textarea, TextareaState};
 use gpui_kit::{
@@ -21,6 +21,7 @@ use gpui_kit::{
 };
 
 mod panels;
+mod reach;
 
 type Log = Rc<RefCell<Vec<String>>>;
 
@@ -43,6 +44,8 @@ enum At {
     Worktrees,
     Branches,
     Projects,
+    /// A browser tab's page area: WebKit's view stands behind it.
+    Page,
     // Text fields.
     Summary,
     Description,
@@ -50,9 +53,13 @@ enum At {
     TagMessage,
     Comment,
     Address,
+    /// The code view's find bar.
+    FindBar,
+    /// The command palette's query.
+    Palette,
 }
 
-const SPOTS: [(At, &str); 12] = [
+const SPOTS: [(At, &str); 13] = [
     (At::Pane, TERMINAL_CONTEXT),
     (At::Changes, "ChangesList"),
     (At::Diff, gitviber_diff::actions::CONTEXT),
@@ -65,6 +72,7 @@ const SPOTS: [(At, &str); 12] = [
     (At::Worktrees, "WorktreePicker"),
     (At::Branches, "BranchPicker"),
     (At::Projects, "ProjectList"),
+    (At::Page, "BrowserPage page=p1"),
 ];
 
 struct Shell {
@@ -77,6 +85,8 @@ struct Shell {
     tag: Entity<TextareaState>,
     comment: Entity<TextareaState>,
     address: Entity<InputState>,
+    find: Entity<InputState>,
+    palette: Entity<InputState>,
     /// The terminal's find bar: its ⌘G and ⇧⌘G step through matches only while it's open.
     find_open: bool,
 }
@@ -96,12 +106,15 @@ impl Shell {
             tag: cx.new(|cx| TextareaState::new(window, cx)),
             comment: cx.new(|cx| TextareaState::new(window, cx)),
             address: cx.new(|cx| InputState::new(window, cx)),
+            find: cx.new(|cx| InputState::new(window, cx)),
+            palette: cx.new(|cx| InputState::new(window, cx)),
             find_open: false,
         }
     }
 
     fn spot(&self, at: At, context: &'static str) -> gpui_kit::Div {
         let focus = &self.spots.iter().find(|(a, _)| *a == at).unwrap().1;
+        let context = gpui_kit::KeyContext::parse(context).unwrap();
         div().key_context(context).track_focus(focus).size(px(20.))
     }
 
@@ -114,6 +127,8 @@ impl Shell {
             At::TagMessage => self.tag.focus_handle(cx),
             At::Comment => self.comment.focus_handle(cx),
             At::Address => self.address.focus_handle(cx),
+            At::FindBar => self.find.focus_handle(cx),
+            At::Palette => self.palette.focus_handle(cx),
             spot => self
                 .spots
                 .iter()
@@ -139,21 +154,23 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut root = div()
+        // Above the window's root, so the palette's own root (a dialog's) reaches it too.
+        let mut outer = div().size_full().flex().flex_col();
+        for c in all_commands().chain(SYSTEM_COMMANDS) {
+            let (log, id) = (self.log.clone(), c.id);
+            outer = outer.on_boxed_action(&*c.action(), move |_, _, _| {
+                log.borrow_mut().push(id.to_string());
+            });
+        }
+        let root = div()
             .key_context(ROOT_CONTEXT)
             .track_focus(&self.root)
             .size_full()
             .flex()
             .flex_col();
-        for c in all_commands().chain(SYSTEM_COMMANDS) {
-            let (log, id) = (self.log.clone(), c.id);
-            root = root.on_boxed_action(&*c.action(), move |_, _, _| {
-                log.borrow_mut().push(id.to_string());
-            });
-        }
         let note = |log: &Log, what: &str| log.borrow_mut().push(what.to_string());
-        let (log, find_log) = (self.log.clone(), self.log.clone());
-        let terminal_panel = div()
+        let find_log = self.log.clone();
+        let mut terminal_panel = div()
             .key_context(gitviber_terminal::PANEL_CONTEXT)
             .on_action(
                 cx.listener(move |this, _: &gitviber_terminal::FindPrev, _, cx| {
@@ -163,9 +180,19 @@ impl Render for Shell {
                         cx.propagate();
                     }
                 }),
-            )
-            .on_action(move |_: &tab::Goto1, _, _| note(&log, "terminal: tab 1"))
-            .child(self.spot(At::Pane, TERMINAL_CONTEXT));
+            );
+        // As the panel's tab keys: its own tabs on ⌘1–⌘9, the code area's on the others.
+        for id in TAB_NUMBERS {
+            let (log, action) = (self.log.clone(), keymap::command(id).unwrap().action());
+            terminal_panel = terminal_panel.on_boxed_action(&*action, move |_, _, cx| {
+                if keymap::for_focused_tabs() {
+                    note(&log, &format!("terminal: {id}"));
+                } else {
+                    cx.propagate();
+                }
+            });
+        }
+        let terminal_panel = terminal_panel.child(self.spot(At::Pane, TERMINAL_CONTEXT));
         let changes = self.spot(At::Changes, "ChangesList").size_auto().child(
             div()
                 .key_context("CommitMessage")
@@ -173,26 +200,33 @@ impl Render for Shell {
                 .child(Textarea::new(&self.description)),
         );
         let code_area = div()
-            .key_context("CodeArea")
+            .key_context(keymap::CODE_AREA_CONTEXT)
             .child(self.spot(At::Tabs, "TabStrip"))
             .child(self.spot(At::Diff, gitviber_diff::actions::CONTEXT))
             .child(
                 div()
                     .key_context("CodeView")
                     .h(px(120.))
-                    .child(Editor::new(&self.code)),
+                    .child(Editor::new(&self.code))
+                    .child(
+                        div()
+                            .key_context("CodeOverlay")
+                            .child(Input::new(&self.find)),
+                    ),
             )
             .child(
                 self.spot(At::Browser, "Browser")
                     .size_auto()
-                    .child(Input::new(&self.address)),
+                    .child(Input::new(&self.address))
+                    .child(self.spot(At::Page, "BrowserPage page=p1")),
             )
             .child(self.spot(At::Image, "ImageView"))
-            .child(self.spot(At::Reading, "MarkdownView MarkdownReading"))
-            .child(self.spot(At::Explorer, "Explorer"));
-        root.child(changes)
+            .child(self.spot(At::Reading, "MarkdownView MarkdownReading"));
+        let root = root
+            .child(changes)
             .child(code_area)
             .child(terminal_panel)
+            .child(self.spot(At::Explorer, "Explorer"))
             .child(self.spot(At::History, "HistoryList"))
             .child(self.spot(At::Worktrees, "WorktreePicker"))
             .child(self.spot(At::Branches, "BranchPicker"))
@@ -206,9 +240,27 @@ impl Render for Shell {
                 div()
                     .key_context("IssueComment")
                     .child(Textarea::new(&self.comment)),
-            )
+            );
+        // A dialog's own root, outside the workspace's.
+        let palette = div()
+            .key_context(ROOT_CONTEXT)
+            .child(Input::new(&self.palette));
+        outer.child(root).child(palette)
     }
 }
+
+/// The tab number commands: in the terminal its own tabs, elsewhere the code area's.
+const TAB_NUMBERS: [&str; 9] = [
+    "tab.goto1",
+    "tab.goto2",
+    "tab.goto3",
+    "tab.goto4",
+    "tab.goto5",
+    "tab.goto6",
+    "tab.goto7",
+    "tab.goto8",
+    "tab.last",
+];
 
 /// The app's keymap as `gitviber::init` builds it, from the classic preset: gitviber-ui's
 /// commands and gpui-component's fields, then the keys the feature crates add.
@@ -231,6 +283,9 @@ fn setup_with(
         gitviber_changes::init(cx);
         gitviber_terminal::init(cx);
         gitviber_files::init(cx);
+        // What the browser installs for its pages, which take the keys the app leaves them.
+        cx.intercept_keystrokes(gitviber_browser::ui::tab::page_key)
+            .detach();
     });
     drop(one);
     let log = Log::default();
@@ -333,7 +388,8 @@ fn the_terminal_keeps_the_shells_keys_and_takes_its_own(cx: &mut TestAppContext)
             ("cmd-up", &["terminal.prevCommand"]),
             ("ctrl-shift-space", &["terminal.hints"]),
             // ⌘1 picks the terminal's tab, the panel's answer.
-            ("cmd-1", &["terminal: tab 1"]),
+            ("cmd-1", &["terminal: tab.goto1"]),
+            ("cmd-9", &["terminal: tab.last"]),
             // ⌃ with a non-letter is the app's; letters, ⌥, F-keys and ⌘-arrows stay the shell's.
             ("ctrl-tab", &["tab.next"]),
             ("ctrl-1", &["view.changes"]),
@@ -675,14 +731,16 @@ fn linux_keys_are_ctrl_chords(cx: &mut TestAppContext) {
     }
 }
 
-/// Two global commands on one chord: only the first listed would ever run.
+/// Two global commands on one chord: only the first listed would ever run. A tab number's
+/// ⌘1–⌘9 is the one share meant: the other command yields to it where focus has tabs.
 #[test]
 fn no_two_global_commands_share_a_default_chord() {
     for preset in Preset::ALL {
         for mac in [true, false] {
             let mut by_chord: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
             for c in all_commands().filter(|c| c.local.is_none()) {
-                for k in preset.keys(c, mac) {
+                let tab_key = |k: &str| c.focused_tab && keymap::chord::picks_focused_tab(k);
+                for k in preset.keys(c, mac).iter().filter(|k| !tab_key(k)) {
                     by_chord.entry(k).or_default().push(c.id);
                 }
             }
@@ -738,7 +796,11 @@ fn the_vscode_presets_keys_run_where_they_should(cx: &mut TestAppContext) {
             ("cmd-\\", &["terminal.split"]),
             ("cmd-d", &["terminal.split"]),
             ("cmd-k", &["terminal.clear"]),
-            ("ctrl-1", &["terminal: tab 1"]),
+            // ⌘1–⌘9 are its tabs, ⌃1–⌃9 the code area's from here too.
+            ("cmd-1", &["terminal: tab.goto1"]),
+            ("cmd-9", &["terminal: tab.last"]),
+            ("ctrl-1", &["tab.goto1"]),
+            ("ctrl-0", &["tab.last"]),
             ("ctrl-`", &["terminal.focus"]),
             ("ctrl-r", &[]),
         ],
@@ -795,7 +857,9 @@ fn the_vscode_presets_keys_run_where_they_should(cx: &mut TestAppContext) {
             ("alt-cmd-right", &["tab.next"]),
             ("ctrl-1", &["tab.goto1"]),
             ("cmd-0", &["browser.zoomReset"]),
-            ("cmd-1", &["view.focusCode"]),
+            // A browser tab is the code area's: ⌘1 picks its first tab, as in a browser.
+            ("cmd-1", &["tab.goto1"]),
+            ("cmd-2", &["tab.goto2"]),
             ("shift-cmd-r", &["browser.toggleReader"]),
         ],
     );

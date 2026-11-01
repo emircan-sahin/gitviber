@@ -50,7 +50,7 @@ pub const PAGE_CONTEXT: &str = "BrowserPage";
 /// isn't Undo Git Action in a page) nor a single key (J typed into a page isn't Next Changed
 /// File). The rest is the page's, or no one's while it's hidden. The keymap as it is now
 /// decides, rebound chords and all, and as GPUI reads a layout (Cyrillic ⌘W is ⌘W).
-pub(super) fn page_key(e: &gpui::KeystrokeEvent, _: &mut Window, cx: &mut App) {
+pub fn page_key(e: &gpui::KeystrokeEvent, _: &mut Window, cx: &mut App) {
     let Some(page) = e.context_stack.last().filter(|c| c.contains(PAGE_CONTEXT)) else {
         return;
     };
