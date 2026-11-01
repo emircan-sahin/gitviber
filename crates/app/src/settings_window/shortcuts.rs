@@ -12,14 +12,14 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{Disableable as _, Icon, Sizable as _};
+use gpui_kit::component::{Disableable as _, Icon, Selectable as _, Sizable as _};
 use gpui_kit::{
     AnyElement, App, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
     prelude::FluentBuilder as _, px, rems,
 };
 
-use super::fields::{note, segmented, segments, switch, with_keys};
+use super::fields::{note, segmented, switch, with_keys};
 use super::shell::{Group, HINT_TEXT, Page, Row, TITLE_TEXT};
 use super::{Recording, SettingsWindow};
 
@@ -387,27 +387,31 @@ pub fn page(w: &SettingsWindow, cx: &App) -> Page {
                                 }),
                         ),
                 )
-                .child(
-                    div()
-                        .id("shortcut-categories")
-                        .flex()
-                        .overflow_x_scroll()
-                        .child(div().flex_none().child(segments(
-                            "shortcut-category",
-                            &chips,
-                            &current,
-                            false,
-                            move |v, _, cx| {
+                // Chips that wrap: a scrolling row hid its last categories past the edge.
+                .child(div().flex().flex_wrap().gap_1().children(
+                    chips.iter().enumerate().map(|(i, (v, label))| {
+                        let on = *v == current;
+                        let (pick, v) = (pick.clone(), v.clone());
+                        let t = cx.app_theme();
+                        Button::new(("shortcut-category", i))
+                            .small()
+                            .ghost()
+                            .label(label.clone())
+                            .selected(on)
+                            .map(|b| match on {
+                                true => b.bg(t.primary.opacity(0.15)).text_color(t.primary),
+                                false => b.text_color(t.muted_foreground),
+                            })
+                            .on_click(move |_, _, cx| {
                                 let category = categories().into_iter().find(|c| c.label() == v);
                                 let _ = pick.update(cx, |w, cx| {
                                     w.shortcut_category = category;
                                     w.scroll.set_offset(gpui_kit::Point::default());
                                     cx.notify();
                                 });
-                            },
-                            cx,
-                        ))),
-                )
+                            })
+                    }),
+                ))
                 .into_any_element()
         })
         .groups(groups)
