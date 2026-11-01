@@ -121,6 +121,7 @@ pub struct MarkdownView {
     toggled: HashSet<u64>,
     focus: FocusHandle,
     _text: Subscription,
+    _settings: Subscription,
     _live: Live,
 }
 
@@ -180,6 +181,12 @@ impl MarkdownView {
             this.find_again(cx);
             this.reveal_pending(cx);
         });
+        // Ligatures change no theme, so nothing else would draw the text again with them.
+        let settings = cx.observe_global::<gitviber_ui::Settings>(|this: &mut Self, cx| {
+            this.state
+                .update(cx, |s, cx| s.invalidate_inline_layout(cx));
+            cx.notify();
+        });
         MarkdownView {
             state,
             base,
@@ -194,6 +201,7 @@ impl MarkdownView {
             toggled: HashSet::new(),
             focus: cx.focus_handle(),
             _text: text,
+            _settings: settings,
             _live: Live::new("MarkdownView"),
         }
     }
@@ -943,7 +951,7 @@ impl Render for MarkdownView {
             // A full pane's document reads in a column; a note's parts cap themselves.
             v.style(match self.inline {
                 true => style,
-                false => style.with_measure(reading::measure(cx), COLUMN_PADDING),
+                false => style.with_measure(reading::column(cx), COLUMN_PADDING),
             })
         })
         .scrollable(!self.inline)
@@ -1280,6 +1288,28 @@ mod tests {
             let s = gitviber_ui::Settings::get(cx);
             (s.code_font_size, s.reading_code_size())
         })
+    }
+
+    /// A trackpad pinch zooms the text as ⌘= and ⌘− do, a step per pinch travel, not per event.
+    #[gpui_kit::test]
+    fn a_pinch_zooms_a_preview(cx: &mut TestAppContext) {
+        let (_view, cx) = long_page(cx);
+        let pinch = |delta: f32, cx: &mut VisualTestContext| {
+            cx.simulate_event(gpui_kit::PinchEvent {
+                position: point(px(400.), px(400.)),
+                delta,
+                ..Default::default()
+            });
+            draw(cx);
+        };
+        let (_, before) = sizes(cx);
+        pinch(0.05, cx);
+        assert_eq!(sizes(cx).1, before, "under a step");
+        pinch(0.05, cx);
+        assert_eq!(sizes(cx).1, before + 0.5);
+        pinch(-0.1, cx);
+        assert_eq!(sizes(cx).1, before);
+        cx.update(|_, cx| gitviber_ui::Settings::step_reading_size(cx, 0));
     }
 
     #[gpui_kit::test]

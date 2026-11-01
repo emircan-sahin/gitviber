@@ -1,5 +1,5 @@
 //! Reading typography, for a document a whole pane shows (a file's or a diff's preview, a vault
-//! note): body text in the reading font (a book serif by default) sized from the code font, one
+//! note): body text in the reading font (the interface's by default) sized from the code font, one
 //! centered column of comfortable width for prose, code, tables and diagrams alike, and keys that
 //! zoom the text on its own. Text inside other pages (a pull request, a comment) keeps the
 //! interface's font and size.
@@ -8,8 +8,8 @@ use gitviber_ui::keymap::markdown;
 use gitviber_ui::{ActiveAppTheme as _, Settings};
 use gpui_kit::base::text::TextViewStyle;
 use gpui_kit::{
-    App, FontWeight, InteractiveElement, Pixels, StyleRefinement, Styled, Window, px, relative,
-    rems,
+    App, FontFeatures, FontWeight, HighlightStyle, InteractiveElement, Length, PinchEvent, Pixels,
+    StyleRefinement, Styled, Window, px, relative, rems,
 };
 
 /// A reading view's key context: a rendered document's (scroll and find keys), and the one the
@@ -33,8 +33,11 @@ const PARAGRAPH_GAP_EM: f32 = 1.;
 /// page.
 const MEASURE_EM: f32 = 36.;
 
-/// Inline code against the body: the text view's 0.875 read as heavy beside a serif.
-const INLINE_CODE_PER_BODY: f32 = 0.8;
+/// Inline code against the body: at the code font's own size, as the code blocks are.
+const INLINE_CODE_PER_BODY: f32 = 1. / BODY_PER_CODE;
+
+/// The body's share of the theme's text color.
+const BODY_INK: f32 = 0.85;
 
 /// Tables, in the interface font, a step under the body: rows of data scan better in a sans.
 const TABLE_PER_BODY: f32 = 0.85;
@@ -44,51 +47,105 @@ pub fn text_size(cx: &App) -> Pixels {
     px(Settings::get(cx).reading_code_size() * BODY_PER_CODE)
 }
 
-/// The widest the column gets.
+/// The widest the readable column gets.
 pub fn measure(cx: &App) -> Pixels {
     text_size(cx) * MEASURE_EM
 }
 
+/// The column as Settings → Markdown → Width has it: the readable [`measure`], or a share of
+/// what it's given.
+pub fn column(cx: &App) -> Length {
+    match Settings::get(cx).markdown_width.fraction() {
+        Some(share) => relative(share).into(),
+        None => measure(cx).into(),
+    }
+}
+
 /// The body's font, size, line height and weight on `el`, which its text inherits. Regular, not
 /// the interface's medium: at reading size medium read as bold beside a done task's dimmed text.
+/// Ligatures as Settings → Editor has them, for the code inside.
 pub fn typography<E: Styled>(el: E, cx: &App) -> E {
     el.font_family(cx.app_theme().fonts.reading.clone())
         .text_size(text_size(cx))
         .line_height(relative(LINE_HEIGHT))
         .font_weight(FontWeight::NORMAL)
+        .font_features(code_features(cx))
 }
 
-/// A reading view's text style: paragraphs spaced for the body's size, headings and tables in
-/// the interface font, code blocks at the code font's size.
+/// Off, `->` and `!=` draw as their characters, as in the code editor.
+fn code_features(cx: &App) -> FontFeatures {
+    match Settings::get(cx).ligatures {
+        true => FontFeatures::default(),
+        false => FontFeatures::disable_ligatures(),
+    }
+}
+
+/// A reading view's text style: the body a step under the theme's text color, paragraphs spaced
+/// for the body's size, headings (at the full text color) and tables in the interface font, code
+/// drawn as the code editor draws it (its weight and line height) at
+/// the code font's size.
 pub fn style(window: &Window, cx: &App) -> TextViewStyle {
     let size = text_size(cx);
-    let ui = cx.app_theme().fonts.ui.clone();
+    let fonts = &cx.app_theme().fonts;
+    let ui = fonts.ui.clone();
     let heading = ui.clone();
+    let ink = cx.app_theme().foreground;
     let mut table = StyleRefinement::default()
         .font_family(ui)
+        .font_weight(fonts.ui_weight)
         .text_size(size * TABLE_PER_BODY)
         .line_height(relative(1.5));
     // Columns fit their content and the table scrolls sideways past the column, instead of
     // every column stretched to an even share of it.
     table.overflow.x = Some(gpui_kit::Overflow::Scroll);
     TextViewStyle::from_theme(&gpui_kit::base::Theme::global(cx))
+        // Long prose at the full text color glares on a dark theme.
+        .with_foreground(ink.opacity(BODY_INK))
         .with_paragraph_gap(rems(PARAGRAPH_GAP_EM * (size / window.rem_size())))
         .with_inline_code_scale(INLINE_CODE_PER_BODY)
-        .with_heading(move |_| StyleRefinement::default().font_family(heading.clone()))
+        // No background here: the text view falls back to its code background.
+        .with_inline_code(HighlightStyle {
+            font_weight: Some(fonts.code_weight),
+            ..Default::default()
+        })
+        .with_heading(move |_| {
+            StyleRefinement::default()
+                .font_family(heading.clone())
+                .text_color(ink)
+        })
         .with_code_block(
             StyleRefinement::default()
                 .text_size(size / BODY_PER_CODE)
+                .font_weight(fonts.code_weight)
+                .line_height(relative(fonts.code_line_height))
                 .rounded(px(8.)),
         )
         .with_table(table)
 }
 
-/// The zoom keys (bound in [`KEY_CONTEXT`]) step the reading size, which persists; the code
-/// editors and diffs keep theirs.
+/// Trackpad pinch travel that makes one zoom step, as in the terminal.
+const PINCH_STEP: f32 = 0.08;
+
+thread_local! {
+    /// Pinch travel not yet spent on a step: a pinch arrives as many small deltas.
+    static PINCH: std::cell::Cell<f32> = const { std::cell::Cell::new(0.) };
+}
+
+/// The zoom keys (bound in [`KEY_CONTEXT`]) and a trackpad pinch step the reading size, which
+/// persists; the code editors and diffs keep theirs.
 pub fn zoom_keys<E: InteractiveElement>(el: E) -> E {
     el.on_action(|_: &markdown::ZoomIn, _, cx| Settings::step_reading_size(cx, 1))
         .on_action(|_: &markdown::ZoomOut, _, cx| Settings::step_reading_size(cx, -1))
         .on_action(|_: &markdown::ZoomReset, _, cx| Settings::step_reading_size(cx, 0))
+        .on_pinch(|e: &PinchEvent, _, cx| {
+            let travel = PINCH.get() + e.delta;
+            if travel.abs() < PINCH_STEP {
+                PINCH.set(travel);
+                return;
+            }
+            PINCH.set(0.);
+            Settings::step_reading_size(cx, if travel > 0. { 1 } else { -1 });
+        })
 }
 
 #[cfg(test)]
@@ -184,27 +241,50 @@ mod tests {
         );
     }
 
-    /// The text as drawn, not only the style it inherits: a task's too, an open and a done one.
-    #[test]
-    fn a_documents_text_is_drawn_at_the_regular_weight() {
+    /// `doc`'s lines as drawn in a workspace, each with its runs' weights.
+    fn drawn(doc: &'static str, dir: &str) -> Vec<(String, Vec<FontWeight>)> {
         let shaped = Arc::new(Shaped::default());
         let mut cx =
             TestAppContext::build_with_text_system(TestDispatcher::new(0), None, shaped.clone());
-        gitviber_ui::test_support::config_dir("markdown-reading-drawn");
+        gitviber_ui::test_support::config_dir(dir);
         cx.update(gitviber_ui::init);
         let (_, cx) = cx.add_window_view(|window, cx| {
-            let doc = "Plain words\n\n- [ ] open task\n- [x] done task\n";
             Workspace(cx.new(|cx| MarkdownView::new(doc, MarkdownBase::default(), window, cx)))
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();
-        let lines = shaped.lines.lock().unwrap();
+        shaped.lines.lock().unwrap().clone()
+    }
+
+    fn weights<'a>(lines: &'a [(String, Vec<FontWeight>)], text: &str) -> &'a [FontWeight] {
+        lines
+            .iter()
+            .find(|(line, _)| line.contains(text))
+            .unwrap_or_else(|| panic!("{text:?} wasn't drawn: {lines:?}"))
+            .1
+            .as_slice()
+    }
+
+    /// The text as drawn, not only the style it inherits: a task's too, an open and a done one.
+    #[test]
+    fn a_documents_text_is_drawn_at_the_regular_weight() {
+        let doc = "Plain words\n\n- [ ] open task\n- [x] done task\n";
+        let lines = drawn(doc, "markdown-reading-drawn");
         for text in ["Plain words", "open task", "done task"] {
-            let (_, weights) = lines
-                .iter()
-                .find(|(line, _)| line.contains(text))
-                .unwrap_or_else(|| panic!("{text:?} wasn't drawn: {lines:?}"));
-            assert_eq!(weights, &[FontWeight::NORMAL], "{text}");
+            assert_eq!(weights(&lines, text), &[FontWeight::NORMAL], "{text}");
         }
+    }
+
+    /// Code, in a block or inline, is drawn at Settings → Editor's weight, as the code editor
+    /// draws it, not at the regular weight of the prose around it.
+    #[test]
+    fn code_is_drawn_at_the_code_editors_weight() {
+        let doc = "Some `tick` here\n\n```\nlet code = 1;\n```\n";
+        let lines = drawn(doc, "markdown-reading-code");
+        let code = FontWeight(Settings::default().code_font_weight as f32);
+        assert_ne!(code, FontWeight::NORMAL);
+        assert_eq!(weights(&lines, "let code"), &[code]);
+        assert_eq!(weights(&lines, "tick"), &[code]);
+        assert_eq!(weights(&lines, "Some"), &[FontWeight::NORMAL]);
     }
 }
