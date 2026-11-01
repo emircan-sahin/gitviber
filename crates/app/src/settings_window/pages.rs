@@ -390,7 +390,9 @@ pub fn editor(w: &SettingsWindow, cx: &App) -> Page {
     let dark = cx.app_theme().dark;
     let in_use = |on: bool| if on { " The preview shows it." } else { "" };
     Page::new().groups([
-        Group::new().plain().item(sample(CODE_SAMPLE, false, Some(w), cx)),
+        Group::new()
+            .plain()
+            .item(sample(CODE_SAMPLE, false, Some(w), cx)),
         // Each appearance keeps its own syntax theme, so switching back restores it.
         Group::new().title("Code colors").items([
             choice(
@@ -409,17 +411,15 @@ pub fn editor(w: &SettingsWindow, cx: &App) -> Page {
             ),
         ]),
         Group::new().title("Font").items(font),
-        Group::new().title("Behavior").items([
-            switch(
-                "Word wrap",
-                with_keys(
-                    "Wrap long lines instead of scrolling sideways.",
-                    &["editor.toggleWrap"],
-                ),
-                |s| s.word_wrap,
-                |s, v| s.word_wrap = v,
+        Group::new().title("Behavior").items([switch(
+            "Word wrap",
+            with_keys(
+                "Wrap long lines instead of scrolling sideways.",
+                &["editor.toggleWrap"],
             ),
-        ]),
+            |s| s.word_wrap,
+            |s, v| s.word_wrap = v,
+        )]),
         Group::new().title("Markdown").items(markdown),
     ])
 }

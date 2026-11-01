@@ -21,9 +21,9 @@ use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     App, AppContext as _, Bounds, ClipboardItem, Context, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, Hsla, ImageSource, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, Render, RenderImage, Resource, ScrollHandle,
-    SharedString, SharedUri, StatefulInteractiveElement as _, Styled as _, Subscription,
-    WeakEntity, Window, div, image_cache, point, prelude::FluentBuilder as _, px, rems,
+    ParentElement as _, Pixels, Render, RenderImage, Resource, ScrollHandle, SharedString,
+    SharedUri, StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div,
+    image_cache, point, prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::blocks::{self, Callout, Callouts, Details, DiagramKind, SourceBlock};
@@ -970,7 +970,12 @@ impl Render for MarkdownView {
             .size_full()
             .bg(t.code(t.background))
             .map(|el| reading::typography(el, cx))
-            .child(image_cache(self.images.clone()).size_full().pt_4().child(view))
+            .child(
+                image_cache(self.images.clone())
+                    .size_full()
+                    .pt_4()
+                    .child(view),
+            )
     }
 }
 
@@ -1280,7 +1285,11 @@ mod tests {
     #[gpui_kit::test]
     fn a_preview_reads_in_a_column_that_zooms_on_its_own(cx: &mut TestAppContext) {
         let (host, cx) = window(cx);
-        let text = format!("{}\n\n{}", "word ".repeat(150), "Another line.\n\n".repeat(300));
+        let text = format!(
+            "{}\n\n{}",
+            "word ".repeat(150),
+            "Another line.\n\n".repeat(300)
+        );
         let view = cx.update(|window, cx| {
             let view = cx.new(|cx| MarkdownView::new(&text, MarkdownBase::default(), window, cx));
             host.update(cx, |h, _| h.0 = Some(view.clone().into()));
@@ -1375,7 +1384,10 @@ mod tests {
         let wide = heights(1600., cx);
         assert_eq!(wide, narrow, "the paragraph, the code block, the table");
         let squeezed = heights(measure - 100., cx);
-        assert!(squeezed[0] > narrow[0], "a narrower pane wraps more: {squeezed:?}");
+        assert!(
+            squeezed[0] > narrow[0],
+            "a narrower pane wraps more: {squeezed:?}"
+        );
     }
 
     #[gpui_kit::test]
