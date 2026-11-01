@@ -87,7 +87,8 @@ impl Keys {
 
 /// Each panel has a key that shows or hides it and one that focuses it: the git panel ⌘B and
 /// ⌘0, the explorer ⌘E (and VS Code's ⌥⌘B) and ⇧⌘E, the terminal ⌘J and ⌃`. Tabs go by ⌃1–⌃8
-/// and ⌘1 focuses the code. The terminal's pane keys stay: they only listen in the terminal, so
+/// from anywhere; ⌘1–⌘9 pick the focused area's (the terminal's, the code area's) as in every
+/// terminal and browser, and elsewhere ⌘1 focuses the code. The terminal's pane keys stay: they only listen in the terminal, so
 /// ⌥⌘←/→ there move between panes and elsewhere between tabs.
 static VSCODE: &[Keys] = &[
     keys("workbench.showCommands", &["shift+cmd+p", "f1"]),
@@ -101,15 +102,15 @@ static VSCODE: &[Keys] = &[
     keys("view.toggleExplorer", &["cmd+e", "alt+cmd+b"]),
     keys("view.focusCode", &["cmd+1"]),
     keys("view.zoomReset", &[]),
-    keys("tab.goto1", &["ctrl+1"]).other(&["alt+1"]),
-    keys("tab.goto2", &["ctrl+2"]).other(&["alt+2"]),
-    keys("tab.goto3", &["ctrl+3"]).other(&["alt+3"]),
-    keys("tab.goto4", &["ctrl+4"]).other(&["alt+4"]),
-    keys("tab.goto5", &["ctrl+5"]).other(&["alt+5"]),
-    keys("tab.goto6", &["ctrl+6"]).other(&["alt+6"]),
-    keys("tab.goto7", &["ctrl+7"]).other(&["alt+7"]),
-    keys("tab.goto8", &["ctrl+8"]).other(&["alt+8"]),
-    keys("tab.last", &["ctrl+0", "ctrl+9"]).other(&["alt+0", "alt+9"]),
+    keys("tab.goto1", &["ctrl+1", "cmd+1"]).other(&["alt+1", "cmd+1"]),
+    keys("tab.goto2", &["ctrl+2", "cmd+2"]).other(&["alt+2", "cmd+2"]),
+    keys("tab.goto3", &["ctrl+3", "cmd+3"]).other(&["alt+3", "cmd+3"]),
+    keys("tab.goto4", &["ctrl+4", "cmd+4"]).other(&["alt+4", "cmd+4"]),
+    keys("tab.goto5", &["ctrl+5", "cmd+5"]).other(&["alt+5", "cmd+5"]),
+    keys("tab.goto6", &["ctrl+6", "cmd+6"]).other(&["alt+6", "cmd+6"]),
+    keys("tab.goto7", &["ctrl+7", "cmd+7"]).other(&["alt+7", "cmd+7"]),
+    keys("tab.goto8", &["ctrl+8", "cmd+8"]).other(&["alt+8", "cmd+8"]),
+    keys("tab.last", &["ctrl+0", "ctrl+9", "cmd+9"]).other(&["alt+0", "alt+9", "cmd+9"]),
     keys("tab.next", &["alt+cmd+right", "shift+cmd+]", "ctrl+tab"])
         .other(&["cmd+pagedown", "cmd+tab"]),
     keys(

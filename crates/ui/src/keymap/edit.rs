@@ -139,8 +139,10 @@ pub fn clash_note(
 ) -> Option<String> {
     // By default some local commands take a global key over in their own place (⌘W in the
     // terminal): not a clash until the user rebinds one of the two.
+    // So does a tab number's ⌘1–⌘9 where focus has tabs (the VS Code preset's Focus Code ⌘1).
     let meant = |o: &Command| {
-        o.local.is_some() != c.local.is_some()
+        let tab = super::chord::picks_focused_tab(chord) && o.focused_tab != c.focused_tab;
+        (o.local.is_some() != c.local.is_some() || tab)
             && !overrides.contains_key(o.id)
             && !overrides.contains_key(c.id)
     };
@@ -294,17 +296,17 @@ mod tests {
     #[test]
     fn a_presets_binding_is_not_stored() {
         let id = "tab.goto1";
-        let bind = |key: &str| {
+        let bind = |keys: &[&str]| {
             with_binding(
                 Preset::VsCode,
                 &Overrides::new(),
                 id,
-                Some(vec![key.into()]),
+                Some(keys.iter().map(|k| k.to_string()).collect()),
                 true,
             )
         };
-        assert!(bind("ctrl+1").is_empty());
-        assert_eq!(bind("cmd+1")[id], vec!["cmd+1".to_string()]);
+        assert!(bind(&["ctrl+1", "cmd+1"]).is_empty());
+        assert_eq!(bind(&["cmd+1"])[id], vec!["cmd+1".to_string()]);
     }
 
     /// ⌥⌘→ is the next tab, and in the terminal the pane to the right: no clash shown.

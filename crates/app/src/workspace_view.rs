@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gitviber_ui::actions::{diff, editor, file, repo, review, tab, terminal, view, workbench};
-use gitviber_ui::keymap::ROOT_CONTEXT;
+use gitviber_ui::keymap::{CODE_AREA_CONTEXT, ROOT_CONTEXT};
 use gitviber_ui::memory::{self, Live};
 use gitviber_ui::state::PanelSizes;
 use gitviber_ui::widgets::{CountBadge, Pressable as _};
@@ -843,7 +843,7 @@ impl WorkspaceView {
         div()
             .id("center")
             .debug_selector(|| "center".into())
-            .key_context("CodeArea")
+            .key_context(CODE_AREA_CONTEXT)
             .track_focus(&focus)
             .relative()
             .flex()
