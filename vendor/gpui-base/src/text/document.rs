@@ -262,7 +262,7 @@ impl ParsedDocument {
                     window,
                     cx,
                 );
-                in_measure(node, block, node_cx)
+                in_measure(block, node_cx)
             }));
         };
 
@@ -295,7 +295,7 @@ impl ParsedDocument {
                         window,
                         cx,
                     );
-                    in_measure(&blocks[ix], block, &node_cx)
+                    in_measure(block, &node_cx)
                 }
             })
             .size_full(),
@@ -303,25 +303,19 @@ impl ParsedDocument {
     }
 }
 
-/// A top-level `block` capped at the style's measure, centered: prose reads at
-/// a comfortable width while code blocks, tables and custom blocks (which
-/// cap themselves) take the whole width.
-fn in_measure(node: &BlockNode, block: AnyElement, node_cx: &NodeContext) -> AnyElement {
+/// A top-level `block` capped at the style's measure, centered, its gutter kept
+/// clear on both sides: the document scrolls at its whole width, its scrollbar
+/// at the edge, while every block reads in one column.
+fn in_measure(block: AnyElement, node_cx: &NodeContext) -> AnyElement {
     match node_cx.style.measure() {
-        Some(measure)
-            if !matches!(
-                node,
-                BlockNode::CodeBlock(_) | BlockNode::Table(_) | BlockNode::Custom { .. }
-            ) =>
-        {
-            div()
-                .w_full()
-                .flex()
-                .justify_center()
-                .child(div().w_full().min_w_0().max_w(measure).child(block))
-                .into_any_element()
-        }
-        _ => block,
+        Some((measure, gutter)) => div()
+            .w_full()
+            .flex()
+            .justify_center()
+            .px(gutter)
+            .child(div().w_full().min_w_0().max_w(measure).child(block))
+            .into_any_element(),
+        None => block,
     }
 }
 

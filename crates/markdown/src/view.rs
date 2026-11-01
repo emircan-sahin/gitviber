@@ -21,7 +21,7 @@ use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     App, AppContext as _, Bounds, ClipboardItem, Context, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, Hsla, ImageSource, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, Render, RenderImage, Resource, ScrollHandle, ScrollWheelEvent,
+    ParentElement as _, Pixels, Render, RenderImage, Resource, ScrollHandle,
     SharedString, SharedUri, StatefulInteractiveElement as _, Styled as _, Subscription,
     WeakEntity, Window, div, image_cache, point, prelude::FluentBuilder as _, px, rems,
 };
@@ -855,7 +855,7 @@ fn extensions(
                 )
                 .children(part("body", &d.body).filter(|_| open))
                 .children(part("after", &d.after));
-            prose(&view, details, cx)
+            details.into_any_element()
         }
     });
     ext.block_renderer("gv-callout", move |node, window, cx| {
@@ -878,10 +878,12 @@ fn extensions(
         } else {
             callout.title.clone().into_any_element()
         };
+        // In the interface font, as headings are: a label, not a line of the text.
         let header = div()
             .flex()
             .items_center()
             .gap_2()
+            .font_family(t.fonts.ui.clone())
             .text_color(color)
             .font_weight(if github {
                 gpui_kit::FontWeight::MEDIUM
@@ -921,16 +923,8 @@ fn extensions(
             .gap_2()
             .child(header)
             .children(body);
-        prose(&view, callout, cx)
+        callout.into_any_element()
     })
-}
-
-/// A block of ours that's text, at the reading measure as the document's own text is.
-fn prose(view: &WeakEntity<MarkdownView>, el: impl IntoElement, cx: &App) -> gpui_kit::AnyElement {
-    match is_reading(view, cx) {
-        true => reading::in_measure(el, cx),
-        false => el.into_any_element(),
-    }
 }
 
 impl Render for MarkdownView {
@@ -944,7 +938,14 @@ impl Render for MarkdownView {
             &self.base,
             self.extensions.clone(),
         )
-        .when(self.reading, |v| v.style(reading::style(window, cx)))
+        .when(self.reading, |v| {
+            let style = reading::style(window, cx);
+            // A full pane's document reads in a column; a note's parts cap themselves.
+            v.style(match self.inline {
+                true => style,
+                false => style.with_measure(reading::measure(cx), COLUMN_PADDING),
+            })
+        })
         .scrollable(!self.inline)
         .selectable(true)
         .when_some(
@@ -960,38 +961,20 @@ impl Render for MarkdownView {
                 .when(self.reading, |el| reading::typography(el, cx))
                 .child(image_cache(self.images.clone()).w_full().child(view));
         }
-        let list = self.state.read(cx).list_state().clone();
-        let column = self.state.read(cx).bounds();
         div()
             .id("markdown-view")
             .key_context(reading::KEY_CONTEXT)
             .track_focus(&self.focus)
             .map(|el| scroll::on_keys(el, Self::scroll_key, cx))
             .map(reading::zoom_keys)
-            // The column leaves the sides of a wide pane empty; the wheel there still scrolls.
-            .on_scroll_wheel(cx.listener(move |_, e: &ScrollWheelEvent, window, cx| {
-                if !column.contains(&e.position) {
-                    list.scroll_by(-e.delta.pixel_delta(window.line_height()).y);
-                    cx.notify();
-                }
-            }))
             .size_full()
             .bg(t.code(t.background))
             .map(|el| reading::typography(el, cx))
-            .flex()
-            .justify_center()
-            .child(
-                image_cache(self.images.clone())
-                    .size_full()
-                    .max_w(reading::wide(cx) + COLUMN_PADDING * 2.)
-                    .px(COLUMN_PADDING)
-                    .pt_4()
-                    .child(view),
-            )
+            .child(image_cache(self.images.clone()).size_full().pt_4().child(view))
     }
 }
 
-/// Room on each side of the text column.
+/// Room on each side of the text column, at least.
 const COLUMN_PADDING: Pixels = px(32.);
 
 /// Brings `line` (window coordinates) into `handle`'s view a third of the way down, only when
@@ -1275,10 +1258,14 @@ mod tests {
     }
 
     /// The text column's width and the middle of it, in the window.
-    fn column(view: &Entity<MarkdownView>, cx: &mut VisualTestContext) -> (f32, f32) {
+    /// The first block's height in a window `width` wide: a long paragraph's grows as its column
+    /// narrows, so two widths that give it the same height give it the same column.
+    fn first_height(view: &Entity<MarkdownView>, width: f32, cx: &mut VisualTestContext) -> f32 {
+        cx.simulate_resize(gpui_kit::size(px(width), px(900.)));
+        draw(cx);
         view.read_with(cx, |v, cx| {
-            let b = v.state.read(cx).bounds();
-            (f32::from(b.size.width), f32::from(b.center().x))
+            let list = v.state.read(cx).list_state().clone();
+            f32::from(list.bounds_for_item(0).unwrap().size.height)
         })
     }
 
@@ -1291,24 +1278,31 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn a_preview_reads_in_a_centered_column_that_zooms_on_its_own(cx: &mut TestAppContext) {
-        let (view, cx) = long_page(cx);
-        cx.simulate_resize(gpui_kit::size(px(1600.), px(900.)));
-        draw(cx);
+    fn a_preview_reads_in_a_column_that_zooms_on_its_own(cx: &mut TestAppContext) {
+        let (host, cx) = window(cx);
+        let text = format!("{}\n\n{}", "word ".repeat(150), "Another line.\n\n".repeat(300));
+        let view = cx.update(|window, cx| {
+            let view = cx.new(|cx| MarkdownView::new(&text, MarkdownBase::default(), window, cx));
+            host.update(cx, |h, _| h.0 = Some(view.clone().into()));
+            window.focus(&view.focus_handle(cx), cx);
+            view
+        });
         let size = cx.update(|_, cx| f32::from(reading::text_size(cx)));
-        assert!((size - 13.5 * 8. / 7.).abs() < 0.01, "{size}");
-        // The column is the code blocks' width; the prose in it, 40em (`code_and_tables_…`).
-        let (width, middle) = column(&view, cx);
-        assert!((width - size * 56.).abs() < 1., "{width}");
-        assert!((middle - 800.).abs() < 1., "{middle}");
+        assert!((size - 13.5 * 4. / 3.).abs() < 0.01, "{size}");
+        // 36em of text and 32px each side: a wider pane wraps the same, a narrower one more.
+        let wide = first_height(&view, 1600., cx);
+        assert_eq!(first_height(&view, size * 36. + 64., cx), wide);
+        assert!(first_height(&view, size * 36. + 24., cx) > wide);
+        first_height(&view, 1600., cx);
         let (_, tall) = scrolled(&view, cx);
 
         // The code editors and diffs keep their size.
         cx.simulate_keystrokes("secondary-=");
         draw(cx);
         assert_eq!(sizes(cx), (13.5, 14.));
-        let (wider, _) = column(&view, cx);
-        assert!((wider - 14. * 8. / 7. * 56.).abs() < 1., "{wider}");
+        let wider = first_height(&view, 1600., cx);
+        assert_eq!(first_height(&view, 14. * 4. / 3. * 36. + 64., cx), wider);
+        first_height(&view, 1600., cx);
         let (_, taller) = scrolled(&view, cx);
         assert!(taller > tall, "{taller} after {tall}");
         cx.simulate_keystrokes("secondary-- secondary--");
@@ -1319,12 +1313,6 @@ mod tests {
         cx.simulate_keystrokes("secondary-0");
         assert_eq!(sizes(cx), (14., 14.));
         cx.update(|_, cx| gitviber_ui::Settings::step_code_font(cx, 0));
-
-        // A pane narrower than the column: the text takes it, less its sides.
-        cx.simulate_resize(gpui_kit::size(px(500.), px(900.)));
-        draw(cx);
-        let (narrow, _) = column(&view, cx);
-        assert!((narrow - (500. - 64.)).abs() < 1., "{narrow}");
     }
 
     /// A pull request's body or a comment keeps the interface's text size through a zoom step:
@@ -1346,7 +1334,7 @@ mod tests {
         }
     }
 
-    /// Paragraphs are spaced by 3/4 of the body's size, at any zoom: a line and a gap, 2.35em.
+    /// Paragraphs are spaced by the body's size, at any zoom: a line and a gap, 2.65em.
     #[gpui_kit::test]
     fn the_paragraph_gap_follows_the_reading_size(cx: &mut TestAppContext) {
         let (host, cx) = window(cx);
@@ -1354,16 +1342,16 @@ mod tests {
         for _ in 0..3 {
             let size = cx.update(|_, cx| f32::from(reading::text_size(cx)));
             let height = first(cx);
-            assert!((height - size * 2.35).abs() < 1., "{height} at {size}");
+            assert!((height - size * 2.65).abs() < 1., "{height} at {size}");
             cx.update(|_, cx| (0..4).for_each(|_| gitviber_ui::Settings::step_reading_size(cx, 1)));
         }
         cx.update(|_, cx| gitviber_ui::Settings::step_reading_size(cx, 0));
     }
 
-    /// In a wide pane the prose stays 40em wide while code blocks and tables take the whole
-    /// column: text wrapped in them takes fewer lines than at the prose's width.
+    /// In a wide pane code blocks and tables keep the prose's width: their text wraps as it does
+    /// in a pane just the column's width.
     #[gpui_kit::test]
-    fn code_and_tables_break_out_of_the_prose_column(cx: &mut TestAppContext) {
+    fn code_and_tables_stay_in_the_prose_column(cx: &mut TestAppContext) {
         let (host, cx) = window(cx);
         let words = "word ".repeat(150);
         let doc = format!("{words}\n\n```\n{words}\n```\n\n| a |\n|---|\n| {words} |\n");
@@ -1385,9 +1373,9 @@ mod tests {
         let measure = cx.update(|_, cx| f32::from(reading::measure(cx)));
         let narrow = heights(measure + 64., cx);
         let wide = heights(1600., cx);
-        assert_eq!(wide[0], narrow[0], "the paragraph");
-        assert!(wide[1] < narrow[1], "the code block: {wide:?} {narrow:?}");
-        assert!(wide[2] < narrow[2], "the table: {wide:?} {narrow:?}");
+        assert_eq!(wide, narrow, "the paragraph, the code block, the table");
+        let squeezed = heights(measure - 100., cx);
+        assert!(squeezed[0] > narrow[0], "a narrower pane wraps more: {squeezed:?}");
     }
 
     #[gpui_kit::test]
@@ -1397,7 +1385,7 @@ mod tests {
         draw(cx);
         // Beside the column, then over it, where the document's own scrolling is the only one.
         for (x, want) in [(40., 120.), (800., 240.)] {
-            cx.simulate_event(ScrollWheelEvent {
+            cx.simulate_event(gpui_kit::ScrollWheelEvent {
                 position: point(px(x), px(400.)),
                 delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-120.))),
                 ..Default::default()

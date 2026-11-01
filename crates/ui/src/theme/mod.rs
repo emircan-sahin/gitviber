@@ -24,7 +24,9 @@ use gpui_kit::{
 use serde::{Deserialize, Serialize};
 
 use crate::keymap::IS_MAC;
-use crate::settings::{Appearance, CodeFont, Settings, TerminalFont, UiFont, WINDOW_OPACITY};
+use crate::settings::{
+    Appearance, CodeFont, ReadingFont, Settings, TerminalFont, UiFont, WINDOW_OPACITY,
+};
 
 /// A palette as the old app's CSS had it: #RRGGBB or #RRGGBBAA.
 pub struct Palette {
@@ -221,6 +223,8 @@ pub struct Fonts {
     /// What the Interface font weight setting adds to the normal, medium and semibold weights:
     /// 0 at Regular, 100 at Medium.
     pub ui_step: f32,
+    /// A rendered document's body text: a preview's, a vault note's.
+    pub reading: SharedString,
     pub code: SharedString,
     pub code_weight: FontWeight,
     pub code_size: Pixels,
@@ -505,6 +509,14 @@ fn resolve_fonts(s: &Settings, cx: &mut App) -> Fonts {
         UiFont::Custom => ".SystemUIFont".into(),
         preset => first_installed(&[preset.as_str(), ".SystemUIFont"], cx),
     };
+    let reading = match s.reading_font {
+        ReadingFont::Interface => ui.clone(),
+        ReadingFont::Custom if !s.custom_reading_font.trim().is_empty() => {
+            first_installed(&[s.custom_reading_font.trim(), &ui], cx)
+        }
+        ReadingFont::Custom => ui.clone(),
+        preset => first_installed(&[preset.as_str(), &ui], cx),
+    };
     let code = code_family(s.code_font, s.custom_code_font.trim(), cx);
     let terminal = match s.terminal_font {
         TerminalFont::Editor => code.clone(),
@@ -522,6 +534,7 @@ fn resolve_fonts(s: &Settings, cx: &mut App) -> Fonts {
         ui_weight: label_weight(FontWeight::NORMAL, ui_step),
         ui,
         ui_step,
+        reading,
         code,
         code_weight: FontWeight(s.code_font_weight as f32),
         code_size: px(s.code_font_size),
@@ -958,6 +971,7 @@ mod tests {
             ui: ".SystemUIFont".into(),
             ui_weight: FontWeight::MEDIUM,
             ui_step: 100.0,
+            reading: "Charter".into(),
             code: "Menlo".into(),
             code_weight: FontWeight::MEDIUM,
             code_size: px(13.5),

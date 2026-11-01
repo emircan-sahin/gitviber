@@ -13,10 +13,10 @@ The crates.io release of gpui-base 0.8.0, byte for byte, except eight changes an
    bump to gpui-kit/gpui-base 0.8.1, which has the same fixes.
 6. A long paragraph with many inline code or bold spans combined its highlights in quadratic
    time on every frame (the end of this file). Drop it once upstream combines them once.
-7. A prose measure for the text view (the end of this file). Drop it once upstream can cap a
-   document's prose narrower than its code blocks and tables.
-8. Task statuses past done and to do (`- [/]`, `- [-]`), as notes write them (the end of this
+7. Task statuses past done and to do (`- [/]`, `- [-]`), as notes write them (the end of this
    file). Drop it once upstream reads them.
+8. A reading column and inline code's size for the text view (the end of this file). Drop it
+   once upstream can cap a scrolling document's blocks narrower than the view and size its code.
 
 Wired in through `[patch.crates-io]` in the workspace Cargo.toml (and excluded from the
 workspace). The whole patch: `diff -ru ~/.cargo/registry/src/index.crates.io-*/gpui-base-0.8.0
@@ -179,17 +179,7 @@ a paragraph's spans. A paragraph with inline code is laid out through `inline_fl
 does this on every render. A node's marks lie within its own text, after every earlier node's, so
 they are now combined among themselves and appended: the same ranges, in linear time.
 
-## 7. Prose measure: why and the change
-
-A rendered document a whole pane shows reads best with its prose about 75 characters a line, while
-code, tables and diagrams want more. A `gpui::list` clips its items to its bounds, so a block can't
-reach past a narrow column: the column has to be the wide one and the prose capped inside it.
-`src/text/style.rs`: `TextViewStyle::with_measure` / `measure()` (part of the style's equality).
-`src/text/document.rs` (`render_root`, `in_measure`): with a measure set, each top-level block but
-code blocks, tables and custom blocks is wrapped in a centered box at most that wide; custom blocks
-cap themselves. Without one nothing changes.
-
-## 8. Task statuses: why and the change
+## 7. Task statuses: why and the change
 
 Obsidian notes mark tasks with more than `[ ]` and `[x]`: `[/]` in progress, `[-]` dropped, and
 `[>]`, `[!]`, `[?]` and the like. GFM reads those as text, so a numbered one showed its number,
@@ -207,3 +197,17 @@ then its status as text.
 
 Tested here (`markdown::tests::task_statuses_past_done_are_read_only_when_asked_for`), run as in
 part 4; and from crates/markdown and crates/obsidian (a note's tasks).
+
+## 8. Reading column and inline code size: why and the change
+
+A document a whole pane shows reads best in a column about 70 characters wide. Capping the text
+view itself put its `gpui::list`, and so its scrollbar, at the column's edge, over the right side
+of code blocks and callouts. The view keeps the pane's width and each block is capped instead.
+`src/text/style.rs`: `TextViewStyle::with_measure(measure, gutter)` / `measure()` (part of the
+style's equality). `src/text/document.rs` (`render_root`, `in_measure`): with a measure set, each
+top-level block is wrapped in a box at most `measure` wide, centered, with `gutter` on both sides.
+Without one nothing changes.
+
+Inline code was drawn at a fixed 0.875 of the text around it, which beside a serif body read as
+heavy. `TextViewStyle::with_inline_code_scale` / `inline_code_scale()` (default 0.875, part of the
+style's equality) set it; `src/text/node.rs` (`mark_highlight`) reads it.

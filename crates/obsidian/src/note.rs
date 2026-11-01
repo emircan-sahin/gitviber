@@ -517,11 +517,6 @@ impl Doc {
         )
     }
 
-    /// Whether the part at `ix` is an embed: it lines up with the prose, not the wider code.
-    pub fn embed_at(&self, ix: usize) -> bool {
-        matches!(self.parts.get(ix), Some(Part::Embed { .. }))
-    }
-
     /// The part a #Heading or #^block names (subheadings joined by #: the last counts).
     pub fn find(&self, anchor: &str) -> Option<usize> {
         let last = anchor.split('#').rfind(|s| !s.is_empty())?;
@@ -836,10 +831,6 @@ impl NoteView {
         };
         let last = ix + 1 == self.doc.len();
         let part = self.doc.element(ix, &index, window, cx);
-        let width = match self.doc.embed_at(ix) {
-            true => reading::measure(cx),
-            false => reading::wide(cx),
-        };
         div()
             .w_full()
             .flex()
@@ -847,7 +838,7 @@ impl NoteView {
             .child(
                 div()
                     .w_full()
-                    .max_w(width + px(64.))
+                    .max_w(reading::measure(cx) + px(64.))
                     .px_8()
                     .when(ix == 0, |d| d.pt_4())
                     // Each part's markdown drops its first block's margin; a heading keeps it.

@@ -1,14 +1,15 @@
 //! Reading typography, for a document a whole pane shows (a file's or a diff's preview, a vault
-//! note): body text sized from the code font, a column of comfortable width, and keys that zoom
-//! the text on its own. Text inside other pages (a pull request, a comment) keeps the interface's
-//! size.
+//! note): body text in the reading font (a book serif by default) sized from the code font, one
+//! centered column of comfortable width for prose, code, tables and diagrams alike, and keys that
+//! zoom the text on its own. Text inside other pages (a pull request, a comment) keeps the
+//! interface's font and size.
 
-use gitviber_ui::Settings;
 use gitviber_ui::keymap::markdown;
+use gitviber_ui::{ActiveAppTheme as _, Settings};
 use gpui_kit::base::text::TextViewStyle;
 use gpui_kit::{
-    AnyElement, App, FontWeight, InteractiveElement, IntoElement, ParentElement as _, Pixels,
-    StyleRefinement, Styled, Window, div, px, relative, rems,
+    App, FontWeight, InteractiveElement, Pixels, StyleRefinement, Styled, Window, px, relative,
+    rems,
 };
 
 /// A reading view's key context: a rendered document's (scroll and find keys), and the one the
@@ -18,63 +19,68 @@ pub const KEY_CONTEXT: &str = "MarkdownView MarkdownReading";
 /// Where the zoom keys bind, for a place beside a reading view that's part of it (its find bar).
 pub const ZOOM_CONTEXT: &str = "MarkdownReading";
 
-/// The body over the code font: inline code, drawn at 7/8 of the body, comes out at the code
-/// font's own size, and changing the code font moves the reading along.
-const BODY_PER_CODE: f32 = 8. / 7.;
+/// The body over the code font: 18px at the default 13.5px, so code blocks (at the code font's
+/// size) sit a step under the prose, and changing the code font moves the reading along.
+const BODY_PER_CODE: f32 = 4. / 3.;
 
-const LINE_HEIGHT: f32 = 1.6;
+const LINE_HEIGHT: f32 = 1.65;
 
 /// Between paragraphs, in ems of the body: the text view's is in rems, the interface's size.
-const PARAGRAPH_GAP_EM: f32 = 0.75;
+const PARAGRAPH_GAP_EM: f32 = 1.;
 
-/// The column in ems of the body: about 75 characters of prose a line, at any zoom.
-const MEASURE_EM: f32 = 40.;
+/// The column in ems of the body: 650px at the default size, about 70 characters of a serif.
+/// Code blocks and tables stay in it too: a block reaching past the prose read as a misaligned
+/// page.
+const MEASURE_EM: f32 = 36.;
 
-/// Code blocks, tables and diagrams get this much: about 860px at the default size.
-const WIDE_EM: f32 = 56.;
+/// Inline code against the body: the text view's 0.875 read as heavy beside a serif.
+const INLINE_CODE_PER_BODY: f32 = 0.8;
 
-/// The body text's size: 15.4px at the default 13.5px code font, before any zoom.
+/// Tables, in the interface font, a step under the body: rows of data scan better in a sans.
+const TABLE_PER_BODY: f32 = 0.85;
+
+/// The body text's size: 18px at the default 13.5px code font, before any zoom.
 pub fn text_size(cx: &App) -> Pixels {
     px(Settings::get(cx).reading_code_size() * BODY_PER_CODE)
 }
 
-/// The widest prose gets.
+/// The widest the column gets.
 pub fn measure(cx: &App) -> Pixels {
     text_size(cx) * MEASURE_EM
 }
 
-/// The widest a code block, a table or a diagram gets, past the prose on both sides.
-pub fn wide(cx: &App) -> Pixels {
-    text_size(cx) * WIDE_EM
-}
-
-/// `el` at most [`measure`] wide, centered in what it's given.
-pub fn in_measure(el: impl IntoElement, cx: &App) -> AnyElement {
-    div()
-        .w_full()
-        .flex()
-        .justify_center()
-        .child(div().w_full().min_w_0().max_w(measure(cx)).child(el))
-        .into_any_element()
-}
-
-/// The body's size, line height and weight on `el`, which its text inherits. Regular, not the
-/// interface's medium: at reading size medium read as bold beside a done task's dimmed text.
+/// The body's font, size, line height and weight on `el`, which its text inherits. Regular, not
+/// the interface's medium: at reading size medium read as bold beside a done task's dimmed text.
 pub fn typography<E: Styled>(el: E, cx: &App) -> E {
-    el.text_size(text_size(cx))
+    el.font_family(cx.app_theme().fonts.reading.clone())
+        .text_size(text_size(cx))
         .line_height(relative(LINE_HEIGHT))
         .font_weight(FontWeight::NORMAL)
 }
 
-/// A reading view's text style: prose at [`measure`], paragraphs spaced for the body's size, code
-/// blocks at the size its inline code is.
+/// A reading view's text style: paragraphs spaced for the body's size, headings and tables in
+/// the interface font, code blocks at the code font's size.
 pub fn style(window: &Window, cx: &App) -> TextViewStyle {
     let size = text_size(cx);
-    let code = size / BODY_PER_CODE;
+    let ui = cx.app_theme().fonts.ui.clone();
+    let heading = ui.clone();
+    let mut table = StyleRefinement::default()
+        .font_family(ui)
+        .text_size(size * TABLE_PER_BODY)
+        .line_height(relative(1.5));
+    // Columns fit their content and the table scrolls sideways past the column, instead of
+    // every column stretched to an even share of it.
+    table.overflow.x = Some(gpui_kit::Overflow::Scroll);
     TextViewStyle::from_theme(&gpui_kit::base::Theme::global(cx))
-        .with_measure(measure(cx))
         .with_paragraph_gap(rems(PARAGRAPH_GAP_EM * (size / window.rem_size())))
-        .with_code_block(StyleRefinement::default().text_size(code))
+        .with_inline_code_scale(INLINE_CODE_PER_BODY)
+        .with_heading(move |_| StyleRefinement::default().font_family(heading.clone()))
+        .with_code_block(
+            StyleRefinement::default()
+                .text_size(size / BODY_PER_CODE)
+                .rounded(px(8.)),
+        )
+        .with_table(table)
 }
 
 /// The zoom keys (bound in [`KEY_CONTEXT`]) step the reading size, which persists; the code
@@ -96,7 +102,7 @@ mod tests {
         RenderGlyphParams, Size, TestAppContext, TestDispatcher, TextRenderingMode, Window, div,
     };
 
-    use gitviber_ui::ActiveAppTheme as _;
+    use gpui_kit::ParentElement as _;
 
     use super::*;
     use crate::{MarkdownBase, MarkdownView};

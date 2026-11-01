@@ -19,7 +19,8 @@ pub struct TextViewStyle {
     code_background: Hsla,
     border: Hsla,
     paragraph_gap: Rems,
-    measure: Option<Pixels>,
+    measure: Option<(Pixels, Pixels)>,
+    inline_code_scale: f32,
     heading: Arc<dyn Fn(u8) -> StyleRefinement + Send + Sync + 'static>,
     code_block: StyleRefinement,
     table: StyleRefinement,
@@ -37,6 +38,7 @@ impl PartialEq for TextViewStyle {
     fn eq(&self, other: &Self) -> bool {
         self.paragraph_gap == other.paragraph_gap
             && self.measure == other.measure
+            && self.inline_code_scale == other.inline_code_scale
             && self.foreground == other.foreground
             && self.muted_foreground == other.muted_foreground
             && self.link == other.link
@@ -85,6 +87,7 @@ impl TextViewStyle {
             border: colors.border,
             paragraph_gap: rems(0.75),
             measure: None,
+            inline_code_scale: 0.875,
             heading: Arc::new(|_| StyleRefinement::default()),
             code_block: StyleRefinement::default(),
             table: StyleRefinement::default(),
@@ -144,10 +147,17 @@ impl TextViewStyle {
         self
     }
 
-    /// Caps the document's prose at `measure` wide, centered, while its code
-    /// blocks, tables and custom blocks keep the whole width.
-    pub fn with_measure(mut self, measure: Pixels) -> Self {
-        self.measure = Some(measure);
+    /// Caps each of the document's top-level blocks at `measure` wide,
+    /// centered, with at least `gutter` on both sides. The view keeps its whole
+    /// width, so it scrolls (and shows its scrollbar) at its own edge.
+    pub fn with_measure(mut self, measure: Pixels, gutter: Pixels) -> Self {
+        self.measure = Some((measure, gutter));
+        self
+    }
+
+    /// Sets inline code's size relative to the text around it. Defaults to 0.875.
+    pub fn with_inline_code_scale(mut self, scale: f32) -> Self {
+        self.inline_code_scale = scale;
         self
     }
 
@@ -250,9 +260,14 @@ impl TextViewStyle {
         self.paragraph_gap
     }
 
-    /// The widest the document's prose gets, if capped.
-    pub fn measure(&self) -> Option<Pixels> {
+    /// The widest the document's blocks get and the room beside them, if capped.
+    pub fn measure(&self) -> Option<(Pixels, Pixels)> {
         self.measure
+    }
+
+    /// Inline code's size relative to the text around it.
+    pub fn inline_code_scale(&self) -> f32 {
+        self.inline_code_scale
     }
 
     /// The style refinement for a heading at `level` (1-6).
@@ -414,7 +429,7 @@ mod tests {
         assert!(style == style.clone());
         assert_eq!(calls.load(Ordering::Relaxed), 0);
         assert!(style != style.clone().with_paragraph_gap(rems(1.)));
-        assert!(style != style.clone().with_measure(gpui::px(600.)));
+        assert!(style != style.clone().with_measure(gpui::px(600.), gpui::px(32.)));
         assert!(style != style.clone().with_dark(!style.is_dark()));
         assert_eq!(calls.load(Ordering::Relaxed), 0);
 

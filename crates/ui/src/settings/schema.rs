@@ -124,6 +124,16 @@ string_enum!(UiFont {
     AvenirNext = "Avenir Next",
     Custom = "Custom",
 });
+string_enum!(
+    /// A rendered document's body text. "Interface" follows the interface font.
+    ReadingFont {
+        Charter = "Charter",
+        IowanOldStyle = "Iowan Old Style",
+        Georgia = "Georgia",
+        Interface = "Interface",
+        Custom = "Custom",
+    }
+);
 string_enum!(Whitespace { Amount = "amount", All = "all" });
 string_enum!(
     /// What ⌥ does in the terminal on macOS: type characters, or send Meta from the left ⌥, the
@@ -174,6 +184,29 @@ impl UiFont {
             .iter()
             .copied()
             .filter(|f| IS_MAC || !f.mac_only())
+    }
+}
+
+impl ReadingFont {
+    /// The serif presets ship with macOS; elsewhere they'd fall back to some other face.
+    pub fn mac_only(self) -> bool {
+        matches!(self, Self::Charter | Self::IowanOldStyle | Self::Georgia)
+    }
+
+    pub fn choices() -> impl Iterator<Item = ReadingFont> {
+        Self::ALL
+            .iter()
+            .copied()
+            .filter(|f| IS_MAC || !f.mac_only())
+    }
+
+    /// A book serif on macOS; elsewhere the interface font.
+    pub fn platform_default() -> Self {
+        if IS_MAC {
+            Self::Charter
+        } else {
+            Self::Interface
+        }
     }
 }
 
@@ -471,6 +504,7 @@ via_serde!(
     CodeFont,
     TerminalFont,
     UiFont,
+    ReadingFont,
     Whitespace,
     OptionKey,
     ResumeMode,
@@ -594,6 +628,8 @@ settings! {
     code_font_size: f32 = DEFAULT_FONT_SIZE,
     /// Points a rendered document's text (a preview, a vault note) is set above the code font.
     reading_font_offset: f32 = 0.0,
+    reading_font: ReadingFont = ReadingFont::platform_default(),
+    custom_reading_font: String = String::new(),
     /// One of CODE_FONT_WEIGHTS; bold text goes two steps up from it.
     code_font_weight: u16 = 500,
     line_height: f32 = 1.6,
@@ -749,6 +785,9 @@ impl Settings {
         if !IS_MAC && self.ui_font.mac_only() {
             self.ui_font = d.ui_font;
         }
+        if !IS_MAC && self.reading_font.mac_only() {
+            self.reading_font = d.reading_font;
+        }
         if !IS_MAC && self.terminal_font.mac_only() {
             self.terminal_font = d.terminal_font;
         }
@@ -779,6 +818,7 @@ impl Settings {
         // type. Fonts are looked up trimmed (`custom_*_font_name`).
         self.custom_code_font = strip_font_chars(&self.custom_code_font);
         self.custom_ui_font = strip_font_chars(&self.custom_ui_font);
+        self.custom_reading_font = strip_font_chars(&self.custom_reading_font);
         self.custom_terminal_font = strip_font_chars(&self.custom_terminal_font);
         if !SYNTAX_THEMES.iter().any(|(id, _)| *id == self.syntax_theme) {
             self.syntax_theme = d.syntax_theme.clone();
