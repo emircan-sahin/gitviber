@@ -169,6 +169,14 @@ pub fn runs_in_terminal(chord: &str, command: &Command, mac: bool) -> bool {
     taken_from_terminal(chord, command, mac)
 }
 
+/// Whether a chord picks a tab of the area focus is in, as in every terminal and browser: ⌘1–⌘9
+/// (Ctrl+1–9 elsewhere) are the terminal's tabs there, the code area's in it. Another command on
+/// the chord yields to the tab there (`keymap::key_bindings`).
+pub fn picks_focused_tab(chord: &str) -> bool {
+    let (mods, key) = split(chord);
+    mods == ["cmd"] && key.len() == 1 && (b'1'..=b'9').contains(&key.as_bytes()[0])
+}
+
 fn is_letter(key: &str) -> bool {
     key.len() == 1 && key.as_bytes()[0].is_ascii_lowercase()
 }
@@ -411,6 +419,23 @@ mod tests {
         // Elsewhere "cmd" is Ctrl: Ctrl+J is the shell's unless it comes with Shift.
         assert!(!runs_in_terminal("cmd+r", &c, false));
         assert!(runs_in_terminal("shift+cmd+t", &c, false));
+    }
+
+    #[test]
+    fn only_cmd_and_a_digit_picks_the_focused_tab() {
+        for chord in ["cmd+1", "cmd+5", "cmd+9"] {
+            assert!(picks_focused_tab(chord), "{chord}");
+        }
+        for chord in [
+            "cmd+0",
+            "ctrl+1",
+            "alt+1",
+            "shift+cmd+1",
+            "alt+cmd+1",
+            "cmd+b",
+        ] {
+            assert!(!picks_focused_tab(chord), "{chord}");
+        }
     }
 
     #[test]

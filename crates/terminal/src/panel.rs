@@ -1572,7 +1572,12 @@ impl TerminalPanel {
         self.activate_group(gid, window, cx);
     }
 
+    /// ⌘1–⌘9 pick the terminal's tabs; a tab number's other keys (the VS Code preset's ⌃1) go on
+    /// to the code area's.
     fn go_group(&mut self, index: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        if !gitviber_ui::keymap::for_focused_tabs() {
+            return cx.propagate();
+        }
         let Some(set) = self.set() else { return };
         let g = match index {
             Some(i) => set.groups.get(i),
@@ -3494,6 +3499,44 @@ mod tests {
 
     fn draw(cx: &mut VisualTestContext) {
         cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+
+    /// ⌘1–⌘9 pick the terminal's tabs in both presets; the VS Code preset's ⌃1–⌃9 go on to the
+    /// code area's (none here), leaving the terminal's open tab as it was.
+    #[gpui::test]
+    fn cmd_digits_pick_the_terminals_tabs_and_ctrl_digits_go_on(cx: &mut TestAppContext) {
+        gitviber_ui::test_support::config_dir("term-tab-numbers");
+        // The keymap as the app has it, VS Code's: `pressed` tells the keys apart.
+        cx.update(gitviber_ui::init);
+        let (panel, _, cx) = beside(cx);
+        cx.update(|_, cx| gitviber_ui::keymap::install(cx));
+        let dir = std::env::temp_dir();
+        for _ in 0..3 {
+            panel.update_in(cx, |p, window, cx| {
+                p.open_terminal(dir.clone(), None, window, cx)
+            });
+        }
+        draw(cx);
+        let groups = |cx: &mut VisualTestContext| {
+            panel.read_with(cx, |p, _| {
+                let s = p.set().expect("a set");
+                (s.groups.iter().map(|g| g.id).collect::<Vec<_>>(), s.active)
+            })
+        };
+        let (ids, _) = groups(cx);
+        let press = |keys: &str, cx: &mut VisualTestContext| {
+            cx.simulate_keystrokes(keys);
+            draw(cx);
+            groups(cx).1
+        };
+        assert_eq!(press("cmd-1", cx), Some(ids[0]));
+        assert_eq!(press("cmd-2", cx), Some(ids[1]));
+        assert_eq!(press("ctrl-3", cx), Some(ids[1]), "⌃3 is the code area's");
+        assert_eq!(press("ctrl-0", cx), Some(ids[1]));
+        assert_eq!(press("cmd-9", cx), Some(ids[2]));
+        panel.update(cx, |p, cx| p.close_all(cx));
+        cx.update(|window, _| window.remove_window());
         cx.run_until_parked();
     }
 

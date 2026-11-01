@@ -392,7 +392,7 @@ impl TerminalPane {
     }
 
     /// Drawn without a shell: what it writes stays to be read.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn without_shell(&mut self) {
         self.started = true;
     }

@@ -172,6 +172,20 @@ pub const ROOT_CONTEXT: &str = "GitViber";
 /// text (gpui-component's inputs already say "Input").
 pub const INPUT_CONTEXT: &str = "Input";
 pub const TERMINAL_CONTEXT: &str = "Terminal";
+/// The center, whose tabs are the code's and the browser's pages.
+pub const CODE_AREA_CONTEXT: &str = "CodeArea";
+/// The terminal panel: its panes, its tab strip, its find bar.
+pub const TERMINAL_PANEL_CONTEXT: &str = "TerminalPanel";
+/// Where focus has tabs of its own that ⌘1–⌘9 pick (`chord::picks_focused_tab`).
+const TAB_AREAS: &str = "CodeArea || TerminalPanel";
+
+/// Whether a tab number being handled is for the tabs of the area focus is in: pressed on
+/// ⌘1–⌘9, or not by a key (the menu bar). Its other keys (the VS Code preset's ⌃1) pick the code
+/// area's tab from anywhere, the terminal too.
+pub fn for_focused_tabs() -> bool {
+    pressed()
+        .is_none_or(|k| edit::chord_of(&k, IS_MAC).is_some_and(|c| chord::picks_focused_tab(&c)))
+}
 
 /// Marks our bindings in GPUI's keymap, so a rebinding replaces them and nothing else.
 const META: KeyBindingMetaIndex = KeyBindingMetaIndex(0x6776);
@@ -232,6 +246,8 @@ pub struct Command {
     pub in_editor: bool,
     /// Held down, it runs once: each run changes what the next one acts on. Handlers check it.
     pub no_repeat: bool,
+    /// A tab number: on ⌘1–⌘9 it picks the focused area's tab, over another command's same key.
+    pub focused_tab: bool,
     new_action: fn() -> Box<dyn Action>,
 }
 
@@ -254,8 +270,14 @@ impl Command {
             over_text: false,
             in_editor: false,
             no_repeat: false,
+            focused_tab: false,
             new_action,
         }
+    }
+
+    pub const fn focused_tab(mut self) -> Self {
+        self.focused_tab = true;
+        self
     }
 
     pub const fn other(mut self, keys: &'static [&'static str]) -> Self {
@@ -421,6 +443,13 @@ pub fn context_for(chord: &str, command: &Command, mac: bool) -> String {
 /// so the commands go in reverse (the first listed wins), and within one command the first chord
 /// goes first (the menu bar shows a command's earliest binding).
 pub fn key_bindings(preset: Preset, overrides: &Overrides, mac: bool) -> Vec<KeyBinding> {
+    // ⌘1–⌘9 a tab number has: another global command on one (the VS Code preset's ⌘1, Focus
+    // Code) runs only where focus has no tabs of its own.
+    let tab_keys: Vec<String> = all_commands()
+        .filter(|c| c.focused_tab)
+        .flat_map(|c| bindings_for(c, preset, overrides, mac))
+        .filter(|k| chord::picks_focused_tab(k))
+        .collect();
     let mut out = Vec::new();
     let mut add = |command: &Command, chord: &str| {
         if !command.id.starts_with("app.")
@@ -430,7 +459,10 @@ pub fn key_bindings(preset: Preset, overrides: &Overrides, mac: bool) -> Vec<Key
             return;
         }
         let keystroke = chord::to_keystroke(chord, mac);
-        let context = context_for(chord, command, mac);
+        let mut context = context_for(chord, command, mac);
+        if command.local.is_none() && !command.focused_tab && tab_keys.iter().any(|k| k == chord) {
+            context = format!("({context}) && !({TAB_AREAS})");
+        }
         let Ok(predicate) = KeyBindingContextPredicate::parse(&context) else {
             return;
         };
@@ -725,8 +757,14 @@ mod tests {
         };
         let none = Overrides::new();
         assert_eq!(keys("tab.goto1", Preset::Classic, &none, true), ["cmd+1"]);
-        assert_eq!(keys("tab.goto1", Preset::VsCode, &none, true), ["ctrl+1"]);
-        assert_eq!(keys("tab.goto1", Preset::VsCode, &none, false), ["alt+1"]);
+        assert_eq!(
+            keys("tab.goto1", Preset::VsCode, &none, true),
+            ["ctrl+1", "cmd+1"]
+        );
+        assert_eq!(
+            keys("tab.goto1", Preset::VsCode, &none, false),
+            ["alt+1", "cmd+1"]
+        );
         assert_eq!(
             keys("browser.open", Preset::Classic, &none, true),
             ["shift+cmd+b"]
@@ -745,20 +783,36 @@ mod tests {
             assert_eq!(keys("tab.goto1", *preset, &o, true), ["cmd+u"]);
             assert_eq!(keys("browser.open", *preset, &o, true), ["alt+cmd+o"]);
         }
-        // The keymap follows: ⌃1 is the first tab, ⌘1 the code view.
+        // The keymap follows: ⌃1 is the first tab, ⌘1 the code view, but where focus has tabs.
         let keymap = gpui_kit::Keymap::new(key_bindings(Preset::VsCode, &none, true));
-        let stack = [gpui_kit::KeyContext::parse(ROOT_CONTEXT).unwrap()];
-        let runs = |ks: &str| {
+        let root = [gpui_kit::KeyContext::parse(ROOT_CONTEXT).unwrap()];
+        let in_area = |area: &str| {
+            [
+                gpui_kit::KeyContext::parse(ROOT_CONTEXT).unwrap(),
+                gpui_kit::KeyContext::parse(area).unwrap(),
+            ]
+        };
+        let runs_in = |ks: &str, stack: &[gpui_kit::KeyContext]| {
             let typed = gpui_kit::Keystroke::parse(ks).unwrap();
-            let (bindings, _) = keymap.bindings_for_input(&[typed], &stack);
+            let (bindings, _) = keymap.bindings_for_input(&[typed], stack);
             bindings
                 .first()
                 .and_then(|b| command_for_action(b.action()))
                 .map(|c| c.id)
         };
+        let runs = |ks: &str| runs_in(ks, &root);
         assert_eq!(runs("ctrl-1"), Some("tab.goto1"));
         assert_eq!(runs("cmd-1"), Some("view.focusCode"));
+        assert_eq!(runs("cmd-2"), Some("tab.goto2"));
         assert_eq!(runs("shift-cmd-b"), None);
+        for area in [CODE_AREA_CONTEXT, TERMINAL_PANEL_CONTEXT] {
+            assert_eq!(
+                runs_in("cmd-1", &in_area(area)),
+                Some("tab.goto1"),
+                "{area}"
+            );
+            assert_eq!(runs_in("cmd-9", &in_area(area)), Some("tab.last"), "{area}");
+        }
     }
 
     #[test]

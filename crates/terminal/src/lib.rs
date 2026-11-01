@@ -63,7 +63,7 @@ use gpui::{App, KeyBinding, NoAction};
 /// The pane's key context (gitviber-ui's TERMINAL_CONTEXT: the app's keys skip it), and the
 /// panel's around it.
 pub const PANE_CONTEXT: &str = gitviber_ui::keymap::TERMINAL_CONTEXT;
-pub const PANEL_CONTEXT: &str = "TerminalPanel";
+pub const PANEL_CONTEXT: &str = gitviber_ui::keymap::TERMINAL_PANEL_CONTEXT;
 
 // The panel's commands (new, split, close, panes, zoom, maximize, rename, font, command jumps)
 // are gitviber-ui's `terminal::*`, rebindable in Settings; these are the pane's own keys.

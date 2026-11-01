@@ -41,10 +41,26 @@ use gpui_kit::App;
 /// on an application made `with_assets(gitviber_ui::assets::Assets)`.
 pub fn init(cx: &mut App) {
     gpui_kit::init(cx);
+    unbind_element_inspector(cx);
     settings::init(cx);
     state::init(cx);
     theme::init(cx);
     keymap::init(cx);
     workspace::init(cx);
     widgets::init(cx);
+}
+
+/// gpui-component binds its element inspector, a developer's tool, on ⌥⌘I (Ctrl+Shift+I
+/// elsewhere) with no context, which outranks every context's binding: Show Web Inspector never
+/// ran from a browser tab.
+fn unbind_element_inspector(cx: &mut App) {
+    let keymap = cx.key_bindings();
+    let kept: Vec<gpui_kit::KeyBinding> = keymap
+        .borrow()
+        .bindings()
+        .filter(|b| b.action().name() != "inspector::ToggleInspector")
+        .cloned()
+        .collect();
+    cx.clear_key_bindings();
+    cx.bind_keys(kept);
 }

@@ -477,7 +477,7 @@ worktree.
 - **Shortcuts.** Most actions have one, every one can be rebound in Settings (`⌘,`), and holding `⌘`
   shows the ones that work where you are. Settings → Keyboard Shortcuts picks the preset they start
   from: VS Code's keys (`⌘B` `⌘E` `⌘J` show or hide the git panel, the explorer and the terminal,
-  `⌘0` `⇧⌘E` `⌃` `` ` `` focus them, `⌃⇧G` Changes, `⌃1`–`⌃8` tabs), the default, or GitViber's
+  `⌘0` `⇧⌘E` `⌃` `` ` `` focus them, `⌃⇧G` Changes, `⌃1`–`⌃8` tabs, while `⌘1`–`⌘9` pick the tabs of the terminal or code area in focus in both presets), the default, or GitViber's
   classic ones; your own rebindings stay on top of either. A shortcut looks the same wherever it
   shows: keycaps in menus, tooltips, the palette and pickers. See [Shortcuts](SHORTCUTS.md).
 - **Command palette** (`⇧⌘P`). Each command has an icon of what it does, recently used ones are

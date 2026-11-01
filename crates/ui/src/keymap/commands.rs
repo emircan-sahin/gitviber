@@ -163,12 +163,12 @@ pub static COMMANDS: &[Command] = &[
     cmd::<view::ZoomIn>("view.zoomIn", "Zoom In", View, &["cmd+=", "shift+cmd+="]),
     cmd::<view::ZoomOut>("view.zoomOut", "Zoom Out", View, &["cmd+-"]),
     cmd::<view::ZoomReset>("view.zoomReset", "Reset Zoom", View, &["cmd+0"]),
-    cmd::<tab::Goto1>("tab.goto1", "Go to Tab 1", Tabs, &["cmd+1"]),
-    cmd::<tab::Goto2>("tab.goto2", "Go to Tab 2", Tabs, &["cmd+2"]),
-    cmd::<tab::Goto3>("tab.goto3", "Go to Tab 3", Tabs, &["cmd+3"]),
-    cmd::<tab::Goto4>("tab.goto4", "Go to Tab 4", Tabs, &["cmd+4"]),
-    cmd::<tab::Goto5>("tab.goto5", "Go to Tab 5", Tabs, &["cmd+5"]),
-    cmd::<tab::Goto6>("tab.goto6", "Go to Tab 6", Tabs, &["cmd+6"]),
+    cmd::<tab::Goto1>("tab.goto1", "Go to Tab 1", Tabs, &["cmd+1"]).focused_tab(),
+    cmd::<tab::Goto2>("tab.goto2", "Go to Tab 2", Tabs, &["cmd+2"]).focused_tab(),
+    cmd::<tab::Goto3>("tab.goto3", "Go to Tab 3", Tabs, &["cmd+3"]).focused_tab(),
+    cmd::<tab::Goto4>("tab.goto4", "Go to Tab 4", Tabs, &["cmd+4"]).focused_tab(),
+    cmd::<tab::Goto5>("tab.goto5", "Go to Tab 5", Tabs, &["cmd+5"]).focused_tab(),
+    cmd::<tab::Goto6>("tab.goto6", "Go to Tab 6", Tabs, &["cmd+6"]).focused_tab(),
     // Elsewhere ⇧Ctrl+T opens a terminal (terminal.new): unbound there.
     cmd::<tab::CloseOthers>("tab.closeOthers", "Close Other Tabs", Tabs, &["alt+cmd+t"]).other(&[]),
     cmd::<tab::CloseLeft>("tab.closeLeft", "Close Tabs to the Left", Tabs, &[]),
@@ -181,9 +181,9 @@ pub static COMMANDS: &[Command] = &[
         &["shift+cmd+t"],
     )
     .other(&[]),
-    cmd::<tab::Goto7>("tab.goto7", "Go to Tab 7", Tabs, &["cmd+7"]),
-    cmd::<tab::Goto8>("tab.goto8", "Go to Tab 8", Tabs, &["cmd+8"]),
-    cmd::<tab::Last>("tab.last", "Go to Last Tab", Tabs, &["cmd+9"]),
+    cmd::<tab::Goto7>("tab.goto7", "Go to Tab 7", Tabs, &["cmd+7"]).focused_tab(),
+    cmd::<tab::Goto8>("tab.goto8", "Go to Tab 8", Tabs, &["cmd+8"]).focused_tab(),
+    cmd::<tab::Last>("tab.last", "Go to Last Tab", Tabs, &["cmd+9"]).focused_tab(),
     // ⌘←/⌘→ skip text fields and the terminal (see runsWhileTyping); ⇧⌘] shows in the menu as it works everywhere.
     // Elsewhere Ctrl+Tab ("cmd" there); Ctrl+← / Ctrl+→ move by word.
     cmd::<tab::Next>(
@@ -812,7 +812,15 @@ mod tests {
                         "{chord} ({}, {preset:?} mac {mac})",
                         c.id
                     );
-                    if let Some(other) = owner.insert(chord.clone(), c.id) {
+                    // A tab number's ⌘1–⌘9 is meant to share: the other command yields to it
+                    // where focus has tabs of its own.
+                    let shares = |id: &str| {
+                        crate::keymap::chord::picks_focused_tab(&chord)
+                            && command(id).unwrap().focused_tab != c.focused_tab
+                    };
+                    if let Some(other) = owner.insert(chord.clone(), c.id)
+                        && !shares(other)
+                    {
                         panic!("{chord} is {other}'s and {}'s ({preset:?} mac {mac})", c.id);
                     }
                 }
