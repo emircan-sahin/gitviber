@@ -359,8 +359,41 @@ pub fn find_in_files(
     }
 }
 
-/// An entry was renamed (`to`) or trashed (None): the tabs of the files in it close; a renamed
-/// one that was open opens again under its new name.
+/// The open file tabs in `path` (a file, or a folder and all in it), by key.
+fn tabs_in(ws: &Workspace, path: &str) -> Vec<SharedString> {
+    let inside = |p: &str| p == path || p.starts_with(&format!("{path}/"));
+    ws.tabs()
+        .tabs()
+        .iter()
+        .filter(|t| path_of_key(&t.key).is_some_and(inside))
+        .map(|t| t.key.clone())
+        .collect()
+}
+
+/// The files in `paths` whose tabs hold unsaved edits, once each, for the Trash's confirm.
+pub(crate) fn unsaved_in(
+    workspace: &WeakEntity<Workspace>,
+    paths: &[&str],
+    cx: &App,
+) -> Vec<String> {
+    let Some(ws) = workspace.upgrade() else {
+        return vec![];
+    };
+    let ws = ws.read(cx);
+    let mut unsaved: Vec<String> = Vec::new();
+    for key in paths.iter().flat_map(|p| tabs_in(ws, p)) {
+        if ws.tabs().get(&key).is_some_and(|t| t.item.is_dirty(cx))
+            && let Some(path) = path_of_key(&key)
+            && !unsaved.iter().any(|u| u == path)
+        {
+            unsaved.push(path.to_string());
+        }
+    }
+    unsaved
+}
+
+/// An entry was renamed (`to`) or trashed (None). A renamed file's tab follows it in place,
+/// unsaved edits and all; a trashed one's closes without asking, as the Trash's confirm said.
 pub(crate) fn path_moved(
     workspace: &WeakEntity<Workspace>,
     from: &str,
@@ -371,29 +404,42 @@ pub(crate) fn path_moved(
     let Some(ws) = workspace.upgrade() else {
         return;
     };
-    let inside = |p: &str| p == from || p.starts_with(&format!("{from}/"));
-    let keys: Vec<SharedString> = ws
-        .read(cx)
-        .tabs()
-        .tabs()
-        .iter()
-        .filter(|t| path_of_key(&t.key).is_some_and(inside))
-        .map(|t| t.key.clone())
-        .collect();
-    if keys.is_empty() {
+    let keys = tabs_in(ws.read(cx), from);
+    let Some(to) = to else {
+        ws.update(cx, |ws, cx| ws.force_close_tabs(&keys, cx));
         return;
-    }
-    let moved: Vec<String> = match to {
-        Some(to) => keys
-            .iter()
-            .filter_map(|k| path_of_key(k))
-            .map(|p| format!("{to}{}", &p[from.len()..]))
-            .collect(),
-        None => vec![],
     };
-    ws.update(cx, |ws, cx| ws.close_tabs(&keys, cx));
-    for path in moved {
-        open_file(workspace, &path, OpenOptions::default(), window, cx);
+    for key in keys {
+        let Some(old) = path_of_key(&key) else {
+            continue;
+        };
+        let path = format!("{to}{}", &old[from.len()..]);
+        let selection = Selection::File { path: path.clone() };
+        // A tab open on the new name already (its file was gone): the old tab stays only for
+        // its typing, read again to say its file is gone.
+        if !ws.update(cx, |ws, cx| ws.rename_tab(&key, selection.clone(), cx)) {
+            let old = ws.read(cx).tabs().get(&key).map(|t| {
+                let view = t
+                    .item
+                    .handle()
+                    .and_then(|h| h.view().downcast::<FileView>().ok());
+                (t.item.is_dirty(cx), view)
+            });
+            match old {
+                Some((true, Some(view))) => view.update(cx, |v, cx| v.load(window, cx)),
+                Some((false, _)) => ws.update(cx, |ws, cx| ws.force_close_tabs(&[key], cx)),
+                _ => {}
+            }
+            continue;
+        }
+        let view = ws
+            .read(cx)
+            .tab_for(&selection)
+            .and_then(|t| t.item.handle())
+            .and_then(|h| h.view().downcast::<FileView>().ok());
+        if let Some(view) = view {
+            view.update(cx, |v, cx| v.moved_to(path, window, cx));
+        }
     }
 }
 

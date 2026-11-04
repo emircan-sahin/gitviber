@@ -26,14 +26,14 @@ impl Render for Root {
 }
 
 /// What a save answers, once the test runs it to the end.
-fn outcome(cx: &mut VisualTestContext, task: Task<bool>) -> Rc<Cell<Option<bool>>> {
+pub(super) fn outcome(cx: &mut VisualTestContext, task: Task<bool>) -> Rc<Cell<Option<bool>>> {
     let out = Rc::new(Cell::new(None));
     let o = out.clone();
     cx.update(|_, cx| cx.spawn(async move |_| o.set(Some(task.await))).detach());
     out
 }
 
-fn draw(cx: &mut VisualTestContext) {
+pub(super) fn draw(cx: &mut VisualTestContext) {
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
 }
@@ -102,7 +102,10 @@ fn put(cx: &mut VisualTestContext, code: &Entity<CodeView>, at: Range<usize>) {
 }
 
 /// The active tab's file view.
-fn active_file(cx: &mut VisualTestContext, ws: &Entity<Workspace>) -> Entity<crate::FileView> {
+pub(super) fn active_file(
+    cx: &mut VisualTestContext,
+    ws: &Entity<Workspace>,
+) -> Entity<crate::FileView> {
     cx.update(|_, cx| {
         let view = ws
             .read(cx)
@@ -116,7 +119,7 @@ fn active_file(cx: &mut VisualTestContext, ws: &Entity<Workspace>) -> Entity<cra
 }
 
 /// A repo with `files` open in a workspace drawn in the window.
-fn open_repo<'a>(
+pub(super) fn open_repo<'a>(
     cx: &'a mut TestAppContext,
     repo: &std::path::Path,
 ) -> (Entity<Workspace>, &'a mut VisualTestContext) {
@@ -159,7 +162,7 @@ fn saving_asks_before_writing_over_a_file_changed_on_disk(cx: &mut TestAppContex
     let flags = |cx: &mut VisualTestContext| {
         cx.update(|_, cx| {
             let c = code.read(cx);
-            (c.is_dirty(), c.changed_on_disk())
+            (c.is_dirty(), c.on_disk() == crate::code::OnDisk::Changed)
         })
     };
     let save = |cx: &mut VisualTestContext| {
