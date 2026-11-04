@@ -1,7 +1,7 @@
 //! When something breaks. A panic off the UI thread (a background load) leaves the app running:
 //! it's said in a toast instead of passing unseen, while core's hook writes it to the log. One on
 //! the UI thread ends the app, as GPUI can't unwind through the platform; the next launch says
-//! the last one didn't end cleanly, and where the log is.
+//! the last one didn't end cleanly. Both offer the log and a bug report.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt as _;
 use futures::channel::mpsc;
+use gitviber_ui::actions::help;
 use gitviber_ui::store;
 use gitviber_ui::workspace::Toast;
 use gpui_kit::{App, AppContext as _, Global, Task};
@@ -67,8 +68,7 @@ pub fn install(cx: &mut App) {
             last = Some(Instant::now());
             cx.update(|cx| {
                 toast(
-                    Toast::error(format!("{message}. Help → Show Logs has the details."))
-                        .title("GitViber ran into an error"),
+                    with_help(Toast::error(message).title("GitViber ran into an error")),
                     cx,
                 )
             });
@@ -83,8 +83,10 @@ pub fn install(cx: &mut App) {
         cx.spawn(async move |cx| {
             cx.update(|cx| {
                 toast(
-                    Toast::warning("Help → Show Logs has what happened, if it was an error.")
-                        .title("GitViber didn't quit cleanly last time"),
+                    with_help(
+                        Toast::warning("If it was an error, the logs say what happened.")
+                            .title("GitViber didn't quit cleanly last time"),
+                    ),
                     cx,
                 )
             })
@@ -97,6 +99,13 @@ pub fn install(cx: &mut App) {
         async {}
     })
     .detach();
+}
+
+/// The logs, and a bug report with the setup filled in: what the user does next.
+fn with_help(toast: Toast) -> Toast {
+    toast
+        .action("Show Logs", |_, cx| cx.dispatch_action(&help::ShowLogs))
+        .action("Report a Bug", |_, cx| cx.dispatch_action(&help::ReportBug))
 }
 
 /// Written at once, so a crash later in the launch is caught. The sync that makes a power cut
@@ -182,6 +191,32 @@ mod tests {
         cx.run_until_parked();
         assert!(!marker.exists());
         assert_eq!(toasts(window, cx), 0);
+    }
+
+    /// The toasts offer the logs and a bug report as buttons, and stay until closed.
+    #[gpui_kit::test]
+    fn the_toasts_offer_the_logs_and_a_bug_report(cx: &mut TestAppContext) {
+        let ran = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let r = ran.clone();
+            cx.on_action(move |_: &help::ShowLogs, _| r.borrow_mut().push("logs"));
+            let r = ran.clone();
+            cx.on_action(move |_: &help::ReportBug, _| r.borrow_mut().push("bug"));
+        });
+        let toast = with_help(Toast::error("index out of bounds (src/a.rs:3)"));
+        assert!(!toast.autohides());
+        assert!(!toast.message.contains("Help →"));
+        let buttons: Vec<_> = toast.action.iter().chain(&toast.more).cloned().collect();
+        let labels: Vec<_> = buttons.iter().map(|b| b.label.as_ref()).collect();
+        assert_eq!(labels, ["Show Logs", "Report a Bug"]);
+        let window = cx.add_empty_window();
+        window.update(|window, cx| {
+            for b in &buttons {
+                (b.run)(window, cx);
+            }
+        });
+        window.run_until_parked();
+        assert_eq!(*ran.borrow(), ["logs", "bug"]);
     }
 
     #[test]
