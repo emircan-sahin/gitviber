@@ -1517,7 +1517,8 @@ impl ChangesPanel {
             .iter()
             .filter(|f| f.status == "?")
             .count();
-        let untracked = Rc::new(Cell::new(false));
+        // On, as Stash and Switch does: "leaves the working tree clean" then holds.
+        let untracked = Rc::new(Cell::new(untracked_count > 0));
         let staged_only = Rc::new(Cell::new(false));
         let mut choices = vec![];
         if !some {
@@ -3900,13 +3901,34 @@ mod tests {
         cx: &'a mut TestAppContext,
         dir: &Path,
     ) -> (Entity<Workspace>, Entity<Host>, &'a mut VisualTestContext) {
+        open_with(cx, dir, false)
+    }
+
+    /// `open`; `root`: under the window root dialogs need.
+    fn open_with<'a>(
+        cx: &'a mut TestAppContext,
+        dir: &Path,
+        root: bool,
+    ) -> (Entity<Workspace>, Entity<Host>, &'a mut VisualTestContext) {
         let core = cx.update(|cx| crate::core(cx));
         gitviber_core::api::repo::open_repo(&core, dir.to_string_lossy().into_owned()).unwrap();
         let ws = cx.update(|cx| cx.new(Workspace::new));
-        let (host, cx) = cx.add_window_view(|_, _| Host {
+        let empty = || Host {
             panel: None,
             center: None,
-        });
+        };
+        let (host, cx) = if root {
+            let mut host = None;
+            let handle = cx.add_window(|window, cx| {
+                let h = cx.new(|_| empty());
+                host = Some(h.clone());
+                gpui_kit::base::Root::new(h, window, cx)
+            });
+            let cx = VisualTestContext::from_window(*handle, cx).into_mut();
+            (host.unwrap(), cx)
+        } else {
+            cx.add_window_view(|_, _| empty())
+        };
         cx.update(|window, cx| Workspace::register_window(&ws, window, cx));
         cx.update(|window, cx| {
             let ctx = ws.update(cx, |ws, cx| ws.context(cx));
@@ -5052,6 +5074,21 @@ mod tests {
         git(&dir, &["commit", "-q", "--allow-empty", "-m", "second"]);
         git(&dir, &["bisect", "start", "HEAD", first.trim()]);
         assert!(!detached(cx));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn stash_changes_takes_the_untracked_files_too(cx: &mut TestAppContext) {
+        let dir = repo("stash-all");
+        setup(cx);
+        let (_ws, host, cx) = open_with(cx, &dir, true);
+        let p = panel(&host, cx);
+        cx.update(|window, cx| p.update(cx, |p, cx| p.stash_dialog(vec![], window, cx)));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(git(&dir, &["status", "--porcelain"]), "");
+        assert!(git(&dir, &["show", "--name-only", "--format=", "stash@{0}^3"]).contains("c.txt"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
