@@ -1,8 +1,10 @@
 //! Merge, rebase and bisect, and finishing or calling off one stopped on conflicts.
 
 use super::{
-    run, run_text, run_with, stage, validate_ref, validate_rev, with_paths, Operation, REF_KINDS,
+    command, hooks_named, run, run_text, run_with, stage, validate_ref, validate_rev, with_paths,
+    Operation, REF_KINDS,
 };
+use crate::network::{self, Net};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -259,11 +261,15 @@ pub fn rebase(
 }
 
 pub fn op_continue(repo: &Path) -> Result<bool, String> {
+    op_continue_with(repo, false)
+}
+
+/// `op_continue`; `no_verify`: a merge's commit skips the commit hooks, after one stopped it.
+pub fn op_continue_with(repo: &Path, no_verify: bool) -> Result<bool, String> {
     let op = operation(repo).ok_or("Nothing to continue.")?;
     match op.kind.as_str() {
         "bisect" => Err("Mark the commit good or bad instead.".into()),
-        // `merge --continue` refuses without an editor on some git versions; commit is equivalent.
-        "merge" => run_stoppable(repo, &["commit", "--no-edit"]),
+        "merge" => merge_commit(repo, no_verify),
         // git's own refusal over a split's leftover changes talks about merge conflicts.
         "rebase" if op.split && run(repo, &["diff", "--quiet", "HEAD"]).is_err() => {
             Err("Commit or discard the changes left in Changes first.".into())
@@ -273,6 +279,24 @@ pub fn op_continue(repo: &Path) -> Result<bool, String> {
         "am" => run_stoppable(repo, &["am", "--continue"]),
         _ => run_stoppable(repo, &["revert", "--continue"]),
     }
+}
+
+/// `merge --continue` refuses without an editor on some git versions; commit is equivalent. Its
+/// hooks are named when it fails, as a commit's are, so the page can offer skipping them.
+fn merge_commit(repo: &Path, no_verify: bool) -> Result<bool, String> {
+    let mut args = vec!["commit", "--no-edit"];
+    if no_verify {
+        args.push("--no-verify");
+    }
+    let out = network::run_local(
+        command(repo, &args),
+        "git commit",
+        &Net::default(),
+        None,
+        false,
+    )
+    .map_err(|f| hooks_named(repo, f, no_verify));
+    stoppable(repo, out)
 }
 
 pub fn op_abort(repo: &Path) -> Result<(), String> {

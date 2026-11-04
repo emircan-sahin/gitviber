@@ -20,7 +20,9 @@ use gitviber_core::git::{Commit, ExternalTools, FileChange, HeadMessage, Side as
 use gitviber_core::network::CANCELLED;
 use gitviber_diff::{Compare, DiffSource};
 use gitviber_history::BisectBar;
+use gitviber_refs::errors::GitFix;
 use gitviber_refs::net::NetActivity;
+use gitviber_refs::toast::Action as ToastAction;
 use gitviber_ui::actions::{git, review};
 use gitviber_ui::keymap::editor;
 use gitviber_ui::memory::Live;
@@ -1850,59 +1852,6 @@ impl ChangesPanel {
     }
 
     fn operation(&mut self, which: &'static str, window: &mut Window, cx: &mut Context<Self>) {
-        let kind = self
-            .operation
-            .as_ref()
-            .map(|o| o.kind.clone())
-            .unwrap_or_default();
-        let go = move |this: &mut Self, cx: &mut Context<Self>| {
-            let core = crate::core(cx);
-            let repo = core.repo().ok();
-            this.busy = true;
-            let kind = kind.clone();
-            this._action = cx.spawn(async move |this, cx| {
-                // Finished, the journal's entry is the whole merge or rebase: Undo takes it back.
-                let result = cx
-                    .background_spawn(async move {
-                        tracked(&core, |core| match which {
-                            "continue" => api::sync::op_continue(core),
-                            "skip" => api::sync::rebase_skip(core),
-                            _ => api::sync::op_abort(core).map(|_| false),
-                        })
-                    })
-                    .await;
-                this.update(cx, |this, cx| {
-                    this.busy = false;
-                    match result {
-                        Ok((true, _)) => this.toast(
-                            Toast::info("Resolve them to continue.")
-                                .title("Stopped on new conflicts"),
-                            cx,
-                        ),
-                        Ok((false, entry)) if which != "abort" => {
-                            let done = Toast::success(format!(
-                                "{}{} finished",
-                                kind[..1.min(kind.len())].to_uppercase(),
-                                &kind[1.min(kind.len())..]
-                            ));
-                            let ws = this.ctx.workspace.clone();
-                            this.toast(with_undo(done, entry, repo, ws), cx)
-                        }
-                        Ok((false, _)) => {}
-                        Err(e) => this.toast(
-                            git_error(
-                                format!("{} failed", which[..1].to_uppercase() + &which[1..]),
-                                &e,
-                                &vec![],
-                            ),
-                            cx,
-                        ),
-                    }
-                    this.refresh_project(cx);
-                })
-                .ok();
-            });
-        };
         if which == "abort" {
             let weak = cx.entity().downgrade();
             let kind = self
@@ -1917,12 +1866,89 @@ impl ChangesPanel {
                 format!("Abort the {kind}? Your branch goes back to how it was before it started."),
                 "Abort",
                 move |_, cx| {
-                    weak.update(cx, |this, cx| go(this, cx)).ok();
+                    weak.update(cx, |this, cx| this.run_operation(which, false, cx))
+                        .ok();
                 },
             );
         } else {
-            go(self, cx);
+            self.run_operation(which, false, cx);
         }
+    }
+
+    /// `no_verify`: a merge's commit without the hooks, from the toast of one they stopped.
+    fn run_operation(&mut self, which: &'static str, no_verify: bool, cx: &mut Context<Self>) {
+        let kind = self
+            .operation
+            .as_ref()
+            .map(|o| o.kind.clone())
+            .unwrap_or_default();
+        let core = crate::core(cx);
+        let repo = core.repo().ok();
+        self.busy = true;
+        self._action = cx.spawn(async move |this, cx| {
+            // Finished, the journal's entry is the whole merge or rebase: Undo takes it back.
+            let result = cx
+                .background_spawn(async move {
+                    tracked(&core, |core| match which {
+                        "continue" => api::sync::op_continue(core, no_verify),
+                        "skip" => api::sync::rebase_skip(core),
+                        _ => api::sync::op_abort(core).map(|_| false),
+                    })
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.busy = false;
+                match result {
+                    Ok((true, _)) => this.toast(
+                        Toast::info("Resolve them to continue.").title("Stopped on new conflicts"),
+                        cx,
+                    ),
+                    Ok((false, entry)) if which != "abort" => {
+                        let done = Toast::success(format!(
+                            "{}{} finished",
+                            kind[..1.min(kind.len())].to_uppercase(),
+                            &kind[1.min(kind.len())..]
+                        ));
+                        let ws = this.ctx.workspace.clone();
+                        this.toast(with_undo(done, entry, repo, ws), cx)
+                    }
+                    Ok((false, _)) => {}
+                    Err(e) => {
+                        // Only a merge's commit takes --no-verify; the toast outlives this
+                        // merge, so its button checks it's still the one stopped.
+                        let mut fixes = vec![];
+                        if which == "continue" && kind == "merge" {
+                            let (weak, root) = (cx.weak_entity(), repo.clone());
+                            let without =
+                                ToastAction::new("Continue without hooks", move |_, cx| {
+                                    weak.update(cx, |this, cx| {
+                                        let here = crate::core(cx).repo().ok() == root;
+                                        let merging = this
+                                            .operation
+                                            .as_ref()
+                                            .is_some_and(|o| o.kind == "merge");
+                                        if here && merging {
+                                            this.run_operation("continue", true, cx);
+                                        } else {
+                                            this.toast(
+                                                Toast::info("The merge it was for has ended.")
+                                                    .title("Continue without hooks not run"),
+                                                cx,
+                                            );
+                                        }
+                                    })
+                                    .ok();
+                                });
+                            fixes.push((GitFix::Hooks, without));
+                        }
+                        let title = format!("{} failed", which[..1].to_uppercase() + &which[1..]);
+                        this.toast(git_error(title, &e, &fixes), cx)
+                    }
+                }
+                this.refresh_project(cx);
+            })
+            .ok();
+        });
     }
 
     /// Apply Patch from Clipboard: what it would do, then Apply. The working tree only.
@@ -5141,6 +5167,41 @@ mod tests {
         assert_eq!(
             git(&dir, &["stash", "list", "--format=%H %gs"]).trim(),
             format!("{sha} On main: saved")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_merge_a_hook_stops_continues_without_hooks(cx: &mut TestAppContext) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = conflicted("merge-hook", "ours\n", "theirs\n");
+        std::fs::write(dir.join("a.txt"), "both\n").unwrap();
+        git(&dir, &["add", "a.txt"]);
+        // Silent, as the commit's test explains.
+        let hook = dir.join(".git/hooks/commit-msg");
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        cx.update(|window, cx| p.update(cx, |p, cx| p.operation("continue", window, cx)));
+        cx.run_until_parked();
+        assert!(dir.join(".git/MERGE_HEAD").exists());
+        let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+        let failed = toasts
+            .iter()
+            .find(|t| t.title.as_deref() == Some("Continue failed"))
+            .expect("a failure toast");
+        let action = failed.action.clone().expect("a way out");
+        assert_eq!(action.label, "Continue without hooks");
+        p.update(cx, |p, cx| p.read(cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| (action.run)(window, cx));
+        cx.run_until_parked();
+        assert!(!dir.join(".git/MERGE_HEAD").exists());
+        assert_eq!(
+            git(&dir, &["rev-list", "--count", "--merges", "HEAD"]).trim(),
+            "1"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

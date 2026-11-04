@@ -87,8 +87,11 @@ fn continue_reports_hook_failures_instead_of_conflicts() {
 
     let err = op_continue(&r).expect_err("a failing hook is an error, not 'stopped on conflicts'");
     assert!(err.contains("rejected by hook"), "{err}");
-    fs::remove_file(&hook).unwrap();
-    assert!(!op_continue(&r).unwrap());
+    // Named, as a commit's are: the page offers continuing without them.
+    assert!(err.ends_with(&format!("{HOOKS_HINT}commit-msg.")), "{err}");
+    assert!(!op_continue_with(&r, true).unwrap());
+    assert!(operation(&r).is_none());
+    assert_eq!(log(&r, None, 0, 1).unwrap()[0].parents.len(), 2);
 }
 
 #[test]
