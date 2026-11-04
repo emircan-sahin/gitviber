@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 #[derive(Serialize, Clone)]
@@ -70,7 +70,8 @@ pub fn github_remote(url: &str) -> Option<RepoRef> {
 /// The host ssh connects to for `alias`, from `ssh -G`; asked once per alias a session, since
 /// every GitHub call reads origin.
 fn ssh_hostname(alias: &str) -> Option<String> {
-    static SEEN: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
+    type Seen = HashMap<String, Arc<OnceLock<Option<String>>>>;
+    static SEEN: Mutex<Option<Seen>> = Mutex::new(None);
     // A host named like an option would be read as one.
     if alias.is_empty()
         || alias.starts_with('-')
@@ -80,28 +81,26 @@ fn ssh_hostname(alias: &str) -> Option<String> {
     {
         return None;
     }
-    if let Some(seen) = SEEN
+    let seen = SEEN
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get_or_insert_default()
-        .get(alias)
-    {
-        return seen.clone();
-    }
-    let mut cmd = Command::new(process::resolve("ssh"));
-    cmd.args(["-G", "--", alias])
-        .env("PATH", process::search_path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let found = process::exec(cmd, "ssh -G", &[], None, Some(Duration::from_secs(5)))
-        .ok()
-        .and_then(|out| hostname_of(&String::from_utf8_lossy(&out)));
-    SEEN.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_or_insert_default()
-        .insert(alias.to_string(), found.clone());
-    found
+        .entry(alias.to_string())
+        .or_default()
+        .clone();
+    // A screen's parallel first calls wait for one `ssh -G`; another alias's needn't.
+    seen.get_or_init(|| {
+        let mut cmd = Command::new(process::resolve("ssh"));
+        cmd.args(["-G", "--", alias])
+            .env("PATH", process::search_path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        process::exec(cmd, "ssh -G", &[], None, Some(Duration::from_secs(5)))
+            .ok()
+            .and_then(|out| hostname_of(&String::from_utf8_lossy(&out)))
+    })
+    .clone()
 }
 
 /// The `hostname` line of `ssh -G`'s output.
