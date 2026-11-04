@@ -722,10 +722,11 @@ pub struct NotificationList {
     /// Whether the lifecycle clock is running. The loop clears it as it exits.
     is_advancing: bool,
     _subscriptions: HashMap<NotificationId, Subscription>,
+    _activation: Subscription,
 }
 
 impl NotificationList {
-    pub fn new(_: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
             notifications: ToastManager::new(ToastMotion::sonner()),
             stacks: Vec::new(),
@@ -733,6 +734,15 @@ impl NotificationList {
             autohide_ids: HashSet::new(),
             is_advancing: false,
             _subscriptions: HashMap::new(),
+            // The clock rests while the window is inactive; back, the time away isn't counted.
+            _activation: cx.observe_window_activation(window, |list, window, cx| {
+                if window.is_window_active() {
+                    list.advance(true, window, cx);
+                    if list.needs_clock(true) {
+                        list.start_advancing(window, cx);
+                    }
+                }
+            }),
         }
     }
 
@@ -755,8 +765,9 @@ impl NotificationList {
                     .timer(NOTIFICATION_ADVANCE_INTERVAL)
                     .await;
                 let running = view.update_in(cx, |view, window, cx| {
-                    view.advance(window, cx);
-                    view.is_advancing = view.needs_clock();
+                    let paused = view.is_expanded() || !window.is_window_active();
+                    view.advance(paused, window, cx);
+                    view.is_advancing = view.needs_clock(window.is_window_active());
                     view.is_advancing
                 });
                 if !matches!(running, Ok(true)) {
@@ -768,12 +779,13 @@ impl NotificationList {
     }
 
     /// Whether a mounted notification is in transition or counting down to
-    /// autohide. A paused countdown still needs its last sample kept current.
-    fn needs_clock(&self) -> bool {
+    /// autohide. A paused countdown still needs its last sample kept current,
+    /// except while the window is inactive: its activation restarts the clock.
+    fn needs_clock(&self, window_active: bool) -> bool {
         self.notifications
             .iter()
             .any(|(id, _, status)| match status {
-                ToastTransitionStatus::Present => self.autohide_ids.contains(id),
+                ToastTransitionStatus::Present => window_active && self.autohide_ids.contains(id),
                 ToastTransitionStatus::Starting | ToastTransitionStatus::Ending => true,
             })
     }
@@ -917,10 +929,10 @@ impl NotificationList {
         });
     }
 
-    fn advance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn advance(&mut self, paused: bool, window: &mut Window, cx: &mut Context<Self>) {
         let changes = self
             .notifications
-            .advance(cx.background_executor().now(), self.is_expanded());
+            .advance(cx.background_executor().now(), paused);
         for id in changes.presented {
             if let Some(note) = self.notifications.get(&id) {
                 note.update(cx, |note, cx| note.complete_enter(cx));
@@ -1408,7 +1420,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn inactive_window_does_not_pause_autohide(cx: &mut TestAppContext) {
+    fn inactive_window_pauses_autohide(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_global(Theme::default()));
         let (root, cx) = cx.add_window_view(|window, cx| TestRoot {
             list: cx.new(|cx| NotificationList::new(window, cx)),
@@ -1429,18 +1441,28 @@ mod tests {
                 .unwrap()
                 .clone()
         });
-        assert_eq!(
-            note.read_with(cx, |note, _| note.transition_status),
-            ToastTransitionStatus::Present
-        );
+        let status =
+            |cx: &mut VisualTestContext| note.read_with(cx, |note, _| note.transition_status);
+        assert_eq!(status(cx), ToastTransitionStatus::Present);
 
+        // Away for a minute: still there, and the clock at rest.
         cx.background_executor
-            .advance_clock(Duration::from_secs(5) + Duration::from_millis(50));
+            .advance_clock(Duration::from_secs(60));
         cx.run_until_parked();
-        assert_eq!(
-            note.read_with(cx, |note, _| note.transition_status),
-            ToastTransitionStatus::Ending
-        );
+        assert_eq!(status(cx), ToastTransitionStatus::Present);
+        assert!(!list.read_with(cx, |list, _| list.is_advancing));
+
+        // Back: the whole countdown is still ahead, not used up by the time away.
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        assert!(list.read_with(cx, |list, _| list.is_advancing));
+        cx.background_executor.advance_clock(Duration::from_secs(4));
+        cx.run_until_parked();
+        assert_eq!(status(cx), ToastTransitionStatus::Present);
+        cx.background_executor
+            .advance_clock(Duration::from_secs(1) + Duration::from_millis(100));
+        cx.run_until_parked();
+        assert_eq!(status(cx), ToastTransitionStatus::Ending);
     }
 
     #[gpui::test]
@@ -1450,6 +1472,7 @@ mod tests {
             list: cx.new(|cx| NotificationList::new(window, cx)),
             other_focus: cx.focus_handle(),
         });
+        cx.update(|window, _| window.activate_window());
         let list = root.read_with(cx, |root, _| root.list.clone());
         list.update_in(cx, |list, window, cx| {
             list.push(Notification::info("paused").id::<FooKind>(), window, cx);
