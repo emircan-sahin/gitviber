@@ -40,7 +40,7 @@ use gpui_kit::{
     Styled as _, Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// While amending: HEAD's message in the fields, the user's own draft aside.
@@ -70,6 +70,14 @@ fn untouched(start: &(String, String), summary: &str, body: &str) -> bool {
     (summary.trim().is_empty() && body.trim().is_empty()) || (summary == start.0 && body == start.1)
 }
 
+/// Unstages what "commit everything" staged, in the worktree it staged in even if another is
+/// open now.
+fn unstage_in(core: &gitviber_core::Core, repo: Option<&Path>, paths: Vec<String>) {
+    if let Some(repo) = repo.filter(|_| !paths.is_empty()) {
+        api::changes::unstage_in(core, repo, paths).ok();
+    }
+}
+
 /// What the panel tells the box about the repo.
 #[derive(Clone, Default)]
 pub struct RepoFacts {
@@ -90,7 +98,7 @@ pub struct RepoFacts {
 
 pub struct CommitBox {
     workspace: WeakEntity<Workspace>,
-    pub(crate) facts: RepoFacts,
+    facts: RepoFacts,
     summary: Entity<InputState>,
     body: Entity<TextareaState>,
     co_authors: Vec<String>,
@@ -210,6 +218,8 @@ impl CommitBox {
             let draft = store::draft(&self.facts.root, cx).unwrap_or_default();
             self.co_authors = draft.co_authors.clone();
             self.amend = None;
+            // Asked of the other worktree's message.
+            self.ask_summary = false;
             self.set_fields(&draft.summary, &draft.body, window, cx);
         }
         if new_root || prepared_changed {
@@ -452,29 +462,29 @@ impl CommitBox {
         let (paths, skipped) = stageable(self.facts.lists.list(Kind::Unstaged));
         let auto = plan.stages_all;
         let core = crate::core(cx);
+        let repo = core.repo().ok();
         let started = Started {
-            repo: core.repo().ok(),
+            repo: repo.clone(),
             root: self.facts.root.clone(),
             summary,
             then,
             skipped,
             amended: options.amend,
-            staged: if auto { paths.clone() } else { vec![] },
+            staged: if auto { paths } else { vec![] },
         };
+        let staged = started.staged.clone();
         self._task = cx.spawn_in(window, async move |this, cx| {
             // Nothing staged means "commit everything", the common case after an agent run.
             let checked = {
                 let core = core.clone();
-                let paths = paths.clone();
+                let (staged, repo) = (staged.clone(), repo.clone());
                 cx.background_spawn(async move {
-                    let staged = if auto {
-                        api::changes::stage(&core, paths.clone(), false)
-                    } else {
-                        Ok(())
-                    };
-                    let large = staged.and_then(|()| api::changes::large_staged(&core));
-                    if large.is_err() && auto {
-                        api::changes::unstage(&core, paths).ok();
+                    if auto {
+                        api::changes::stage_all(&core, staged.clone())?;
+                    }
+                    let large = api::changes::large_staged(&core);
+                    if large.is_err() {
+                        unstage_in(&core, repo.as_deref(), staged);
                     }
                     large
                 })
@@ -490,18 +500,20 @@ impl CommitBox {
             if !large.is_empty() {
                 let text = large_files_text(&large, auto);
                 let weak = this.clone();
-                let (paths, message, options) = (paths.clone(), message.clone(), options);
+                let (paths, repo) = (staged.clone(), started.repo.clone());
+                let (message, options) = (message.clone(), options);
                 this.update_in(cx, move |_, window, cx| {
                     let go = std::rc::Rc::new(std::cell::RefCell::new(Some((
                         message, options, started,
                     ))));
                     let (go_ok, weak_ok, weak_cancel) = (go.clone(), weak.clone(), weak.clone());
                     window.open_alert_dialog(cx, move |alert, _, _| {
-                        let (go_ok, weak_ok, weak_cancel, paths) = (
+                        let (go_ok, weak_ok, weak_cancel, paths, repo) = (
                             go_ok.clone(),
                             weak_ok.clone(),
                             weak_cancel.clone(),
                             paths.clone(),
+                            repo.clone(),
                         );
                         alert
                             .ok_variant(gpui_kit::component::button::ButtonVariant::Danger)
@@ -521,18 +533,16 @@ impl CommitBox {
                                 true
                             })
                             .on_cancel(move |_, _, cx| {
-                                let paths = paths.clone();
+                                let (paths, repo) = (paths.clone(), repo.clone());
                                 weak_cancel
                                     .update(cx, |this, cx| {
                                         this.busy = None;
                                         // Nothing was staged before, so unstaging what this staged puts the index back.
-                                        if auto {
-                                            let core = crate::core(cx);
-                                            cx.background_spawn(async move {
-                                                api::changes::unstage(&core, paths)
-                                            })
-                                            .detach();
-                                        }
+                                        let core = crate::core(cx);
+                                        cx.background_spawn(async move {
+                                            unstage_in(&core, repo.as_deref(), paths)
+                                        })
+                                        .detach();
                                         this.toast(Toast::info("Commit cancelled"), cx);
                                         this.refresh_project(cx);
                                         cx.notify();
@@ -564,6 +574,9 @@ impl CommitBox {
         // Core opened another worktree while the large files were asked about.
         if core.repo().ok() != started.repo {
             self.busy = None;
+            let (repo, staged) = (started.repo, started.staged);
+            cx.background_spawn(async move { unstage_in(&core, repo.as_deref(), staged) })
+                .detach();
             self.toast(
                 Toast::info("Another worktree was opened while it waited.").title("Commit not run"),
                 cx,
@@ -583,8 +596,8 @@ impl CommitBox {
             .map(|((), entry)| entry);
             // A failed or cancelled "Commit all" leaves the index as it found it: empty, so
             // fixes made for the next try are committed too.
-            if out.is_err() && !staged.is_empty() && core.repo().ok() == repo {
-                api::changes::unstage(&core, staged).ok();
+            if out.is_err() {
+                unstage_in(&core, repo.as_deref(), staged);
             }
             out
         });
