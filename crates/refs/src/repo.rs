@@ -411,6 +411,7 @@ impl RepoState {
                         Note::success(done)
                             .maybe_detail(action.detail.clone())
                             .action(entry.map(|id| undo_action(weak.clone(), id)))
+                            .also(action.also.clone())
                     }),
                     Err(e) if e == CANCELLED => {
                         Some(Note::info(format!("{} cancelled", action.label)))
@@ -599,6 +600,8 @@ pub struct GitAction {
     /// A network command: its progress shows in the top bar, and Cancel stops it.
     pub net: bool,
     pub fixes: Fixes,
+    /// The success toast's second button, beside Undo.
+    pub also: Option<Action>,
     /// Sees a failure first; true when it took care of it (asked to force, stashed and retried),
     /// and then no error toast shows.
     pub on_error: Option<OnError>,
@@ -617,6 +620,7 @@ impl GitAction {
             tracked: true,
             net: false,
             fixes: vec![],
+            also: None,
             on_error: None,
         }
     }
@@ -646,6 +650,10 @@ impl GitAction {
     }
     pub fn on_error(mut self, f: impl Fn(&str, &mut Window, &mut App) -> bool + 'static) -> Self {
         self.on_error = Some(Rc::new(f));
+        self
+    }
+    pub fn also(mut self, also: Option<Action>) -> Self {
+        self.also = also;
         self
     }
     pub fn fix(mut self, fix: crate::errors::GitFix, action: Action) -> Self {

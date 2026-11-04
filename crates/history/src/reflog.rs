@@ -84,7 +84,7 @@ impl Reflog {
         let short = sha[..7.min(sha.len())].to_string();
         let q = Ask::new(
             "Reset to here",
-            format!("Move the current branch to {short} ({message})? Uncommitted changes to tracked files are discarded, and commits after it leave the branch."),
+            format!("Move the current branch to {short} ({message})? Commits after it leave the branch. Your uncommitted changes are kept in Stashes."),
             "Reset",
         )
         .danger();

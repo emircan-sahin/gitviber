@@ -179,7 +179,7 @@ pub fn undo_commit(core: &Core, sha: String) -> Res<()> {
 
 pub fn reset(core: &Core, sha: String, mode: git::ResetMode, head: String) -> Res<()> {
     let label = format!("Reset to {}", short(&sha));
-    // Undone the same way, except that a hard reset's lost changes can't come back.
+    // Undone the same way; a hard reset's uncommitted changes wait in Stashes (git::reset).
     let back = match mode {
         git::ResetMode::Soft => Mode::Soft,
         git::ResetMode::Mixed => Mode::Mixed,

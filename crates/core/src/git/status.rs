@@ -75,7 +75,7 @@ pub struct Operation {
     pub split: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoStatus {
     pub root: String,

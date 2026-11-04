@@ -23,6 +23,7 @@ use gpui_kit::{
     Subscription, Task, Window, div, prelude::FluentBuilder as _, px, rems,
 };
 
+use crate::actions::{Op, tracked, why_not};
 use crate::net::{NetActivity, NetOp, progress_text};
 use crate::ops;
 use crate::remote_tags;
@@ -254,14 +255,21 @@ impl Render for TopPart {
             Part::Undo => then_divider(undo_controls(&self.state, window, cx), cx),
             Part::Fetch => {
                 let state = self.state.clone();
-                let busy = state.read(cx).busy().is_some();
+                let s = state.read(cx);
+                let busy = s.busy().is_some();
+                let why = s.status.as_ref().and_then(|st| why_not(Op::Fetch, st));
+                let blocked = why.is_some();
                 Button::new("fetch")
                     .ghost()
                     .small()
                     .icon(IconName::RefreshCw)
-                    .tooltip("Fetch")
-                    .tooltip_key_binding(command_kbd("git.fetch", cx))
-                    .disabled(busy)
+                    .map(|b| match why {
+                        Some(why) => b.tooltip(why.reason),
+                        None => b
+                            .tooltip("Fetch")
+                            .tooltip_key_binding(command_kbd("git.fetch", cx)),
+                    })
+                    .disabled(busy || blocked)
                     .on_click(move |_, window, cx| ops::fetch(&state, window, cx))
                     .into_any_element()
             }
@@ -503,25 +511,13 @@ fn entry_tip(forward: bool, label: &str, steps: &[(u64, Option<String>)]) -> Str
     what + &ops::switch_note(forward, to.as_deref())
 }
 
-fn tracked(st: &git::RepoStatus) -> bool {
-    st.upstream.is_some() && !st.upstream_gone
-}
-
 fn pull_button(state: &Entity<RepoState>, cx: &mut App) -> AnyElement {
     let t = cx.app_theme().clone();
     let s = state.read(cx);
     let busy = s.busy().is_some();
     let status = s.status.clone();
-    // A fork's pull request checked out pulls from its refs/pull/<n>/head.
-    let pullable = status
-        .as_ref()
-        .is_some_and(|st| tracked(st) || st.follows.is_some());
-    let gone = status.as_ref().filter(|st| st.upstream_gone).map(|st| {
-        format!(
-            "{} isn't on the remote (deleted, or never pushed)",
-            st.upstream.clone().unwrap_or_default()
-        )
-    });
+    let why = status.as_ref().and_then(|st| why_not(Op::Pull, st));
+    let pullable = status.is_some() && why.is_none();
     let behind = status.as_ref().map_or(0, |st| st.behind);
     let st1 = state.clone();
     let button = Button::new("pull-main")
@@ -543,8 +539,8 @@ fn pull_button(state: &Entity<RepoState>, cx: &mut App) -> AnyElement {
                     )
                 }),
         )
-        .map(|b| match gone {
-            Some(gone) => b.tooltip(gone),
+        .map(|b| match why {
+            Some(why) => b.tooltip(why.reason),
             None => b
                 .tooltip("Pull (fast-forward only)")
                 .tooltip_key_binding(command_kbd("git.pull", cx)),
@@ -636,14 +632,13 @@ fn push_button(state: &Entity<RepoState>, cx: &mut App) -> AnyElement {
         }
         return split.into_any_element();
     }
-    if let Some(f) = &status.follows {
+    if status.follows.is_some() {
+        let why = why_not(Op::Push, &status).map(|w| w.reason);
         return Button::new("push-main")
             .small()
             .icon(IconName::ArrowUpFromLine)
             .label("Push")
-            .tooltip(format!(
-                "Pull request {f}'s branch is on its author's fork; push there"
-            ))
+            .tooltip(why.unwrap_or_default())
             .disabled(true)
             .into_any_element();
     }
@@ -743,19 +738,16 @@ fn push_menu(
 /// Publishes to the preferred remote; with several remotes, any can be picked.
 fn publish_button(state: &Entity<RepoState>, status: &git::RepoStatus, busy: bool) -> AnyElement {
     let remotes = status.remotes.clone();
-    // Before the first commit there's nothing to push.
-    let disabled = busy || status.branch.is_none() || status.head.is_none();
-    if remotes.is_empty() {
+    if let Some(why) = why_not(Op::Publish, status) {
         return Button::new("publish")
             .small()
             .icon(IconName::CloudUpload)
             .label("Publish")
-            .tooltip(
-                "This repository has no remote. Add one (git remote add origin <url>) to publish.",
-            )
+            .tooltip(why.reason)
             .disabled(true)
             .into_any_element();
     }
+    let disabled = busy;
     let preferred = status.publish.clone();
     let menu = {
         let (st, remotes, preferred) = (state.downgrade(), remotes.clone(), preferred.clone());
