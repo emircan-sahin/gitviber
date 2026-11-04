@@ -8,6 +8,7 @@ pub(crate) mod list_keys;
 mod pressable;
 mod project_tile;
 mod relative_time;
+mod skeleton;
 mod toggle;
 
 pub use badges::{
@@ -20,6 +21,7 @@ pub use list_keys::{Ends, PAGE, list_step, on_list_keys};
 pub use pressable::Pressable;
 pub use project_tile::{DraggedProject, project_tile, swatch_tile};
 pub use relative_time::{RelativeTime, full_date, now_unix, relative_time, repaint_next_minute};
+pub use skeleton::PanelSkeleton;
 pub use toggle::{Toggle, segmented};
 
 pub(crate) fn init(cx: &mut gpui_kit::App) {
