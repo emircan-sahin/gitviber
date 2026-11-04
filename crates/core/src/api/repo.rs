@@ -206,9 +206,27 @@ pub fn project_info(_core: &Core, paths: Vec<String>) -> Res<Vec<ProjectInfo>> {
         .collect())
 }
 
-/// The branch of a folder outside the open repo, for a terminal tab there.
-pub fn folder_branch(_core: &Core, path: String) -> Res<Option<String>> {
-    Ok(git::current_branch(Path::new(&path)))
+/// A folder outside the open repo, as a terminal tab there shows it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FolderRepo {
+    pub branch: Option<String>,
+    /// Its repo's main worktree.
+    pub main: Option<String>,
+    /// It's the top of a linked worktree, not a folder inside one or the main one.
+    pub linked: bool,
+}
+
+pub fn folder_repo(_core: &Core, path: String) -> Res<FolderRepo> {
+    let dir = Path::new(&path);
+    let main = git::main_worktree(dir);
+    let top = git::toplevel(dir).ok();
+    Ok(FolderRepo {
+        branch: git::current_branch(dir),
+        linked: main.is_some()
+            && top.as_deref().is_some_and(|t| Path::new(t) == dir)
+            && main != top,
+        main,
+    })
 }
 
 /// Reveals a saved project, open or not. reveal_path is confined to the open repo; this only
