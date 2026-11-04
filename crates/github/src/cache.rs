@@ -227,6 +227,14 @@ impl Cache {
             }
         }
         let core = crate::core(cx);
+        // Core reads the repo it has open: until a switch lands there, a read for the next repo
+        // would answer with the last one's lists. The switch's wake asks again once it has.
+        let repo = cx.try_global::<Cache>().and_then(|c| c.repo.clone());
+        if let (Some(repo), Ok(open)) = (repo, core.repo())
+            && repo != open
+        {
+            return;
+        }
         let cache = cx.default_global::<Cache>();
         let generation = cache.generation;
         let used = cache.tick();
@@ -563,6 +571,53 @@ mod tests {
         );
         cx.update(|cx| Cache::use_repo(cx, Path::new("/a")));
         assert_eq!(cx.update(|cx| Cache::len(cx)), 0);
+    }
+
+    fn git_repo(name: &str) -> Option<PathBuf> {
+        let dir = gitviber_ui::test_support::temp_dir(&format!("cache-{name}"));
+        let ok = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(&dir)
+            .status()
+            .ok()?
+            .success();
+        ok.then(|| dir.canonicalize().unwrap_or(dir))
+    }
+
+    #[gpui_kit::test]
+    fn a_read_for_the_next_repo_waits_until_core_has_it_open(cx: &mut TestAppContext) {
+        let (Some(a), Some(b)) = (git_repo("a"), git_repo("b")) else {
+            return;
+        };
+        setup(cx);
+        let core = cx.update(|cx| crate::core(cx));
+        let open = |root: &Path| {
+            gitviber_core::api::repo::open_repo(&core, root.to_string_lossy().into_owned()).unwrap()
+        };
+        open(&a);
+        // B's PRs panel asks while core still has A open: that read would be A's list.
+        let calls = Arc::new(AtomicUsize::new(0));
+        let ask = |cx: &mut TestAppContext| {
+            let calls = calls.clone();
+            cx.update(|cx| {
+                Cache::load(cx, "pulls:origin", MIN_AGE, move |core| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(core.repo()?.to_string_lossy().into_owned())
+                })
+            });
+            cx.run_until_parked();
+            cx.update(|cx| Cache::read::<String>(cx, "pulls:origin"))
+        };
+        cx.update(|cx| Cache::use_repo(cx, &b));
+        let early = ask(cx);
+        assert!(early.data.is_none() && !early.loading);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        open(&b);
+        let read = ask(cx);
+        assert_eq!(
+            read.data.as_deref().map(String::as_str),
+            Some(&*b.to_string_lossy())
+        );
     }
 
     #[gpui_kit::test]
