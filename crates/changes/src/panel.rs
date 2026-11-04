@@ -271,6 +271,8 @@ struct StashInfo {
     sha: String,
     index: usize,
     author: String,
+    /// As git worded it, for putting it back after a drop.
+    message: String,
     text: String,
     branch: Option<String>,
     timestamp: i64,
@@ -670,6 +672,7 @@ impl ChangesPanel {
                                     sha: s.sha,
                                     index: s.index,
                                     author: s.author,
+                                    message: s.message,
                                     text,
                                     branch,
                                     timestamp: s.timestamp,
@@ -1698,27 +1701,44 @@ impl ChangesPanel {
         cx: &mut Context<Self>,
     ) {
         let weak = cx.entity().downgrade();
-        let short = sha[..sha.len().min(10)].to_string();
-        dialogs::confirm(
-            window,
-            cx,
-            "Drop stash",
-            format!("Drop \"{text}\"? Its changes are thrown away; GitViber can't undo this."),
-            "Drop",
-            move |_, cx| {
-                weak.update(cx, |this, cx| {
-                    this.run(
-                        "Drop failed",
-                        Some(Toast::success(format!(
-                            "Stash dropped. To get it back: git stash apply {short}"
-                        ))),
-                        move |core| api::stash::stash_drop(core, sha),
-                        cx,
-                    )
-                })
-                .ok();
-            },
-        );
+        let Some(message) = self
+            .stashes
+            .iter()
+            .find(|s| s.sha == sha)
+            .map(|s| s.message.clone())
+        else {
+            return;
+        };
+        let repo = crate::core(cx).repo().ok();
+        let question = format!("Drop \"{text}\"? Its changes go with it.");
+        dialogs::confirm(window, cx, "Drop stash", question, "Drop", move |_, cx| {
+            let (undo, keep) = (weak.clone(), sha.clone());
+            // Its commit is still there: storing it again brings the stash back, on top.
+            let done = Toast::success(text)
+                .title("Stash dropped")
+                .action("Undo", move |_, cx| {
+                    let (sha, message) = (keep.clone(), message.clone());
+                    undo.update(cx, |this, cx| {
+                        if crate::core(cx).repo().ok() != repo {
+                            let note = Toast::info("It was for the worktree open before this one.");
+                            return this.toast(note.title("Undo not run"), cx);
+                        }
+                        let done = Toast::success("Stash restored");
+                        let store = move |core: &_| api::stash::stash_store(core, sha, message);
+                        this.run("Undo failed", Some(done), store, cx)
+                    })
+                    .ok();
+                });
+            weak.update(cx, |this, cx| {
+                this.run(
+                    "Drop failed",
+                    Some(done),
+                    move |core| api::stash::stash_drop(core, sha),
+                    cx,
+                )
+            })
+            .ok();
+        });
     }
 
     fn rename_stash(
@@ -5089,6 +5109,39 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(git(&dir, &["status", "--porcelain"]), "");
         assert!(git(&dir, &["show", "--name-only", "--format=", "stash@{0}^3"]).contains("c.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_dropped_stash_comes_back_with_undo(cx: &mut TestAppContext) {
+        let dir = repo("stash-drop");
+        git(&dir, &["stash", "push", "-q", "-m", "saved", "--", "b.txt"]);
+        let sha = git(&dir, &["rev-parse", "stash@{0}"]).trim().to_string();
+        setup(cx);
+        let (ws, host, cx) = open_with(cx, &dir, true);
+        let p = panel(&host, cx);
+        cx.update(|window, cx| {
+            p.update(cx, |p, cx| {
+                p.drop_stash(sha.clone(), "saved".into(), window, cx)
+            })
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(git(&dir, &["stash", "list"]), "");
+        let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+        let dropped = toasts
+            .iter()
+            .find(|t| t.title.as_deref() == Some("Stash dropped"))
+            .expect("a toast for the drop");
+        let undo = dropped.action.clone().expect("Undo");
+        assert_eq!(undo.label, "Undo");
+        cx.update(|window, cx| (undo.run)(window, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            git(&dir, &["stash", "list", "--format=%H %gs"]).trim(),
+            format!("{sha} On main: saved")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
