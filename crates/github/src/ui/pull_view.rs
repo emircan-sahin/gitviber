@@ -8,10 +8,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gitviber_core::api;
-use gitviber_core::git::FileChange;
+use gitviber_core::git::{FileChange, PullMode};
 use gitviber_core::github::{Annotation, CheckFailure, PullDetail, PullFiles};
 use gitviber_markdown::MarkdownView;
-use gitviber_refs::{RepoState, ops};
+use gitviber_refs::repo::plain;
+use gitviber_refs::{GitAction, RepoState, ops};
 use gitviber_ui::AppTheme;
 use gitviber_ui::actions::editor;
 use gitviber_ui::keymap::scroll::{self, Step};
@@ -37,11 +38,13 @@ use crate::ci::{self, CiWatch};
 use crate::logic::actions::{
     MergeMethod, PullRights, ReviewEvent, allowed_methods, pull_rights, pull_source, review_badge,
 };
-use crate::logic::checks::{check_note, checks_summary, failure_report, is_failing, sort_checks};
+use crate::logic::checks::{
+    check_note, checks_summary, checks_verdict, failure_report, is_failing, sort_checks,
+};
 use crate::logic::pull_commits::{
     CommitRun, by_day, is_whole_pr, pick_label, picked_commits, run_to,
 };
-use crate::model::{Account, Check, PullItem, PullState, Target, repo_of};
+use crate::model::{Account, Check, CiState, PullItem, PullState, Target, repo_of};
 use crate::requests::{GithubRequest, PullSource, request};
 use crate::store::Store;
 use crate::ui::common::{
@@ -130,6 +133,8 @@ pub struct PullView {
     /// Goes up when a review lands; the dialog closes on it.
     reviews_done: u64,
     polls: u32,
+    /// The head's CI verdict as of the last read: a newer one reads the page again.
+    ci_read: Option<CiState>,
     wakes: Wakes,
     generation: u64,
     focus: FocusHandle,
@@ -179,7 +184,10 @@ impl PullView {
         let repo = repo_of(&url);
         crate::ui::use_workspace_project(&ws, cx);
         let subs = vec![
-            cx.observe_global::<ci::Ci>(|_, cx| cx.notify()),
+            cx.observe_global::<ci::Ci>(|this: &mut Self, cx| {
+                this.ci_moved(cx);
+                cx.notify();
+            }),
             // The account decides what the page offers.
             super::observe_cache(|this: &Self| this.wakes, cx),
             cx.observe_window_activation(window, |_, window, cx| {
@@ -224,6 +232,7 @@ impl PullView {
             review_pick: None,
             reviews_done: 0,
             polls: 0,
+            ci_read: None,
             wakes: Cache::wakes(cx),
             generation: Cache::generation(cx),
             focus: cx.focus_handle(),
@@ -316,6 +325,14 @@ impl PullView {
         }
         let mergeable_unknown = d.pull.state == "open" && d.mergeable.is_none();
         self.detail = Some(d.clone());
+        // The badge follows the rollup, the checks and merge box this read: they agree on it.
+        if d.ci.checks_error.is_none()
+            && let Some(verdict) =
+                checks_verdict(&d.ci.checks.iter().map(Check::from).collect::<Vec<_>>())
+        {
+            ci::note(cx, &self.target, &d.pull.head_sha, verdict);
+        }
+        self.ci_read = ci::state(cx, &self.target, &d.pull.head_sha);
         self.text_stale = true;
         self.wants_signed(cx);
         // GitHub computes mergeability in the background and answers null until it's done; ask
@@ -338,6 +355,18 @@ impl PullView {
             self.load_files(cx);
         }
         cx.notify();
+    }
+
+    /// A run on the head finished or started since the last read: read the checks and the merge
+    /// state again, which GitHub doesn't say changed.
+    fn ci_moved(&mut self, cx: &mut Context<Self>) {
+        let Some(d) = &self.detail else { return };
+        let now = ci::state(cx, &self.target, &d.pull.head_sha);
+        if now.is_none() || now == self.ci_read || self.loading {
+            return;
+        }
+        self.ci_read = now;
+        self.load(cx);
     }
 
     /// CI for the head, and for each commit, newest first (asked 100 at a time), while shown.
@@ -684,7 +713,7 @@ impl PullView {
     fn act(
         &mut self,
         busy: &'static str,
-        done: String,
+        done: Toast,
         run: impl FnOnce(&gitviber_core::Core) -> Wrote + Send + 'static,
         after: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
@@ -703,14 +732,18 @@ impl PullView {
                         let toast = if stopped {
                             Toast::warning(CONFLICTS)
                         } else {
-                            Toast::success(done)
+                            done
                         };
                         this.toast(toast, cx);
                         Cache::pulls_changed(cx);
                         this.load(cx);
                         after(this, cx);
                     }
-                    Err(e) => this.toast(Toast::error(e).title(format!("{busy} failed")), cx),
+                    Err(e) => {
+                        this.toast(Toast::error(e).title(format!("{busy} failed")), cx);
+                        // Refused for what changed on GitHub (blocked, a new head): show that.
+                        this.load(cx);
+                    }
                 }
                 cx.notify();
             })
@@ -746,7 +779,7 @@ impl PullView {
         // A checkout moves HEAD; the repo watcher refreshes the rest of the window.
         self.act(
             "Checkout",
-            message,
+            Toast::success(message),
             move |core| {
                 done(api::github::pr_checkout(
                     core,
@@ -775,8 +808,15 @@ impl PullView {
             "Merge",
             window,
             cx,
-            move |_, cx| {
+            move |window, cx| {
                 let (branch, head_sha) = (branch.clone(), p.head_sha.clone());
+                let mut merged = Toast::success(format!("Merged #{}", p.number));
+                if on_branch_here(&branch, window, cx) {
+                    let base = p.base_ref.clone();
+                    merged = merged.action(format!("Switch to {base}"), move |window, cx| {
+                        switch_and_pull(base.clone(), window, cx)
+                    });
+                }
                 weak.update(cx, |this, cx| {
                     let (target, number) = (this.target.clone(), this.number);
                     let then = GithubRequest::OfferWorktreeRemoval {
@@ -788,7 +828,7 @@ impl PullView {
                     let sha = Some(head_sha);
                     this.act(
                         "Merge",
-                        format!("Merged #{number}"),
+                        merged,
                         move |core| {
                             done(api::github::pr_merge(
                                 core,
@@ -814,7 +854,7 @@ impl PullView {
             let target = target.clone();
             this.act(
                 if open { "Reopen" } else { "Close" },
-                format!("{verb} #{number}"),
+                Toast::success(format!("{verb} #{number}")),
                 move |core| done(api::github::pr_set_open(core, target, number, open)),
                 |_, _| {},
                 cx,
@@ -833,6 +873,17 @@ impl PullView {
             move |_, cx| {
                 weak.update(cx, |this, cx| run(this, cx)).ok();
             },
+        );
+    }
+
+    fn mark_ready(&mut self, cx: &mut Context<Self>) {
+        let (target, number) = (self.target.clone(), self.number);
+        self.act(
+            "Ready for review",
+            Toast::success(format!("#{number} is ready for review")),
+            move |core| done(api::github::pr_ready(core, target, number)),
+            |_, _| {},
+            cx,
         );
     }
 
@@ -871,7 +922,7 @@ impl PullView {
                             format!("Merged {} into {}; review and push", p.base_ref, p.head_ref);
                         this.act(
                             "Merge",
-                            message,
+                            Toast::success(message),
                             move |core| {
                                 let number = p.number;
                                 api::github::pr_checkout(
@@ -970,7 +1021,7 @@ impl PullView {
         let commit = self.detail.as_ref().map(|d| d.pull.head_sha.clone());
         self.act(
             "Review",
-            event.done().into(),
+            Toast::success(event.done()),
             move |core| {
                 done(api::github::pr_review(
                     core,
@@ -1082,6 +1133,51 @@ fn leaving_head(
         Some(state) => ops::unless_left_behind(&state, "Check out", window, cx, go),
         None => go(window, cx),
     }
+}
+
+/// Whether this window's main worktree has `branch` out. A linked one on it is offered for
+/// removal instead, and its base is likely out in the main one, where a switch can't take it.
+fn on_branch_here(branch: &str, window: &Window, cx: &mut App) -> bool {
+    RepoState::for_window(window, cx).is_some_and(|state| {
+        let s = state.read(cx);
+        s.branch() == Some(branch) && s.current_worktree().is_none_or(|w| w.main)
+    })
+}
+
+/// Leaves a merged branch for `base`, then pulls the merge into it.
+fn switch_and_pull(base: String, window: &mut Window, cx: &mut App) {
+    let Some(state) = RepoState::for_window(window, cx) else {
+        return;
+    };
+    if let Some(busy) = state.read(cx).busy().cloned() {
+        Toast::info(format!("Wait for {busy} to finish."))
+            .title("Switch not run")
+            .show(window, cx);
+        return;
+    }
+    let to = base.clone();
+    let switched = state.update(cx, |s, cx| {
+        s.run(
+            GitAction::new("Switch branch").net(),
+            move |core, op| {
+                plain(api::branches::switch_branch(
+                    core,
+                    to,
+                    false,
+                    op.id.clone(),
+                    op.progress(),
+                ))
+            },
+            window,
+            cx,
+        )
+    });
+    let weak = state.downgrade();
+    ops::after_yes(switched, window, cx, move |window, cx| {
+        if let Some(state) = weak.upgrade() {
+            ops::pull(&state, PullMode::Ff, false, window, cx);
+        }
+    });
 }
 
 /// "Check out in new worktree…" without the worktree dialog (no handler set): core makes it
@@ -1275,6 +1371,18 @@ fn merge_side(d: &PullDetail, rights: &PullRights) -> Option<&'static str> {
     }
 }
 
+/// A draft's merge box offers "Ready for review" in place of Merge: GitHub lets its author and
+/// writers mark it, and nothing else moves it on.
+fn offers_ready(d: &PullDetail, rights: &PullRights) -> bool {
+    d.pull.draft && !has_conflicts(d) && (rights.own || rights.merge)
+}
+
+/// Merge can't go through yet: GitHub is still deciding, it's a draft, or it's blocked, which
+/// GitHub refuses all but admins (the box's note says why).
+fn merge_off(d: &PullDetail, rights: &PullRights) -> bool {
+    d.mergeable.is_none() || d.pull.draft || (d.mergeable_state == "blocked" && !rights.admin)
+}
+
 fn checks_error(e: &str) -> String {
     format!("Could not load all checks: {e}")
 }
@@ -1410,7 +1518,15 @@ impl PullView {
         };
         let conflicts = has_conflicts(d);
         let busy = self.busy.is_some();
-        let action: AnyElement = if let Some(side) = merge_side(d, &rights) {
+        let action: AnyElement = if offers_ready(d, &rights) {
+            Button::new("ready")
+                .small()
+                .primary()
+                .label("Ready for review")
+                .disabled(busy)
+                .on_click(cx.listener(|this, _, _, cx| this.mark_ready(cx)))
+                .into_any_element()
+        } else if let Some(side) = merge_side(d, &rights) {
             div()
                 .max_w(px(220.))
                 .text_right()
@@ -1430,7 +1546,7 @@ impl PullView {
         } else {
             let methods = allowed_methods(account.and_then(|a| a.access_for(&p.url)));
             let first = methods[0];
-            let off = busy || d.mergeable.is_none() || d.pull.draft;
+            let off = busy || merge_off(d, &rights);
             let weak = cx.weak_entity();
             div()
                 .flex()
@@ -2120,7 +2236,10 @@ impl PullView {
                                 .update(cx, |this, cx| {
                                     this.act(
                                         "Cherry-pick",
-                                        format!("Cherry-picked {}", &sha[..sha.len().min(7)]),
+                                        Toast::success(format!(
+                                            "Cherry-picked {}",
+                                            &sha[..sha.len().min(7)]
+                                        )),
                                         move |core| api::history::cherry_pick(core, sha),
                                         |_, _| {},
                                         cx,
@@ -2927,12 +3046,11 @@ mod tests {
         cx.run_until_parked();
     }
 
-    /// Fills the page as a read would: a failing check shown, two commits (one message folded),
-    /// thirty files, a description and a review.
-    fn fill(v: &mut PullView) {
+    /// A read of PR 1: one check (id 7) in `check`, a description and a review.
+    fn detail(check: &str) -> PullDetail {
         let mut p = crate::ui::core_pull(&pull(1));
         p.title = "zeta: the fix".into();
-        v.detail = Some(Arc::new(PullDetail {
+        PullDetail {
             pull: p,
             body: "The zeta body".into(),
             additions: 1,
@@ -2944,7 +3062,7 @@ mod tests {
             ci: CommitChecks {
                 checks: vec![gitviber_core::github::Check {
                     name: "zeta-lint".into(),
-                    state: "failure".into(),
+                    state: check.into(),
                     status: String::new(),
                     description: String::new(),
                     app: "GitHub Actions".into(),
@@ -2963,7 +3081,13 @@ mod tests {
             }],
             closed_by: None,
             merged_by: None,
-        }));
+        }
+    }
+
+    /// Fills the page as a read would: a failing check shown, two commits (one message folded),
+    /// thirty files, a description and a review.
+    fn fill(v: &mut PullView) {
+        v.detail = Some(Arc::new(detail("failure")));
         v.detail_error = None;
         v.detail_at = Some(Instant::now());
         v.text_stale = true;
@@ -3308,5 +3432,90 @@ mod tests {
         );
         cx.simulate_keystrokes("home");
         assert_eq!(scrolled(cx).0, 0.);
+    }
+
+    fn rights(own: bool, merge: bool, admin: bool) -> PullRights {
+        PullRights {
+            merge,
+            close: true,
+            reopen: true,
+            resolve: true,
+            own,
+            admin,
+        }
+    }
+
+    #[gpui_kit::test]
+    fn checks_are_read_again_when_the_heads_ci_moves_on(cx: &mut TestAppContext) {
+        let (view, cx) = open_page(cx);
+        let target = Some("o/r".to_string());
+        // A read with the check still running: the head's badge says so too.
+        view.update(cx, |v, cx| v.detail_landed(Ok(detail("pending")), cx));
+        cx.run_until_parked();
+        let state = |cx: &mut VisualTestContext| cx.update(|_, cx| ci::state(cx, &target, "abc"));
+        assert_eq!(state(cx), Some(CiState::Pending));
+        let at = view.read_with(cx, |v, _| v.detail_at);
+        // Still running by the rollup: nothing new to read.
+        cx.update(|_, cx| ci::note(cx, &target, "abc", CiState::Pending));
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |v, _| v.detail_at), at);
+        // It finished: the checks and the merge box are read again, once.
+        cx.update(|_, cx| ci::note(cx, &target, "abc", CiState::Success));
+        cx.run_until_parked();
+        let again = view.read_with(cx, |v, _| v.detail_at);
+        assert!(again > at);
+        cx.update(|_, cx| ci::note(cx, &target, "abc", CiState::Success));
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |v, _| v.detail_at), again);
+    }
+
+    #[gpui_kit::test]
+    fn a_failed_action_reads_the_page_again(cx: &mut TestAppContext) {
+        let (view, cx) = open_page(cx);
+        view.update(cx, |v, cx| {
+            fill(v);
+            cx.notify();
+        });
+        let at = view.read_with(cx, |v, _| v.detail_at);
+        view.update(cx, |v, cx| {
+            v.act(
+                "Merge",
+                Toast::success("Merged #1"),
+                |_| Err("GitHub 405: Required status check is failing.".into()),
+                |_, _| {},
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |v, _| {
+            assert!(v.busy.is_none());
+            assert!(v.detail_at > at, "the page wasn't read again");
+        });
+    }
+
+    #[test]
+    fn merge_waits_while_github_blocks_it_unless_admin() {
+        let mut d = detail("success");
+        assert!(!merge_off(&d, &rights(false, true, false)));
+        d.mergeable_state = "blocked".into();
+        assert!(merge_off(&d, &rights(false, true, false)));
+        // Admins merge past branch protection, as GitHub lets them.
+        assert!(!merge_off(&d, &rights(false, true, true)));
+        // Behind or unstable still merges, when the repository allows it.
+        d.mergeable_state = "unstable".into();
+        assert!(!merge_off(&d, &rights(false, true, false)));
+    }
+
+    #[test]
+    fn a_draft_offers_ready_for_review_to_its_author_and_writers() {
+        let mut d = detail("success");
+        assert!(!offers_ready(&d, &rights(true, true, false)));
+        d.pull.draft = true;
+        assert!(offers_ready(&d, &rights(true, false, false)));
+        assert!(offers_ready(&d, &rights(false, true, false)));
+        assert!(!offers_ready(&d, &rights(false, false, false)));
+        // Its conflicts come first: the box offers to resolve them.
+        d.mergeable = Some(false);
+        assert!(!offers_ready(&d, &rights(true, true, false)));
     }
 }

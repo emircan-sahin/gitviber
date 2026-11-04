@@ -161,6 +161,8 @@ pub struct PullRights {
     /// The PR's branch is on origin, where a pushed fix updates it.
     pub resolve: bool,
     pub own: bool,
+    /// Merges past branch protection (GitHub's "bypass" for admins).
+    pub admin: bool,
 }
 
 pub fn pull_rights(p: &PullItem, account: Option<&Account>, closed_by: Option<&str>) -> PullRights {
@@ -183,6 +185,7 @@ pub fn pull_rights(p: &PullItem, account: Option<&Account>, closed_by: Option<&s
         reopen: writer || triager || (own && closed_by.is_some() && closed_by == login),
         resolve: same_repo && access.is_some(),
         own,
+        admin: access.is_some_and(|a| a.admin),
     }
 }
 
