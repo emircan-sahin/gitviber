@@ -230,9 +230,14 @@ pub fn kinds(root: &Path, rels: &[String]) -> Vec<Option<Kind>> {
         .collect()
 }
 
-/// Writes a file inside the repo (used to save a resolved conflict).
+/// Writes a file inside the repo (a resolved conflict, a file tab's save). A file tab saved
+/// after its folder went (a branch switch, an agent's `rm -r`) brings the folder back.
 pub fn write_file(root: &Path, rel: &str, content: &str) -> Result<(), String> {
-    std::fs::write(resolve(root, rel)?, content).map_err(|e| e.to_string())
+    let path = resolve(root, rel)?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(path, content).map_err(|e| e.to_string())
 }
 
 pub fn read_file(root: &Path, rel: &str) -> FileText {
@@ -863,6 +868,11 @@ mod tests {
             "keep"
         );
         create_file(root, "new/deeper/x.txt").unwrap();
+        write_file(root, "gone/again/y.txt", "back").unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("gone/again/y.txt")).unwrap(),
+            "back"
+        );
         assert!(root.join("new/deeper/x.txt").is_file());
         create_dir(root, "more/dir").unwrap();
         assert!(root.join("more/dir").is_dir());

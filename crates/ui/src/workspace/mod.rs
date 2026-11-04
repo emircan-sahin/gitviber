@@ -785,6 +785,28 @@ impl Workspace {
         true
     }
 
+    /// The tab under `key` stands for `selection` now and keeps its view, typing and all (its
+    /// file was renamed). False when `key` isn't open or another tab is open on `selection`.
+    pub fn rename_tab(&mut self, key: &str, selection: Selection, cx: &mut Context<Self>) -> bool {
+        let new_key: SharedString = selection_key(&selection).into();
+        let Some(tab) = self.tabs.get(key) else {
+            return false;
+        };
+        if new_key.as_ref() != key && self.tabs.get(&new_key).is_some() {
+            return false;
+        }
+        let handle = tab.item.handle.clone();
+        self.tabs.replace(key, new_key.clone(), || Tab {
+            handle,
+            selection: Some(selection),
+        });
+        for k in self.shown.iter_mut().filter(|k| k.as_ref() == key) {
+            *k = new_key.clone();
+        }
+        self.changed(WorkspaceEvent::TabsChanged, cx);
+        true
+    }
+
     /// Keeps a preview tab (it was typed into, or double-clicked).
     pub fn pin_tab(&mut self, key: &str, cx: &mut Context<Self>) {
         self.tabs.pin(key);

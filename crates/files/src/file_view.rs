@@ -29,7 +29,7 @@ use gpui_kit::{
     Styled as _, Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
 
-use crate::code::{CodeEvent, CodeSource, CodeView};
+use crate::code::{CodeEvent, CodeSource, CodeView, OnDisk};
 use crate::media::{MediaKind, MediaView, media_kind};
 use crate::svg::SvgPreview;
 use crate::text::{self, Bar};
@@ -275,7 +275,6 @@ impl FileView {
         });
     }
 
-    #[cfg(test)]
     pub(crate) fn code(&self) -> Option<Entity<CodeView>> {
         match &self.content {
             Content::Text { code, .. } => Some(code.clone()),
@@ -298,6 +297,20 @@ impl FileView {
             (FileSource::Repo(p), Some(root)) => root.join(p),
             (s, _) => PathBuf::from(s.path()),
         }
+    }
+
+    /// Its file was renamed to `path`: unsaved typing stays, to be saved under the new name; a
+    /// clean file is read again, as its name may make it another language or kind.
+    pub(crate) fn moved_to(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.source = FileSource::Repo(path.clone());
+        match &self.content {
+            Content::Text { code, .. } if code.read(cx).is_dirty() => {
+                code.update(cx, |c, cx| c.moved_to(path, cx));
+            }
+            _ => self.content = Content::Loading,
+        }
+        self.load(window, cx);
+        cx.notify();
     }
 
     fn previewable(&self) -> bool {
@@ -397,17 +410,24 @@ impl FileView {
         });
     }
 
-    /// The header's Reload, after the file changed on disk under unsaved typing: the typing
-    /// goes, once the user says so, and the file shows as it is on disk.
+    /// The header's Reload (or Discard), after the file changed (or went) on disk under unsaved
+    /// typing: the typing goes, once the user says so, and the file shows as it is on disk.
     pub(crate) fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let FileSource::Repo(path) = self.source.clone() else {
             return;
         };
         let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+        let gone = self
+            .code()
+            .is_some_and(|c| c.read(cx).on_disk() == OnDisk::Deleted);
         let answer = window.prompt(
             PromptLevel::Warning,
             &format!("Discard your changes to {name}?"),
-            Some("It changed on disk. It shows as it is there now."),
+            Some(if gone {
+                "It was deleted on disk, so your changes are the only copy."
+            } else {
+                "It changed on disk. It shows as it is there now."
+            }),
             &["Discard Changes", "Cancel"],
             cx,
         );
@@ -523,8 +543,14 @@ impl FileView {
     }
 
     fn show_loaded(&mut self, loaded: Loaded, window: &mut Window, cx: &mut Context<Self>) {
-        self.lfs = false;
+        // Unsaved typing never goes for what the disk holds now: it stays, and the header says
+        // the file is gone or changed.
+        let typed = match &self.content {
+            Content::Text { code, .. } if code.read(cx).is_dirty() => Some(code.clone()),
+            _ => None,
+        };
         let (head, file, rows) = match loaded {
+            Loaded::Failed(_) if typed.is_some() => return,
             Loaded::Failed(e) => return self.notice("Could not read the file", e, false, cx),
             Loaded::External(f) => (None, f, vec![]),
             Loaded::Pair(DiffPair {
@@ -538,7 +564,23 @@ impl FileView {
             }
         };
         let path = self.source.path().to_string();
-        let kind = media_kind(&path);
+        let media = media_kind(&path)
+            .filter(|k| *k != MediaKind::Image || !path.to_ascii_lowercase().ends_with(".svg"));
+        if let Some(code) = typed {
+            let disk = if !file.exists {
+                OnDisk::Deleted
+            } else if file.lfs_missing.is_some() || media.is_some() || file.too_large || file.binary
+            {
+                OnDisk::Changed
+            } else {
+                OnDisk::Same
+            };
+            if disk != OnDisk::Same {
+                code.update(cx, |c, cx| c.set_on_disk(disk, cx));
+                return;
+            }
+        }
+        self.lfs = false;
         if !file.exists {
             return self.notice(
                 "This file is not on disk",
@@ -557,9 +599,7 @@ impl FileView {
             self.lfs = true;
             return;
         }
-        if let Some(kind) =
-            kind.filter(|k| *k != MediaKind::Image || !path.to_ascii_lowercase().ends_with(".svg"))
-        {
+        if let Some(kind) = media {
             match &self.content {
                 Content::Media(media) => media.update(cx, |m, cx| m.reload(cx)),
                 _ => {
@@ -830,9 +870,9 @@ impl FileView {
         let (readonly, on_disk) = match &self.content {
             Content::Text { code, .. } => {
                 let code = code.read(cx);
-                (code.is_readonly(), code.changed_on_disk())
+                (code.is_readonly(), code.on_disk())
             }
-            _ => (false, false),
+            _ => (false, OnDisk::Same),
         };
         let svg = path.to_ascii_lowercase().ends_with(".svg");
         div()
@@ -879,7 +919,7 @@ impl FileView {
                 )
             })
             .child(div().flex_1())
-            .when(on_disk, |d| {
+            .when(on_disk == OnDisk::Changed, |d| {
                 d.child(
                     div()
                         .flex_none()
@@ -893,6 +933,35 @@ impl FileView {
                         .xsmall()
                         .label("Reload")
                         .tooltip("Discard your changes and show the file as it is on disk")
+                        .on_click(cx.listener(|this, _, window, cx| this.reload(window, cx))),
+                )
+            })
+            .when(on_disk == OnDisk::Deleted, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(11.5))
+                        .text_color(t.removed)
+                        .child("Deleted on disk"),
+                )
+                .child(
+                    Button::new("recreate")
+                        .ghost()
+                        .xsmall()
+                        .label("Save")
+                        .tooltip("Write your version back to the file")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if let Some(code) = this.code() {
+                                code.update(cx, |c, cx| c.save(window, cx));
+                            }
+                        })),
+                )
+                .child(
+                    Button::new("discard")
+                        .ghost()
+                        .xsmall()
+                        .label("Discard")
+                        .tooltip("Discard your changes")
                         .on_click(cx.listener(|this, _, window, cx| this.reload(window, cx))),
                 )
             })
