@@ -93,6 +93,16 @@ fn side_name(side: Side) -> &'static str {
     }
 }
 
+/// "line 4", "lines 2–4 (on 4)", "(old)" on the removed side.
+fn lines_label(r: LineRange) -> String {
+    let old = if r.side == Side::Old { " (old)" } else { "" };
+    if r.start == r.end {
+        format!("line {}{old}", r.end)
+    } else {
+        format!("lines {}–{} (on {}){old}", r.start, r.end, r.end)
+    }
+}
+
 /// `drafts` with `text` kept for `draft` (an empty one forgotten), the latest last, bounded.
 fn keep_draft(drafts: &mut Vec<(Draft, String)>, draft: Draft, text: String) {
     drafts.retain(|(d, _)| *d != draft);
@@ -310,6 +320,18 @@ impl PullFileView {
         cx.notify();
     }
 
+    /// Esc: the box closes and what's in it waits as that line's or thread's draft.
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(was) = self.draft {
+            let text = self.composer.read(cx).value(cx).to_string();
+            keep_draft(&mut self.drafts, was, text);
+        }
+        self.cancel(window, cx);
+        let diff = gpui_kit::Focusable::focus_handle(self.diff.read(cx), cx);
+        window.focus(&diff, cx);
+    }
+
+    /// Cancel, clicked on purpose: what's in the box goes.
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.draft = None;
         self.composer
@@ -388,13 +410,13 @@ impl PullFileView {
             }))
             .capture_action(cx.listener(|this, _: &Escape, window, cx| {
                 cx.stop_propagation();
-                this.cancel(window, cx);
+                this.close(window, cx);
             }))
             // The preview showing has the focus, and no binding for Esc.
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 if e.keystroke.key == "escape" && !e.keystroke.modifiers.modified() {
                     cx.stop_propagation();
-                    this.cancel(window, cx);
+                    this.close(window, cx);
                 }
             }))
             .flex()
@@ -433,7 +455,19 @@ impl PullFileView {
     }
 
     fn threads_view(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if self.threads.is_empty() && self.draft.is_none() && self.comments_error.is_none() {
+        let waiting: Vec<LineRange> = self
+            .drafts
+            .iter()
+            .filter_map(|(d, _)| match d {
+                Draft::New(r) if self.draft != Some(*d) => Some(*r),
+                _ => None,
+            })
+            .collect();
+        if self.threads.is_empty()
+            && self.draft.is_none()
+            && waiting.is_empty()
+            && self.comments_error.is_none()
+        {
             return None;
         }
         let t = theme(cx);
@@ -481,18 +515,29 @@ impl PullFileView {
             .border_b_1()
             .border_color(t.border);
         if !folded {
+            for (i, r) in waiting.into_iter().enumerate() {
+                list = list.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .px(px(12.))
+                        .py(px(6.))
+                        .border_b_1()
+                        .border_color(t.border)
+                        .child(
+                            text_button(("draft", i), format!("Draft on {}…", lines_label(r)), &t)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.start(Draft::New(r), window, cx)
+                                })),
+                        ),
+                );
+            }
             if let Some(Draft::New(r)) = self.draft {
-                let old = if r.side == Side::Old { " (old)" } else { "" };
-                let lines = if r.start == r.end {
-                    format!("line {}", r.end)
-                } else {
-                    format!("lines {}–{} (on {})", r.start, r.end, r.end)
-                };
                 list = list.child(
                     div()
                         .border_b_1()
                         .border_color(t.border)
-                        .child(self.composer(format!("Comment on {lines}{old}"), cx)),
+                        .child(self.composer(format!("Comment on {}", lines_label(r)), cx)),
                 );
             }
             for (ti, th) in self.threads.iter().enumerate() {
@@ -671,6 +716,57 @@ impl Render for PullFileView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_kit::{TestAppContext, VisualTestContext};
+
+    fn open_file(cx: &mut TestAppContext) -> (Entity<PullFileView>, &mut VisualTestContext) {
+        crate::leak_tests::setup(cx);
+        cx.add_window_view(|window, cx| {
+            let ws = cx.new(Workspace::new);
+            let range = PullRange {
+                number: Some(1),
+                pull_url: Some("https://github.com/o/r/pull/1".into()),
+                label: None,
+                base: "def".into(),
+                head: "abc".into(),
+            };
+            let file = Arc::new(crate::leak_tests::file("src/zeta.rs"));
+            PullFileView::new(ws.downgrade(), range, file, window, cx)
+        })
+    }
+
+    #[gpui_kit::test]
+    fn esc_keeps_a_line_comment_and_cancel_drops_it(cx: &mut TestAppContext) {
+        let (view, cx) = open_file(cx);
+        let line = Draft::New(LineRange {
+            side: Side::New,
+            start: 4,
+            end: 4,
+        });
+        view.update_in(cx, |v, window, cx| {
+            v.start(line, window, cx);
+            v.composer
+                .update(cx, |c, cx| c.set_value("half a thought", window, cx));
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_keystrokes("escape");
+        // The box closed, the text waits as the line's draft, and the tab still asks before closing.
+        view.read_with(cx, |v, cx| {
+            assert_eq!(v.draft, None);
+            assert_eq!(v.drafts, vec![(line, "half a thought".to_string())]);
+            assert!(v.is_dirty(cx));
+        });
+        // Back on the line, the text is there; Cancel drops it.
+        view.update_in(cx, |v, window, cx| {
+            v.start(line, window, cx);
+            assert_eq!(v.composer.read(cx).value(cx).to_string(), "half a thought");
+            v.cancel(window, cx);
+        });
+        view.read_with(cx, |v, cx| {
+            assert!(v.drafts.is_empty());
+            assert!(!v.is_dirty(cx));
+        });
+    }
 
     #[test]
     fn a_draft_set_aside_comes_back_and_an_empty_one_is_forgotten() {
