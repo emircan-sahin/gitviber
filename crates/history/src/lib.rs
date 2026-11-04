@@ -204,7 +204,10 @@ mod tests {
     fn repo() -> PathBuf {
         use std::fmt::Write as _;
         use std::io::Write as _;
-        let dir = gitviber_ui::test_support::temp_dir("history-long");
+        // One folder per call: tests run in parallel, and two `git init`s in one folder collide.
+        static MADE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = gitviber_ui::test_support::temp_dir(&format!("history-long-{n}"));
         git(&dir, &["init", "-q", "-b", "main"]);
         let mut stream = String::new();
         for i in 1..=500 {
