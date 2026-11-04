@@ -209,6 +209,44 @@ fn reset_modes() {
 }
 
 #[test]
+fn a_hard_reset_keeps_uncommitted_changes_in_stashes() {
+    let sb = Sandbox::new("reset-keep");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "1\n", "base");
+    let base = log(&r, None, 0, 1).unwrap()[0].sha.clone();
+    write_commit(&r, "a.txt", "1\n2\n", "two");
+    let two = log(&r, None, 0, 1).unwrap()[0].sha.clone();
+    fs::write(r.join("a.txt"), "1\n2\nedited\n").unwrap();
+    fs::write(r.join("new.txt"), "staged\n").unwrap();
+    run(&r, &["add", "new.txt"]).unwrap();
+
+    reset(&r, &base, ResetMode::Hard, &two).unwrap();
+    let st = status(&r).unwrap();
+    assert!(st.staged.is_empty() && st.unstaged.is_empty());
+    let kept = stashes(&r).unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(
+        kept[0].message,
+        format!("Before hard reset to {}", &base[..7])
+    );
+
+    // Back on the commit they were made on, they come back as they were.
+    reset(&r, &two, ResetMode::Hard, &base).unwrap();
+    assert_eq!(
+        stashes(&r).unwrap().len(),
+        1,
+        "a clean tree stashes nothing"
+    );
+    assert!(!stash_apply(&r, &kept[0].sha, true).unwrap());
+    assert_eq!(
+        fs::read_to_string(r.join("a.txt")).unwrap(),
+        "1\n2\nedited\n"
+    );
+    assert_eq!(fs::read_to_string(r.join("new.txt")).unwrap(), "staged\n");
+}
+
+#[test]
 fn checkout_branch_and_tag_at_a_commit() {
     let sb = Sandbox::new("refs");
     let r = sb.path("r");

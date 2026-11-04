@@ -77,9 +77,29 @@ pub fn reset(repo: &Path, sha: &str, mode: ResetMode, head: &str) -> Result<(), 
     let flag = match mode {
         ResetMode::Soft => "--soft",
         ResetMode::Mixed => "--mixed",
-        ResetMode::Hard => "--hard",
+        ResetMode::Hard => {
+            keep_changes(repo, sha)?;
+            "--hard"
+        }
     };
     run(repo, &["reset", "-q", flag, sha]).map(|_| ())
+}
+
+/// What a hard reset would discard, kept in Stashes first; nothing is reset if that fails.
+/// `stash create` makes nothing on a clean tree, and leaves the working tree as it is.
+fn keep_changes(repo: &Path, sha: &str) -> Result<(), String> {
+    let kept = |e: String| {
+        format!("Your uncommitted changes couldn't be kept in Stashes, so nothing was reset.\n{e}")
+    };
+    let made = run_text(repo, &["stash", "create"]).map_err(kept)?;
+    let made = made.trim();
+    if made.is_empty() {
+        return Ok(());
+    }
+    let message = format!("Before hard reset to {}", &sha[..7.min(sha.len())]);
+    run(repo, &["stash", "store", "-m", &message, made])
+        .map(|_| ())
+        .map_err(kept)
 }
 
 /// `git revert`, returning true if it stopped on conflicts.
