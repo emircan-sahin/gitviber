@@ -92,7 +92,7 @@ pub fn fetch(state: &Entity<RepoState>, window: &mut Window, cx: &mut App) {
     let action = GitAction::new("Fetch")
         .net()
         .untracked()
-        .fix(GitFix::Unreachable, try_again(state, fetch));
+        .fix(GitFix::Unreachable, retry(state, "Retry", fetch));
     go(
         state,
         action,
@@ -120,23 +120,14 @@ fn pulls(state: &Entity<RepoState>) -> Action {
     })
 }
 
+/// The same action once more: with autostash, or for a remote that couldn't be reached.
 fn retry(
     state: &Entity<RepoState>,
+    label: &'static str,
     again: impl Fn(&Entity<RepoState>, &mut Window, &mut App) + 'static,
 ) -> Action {
     let weak = state.downgrade();
-    Action::new("Retry with autostash", move |window, cx| {
-        with(&weak, window, cx, |s, w, cx| again(s, w, cx))
-    })
-}
-
-/// The same network action once more, for a remote that couldn't be reached.
-fn try_again(
-    state: &Entity<RepoState>,
-    again: impl Fn(&Entity<RepoState>, &mut Window, &mut App) + 'static,
-) -> Action {
-    let weak = state.downgrade();
-    Action::new("Retry", move |window, cx| {
+    Action::new(label, move |window, cx| {
         with(&weak, window, cx, |s, w, cx| again(s, w, cx))
     })
 }
@@ -155,11 +146,15 @@ pub fn pull(
     .fix(GitFix::Diverged, pulls(state))
     .fix(
         GitFix::Autostash,
-        retry(state, move |s, w, cx| pull(s, mode, true, w, cx)),
+        retry(state, "Retry with autostash", move |s, w, cx| {
+            pull(s, mode, true, w, cx)
+        }),
     )
     .fix(
         GitFix::Unreachable,
-        try_again(state, move |s, w, cx| pull(s, mode, autostash, w, cx)),
+        retry(state, "Retry", move |s, w, cx| {
+            pull(s, mode, autostash, w, cx)
+        }),
     );
     go(
         state,
@@ -184,11 +179,13 @@ pub fn sync(state: &Entity<RepoState>, autostash: bool, window: &mut Window, cx:
     .fix(GitFix::Diverged, pulls(state))
     .fix(
         GitFix::Autostash,
-        retry(state, |s, w, cx| sync(s, true, w, cx)),
+        retry(state, "Retry with autostash", |s, w, cx| {
+            sync(s, true, w, cx)
+        }),
     )
     .fix(
         GitFix::Unreachable,
-        try_again(state, move |s, w, cx| sync(s, autostash, w, cx)),
+        retry(state, "Retry", move |s, w, cx| sync(s, autostash, w, cx)),
     );
     if let Some(b) = behind {
         action = action.fix(GitFix::FetchFirst, b);
@@ -259,7 +256,7 @@ pub fn push(state: &Entity<RepoState>, tags: bool, force: bool, window: &mut Win
     });
     action = action.fix(
         GitFix::Unreachable,
-        try_again(state, move |s, w, cx| push(s, tags, force, w, cx)),
+        retry(state, "Retry", move |s, w, cx| push(s, tags, force, w, cx)),
     );
     if pushes_upstream(state, cx) {
         action = action.fix(GitFix::FetchFirst, pulls(state));
@@ -303,7 +300,9 @@ pub fn publish(state: &Entity<RepoState>, remote: String, window: &mut Window, c
         .on_error(move |e, window, cx| secret_refused(&weak, "Publish", e, window, cx))
         .fix(
             GitFix::Unreachable,
-            try_again(state, move |s, w, cx| publish(s, again.clone(), w, cx)),
+            retry(state, "Retry", move |s, w, cx| {
+                publish(s, again.clone(), w, cx)
+            }),
         );
     go(
         state,
@@ -453,7 +452,7 @@ pub fn merge(
         )
         .fix(
             GitFix::Autostash,
-            retry(state, move |s, w, cx| {
+            retry(state, "Retry with autostash", move |s, w, cx| {
                 merge(s, again.clone(), how, true, w, cx)
             }),
         )
@@ -536,7 +535,7 @@ fn go_rebase(
     )
     .fix(
         GitFix::Autostash,
-        retry(state, move |s, w, cx| {
+        retry(state, "Retry with autostash", move |s, w, cx| {
             go_rebase(s, again.clone(), true, update_refs, w, cx)
         }),
     );
