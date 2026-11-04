@@ -331,6 +331,36 @@ fn find_option_key(key: &str, m: &gpui::Modifiers, mac: bool) -> Option<u8> {
     }
 }
 
+/// The window's terminal panel; `show`: shown, and built if it wasn't yet. None in a window
+/// without a workspace.
+pub fn window_panel(
+    window: &mut Window,
+    cx: &mut App,
+    show: bool,
+) -> Option<Entity<TerminalPanel>> {
+    let ws = Workspace::for_window(window, cx)?;
+    let panel = if show {
+        ws.update(cx, |ws, cx| ws.show_panel("terminal", cx));
+        // Built outside the workspace's update: the panel reads the workspace as it's made.
+        Workspace::ensure_panel(&ws, "terminal", window, cx)
+    } else {
+        ws.read(cx).built_panel("terminal").cloned()
+    }?;
+    panel.view().downcast::<TerminalPanel>().ok()
+}
+
+/// `line` run in a new tab of the window's terminal, opened in `cwd`, the panel shown. False
+/// when the window has no terminal.
+pub fn run_in_new_tab(cwd: PathBuf, line: &str, window: &mut Window, cx: &mut App) -> bool {
+    let Some(panel) = window_panel(window, cx, true) else {
+        return false;
+    };
+    // The pane only types it: without its Enter it sat at the prompt.
+    let run = Some(format!("{line}\r"));
+    panel.update(cx, |p, cx| p.open_terminal(cwd, run, window, cx));
+    true
+}
+
 /// Runs `f` on the terminal panel of the window in front once the key dispatch is over (the
 /// window is busy during it); `show`: the panel opened for it.
 fn in_front(
@@ -3434,6 +3464,59 @@ mod tests {
         ws.update(cx, |ws, cx| ws.toggle(Slot::Bottom, cx));
         cx.run_until_parked();
         assert_eq!(count(&p, cx), 1);
+
+        p.update(cx, |p, cx| p.close_all(cx));
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Another view's line runs in a new tab of the window's terminal, built outside the
+    /// workspace's update (built inside, its constructor reading the workspace panicked); a
+    /// look without `show` neither builds nor shows it.
+    #[gpui::test]
+    fn a_line_runs_in_a_new_tab_of_an_unbuilt_panel(cx: &mut TestAppContext) {
+        let base = std::env::temp_dir().join(format!("gitviber-term-run-{}", std::process::id()));
+        let (home, repo) = (base.join("home"), base.join("repo"));
+        for d in [&home, &repo] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        // SAFETY: nextest gives each test its own process; nothing else reads these meanwhile.
+        unsafe {
+            std::env::set_var("GITVIBER_CONFIG_DIR", base.join("config"));
+            std::env::set_var("HOME", &home);
+        }
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            gitviber_ui::install_core(cx);
+            crate::init(cx);
+        });
+        let (_, cx) = cx.add_window_view(|_, _| Host);
+        let ws = cx.update(|window, cx| {
+            let ws = cx.new(Workspace::new);
+            Workspace::register_window(&ws, window, cx);
+            ws
+        });
+        assert!(
+            cx.update(|window, cx| window_panel(window, cx, false))
+                .is_none()
+        );
+        assert!(!ws.read_with(cx, |ws, _| ws.is_open(Slot::Bottom)));
+
+        assert!(cx.update(|window, cx| run_in_new_tab(repo.clone(), "gh auth login", window, cx)));
+        cx.run_until_parked();
+        assert!(ws.read_with(cx, |ws, _| ws.is_open(Slot::Bottom)));
+        let p = cx
+            .update(|window, cx| window_panel(window, cx, false))
+            .expect("built for the line");
+        let (cwd, run) = p.read_with(cx, |p, cx| {
+            let pane = p.active_pane().expect("the new tab");
+            let pane = pane.read(cx);
+            (pane.cwd().to_path_buf(), pane.run.clone())
+        });
+        assert_eq!(cwd, repo);
+        // Typed alone, it waited at the prompt for an Enter.
+        assert_eq!(run.as_deref(), Some("gh auth login\r"));
 
         p.update(cx, |p, cx| p.close_all(cx));
         cx.update(|window, _| window.remove_window());

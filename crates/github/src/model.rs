@@ -353,9 +353,20 @@ pub fn unix(iso: &str) -> Option<i64> {
         .map(|t| t.timestamp())
 }
 
-/// Whether `err` is core's "no GitHub login found".
+/// Whether `err` is core's "no usable GitHub login": none found, or one GitHub refused.
 pub fn is_not_connected(err: &str) -> bool {
-    err == github::NOT_CONNECTED
+    err == github::NOT_CONNECTED || is_expired(err)
+}
+
+/// Whether `err` is core's "GitHub refused the login found" (expired or revoked).
+pub fn is_expired(err: &str) -> bool {
+    err == github::EXPIRED
+}
+
+/// The transport's own words when `err` is core's "GitHub couldn't be reached".
+pub fn unreachable_detail(err: &str) -> Option<&str> {
+    err.strip_prefix(github::UNREACHABLE)
+        .map(|rest| rest.trim_start_matches('\n'))
 }
 
 #[cfg(test)]

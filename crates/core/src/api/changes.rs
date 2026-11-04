@@ -8,7 +8,7 @@ pub fn status(core: &Core) -> Res<git::RepoStatus> {
         let mut st = git::status_in(r, core.git_dirs(r).as_ref())?;
         st.web_url = st.origin.as_ref().map(|url| {
             url.as_deref()
-                .and_then(github::parse_remote)
+                .and_then(github::github_remote)
                 .map(|g| format!("https://github.com/{}/{}", g.owner, g.name))
         });
         Ok(st)

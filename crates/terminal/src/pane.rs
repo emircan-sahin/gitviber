@@ -192,7 +192,7 @@ pub struct TerminalPane {
     exited: bool,
     integrated: bool,
     /// Typed into the shell at its first prompt.
-    run: Option<String>,
+    pub(crate) run: Option<String>,
     pub(crate) metrics: Option<Metrics>,
     size: GridSize,
     proposed: Option<GridSize>,

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use gitviber_core::api;
 use gitviber_core::git::Worktree;
-use gitviber_terminal::{TerminalPane, TerminalPanel};
+use gitviber_terminal::{TerminalPane, TerminalPanel, run_in_new_tab, window_panel};
 use gitviber_ui::workspace::{Toast, Workspace};
 use gpui_kit::{App, AppContext as _, ClipboardItem, Entity, WeakEntity, Window};
 
@@ -15,9 +15,6 @@ use crate::model::agent::{ReviewAgent, effort_of, model_of, preset_of, program_o
 use crate::model::handoff::{
     About, HandoffInput, as_prompt, handoff_context, handoff_name, placed_in, risk_prompt,
 };
-
-/// The terminal panel's id, as the terminal crate registers it.
-const TERMINAL: &str = "terminal";
 
 fn toast(toast: Toast, window: &mut Window, cx: &mut App) {
     match Workspace::for_window(window, cx) {
@@ -30,26 +27,6 @@ fn folder_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
-}
-
-/// The window's terminal panel, shown.
-fn terminal(window: &mut Window, cx: &mut App) -> Option<Entity<TerminalPanel>> {
-    let ws = Workspace::for_window(window, cx)?;
-    ws.update(cx, |ws, cx| ws.show_panel(TERMINAL, cx));
-    // Built outside the workspace's update: the terminal panel reads the workspace as it's made.
-    let panel = Workspace::ensure_panel(&ws, TERMINAL, window, cx)?;
-    panel.view().downcast::<TerminalPanel>().ok()
-}
-
-/// A new terminal tab in `root`, `run` run at its first prompt.
-fn open_terminal(root: PathBuf, run: Option<String>, window: &mut Window, cx: &mut App) -> bool {
-    let Some(panel) = terminal(window, cx) else {
-        return false;
-    };
-    // The panel only types it: without its Enter it sat at the prompt.
-    let run = run.map(|line| format!("{line}\r"));
-    panel.update(cx, |p, cx| p.open_terminal(root, run, window, cx));
-    true
 }
 
 /// What's asked: a risk's look into it, else the user's question; None leaves it to them.
@@ -129,7 +106,7 @@ pub fn start_agent_with(
             cx,
         );
         if session {
-            open_terminal(root, Some(program), window, cx);
+            run_in_new_tab(root, &program, window, cx);
         }
         return;
     }
@@ -145,7 +122,7 @@ pub fn start_agent_with(
                 .await;
             let _ = cx.update(|window, cx| match line {
                 Ok(line) => {
-                    if !open_terminal(root, Some(line), window, cx) {
+                    if !run_in_new_tab(root, &line, window, cx) {
                         toast(
                             Toast::error("This window has no terminal.")
                                 .title("Couldn't hand the review to Claude Code"),
@@ -195,7 +172,7 @@ pub fn paste_to_running_agent(
     let (root, a) = placed(open, worktrees, a);
     let text = as_prompt(&handoff_context(&a), prompt_of(&a, "").as_deref());
     let name = folder_name(&root);
-    let Some(panel) = terminal(window, cx) else {
+    let Some(panel) = window_panel(window, cx, true) else {
         return toast(
             Toast::info("Ask Agent starts one in a new terminal tab.")
                 .title(format!("No agent runs in {name}'s terminal")),
@@ -276,7 +253,7 @@ fn panes_in(
 /// `text` pasted into `root`'s terminal, Enter left to the user: into the pane its agent runs
 /// in, else the one in front of the worktree's. False when it has none.
 pub fn paste_to_terminal(root: &Path, text: String, window: &mut Window, cx: &mut App) -> bool {
-    let Some(panel) = terminal(window, cx) else {
+    let Some(panel) = window_panel(window, cx, true) else {
         return false;
     };
     let panes = panes_in(&panel, root, cx);
