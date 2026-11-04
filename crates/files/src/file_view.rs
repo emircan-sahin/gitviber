@@ -303,9 +303,19 @@ impl FileView {
     /// clean file is read again, as its name may make it another language or kind.
     pub(crate) fn moved_to(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
         self.source = FileSource::Repo(path.clone());
-        match &self.content {
-            Content::Text { code, .. } if code.read(cx).is_dirty() => {
+        match &mut self.content {
+            Content::Text {
+                code, preview, svg, ..
+            } if code.read(cx).is_dirty() => {
                 code.update(cx, |c, cx| c.moved_to(path, cx));
+                // Built for the old name: its kind, and the folder its links and images are from.
+                *preview = None;
+                *svg = None;
+                if !self.previewable() {
+                    self.mode = Mode::Code;
+                } else if self.mode == Mode::Preview {
+                    self.build_preview(window, cx);
+                }
             }
             _ => self.content = Content::Loading,
         }
@@ -566,11 +576,10 @@ impl FileView {
         let path = self.source.path().to_string();
         let media = media_kind(&path)
             .filter(|k| *k != MediaKind::Image || !path.to_ascii_lowercase().ends_with(".svg"));
-        if let Some(code) = typed {
+        if let Some(code) = &typed {
             let disk = if !file.exists {
                 OnDisk::Deleted
-            } else if file.lfs_missing.is_some() || media.is_some() || file.too_large || file.binary
-            {
+            } else if file.lfs_missing.is_some() || file.too_large || file.binary {
                 OnDisk::Changed
             } else {
                 OnDisk::Same
@@ -580,6 +589,9 @@ impl FileView {
                 return;
             }
         }
+        // Typing renamed to a media name (x.txt to x.png) stays text until saved, and the disk
+        // is compared as text: nothing changed there.
+        let media = media.filter(|_| typed.is_none());
         self.lfs = false;
         if !file.exists {
             return self.notice(
@@ -639,11 +651,14 @@ impl FileView {
         } = &self.content
         {
             let (code, preview, svg) = (code.clone(), preview.clone(), svg.clone());
-            if let Some(preview) = &preview {
-                preview.update(cx, |p, cx| p.set_source(&file.text, cx));
-            }
-            if let Some(svg) = &svg {
-                svg.update(cx, |p, cx| p.set_source(&file.text, cx));
+            // A preview built from unsaved typing keeps showing it.
+            if typed.is_none() {
+                if let Some(preview) = &preview {
+                    preview.update(cx, |p, cx| p.set_source(&file.text, cx));
+                }
+                if let Some(svg) = &svg {
+                    svg.update(cx, |p, cx| p.set_source(&file.text, cx));
+                }
             }
             code.update(cx, |c, cx| {
                 c.file_changed(file.text, head, bars, window, cx)

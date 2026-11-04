@@ -370,7 +370,7 @@ fn tabs_in(ws: &Workspace, path: &str) -> Vec<SharedString> {
         .collect()
 }
 
-/// The names of the files in `paths` whose tabs hold unsaved edits, for the Trash's confirm.
+/// The files in `paths` whose tabs hold unsaved edits, once each, for the Trash's confirm.
 pub(crate) fn unsaved_in(
     workspace: &WeakEntity<Workspace>,
     paths: &[&str],
@@ -380,12 +380,16 @@ pub(crate) fn unsaved_in(
         return vec![];
     };
     let ws = ws.read(cx);
-    paths
-        .iter()
-        .flat_map(|p| tabs_in(ws, p))
-        .filter(|k| ws.tabs().get(k).is_some_and(|t| t.item.is_dirty(cx)))
-        .filter_map(|k| path_of_key(&k).map(|p| p.rsplit('/').next().unwrap_or(p).to_string()))
-        .collect()
+    let mut unsaved: Vec<String> = Vec::new();
+    for key in paths.iter().flat_map(|p| tabs_in(ws, p)) {
+        if ws.tabs().get(&key).is_some_and(|t| t.item.is_dirty(cx))
+            && let Some(path) = path_of_key(&key)
+            && !unsaved.iter().any(|u| u == path)
+        {
+            unsaved.push(path.to_string());
+        }
+    }
+    unsaved
 }
 
 /// An entry was renamed (`to`) or trashed (None). A renamed file's tab follows it in place,
@@ -411,8 +415,21 @@ pub(crate) fn path_moved(
         };
         let path = format!("{to}{}", &old[from.len()..]);
         let selection = Selection::File { path: path.clone() };
-        // A tab open on the new name already: the old one stays, and says its file is gone.
+        // A tab open on the new name already (its file was gone): the old tab stays only for
+        // its typing, read again to say its file is gone.
         if !ws.update(cx, |ws, cx| ws.rename_tab(&key, selection.clone(), cx)) {
+            let old = ws.read(cx).tabs().get(&key).map(|t| {
+                let view = t
+                    .item
+                    .handle()
+                    .and_then(|h| h.view().downcast::<FileView>().ok());
+                (t.item.is_dirty(cx), view)
+            });
+            match old {
+                Some((true, Some(view))) => view.update(cx, |v, cx| v.load(window, cx)),
+                Some((false, _)) => ws.update(cx, |ws, cx| ws.force_close_tabs(&[key], cx)),
+                _ => {}
+            }
             continue;
         }
         let view = ws

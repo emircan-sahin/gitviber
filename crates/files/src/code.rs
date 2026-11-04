@@ -996,8 +996,7 @@ impl CodeView {
         self.disk
     }
 
-    /// The file on disk can't show in place of the typing (it's gone, or no longer text): the
-    /// typing stays, and the header says so.
+    /// Sets how the file on disk stands against the typing; the header follows.
     pub(crate) fn set_on_disk(&mut self, disk: OnDisk, cx: &mut Context<Self>) {
         if disk != self.disk {
             self.disk = disk;
@@ -1005,10 +1004,20 @@ impl CodeView {
         }
     }
 
-    /// The file was renamed: a save writes the new name.
+    /// The file was renamed: a save writes the new name, and its language follows the name.
     pub(crate) fn moved_to(&mut self, path: String, cx: &mut Context<Self>) {
+        let text = self.state.read(cx).text().clone();
+        self.lang = crate::language::language_with(&path, || Some(text.to_string().into()));
+        let language = if text.len() > MAX_HIGHLIGHT_BYTES {
+            "text"
+        } else {
+            self.lang
+        };
+        self.state
+            .update(cx, |s, cx| s.set_highlighter(language, cx));
         self.source.path = path;
         self.load_blame(cx);
+        cx.notify();
     }
 
     /// Drops the typing, so the file as read next shows (the header's Reload).
