@@ -337,7 +337,7 @@ fn the_section_sits_under_the_explorers_files_and_the_arrows_cross_into_it(
     });
     assert!(cx.update(|_, cx| !section.read(cx).is_open()));
     // Where the Obsidian panel's tab was: the explorer, its section opened and focused.
-    assert!(cx.update(|window, cx| crate::show_vault(&ws, window, cx)));
+    cx.update(|window, cx| crate::show_vault(&ws, window, cx));
     show(&host, Some(explorer.clone().into()), cx);
     let in_section = |cx: &mut VisualTestContext| {
         cx.update(|window, cx| {

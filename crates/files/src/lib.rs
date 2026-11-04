@@ -323,7 +323,11 @@ pub fn reveal_in_explorer(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let Some(ws) = workspace.upgrade() else {
+    // Mid-switch the path is the last worktree's.
+    let Some(ws) = workspace
+        .upgrade()
+        .filter(|ws| !ws.read(cx).project_loading(cx))
+    else {
         return;
     };
     ws.update(cx, |ws, cx| ws.show_panel(explorer::PANEL_ID, cx));
@@ -353,10 +357,12 @@ pub fn find_in_files(
     if !went_in {
         return;
     }
-    let panel = Workspace::ensure_panel(&ws, search::PANEL_ID, window, cx);
-    if let Some(panel) = panel.and_then(|p| p.view().downcast::<SearchPanel>().ok()) {
-        panel.update(cx, |p, cx| p.ask(seed, window, cx));
-    }
+    // While the repo loads, once its panel is built.
+    Workspace::with_panel(&ws, search::PANEL_ID, window, cx, |p, window, cx| {
+        if let Ok(panel) = p.view().downcast::<SearchPanel>() {
+            panel.update(cx, |p, cx| p.ask(seed, window, cx));
+        }
+    });
 }
 
 /// An entry was renamed (`to`) or trashed (None): the tabs of the files in it close; a renamed

@@ -112,10 +112,12 @@ pub(crate) fn show_history(path: &str, file: bool, window: &mut gpui_kit::Window
         return;
     };
     ws.update(cx, |ws, cx| ws.show_panel(gitviber_history::PANEL, cx));
-    let panel = Workspace::ensure_panel(&ws, gitviber_history::PANEL, window, cx);
-    if let Some(p) = panel.and_then(|p| p.view().downcast::<HistoryPanel>().ok()) {
-        p.update(cx, |p, cx| p.show_history_of(path.to_string(), file, cx));
-    }
+    let path = path.to_string();
+    Workspace::with_panel(&ws, gitviber_history::PANEL, window, cx, move |p, _, cx| {
+        if let Ok(p) = p.view().downcast::<HistoryPanel>() {
+            p.update(cx, |p, cx| p.show_history_of(path, file, cx));
+        }
+    });
 }
 
 /// GITVIBER_SNAPSHOT_OPEN pictures more than the main window: `settings:<section>` the settings

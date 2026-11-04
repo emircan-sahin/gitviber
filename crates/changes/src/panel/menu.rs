@@ -23,7 +23,10 @@ pub(super) fn show_history(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let Some(ws) = ws.upgrade() else { return };
+    // Mid-switch the path is the last worktree's.
+    let Some(ws) = ws.upgrade().filter(|ws| !ws.read(cx).project_loading(cx)) else {
+        return;
+    };
     ws.update(cx, |ws, cx| ws.show_panel(gitviber_history::PANEL, cx));
     let panel = Workspace::ensure_panel(&ws, gitviber_history::PANEL, window, cx)
         .and_then(|p| p.view().downcast::<gitviber_history::HistoryPanel>().ok());
