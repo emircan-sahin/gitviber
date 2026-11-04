@@ -4,6 +4,7 @@ use super::{
     commit_files, ensure_idle, git_dir, has_conflicts, listed_worktree, operation, pushed_base,
     run, run_text, status, stoppable, toplevel, validate_branch, validate_rev,
 };
+use crate::state::{short, some_of};
 use serde::Deserialize;
 use std::path::Path;
 
@@ -78,6 +79,7 @@ pub fn reset(repo: &Path, sha: &str, mode: ResetMode, head: &str) -> Result<(), 
         ResetMode::Soft => "--soft",
         ResetMode::Mixed => "--mixed",
         ResetMode::Hard => {
+            ensure_not_overwritten(repo, sha)?;
             keep_changes(repo, sha)?;
             "--hard"
         }
@@ -85,21 +87,52 @@ pub fn reset(repo: &Path, sha: &str, mode: ResetMode, head: &str) -> Result<(), 
     run(repo, &["reset", "-q", flag, sha]).map(|_| ())
 }
 
+/// Files on disk that the index doesn't track but `sha` does: a hard reset writes `sha`'s copy
+/// over them, and Stashes can't keep them (`stash create` has no untracked files).
+fn ensure_not_overwritten(repo: &Path, sha: &str) -> Result<(), String> {
+    let root = toplevel(repo)?;
+    let listed = run_text(
+        repo,
+        &[
+            "diff",
+            "--cached",
+            "--name-only",
+            "--no-renames",
+            "--diff-filter=D",
+            "-z",
+            sha,
+        ],
+    )?;
+    let lost: Vec<&str> = listed
+        .split('\0')
+        .filter(|p| !p.is_empty() && Path::new(&root).join(p).symlink_metadata().is_ok())
+        .collect();
+    if lost.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "Nothing was reset: {} has its own copy of files you haven't committed, and a hard \
+         reset would write over them: {}. Move them aside first.",
+        short(sha),
+        some_of(&lost, 3)
+    ))
+}
+
 /// What a hard reset would discard, kept in Stashes first; nothing is reset if that fails.
 /// `stash create` makes nothing on a clean tree, and leaves the working tree as it is.
 fn keep_changes(repo: &Path, sha: &str) -> Result<(), String> {
-    let kept = |e: String| {
+    let not_kept = |e: String| {
         format!("Your uncommitted changes couldn't be kept in Stashes, so nothing was reset.\n{e}")
     };
-    let made = run_text(repo, &["stash", "create"]).map_err(kept)?;
+    let made = run_text(repo, &["stash", "create"]).map_err(not_kept)?;
     let made = made.trim();
     if made.is_empty() {
         return Ok(());
     }
-    let message = format!("Before hard reset to {}", &sha[..7.min(sha.len())]);
+    let message = format!("Before hard reset to {}", short(sha));
     run(repo, &["stash", "store", "-m", &message, made])
         .map(|_| ())
-        .map_err(kept)
+        .map_err(not_kept)
 }
 
 /// `git revert`, returning true if it stopped on conflicts.

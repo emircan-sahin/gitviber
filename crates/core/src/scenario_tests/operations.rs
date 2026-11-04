@@ -247,6 +247,32 @@ fn a_hard_reset_keeps_uncommitted_changes_in_stashes() {
 }
 
 #[test]
+fn a_hard_reset_refuses_to_write_over_untracked_files_the_target_has() {
+    let sb = Sandbox::new("reset-untracked");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "x.env", "old\n", "base");
+    let base = log(&r, None, 0, 1).unwrap()[0].sha.clone();
+    run(&r, &["rm", "-q", "x.env"]).unwrap();
+    write_commit(&r, ".gitignore", "x.env\n", "ignore it");
+    let two = log(&r, None, 0, 1).unwrap()[0].sha.clone();
+    fs::write(r.join("x.env"), "mine\n").unwrap();
+
+    let err = reset(&r, &base, ResetMode::Hard, &two).unwrap_err();
+    assert!(err.contains("x.env"), "{err}");
+    assert_eq!(
+        log(&r, None, 0, 1).unwrap()[0].sha,
+        two,
+        "nothing was reset"
+    );
+    assert_eq!(fs::read_to_string(r.join("x.env")).unwrap(), "mine\n");
+
+    fs::remove_file(r.join("x.env")).unwrap();
+    reset(&r, &base, ResetMode::Hard, &two).unwrap();
+    assert_eq!(fs::read_to_string(r.join("x.env")).unwrap(), "old\n");
+}
+
+#[test]
 fn checkout_branch_and_tag_at_a_commit() {
     let sb = Sandbox::new("refs");
     let r = sb.path("r");
