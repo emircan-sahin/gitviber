@@ -2,6 +2,7 @@
 //! Appearance, Editor, Diff, Terminal, Open In, Notifications, Obsidian, Browser and Updates.
 
 use gitviber_core::notifications::Permission;
+use gitviber_refs::names::thousands;
 use gitviber_ui::actions::browser as browser_cmds;
 use gitviber_ui::keymap::IS_MAC;
 use gitviber_ui::settings::*;
@@ -662,7 +663,9 @@ pub fn terminal(cx: &App) -> Page {
                 "Scrollback",
                 "Lines of history each terminal keeps. After a restart, a terminal comes back \
                      with its last 1,000.",
-                options(SCROLLBACK_LINES, |n| format!("{} lines", thousands(*n))),
+                options(SCROLLBACK_LINES, |n| {
+                    format!("{} lines", thousands(*n as usize))
+                }),
                 |s| s.terminal_scrollback.to_string(),
                 |s, v| s.terminal_scrollback = v.parse().unwrap_or(s.terminal_scrollback),
             ),
@@ -676,19 +679,6 @@ pub fn terminal(cx: &App) -> Page {
             |s, v| s.terminal_screen_reader = v,
         )]),
     ])
-}
-
-/// 100000 → 100,000.
-pub fn thousands(n: u32) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
 }
 
 /// "None: show the list", then the apps found here (unless hidden) and the user's own.

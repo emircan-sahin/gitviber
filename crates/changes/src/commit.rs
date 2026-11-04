@@ -4,7 +4,7 @@
 //! runs as the top bar's activity, so hooks that lint or test for minutes can be cancelled.
 
 use crate::co_authors::CoAuthorPicker;
-use crate::model::commit::{Facts, SUMMARY_LIMIT, plan};
+use crate::model::commit::{Facts, NO_MESSAGE, SUMMARY_LIMIT, plan};
 use crate::model::list::{files, left_out, stageable};
 use crate::model::text::{
     SUGGEST_PROMPT, author_name, command_line, parse_suggestion, paste_message, plain_line,
@@ -40,7 +40,7 @@ use gpui_kit::{
     Styled as _, Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// While amending: HEAD's message in the fields, the user's own draft aside.
@@ -61,11 +61,21 @@ pub(crate) struct Started {
     /// Nested repositories "commit everything" left out.
     pub skipped: usize,
     pub amended: bool,
+    /// What "commit everything" staged itself, unstaged again if the commit doesn't happen.
+    pub staged: Vec<String>,
 }
 
 /// A message nobody wrote in: blank, or still the `start` it began as.
 fn untouched(start: &(String, String), summary: &str, body: &str) -> bool {
     (summary.trim().is_empty() && body.trim().is_empty()) || (summary == start.0 && body == start.1)
+}
+
+/// Unstages what "commit everything" staged, in the worktree it staged in even if another is
+/// open now.
+fn unstage_in(core: &gitviber_core::Core, repo: Option<&Path>, paths: Vec<String>) {
+    if let Some(repo) = repo.filter(|_| !paths.is_empty()) {
+        api::changes::unstage_in(core, repo, paths).ok();
+    }
 }
 
 /// What the panel tells the box about the repo.
@@ -75,6 +85,8 @@ pub struct RepoFacts {
     /// The main worktree: sign-off is kept per repository, across its worktrees.
     pub main: String,
     pub branch: Option<String>,
+    /// HEAD is a commit no branch follows, and no rebase or bisect will bring back.
+    pub detached: bool,
     pub head: Option<Arc<HeadMessage>>,
     pub lists: Lists,
     /// Set while git has left a message for the next commit (a squash merge, `cherry-pick -n`).
@@ -92,6 +104,8 @@ pub struct CommitBox {
     co_authors: Vec<String>,
     amend: Option<Amend>,
     no_verify: bool,
+    /// A commit was asked for with no summary: the field says so until it has one.
+    pub(crate) ask_summary: bool,
     /// While a commit runs: the window's repo stays put until it ends (its push is for it).
     busy: Option<RepoHold>,
     suggesting: bool,
@@ -131,6 +145,7 @@ impl CommitBox {
             co_authors: vec![],
             amend: None,
             no_verify: false,
+            ask_summary: false,
             busy: None,
             suggesting: false,
             start: Default::default(),
@@ -203,6 +218,8 @@ impl CommitBox {
             let draft = store::draft(&self.facts.root, cx).unwrap_or_default();
             self.co_authors = draft.co_authors.clone();
             self.amend = None;
+            // Asked of the other worktree's message.
+            self.ask_summary = false;
             self.set_fields(&draft.summary, &draft.body, window, cx);
         }
         if new_root || prepared_changed {
@@ -407,8 +424,20 @@ impl CommitBox {
         cx: &mut Context<Self>,
     ) {
         let plan = plan(self.facts_for_plan(cx));
-        if plan.blocked.is_some() {
-            return;
+        match plan.blocked {
+            Some(NO_MESSAGE) => {
+                self.ask_summary = true;
+                self.focus_message(window, cx);
+                cx.notify();
+                return;
+            }
+            // The button already says it's committing.
+            Some(_) if self.busy.is_some() => return,
+            Some(why) => {
+                self.toast(Toast::info(format!("{why}.")).title("Commit not run"), cx);
+                return;
+            }
+            None => self.ask_summary = false,
         }
         self.drop_suggestion(cx);
         // Hooks can run for minutes: the worktree stays open until the commit (and its push) is done.
@@ -433,24 +462,31 @@ impl CommitBox {
         let (paths, skipped) = stageable(self.facts.lists.list(Kind::Unstaged));
         let auto = plan.stages_all;
         let core = crate::core(cx);
+        let repo = core.repo().ok();
         let started = Started {
-            repo: core.repo().ok(),
+            repo: repo.clone(),
             root: self.facts.root.clone(),
             summary,
             then,
             skipped,
             amended: options.amend,
+            staged: if auto { paths } else { vec![] },
         };
+        let staged = started.staged.clone();
         self._task = cx.spawn_in(window, async move |this, cx| {
             // Nothing staged means "commit everything", the common case after an agent run.
             let checked = {
                 let core = core.clone();
-                let paths = paths.clone();
+                let (staged, repo) = (staged.clone(), repo.clone());
                 cx.background_spawn(async move {
                     if auto {
-                        api::changes::stage(&core, paths, false)?;
+                        api::changes::stage_all(&core, staged.clone())?;
                     }
-                    api::changes::large_staged(&core)
+                    let large = api::changes::large_staged(&core);
+                    if large.is_err() {
+                        unstage_in(&core, repo.as_deref(), staged);
+                    }
+                    large
                 })
                 .await
             };
@@ -464,18 +500,20 @@ impl CommitBox {
             if !large.is_empty() {
                 let text = large_files_text(&large, auto);
                 let weak = this.clone();
-                let (paths, message, options) = (paths.clone(), message.clone(), options);
+                let (paths, repo) = (staged.clone(), started.repo.clone());
+                let (message, options) = (message.clone(), options);
                 this.update_in(cx, move |_, window, cx| {
                     let go = std::rc::Rc::new(std::cell::RefCell::new(Some((
                         message, options, started,
                     ))));
                     let (go_ok, weak_ok, weak_cancel) = (go.clone(), weak.clone(), weak.clone());
                     window.open_alert_dialog(cx, move |alert, _, _| {
-                        let (go_ok, weak_ok, weak_cancel, paths) = (
+                        let (go_ok, weak_ok, weak_cancel, paths, repo) = (
                             go_ok.clone(),
                             weak_ok.clone(),
                             weak_cancel.clone(),
                             paths.clone(),
+                            repo.clone(),
                         );
                         alert
                             .ok_variant(gpui_kit::component::button::ButtonVariant::Danger)
@@ -495,18 +533,16 @@ impl CommitBox {
                                 true
                             })
                             .on_cancel(move |_, _, cx| {
-                                let paths = paths.clone();
+                                let (paths, repo) = (paths.clone(), repo.clone());
                                 weak_cancel
                                     .update(cx, |this, cx| {
                                         this.busy = None;
                                         // Nothing was staged before, so unstaging what this staged puts the index back.
-                                        if auto {
-                                            let core = crate::core(cx);
-                                            cx.background_spawn(async move {
-                                                api::changes::unstage(&core, paths)
-                                            })
-                                            .detach();
-                                        }
+                                        let core = crate::core(cx);
+                                        cx.background_spawn(async move {
+                                            unstage_in(&core, repo.as_deref(), paths)
+                                        })
+                                        .detach();
                                         this.toast(Toast::info("Commit cancelled"), cx);
                                         this.refresh_project(cx);
                                         cx.notify();
@@ -538,6 +574,9 @@ impl CommitBox {
         // Core opened another worktree while the large files were asked about.
         if core.repo().ok() != started.repo {
             self.busy = None;
+            let (repo, staged) = (started.repo, started.staged);
+            cx.background_spawn(async move { unstage_in(&core, repo.as_deref(), staged) })
+                .detach();
             self.toast(
                 Toast::info("Another worktree was opened while it waited.").title("Commit not run"),
                 cx,
@@ -549,11 +588,18 @@ impl CommitBox {
         let net = NetActivity::global(cx);
         let op = net.update(cx, |a, cx| a.start("Commit".into(), cx));
         let (id, progress) = (op.id.clone(), op.progress());
+        let (staged, repo) = (started.staged.clone(), started.repo.clone());
         let work = cx.background_spawn(async move {
-            tracked(&core, |core| {
+            let out = tracked(&core, |core| {
                 api::changes::commit(core, message, options, id, progress)
             })
-            .map(|((), entry)| entry)
+            .map(|((), entry)| entry);
+            // A failed or cancelled "Commit all" leaves the index as it found it: empty, so
+            // fixes made for the next try are committed too.
+            if out.is_err() {
+                unstage_in(&core, repo.as_deref(), staged);
+            }
+            out
         });
         // Detached, holding the box weakly: dropping it wouldn't stop git, only leave the top bar
         // showing a commit that ended.
@@ -831,6 +877,8 @@ impl CommitBox {
 
 type OnRemove = Box<dyn Fn(&mut Window, &mut App)>;
 
+const DETACHED: &str = "Detached HEAD: these commits aren't on a branch ·";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Then {
     Push,
@@ -840,7 +888,8 @@ pub enum Then {
 impl Render for CommitBox {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.app_theme().clone();
-        let plan = plan(self.facts_for_plan(cx));
+        let facts = self.facts_for_plan(cx);
+        let plan = plan(facts);
         let length = self.summary_text(cx).chars().count();
         let sign_off = self.sign_off(cx);
         let suggest_on = Settings::get(cx).suggest_enabled;
@@ -928,6 +977,15 @@ impl Render for CommitBox {
                         cx.listener(|this, _: &Paste, window, cx| this.paste_summary(window, cx)),
                     )
                     .child(Input::new(&self.summary).small())
+                    .when(self.ask_summary && facts.summary_empty, |el| {
+                        el.child(
+                            div()
+                                .pt_1()
+                                .text_size(px(11.))
+                                .text_color(t.modified)
+                                .child(NO_MESSAGE),
+                        )
+                    })
                     .when(length > 50, |el| {
                         el.child(
                             div()
@@ -1003,6 +1061,29 @@ impl Render for CommitBox {
                     )
                 },
             )
+            // Said before the commit, not only when leaving: then the commits are already made.
+            .when(self.facts.detached, |el| {
+                el.child(
+                    h_flex()
+                        .gap_1()
+                        .text_size(px(11.))
+                        .text_color(t.modified)
+                        .child(div().min_w_0().child(DETACHED))
+                        .child(
+                            Button::new("detached-branch")
+                                .link()
+                                .xsmall()
+                                .label("Create branch")
+                                .on_click(|_, window, cx| {
+                                    gitviber_refs::branches::open_new_branch(
+                                        "HEAD".into(),
+                                        window,
+                                        cx,
+                                    )
+                                }),
+                        ),
+                )
+            })
             .child(
                 h_flex()
                     .gap_2()

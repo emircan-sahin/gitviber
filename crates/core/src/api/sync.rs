@@ -79,10 +79,11 @@ pub fn rebase_stacked(core: &Core, onto: String) -> Res<rewrite::Stacked> {
 }
 
 // These finish (or call off) the action that stopped on conflicts; its entry is recorded then.
-pub fn op_continue(core: &Core) -> Res<bool> {
+/// `no_verify`: a merge's commit skips the hooks that stopped it.
+pub fn op_continue(core: &Core, no_verify: bool) -> Res<bool> {
     let lock = core.index.clone();
     core.journaled(Action::new("Continue", Mode::Keep), move |r| {
-        with_index_lock(&lock, r, git::op_continue)
+        with_index_lock(&lock, r, |r| git::op_continue_with(r, no_verify))
     })
 }
 
