@@ -1042,6 +1042,34 @@ impl ChangesPanel {
             .collect()
     }
 
+    /// The files S and ⌘⌫ act on: the keys' row (a folder: every file in it), else the open
+    /// tab's. A stash or review row has none, so the keys never reach a file out of sight.
+    fn key_targets(&self, cx: &App) -> Option<(Kind, Vec<Arc<FileChange>>)> {
+        match self.cursor_ix(cx).and_then(|ix| self.rows.get(ix)) {
+            Some(Row::Item(Item::File { change, .. })) => {
+                Some((change.kind, self.targets(change.kind, &change.key())))
+            }
+            Some(Row::Item(Item::Folder { kind, files, .. })) => Some((
+                *kind,
+                files
+                    .iter()
+                    .filter(|f| f.nested.is_none())
+                    .cloned()
+                    .collect(),
+            )),
+            Some(_) => None,
+            None => {
+                let key = self.open_key.as_deref()?;
+                let kind = match key.split_once("::")?.0 {
+                    "unstaged" => Kind::Unstaged,
+                    "staged" => Kind::Staged,
+                    _ => return None,
+                };
+                Some((kind, self.targets(kind, key)))
+            }
+        }
+    }
+
     fn file_keys(&self) -> Vec<String> {
         self.rows
             .iter()
@@ -3771,32 +3799,17 @@ impl Render for ChangesPanel {
                 };
                 this.mark_viewed(sels, on, cx);
             }))
-            .on_action(cx.listener(|this, _: &git::ToggleStage, _, cx| {
-                let Some(key) = this.open_key.clone() else {
-                    return;
-                };
-                match key.split_once("::").map(|x| x.0) {
-                    Some("unstaged") => {
-                        let rows = this.targets(Kind::Unstaged, &key);
-                        this.stage(rows, cx);
-                    }
-                    Some("staged") => {
-                        let rows = this.targets(Kind::Staged, &key);
-                        this.unstage_files(rows, cx);
-                    }
+            .on_action(cx.listener(
+                |this, _: &git::ToggleStage, _, cx| match this.key_targets(cx) {
+                    Some((Kind::Unstaged, rows)) => this.stage(rows, cx),
+                    Some((Kind::Staged, rows)) => this.unstage_files(rows, cx),
                     _ => {}
-                }
-            }))
+                },
+            ))
             .on_action(cx.listener(|this, _: &git::Discard, window, cx| {
-                let Some(key) = this
-                    .open_key
-                    .clone()
-                    .filter(|k| k.starts_with("unstaged::"))
-                else {
-                    return;
-                };
-                let rows = this.targets(Kind::Unstaged, &key);
-                this.discard(rows, window, cx);
+                if let Some((Kind::Unstaged, rows)) = this.key_targets(cx) {
+                    this.discard(rows, window, cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &git::SelectAllChanges, _, cx| {
                 let keys = this.file_keys();
@@ -5066,6 +5079,63 @@ mod tests {
         assert!(p.read_with(cx, |p, _| p.expanded_stash.is_none()));
         // PgUp from the bottom goes up a page, never past the first row.
         assert_ne!(key("pageup", cx), "stash:0");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn s_and_discard_act_on_the_keys_row_not_the_open_tab(cx: &mut TestAppContext) {
+        let dir = repo("keys-act");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/x.txt"), "x\n").unwrap();
+        std::fs::write(dir.join("src/y.txt"), "y\n").unwrap();
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        p.update(cx, |p, cx| {
+            p.set_view(
+                ChangesView {
+                    tree: true,
+                    recent: false,
+                },
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let a = p.read(cx).lists.unstaged[0].clone();
+            p.update(cx, |p, cx| {
+                p.open(selection_of(Kind::Unstaged, a), true, window, cx)
+            });
+            let focus = p.read(cx).focus.clone();
+            focus.focus(window, cx)
+        });
+        cx.run_until_parked();
+        let targets = |cx: &mut VisualTestContext| {
+            p.read_with(cx, |p, cx| {
+                p.key_targets(cx).map(|(k, rows)| (k, paths(&rows)))
+            })
+        };
+        // No cursor yet: the open tab's file.
+        assert_eq!(targets(cx), Some((Kind::Unstaged, vec!["a.txt".into()])));
+        // The keys onto the folder: S stages every file in it, and the open a.txt stays.
+        p.update(cx, |p, _| p.cursor = Some("folder:unstaged:src".into()));
+        assert_eq!(
+            targets(cx),
+            Some((Kind::Unstaged, vec!["src/x.txt".into(), "src/y.txt".into()]))
+        );
+        cx.dispatch_action(git::ToggleStage);
+        cx.run_until_parked();
+        let staged = git(&dir, &["diff", "--cached", "--name-only"]);
+        assert_eq!(
+            staged.lines().collect::<Vec<_>>(),
+            ["src/x.txt", "src/y.txt"]
+        );
+        // A stash row has no files for the keys, so nothing out of sight is touched.
+        git(&dir, &["stash", "push", "-q", "-m", "saved", "--", "b.txt"]);
+        p.update(cx, |p, cx| p.read(cx));
+        cx.run_until_parked();
+        p.update(cx, |p, _| p.cursor = Some("stash:0".into()));
+        assert_eq!(targets(cx), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
