@@ -109,6 +109,9 @@ pub fn set_switch_guard(cx: &mut App, guard: SwitchGuard) {
     cx.set_global(SwitchGuardGlobal(Some(guard)));
 }
 
+/// A key's work on a per-project panel, held until the repo loading now is open.
+type AfterLoad = Box<dyn FnOnce(&mut Window, &mut App)>;
+
 struct SideState {
     open: bool,
     active: Option<&'static str>,
@@ -152,7 +155,7 @@ pub struct Workspace {
     /// The project's `is_loading` as last seen: the end of a load runs `after_load`.
     loading_seen: bool,
     /// What keys asked of a per-project panel while the repo loaded, run once it's open.
-    after_load: Vec<Box<dyn FnOnce(&mut Window, &mut App)>>,
+    after_load: Vec<AfterLoad>,
     _project_events: Vec<Subscription>,
     _live: Live,
 }
