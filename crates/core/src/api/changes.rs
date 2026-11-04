@@ -27,6 +27,27 @@ pub fn unstage(core: &Core, paths: Vec<String>) -> Res<()> {
     core.indexed(move |r| git::unstage(r, &paths))
 }
 
+/// What "commit everything" refuses with: the index has staged changes the list didn't show.
+pub const STAGED_MEANWHILE: &str =
+    "Changes were staged since the list was read. Check them in Changes, then commit again.";
+
+/// Stages `paths` for "commit everything", only while nothing is staged: an agent or the
+/// terminal may have staged since the list was read, and a failed commit unstages `paths`.
+pub fn stage_all(core: &Core, paths: Vec<String>) -> Res<()> {
+    core.indexed(move |r| {
+        if git::run(r, &["diff", "--cached", "--quiet"]).is_err() {
+            return Err(STAGED_MEANWHILE.into());
+        }
+        git::stage(r, &paths)
+    })
+}
+
+/// `unstage` in `repo`, which may no longer be the open one: what a commit staged there before
+/// another worktree was opened.
+pub fn unstage_in(core: &Core, repo: &Path, paths: Vec<String>) -> Res<()> {
+    with_index_lock(&core.index, repo, |r| git::unstage(r, &paths))
+}
+
 /// Removes a stale index.lock that `path`, from git's error, names; see git::remove_index_lock.
 /// Not while one of ours writes the index.
 pub fn remove_index_lock(core: &Core, path: String) -> Res<()> {
@@ -45,10 +66,13 @@ pub fn discard(core: &Core, paths: Vec<String>) -> Res<()> {
     })
 }
 
-/// Stages, unstages or discards some of a file's changed lines; a discard can be undone.
-pub fn change_lines(core: &Core, request: lines::Request) -> Res<()> {
+/// Stages, unstages or discards some of a file's changed lines; a discard can be undone, by
+/// the journal entry returned.
+pub fn change_lines(core: &Core, request: lines::Request) -> Res<Option<u64>> {
     if request.action != "discard" {
-        return core.indexed(move |r| lines::run(r, &request));
+        return core
+            .indexed(move |r| lines::run(r, &request))
+            .map(|()| None);
     }
     let (journal, index) = (core.journal.clone(), core.index.clone());
     core.in_repo(move |r| {
@@ -56,8 +80,8 @@ pub fn change_lines(core: &Core, request: lines::Request) -> Res<()> {
         let label = files_label("Discard", &paths);
         let write = move |r: &Path| lines::run(r, &request).map(|_| vec![]);
         journal
-            .replace(r, label, "discarded", &paths, &index, write)
-            .map(|_| ())
+            .replace_entry(r, label, "discarded", &paths, &index, write)
+            .map(|(_, entry)| entry)
     })
 }
 

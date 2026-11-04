@@ -278,22 +278,38 @@ impl Journal {
         index: &Mutex<()>,
         write: impl Fn(&Path) -> Result<Vec<String>, String> + Send + Sync + 'static,
     ) -> Result<Vec<String>, String> {
+        self.replace_entry(repo, label, word, paths, index, write)
+            .map(|(conflicts, _)| conflicts)
+    }
+
+    /// `replace`, with the id of the entry it recorded, if any: for an Undo that must take back
+    /// this action and not one that finished just after it.
+    pub fn replace_entry(
+        &self,
+        repo: &Path,
+        label: String,
+        word: &'static str,
+        paths: &[String],
+        index: &Mutex<()>,
+        write: impl Fn(&Path) -> Result<Vec<String>, String> + Send + Sync + 'static,
+    ) -> Result<(Vec<String>, Option<u64>), String> {
         let _one = lock(&self.acting);
         let write: Write = Arc::new(write);
         let (files, conflicts) = replace_files(repo, paths, word, || {
             crate::state::with_index_lock(index, repo, |r| write(r))
         })?;
         let Ok(snap) = snapshot(repo, false) else {
-            return Ok(conflicts);
+            return Ok((conflicts, None));
         };
         if files.is_empty() {
-            return Ok(conflicts);
+            return Ok((conflicts, None));
         }
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
         let mut stacks = lock(&self.stacks);
         let s = stacks.entry(repo.to_path_buf()).or_default();
         s.undone.clear();
         s.done.push(Entry {
-            id: self.next.fetch_add(1, Ordering::Relaxed),
+            id,
             label,
             time: now(),
             mode: Mode::Keep,
@@ -306,7 +322,7 @@ impl Journal {
         if s.done.len() > KEEP {
             s.done.remove(0);
         }
-        Ok(conflicts)
+        Ok((conflicts, Some(id)))
     }
 
     /// Undoes the newest entry, or redoes (`forward`) the last undone one. `id`, when given,

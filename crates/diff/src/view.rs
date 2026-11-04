@@ -1400,11 +1400,10 @@ impl DiffView {
             let result = cx
                 .background_spawn(async move {
                     use gitviber_core::api;
-                    let last = || api::journal::journal_last(&core).ok().flatten();
-                    let before = last();
-                    let conflicts = match (action, compare) {
+                    match (action, compare) {
                         (LineAction::Stash, _) => {
-                            api::stash::stash_lines(&core, String::new(), request).map(|_| vec![])
+                            api::stash::stash_lines(&core, String::new(), request)
+                                .map(|_| (vec![], None))
                         }
                         (LineAction::Revert, Compare::Commit { sha }) => api::patch::revert_lines(
                             &core,
@@ -1415,11 +1414,12 @@ impl DiffView {
                                 removed: request.removed,
                                 added: request.added,
                             },
-                        ),
-                        _ => api::changes::change_lines(&core, request).map(|_| vec![]),
-                    }?;
-                    let entry = last().filter(|a| Some(*a) != before);
-                    Ok::<_, String>((conflicts, entry))
+                        )
+                        .map(|conflicts| (conflicts, None)),
+                        _ => {
+                            api::changes::change_lines(&core, request).map(|entry| (vec![], entry))
+                        }
+                    }
                 })
                 .await;
             this.update(cx, |this, cx| {
