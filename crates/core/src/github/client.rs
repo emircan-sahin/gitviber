@@ -150,6 +150,10 @@ impl Session {
         let _one = self.looking.lock().unwrap_or_else(|e| e.into_inner());
         if store {
             self.store_asked.store(true, Ordering::Relaxed);
+        } else {
+            // gh's token tried once more: a 401 during a GitHub incident isn't an expiry, and a
+            // real one is refused again by the next call. Asking the store, gh's is passed over.
+            *self.refused.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
         self.lookup(repo, self.picked(), store).map(|t| t.source)
     }
@@ -174,16 +178,26 @@ impl Session {
                 format!("gh has no token for {user}, the GitHub account picked for this repository. Sign in with `gh auth login`, or pick another account in Settings > Git.")
             })?,
             None => {
-                let found = self.tools.gh(None).map(|v| (v, "gh")).or_else(|| {
+                let gh = self.tools.gh(None);
+                // Passed over, so the store is still asked: it may hold another login.
+                let gh_refused = gh.as_ref().is_some_and(|v| self.is_refused(v));
+                let found = gh.filter(|_| !gh_refused).map(|v| (v, "gh")).or_else(|| {
                     store
                         .then(|| self.tools.store(repo).map(|v| (v, "git")))
                         .flatten()
                 });
-                let refused = found.as_ref().is_some_and(|(v, _)| self.is_refused(v));
+                let refused = found
+                    .as_ref()
+                    .map_or(gh_refused, |(v, _)| self.is_refused(v));
                 *self.missing.lock().unwrap_or_else(|e| e.into_inner()) =
                     (found.is_none() || refused).then(Instant::now);
                 self.missing_expired.store(refused, Ordering::Relaxed);
-                found.ok_or_else(|| NOT_CONNECTED.to_string())?
+                match found {
+                    Some(found) => found,
+                    // An asked store with nothing is what the user's click finds.
+                    None if gh_refused && !store => return Err(EXPIRED.to_string()),
+                    None => return Err(NOT_CONNECTED.to_string()),
+                }
             }
         };
         let (value, source) = found;
@@ -316,16 +330,38 @@ pub const NOT_CONNECTED: &str = "github:not-connected";
 pub const EXPIRED: &str = "github:expired";
 /// The first line of an error when GitHub couldn't be reached; the transport's words follow.
 pub const UNREACHABLE: &str = "Can't reach GitHub. Check your connection.";
+/// The first line when the network works but the secure connection failed, mostly a certificate
+/// that can't be checked (a proxy that inspects HTTPS); the transport's words follow.
+pub const TLS_FAILED: &str = "Couldn't make a secure connection to GitHub.";
 
-/// ureq's failure before any answer: no network (or DNS, or a timeout) says so plainly.
+/// ureq's failure before any answer: no network (or DNS, or a timeout), or a secure connection
+/// that failed, says so plainly.
 fn transport_error(e: ureq::Error) -> String {
-    match e {
-        ureq::Error::HostNotFound
-        | ureq::Error::ConnectionFailed
-        | ureq::Error::Io(_)
-        | ureq::Error::Timeout(_) => format!("{UNREACHABLE}\n{e}"),
-        e => format!("GitHub request failed: {e}"),
-    }
+    use std::io::ErrorKind as K;
+    let first = match &e {
+        ureq::Error::HostNotFound | ureq::Error::ConnectionFailed | ureq::Error::Timeout(_) => {
+            UNREACHABLE
+        }
+        ureq::Error::Io(io) => match io.kind() {
+            K::ConnectionRefused
+            | K::ConnectionReset
+            | K::ConnectionAborted
+            | K::NotConnected
+            | K::TimedOut
+            | K::HostUnreachable
+            | K::NetworkUnreachable
+            | K::NetworkDown
+            | K::AddrNotAvailable
+            | K::BrokenPipe
+            | K::UnexpectedEof => UNREACHABLE,
+            // rustls' certificate errors come out of the handshake as InvalidData.
+            K::InvalidData => TLS_FAILED,
+            _ => return format!("GitHub request failed: {e}"),
+        },
+        ureq::Error::Tls(_) | ureq::Error::Rustls(_) | ureq::Error::Pem(_) => TLS_FAILED,
+        _ => return format!("GitHub request failed: {e}"),
+    };
+    format!("{first}\n{e}")
 }
 
 /// Whether `gh` is on the search path: "install gh" and "sign in with gh" are different steps.
@@ -949,8 +985,8 @@ mod tests {
         assert_eq!(s.token(Path::new(REPO)).unwrap().value, "new");
     }
 
-    /// gh still holds the token GitHub refused: told apart from no login, on every call and on a
-    /// click, until gh has another.
+    /// gh still holds the token GitHub refused: told apart from no login on every call, until gh
+    /// has another. A click tries it once more, in case the 401 was GitHub's own trouble.
     #[test]
     fn a_refused_token_handed_back_is_expired() {
         let (s, f) = session(Fake {
@@ -963,7 +999,10 @@ mod tests {
             assert_eq!(s.token(Path::new(REPO)).err().as_deref(), Some(EXPIRED));
         }
         assert_eq!(calls(&f), (2, 0), "the gap holds for an expired login too");
-        assert_eq!(s.connect(Path::new(REPO), false), Err(EXPIRED.to_string()));
+        assert_eq!(s.connect(Path::new(REPO), false), Ok("gh"));
+        assert_eq!(s.token(Path::new(REPO)).unwrap().value, "stale-1");
+        s.forget("stale-1");
+        assert_eq!(s.token(Path::new(REPO)).err().as_deref(), Some(EXPIRED));
         *f.gh.lock().unwrap() = None;
         assert_eq!(
             s.connect(Path::new(REPO), false),
@@ -972,6 +1011,34 @@ mod tests {
         *f.gh.lock().unwrap() = Some("fresh-2".into());
         assert_eq!(s.connect(Path::new(REPO), false), Ok("gh"));
         assert_eq!(s.token(Path::new(REPO)).unwrap().value, "fresh-2");
+    }
+
+    /// gh's token refused, "Use it" on git's login reaches the store; with nothing stored there,
+    /// that's what the click says, and the screen still tells of the expired login.
+    #[test]
+    fn the_store_is_asked_past_a_refused_gh_token() {
+        let (s, f) = session(Fake {
+            gh: Mutex::new(Some("stale-1".into())),
+            store: Some("stored".into()),
+            ..Fake::default()
+        });
+        s.token(Path::new(REPO)).unwrap();
+        s.forget("stale-1");
+        assert_eq!(s.connect(Path::new(REPO), true), Ok("git"));
+        assert_eq!(s.token(Path::new(REPO)).unwrap().value, "stored");
+        assert_eq!(calls(&f), (2, 1));
+
+        let (s, _) = session(Fake {
+            gh: Mutex::new(Some("stale-1".into())),
+            ..Fake::default()
+        });
+        s.token(Path::new(REPO)).unwrap();
+        s.forget("stale-1");
+        assert_eq!(
+            s.connect(Path::new(REPO), true),
+            Err(NOT_CONNECTED.to_string())
+        );
+        assert_eq!(s.token(Path::new(REPO)).err().as_deref(), Some(EXPIRED));
     }
 
     #[test]
@@ -1016,6 +1083,31 @@ mod tests {
         let (first, rest) = e.split_once('\n').expect("the transport's words follow");
         assert_eq!(first, UNREACHABLE);
         assert!(!rest.is_empty());
+    }
+
+    /// A certificate rustls can't check fails the handshake with InvalidData: not "offline".
+    #[test]
+    fn a_failed_secure_connection_is_not_called_offline() {
+        use std::io::{Error, ErrorKind};
+        let first = |kind, msg: &str| {
+            let e = transport_error(ureq::Error::Io(Error::new(kind, msg.to_string())));
+            e.lines().next().unwrap().to_string()
+        };
+        assert_eq!(
+            first(
+                ErrorKind::InvalidData,
+                "invalid peer certificate: UnknownIssuer"
+            ),
+            TLS_FAILED
+        );
+        assert_eq!(first(ErrorKind::ConnectionRefused, "refused"), UNREACHABLE);
+        assert_eq!(
+            first(ErrorKind::NetworkUnreachable, "no route"),
+            UNREACHABLE
+        );
+        assert!(first(ErrorKind::PermissionDenied, "denied").starts_with("GitHub request failed"));
+        let e = transport_error(ureq::Error::Tls("no certificates"));
+        assert_eq!(e, format!("{TLS_FAILED}\nno certificates"));
     }
 
     /// `gh` as a script in a folder of its own: what it prints, and the arguments it got.

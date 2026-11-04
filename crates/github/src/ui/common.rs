@@ -3,6 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use gitviber_core::github::TLS_FAILED;
 use gitviber_markdown::{Callouts, MarkdownBase, MarkdownView};
 use gitviber_ui::widgets::{now_unix, relative_time};
 use gitviber_ui::workspace::{Slot, Toast, ToastRun, Workspace};
@@ -259,6 +260,13 @@ pub fn github_failure(error: &str) -> GithubFailure {
             FailureKind::Offline,
             gitviber_core::github::UNREACHABLE.to_string(),
             Some(detail.to_string()).filter(|d| !d.is_empty()),
+        )
+    } else if let Some(detail) = error.strip_prefix(TLS_FAILED) {
+        // Retrying won't help: a proxy or a certificate is in the way, which the words name.
+        (
+            FailureKind::Other,
+            TLS_FAILED.to_string(),
+            Some(detail.trim_start_matches('\n').to_string()).filter(|d| !d.is_empty()),
         )
     } else {
         (FailureKind::Other, error.to_string(), None)
@@ -638,6 +646,16 @@ mod tests {
             Some("io: Network is unreachable")
         );
         assert!(!offline.needs_sign_in());
+
+        let tls = github_failure(&format!(
+            "{TLS_FAILED}\nio: invalid peer certificate: UnknownIssuer"
+        ));
+        assert_eq!(tls.kind, FailureKind::Other);
+        assert_eq!(tls.message, TLS_FAILED);
+        assert_eq!(
+            tls.detail.as_deref(),
+            Some("io: invalid peer certificate: UnknownIssuer")
+        );
 
         let other = github_failure("GitHub 422: Validation Failed");
         assert_eq!(other.kind, FailureKind::Other);
