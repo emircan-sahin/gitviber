@@ -89,7 +89,10 @@ fn with_conflicts(action: GitAction, text: Option<String>) -> GitAction {
 }
 
 pub fn fetch(state: &Entity<RepoState>, window: &mut Window, cx: &mut App) {
-    let action = GitAction::new("Fetch").net().untracked();
+    let action = GitAction::new("Fetch")
+        .net()
+        .untracked()
+        .fix(GitFix::Unreachable, try_again(state, fetch));
     go(
         state,
         action,
@@ -127,6 +130,17 @@ fn retry(
     })
 }
 
+/// The same network action once more, for a remote that couldn't be reached.
+fn try_again(
+    state: &Entity<RepoState>,
+    again: impl Fn(&Entity<RepoState>, &mut Window, &mut App) + 'static,
+) -> Action {
+    let weak = state.downgrade();
+    Action::new("Retry", move |window, cx| {
+        with(&weak, window, cx, |s, w, cx| again(s, w, cx))
+    })
+}
+
 pub fn pull(
     state: &Entity<RepoState>,
     mode: git::PullMode,
@@ -142,6 +156,10 @@ pub fn pull(
     .fix(
         GitFix::Autostash,
         retry(state, move |s, w, cx| pull(s, mode, true, w, cx)),
+    )
+    .fix(
+        GitFix::Unreachable,
+        try_again(state, move |s, w, cx| pull(s, mode, autostash, w, cx)),
     );
     go(
         state,
@@ -167,6 +185,10 @@ pub fn sync(state: &Entity<RepoState>, autostash: bool, window: &mut Window, cx:
     .fix(
         GitFix::Autostash,
         retry(state, |s, w, cx| sync(s, true, w, cx)),
+    )
+    .fix(
+        GitFix::Unreachable,
+        try_again(state, move |s, w, cx| sync(s, autostash, w, cx)),
     );
     if let Some(b) = behind {
         action = action.fix(GitFix::FetchFirst, b);
@@ -235,6 +257,10 @@ pub fn push(state: &Entity<RepoState>, tags: bool, force: bool, window: &mut Win
         after_yes(rx, window, cx, move |w, cx| with(&weak, w, cx, |s, w, cx| push(s, tags, true, w, cx)));
         true
     });
+    action = action.fix(
+        GitFix::Unreachable,
+        try_again(state, move |s, w, cx| push(s, tags, force, w, cx)),
+    );
     if pushes_upstream(state, cx) {
         action = action.fix(GitFix::FetchFirst, pulls(state));
     }
@@ -269,11 +295,16 @@ pub fn push(state: &Entity<RepoState>, tags: bool, force: bool, window: &mut Win
 /// Pushes the branch to `remote` and tracks it there.
 pub fn publish(state: &Entity<RepoState>, remote: String, window: &mut Window, cx: &mut App) {
     let weak = state.downgrade();
+    let again = remote.clone();
     let action = GitAction::new("Publish")
         .net()
         .untracked()
         .done(format!("Branch published to {remote}"))
-        .on_error(move |e, window, cx| secret_refused(&weak, "Publish", e, window, cx));
+        .on_error(move |e, window, cx| secret_refused(&weak, "Publish", e, window, cx))
+        .fix(
+            GitFix::Unreachable,
+            try_again(state, move |s, w, cx| publish(s, again.clone(), w, cx)),
+        );
     go(
         state,
         action,
