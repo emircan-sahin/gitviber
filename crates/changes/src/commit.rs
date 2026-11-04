@@ -77,6 +77,8 @@ pub struct RepoFacts {
     /// The main worktree: sign-off is kept per repository, across its worktrees.
     pub main: String,
     pub branch: Option<String>,
+    /// HEAD is a commit no branch follows, and no rebase or bisect will bring back.
+    pub detached: bool,
     pub head: Option<Arc<HeadMessage>>,
     pub lists: Lists,
     /// Set while git has left a message for the next commit (a squash merge, `cherry-pick -n`).
@@ -88,7 +90,7 @@ pub struct RepoFacts {
 
 pub struct CommitBox {
     workspace: WeakEntity<Workspace>,
-    facts: RepoFacts,
+    pub(crate) facts: RepoFacts,
     summary: Entity<InputState>,
     body: Entity<TextareaState>,
     co_authors: Vec<String>,
@@ -862,6 +864,8 @@ impl CommitBox {
 
 type OnRemove = Box<dyn Fn(&mut Window, &mut App)>;
 
+const DETACHED: &str = "Detached HEAD: these commits aren't on a branch ·";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Then {
     Push,
@@ -1043,6 +1047,29 @@ impl Render for CommitBox {
                     )
                 },
             )
+            // Said before the commit, not only when leaving: then the commits are already made.
+            .when(self.facts.detached, |el| {
+                el.child(
+                    h_flex()
+                        .gap_1()
+                        .text_size(px(11.))
+                        .text_color(t.modified)
+                        .child(div().min_w_0().child(DETACHED))
+                        .child(
+                            Button::new("detached-branch")
+                                .link()
+                                .xsmall()
+                                .label("Create branch")
+                                .on_click(|_, window, cx| {
+                                    gitviber_refs::branches::open_new_branch(
+                                        "HEAD".into(),
+                                        window,
+                                        cx,
+                                    )
+                                }),
+                        ),
+                )
+            })
             .child(
                 h_flex()
                     .gap_2()

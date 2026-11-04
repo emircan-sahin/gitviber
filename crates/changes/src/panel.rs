@@ -737,6 +737,7 @@ impl ChangesPanel {
             root: self.root.clone(),
             main,
             branch: self.branch.clone(),
+            detached: self.branch.is_none() && self.head.is_some() && self.operation.is_none(),
             head: self.head.clone(),
             lists: self.lists.clone(),
             prepared: self.prepared.clone(),
@@ -5028,6 +5029,29 @@ mod tests {
             git(&dir, &["show", "--name-only", "--format=", "HEAD"]),
             "a.txt\nb.txt\nc.txt\n"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_detached_head_is_said_above_the_commit_button(cx: &mut TestAppContext) {
+        let dir = repo("detached");
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        let commit = p.read_with(cx, |p, _| p.commit.clone());
+        let detached = |cx: &mut VisualTestContext| {
+            p.update(cx, |p, cx| p.read(cx));
+            cx.run_until_parked();
+            commit.read_with(cx, |b, _| b.facts.detached)
+        };
+        assert!(!detached(cx));
+        git(&dir, &["checkout", "-q", "--detach"]);
+        assert!(detached(cx));
+        // A bisect moves HEAD off the branch too, and brings it back: no warning then.
+        let first = git(&dir, &["rev-parse", "HEAD"]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "second"]);
+        git(&dir, &["bisect", "start", "HEAD", first.trim()]);
+        assert!(!detached(cx));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
