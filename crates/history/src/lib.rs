@@ -143,10 +143,11 @@ pub fn init(cx: &mut App) {
         in_front(cx, |ws, _, window, cx| {
             ws.update(cx, |ws, cx| ws.show_panel(PANEL, cx));
             // Built outside the workspace's update: the panel reads the workspace as it's made.
-            let panel = Workspace::ensure_panel(ws, PANEL, window, cx);
-            if let Some(p) = panel.and_then(|p| p.view().downcast::<HistoryPanel>().ok()) {
-                p.update(cx, |p, cx| p.focus_search(window, cx));
-            }
+            Workspace::with_panel(ws, PANEL, window, cx, |p, window, cx| {
+                if let Ok(p) = p.view().downcast::<HistoryPanel>() {
+                    p.update(cx, |p, cx| p.focus_search(window, cx));
+                }
+            });
         })
     });
     // A commit's link (a terminal's SHA): History shows it, selected.
@@ -157,10 +158,11 @@ pub fn init(cx: &mut App) {
                 return;
             };
             ws.update(cx, |ws, cx| ws.show_panel(PANEL, cx));
-            let panel = Workspace::ensure_panel(&ws, PANEL, window, cx);
-            if let Some(p) = panel.and_then(|p| p.view().downcast::<HistoryPanel>().ok()) {
-                p.update(cx, |p, cx| p.jump_to(sha, window, cx));
-            }
+            Workspace::with_panel(&ws, PANEL, window, cx, move |p, window, cx| {
+                if let Ok(p) = p.view().downcast::<HistoryPanel>() {
+                    p.update(cx, |p, cx| p.jump_to(sha, window, cx));
+                }
+            });
         }),
     );
     gitviber_refs::hooks::set_open_compare(

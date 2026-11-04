@@ -225,6 +225,10 @@ impl CommitBox {
         if new_root || prepared_changed {
             self.load_template(window, cx);
         }
+        // No HEAD (an unborn branch, a worktree switch on its way): nothing to amend.
+        if self.facts.head.is_none() && self.amend.is_some() {
+            self.toggle_amend(false, window, cx);
+        }
         // An agent committing meanwhile moves HEAD; an untouched amend message follows it.
         if let (Some(amend), Some(head)) = (&self.amend, self.facts.head.clone())
             && head.sha != amend.sha
@@ -339,7 +343,7 @@ impl CommitBox {
             .count()
     }
 
-    fn toggle_amend(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_amend(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.drop_suggestion(cx);
         if on {
             let Some(head) = self.facts.head.clone() else {

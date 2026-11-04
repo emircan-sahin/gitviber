@@ -250,7 +250,7 @@ fn follow_projects(cx: &mut App) {
                     }
                     return;
                 }
-                ProjectEvent::Failed(_) => return,
+                ProjectEvent::Switching | ProjectEvent::Failed(_) => return,
             }
             // A plain folder has no remote to ask GitHub about; the last repository's lists go.
             if project.is_folder() {
@@ -267,6 +267,9 @@ fn follow_projects(cx: &mut App) {
                 cx.defer(move |cx| account_not_applied(project, e, cx));
             }
             Cache::use_repo(cx, &root);
+            // A view may have named this repo to the cache before core had it open: what that
+            // skipped is asked for now.
+            Cache::wake(cx);
             crate::account::load(cx, false);
         })
         .detach();

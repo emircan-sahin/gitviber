@@ -14,7 +14,7 @@ use gitviber_core::{Core, api};
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::keymap::explorer;
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::{ChangeKind, FileIcon};
+use gitviber_ui::widgets::{ChangeKind, FileIcon, PanelSkeleton};
 use gitviber_ui::workspace::{
     Panel, PanelContext, PanelHandle, Project, ProjectEvent, Toast, Workspace, WorkspaceEvent,
 };
@@ -148,6 +148,8 @@ pub struct ExplorerPanel {
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
     listings: HashMap<SharedString, Task<()>>,
+    /// The worktree's root isn't listed yet (a network volume takes seconds): the skeleton shows.
+    unlisted: bool,
     _status: Task<()>,
     _work: Task<()>,
     _subs: Vec<Subscription>,
@@ -172,15 +174,23 @@ impl ExplorerPanel {
             subs.push(cx.subscribe(
                 project,
                 |this, project: Entity<Project>, e: &ProjectEvent, cx| match e {
-                    ProjectEvent::RepoChanged(_) => this.refresh(cx),
+                    // Mid-switch core may list either worktree: `Switched` lists the next one.
+                    ProjectEvent::RepoChanged(_) if !project.read(cx).is_loading() => {
+                        this.refresh(cx)
+                    }
+                    ProjectEvent::RepoChanged(_) => {}
+                    ProjectEvent::Switching => this.switching(cx),
                     ProjectEvent::Opened | ProjectEvent::Switched { .. } => {
                         let revision = project.read(cx).revision();
                         this.root = project.read(cx).root().to_path_buf();
                         this.tree = LazyTree::new();
+                        this.unlisted = true;
                         this.rebuild(cx);
                         this.refresh(cx);
                         crate::quick_open::warm(&this.root, revision, cx);
                     }
+                    // A failed switch stays on its worktree: listed again.
+                    ProjectEvent::Failed(_) if project.read(cx).is_open() => this.refresh(cx),
                     ProjectEvent::Failed(_) => {}
                 },
             ));
@@ -222,6 +232,7 @@ impl ExplorerPanel {
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
             listings: HashMap::new(),
+            unlisted: false,
             _status: Task::ready(()),
             _work: Task::ready(()),
             _subs: subs,
@@ -231,6 +242,7 @@ impl ExplorerPanel {
         // fails with "No repository is open".
         if let Some(project) = ctx.project.as_ref().filter(|p| p.read(cx).is_open()) {
             let revision = project.read(cx).revision();
+            panel.unlisted = true;
             panel.refresh(cx);
             crate::quick_open::warm(&panel.root, revision, cx);
         }
@@ -294,6 +306,9 @@ impl ExplorerPanel {
                 .await;
             _ = this.update(cx, |this, cx| {
                 this.listings.remove(&path);
+                if path.is_empty() {
+                    this.unlisted = false;
+                }
                 let listed = listed.map(|v| v.into_iter().map(Node::from).collect());
                 let listed = this.tree.listed(&path, id, listed);
                 if path.is_empty()
@@ -313,6 +328,21 @@ impl ExplorerPanel {
             });
         });
         self.listings.insert(key, task);
+    }
+
+    /// A worktree switch started: the tree is the last worktree's, and so are listings on their
+    /// way. The skeleton shows till the next one's root is listed.
+    fn switching(&mut self, cx: &mut Context<Self>) {
+        self.listings.clear();
+        self._status = Task::ready(());
+        self.tree = LazyTree::new();
+        self.unlisted = true;
+        if let Some(f) = &mut self.filter {
+            f.files = None;
+            f._load = Task::ready(());
+        }
+        self.rebuild(cx);
+        cx.notify();
     }
 
     fn rebuild(&mut self, cx: &mut Context<Self>) {
@@ -390,11 +420,6 @@ impl ExplorerPanel {
     #[cfg(test)]
     pub(crate) fn shows_empty_for_test(&self) -> bool {
         self.shows_empty()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_listing(&self) -> bool {
-        !self.listings.is_empty()
     }
 
     #[cfg(test)]
@@ -1926,6 +1951,10 @@ impl Render for ExplorerPanel {
                         .child("This folder is empty"),
                 )
             })
+            .when(
+                count == 0 && self.unlisted && self.root_failed.is_none(),
+                |d| d.child(PanelSkeleton::new()),
+            )
             .child(
                 uniform_list(
                     "explorer-rows",

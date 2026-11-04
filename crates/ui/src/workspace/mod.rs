@@ -109,6 +109,9 @@ pub fn set_switch_guard(cx: &mut App, guard: SwitchGuard) {
     cx.set_global(SwitchGuardGlobal(Some(guard)));
 }
 
+/// A key's work on a per-project panel, held until the repo loading now is open.
+type AfterLoad = Box<dyn FnOnce(&mut Window, &mut App)>;
+
 struct SideState {
     open: bool,
     active: Option<&'static str>,
@@ -149,7 +152,11 @@ pub struct Workspace {
     _focus_watch: Vec<Subscription>,
     panels: HashMap<&'static str, PanelHandle>,
     toasts: Vec<Toast>,
-    _project_events: Option<Subscription>,
+    /// The project's `is_loading` as last seen: the end of a load runs `after_load`.
+    loading_seen: bool,
+    /// What keys asked of a per-project panel while the repo loaded, run once it's open.
+    after_load: Vec<AfterLoad>,
+    _project_events: Vec<Subscription>,
     _live: Live,
 }
 
@@ -183,7 +190,9 @@ impl Workspace {
             _focus_watch: Vec::new(),
             panels: HashMap::new(),
             toasts: Vec::new(),
-            _project_events: None,
+            loading_seen: false,
+            after_load: Vec::new(),
+            _project_events: Vec::new(),
             _live: Live::new("Workspace"),
         }
     }
@@ -256,7 +265,11 @@ impl Workspace {
         }
         self.drop_project(cx);
         let project = cx.new(|cx| Project::new(root, cx));
-        self._project_events = Some(cx.subscribe_in(&project, window, Self::on_project_event));
+        self.loading_seen = project.read(cx).is_loading();
+        self._project_events = vec![
+            cx.subscribe_in(&project, window, Self::on_project_event),
+            cx.observe_in(&project, window, Self::follow_loading),
+        ];
         self.project = Some(project);
         // Without core (a test) nothing opens it: it's taken as open where it was asked.
         if !crate::has_core(cx) {
@@ -317,8 +330,45 @@ impl Workspace {
                 cx,
             ),
             ProjectEvent::Opened => self.opened(cx),
-            ProjectEvent::RepoChanged(_) => {}
+            ProjectEvent::Switching | ProjectEvent::RepoChanged(_) => {}
         }
+    }
+
+    /// A load ending (open, failed or overtaken) builds the panels it held back, and runs what
+    /// keys asked of them meanwhile: after this update, as building one reads the workspace.
+    fn follow_loading(
+        &mut self,
+        project: Entity<Project>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let loading = project.read(cx).is_loading();
+        if loading == self.loading_seen {
+            return;
+        }
+        self.loading_seen = loading;
+        if !loading {
+            for f in std::mem::take(&mut self.after_load) {
+                window.defer(cx, f);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Whether the project's repo is on its way: core may still read the last one.
+    pub fn project_loading(&self, cx: &App) -> bool {
+        self.project
+            .as_ref()
+            .is_some_and(|p| p.read(cx).is_loading())
+    }
+
+    /// Per-project panels are built once the repo is open: one built while it loads would read
+    /// whatever core still has, and one git couldn't open has nothing to read.
+    fn builds_project_panels(&self, cx: &App) -> bool {
+        self.project.as_ref().is_some_and(|p| {
+            let p = p.read(cx);
+            !p.is_loading() && !matches!(p.state(), RepoState::Failed(_))
+        })
     }
 
     /// Opens another worktree of the open repo in this window (the worktree picker).
@@ -420,7 +470,9 @@ impl Workspace {
         self.panels.retain(|id, _| !per_project.contains(id));
         self.clear_tabs();
         self.tabs_root = None;
-        self._project_events = None;
+        self.loading_seen = false;
+        self.after_load.clear();
+        self._project_events.clear();
         if self.project.take().is_some() && crate::has_core(cx) {
             // Its watcher stops; a project opened next overtakes this in core's queue.
             crate::backend::close_repo(cx);
@@ -1114,7 +1166,7 @@ impl Workspace {
             return Some(panel.clone());
         }
         let spec = Registry::get(cx).panel(id).cloned()?;
-        if spec.per_project && ws.project.is_none() {
+        if spec.per_project && !ws.builds_project_panels(cx) {
             return None;
         }
         // A per-window panel outlives projects: it reads the current one from the workspace, so
@@ -1146,7 +1198,7 @@ impl Workspace {
             return Some(panel.clone());
         }
         let spec = Registry::get(cx).panel(id).cloned()?;
-        if spec.per_project && self.project.is_none() {
+        if spec.per_project && !self.builds_project_panels(cx) {
             return None;
         }
         let ctx = PanelContext {
@@ -1162,6 +1214,34 @@ impl Workspace {
         Some(panel)
     }
 
+    /// Runs `f` on panel `id`, built if need be: now, or once the repo loading now is open, so a
+    /// key pressed meanwhile still lands. Dropped when there's no panel to have.
+    pub fn with_panel(
+        workspace: &Entity<Self>,
+        id: &'static str,
+        window: &mut Window,
+        cx: &mut App,
+        f: impl FnOnce(PanelHandle, &mut Window, &mut App) + 'static,
+    ) {
+        if let Some(panel) = Self::ensure_panel(workspace, id, window, cx) {
+            return f(panel, window, cx);
+        }
+        if !workspace.read(cx).project_loading(cx) {
+            return;
+        }
+        let ws = workspace.downgrade();
+        workspace.update(cx, |this, _| {
+            this.after_load.push(Box::new(move |window, cx| {
+                let panel = ws
+                    .upgrade()
+                    .and_then(|ws| Self::ensure_panel(&ws, id, window, cx));
+                if let Some(panel) = panel {
+                    f(panel, window, cx);
+                }
+            }))
+        });
+    }
+
     /// The panel's view if it was built; no building.
     pub fn built_panel(&self, id: &str) -> Option<&PanelHandle> {
         self.panels.get(id)
@@ -1175,15 +1255,20 @@ impl Workspace {
         self.set_open(slot, true, cx);
         let id = self.active_panel(slot, cx);
         if let Some(id) = id.filter(|id| !self.panels.contains_key(id)) {
-            // Built on the next frame, outside this update (ensure_panel), then focused.
+            // Built on the next frame, outside this update (ensure_panel), then focused. Till
+            // then (a repo still loading) the slot holds focus, unless it went elsewhere since.
             let ws = cx.weak_entity();
-            let fallback = self.side(slot).focus.clone();
+            let slot_focus = self.side(slot).focus.clone();
             window.on_next_frame(move |window, cx| {
-                let panel = ws
-                    .upgrade()
-                    .and_then(|ws| Self::ensure_panel(&ws, id, window, cx));
-                let handle = panel.and_then(|p| p.focus_handle(cx)).unwrap_or(fallback);
-                handle.focus(window, cx);
+                let Some(ws) = ws.upgrade() else { return };
+                slot_focus.focus(window, cx);
+                Self::with_panel(&ws, id, window, cx, move |panel, window, cx| {
+                    if let Some(f) = panel.focus_handle(cx)
+                        && slot_focus.is_focused(window)
+                    {
+                        f.focus(window, cx);
+                    }
+                });
             });
             return;
         }
@@ -1900,6 +1985,75 @@ mod tests {
             .ok()?
             .success();
         ok.then(|| dir.canonicalize().unwrap_or(dir))
+    }
+
+    #[gpui_kit::test]
+    fn per_project_panels_wait_for_the_repo_and_stay_through_a_switch(cx: &mut TestAppContext) {
+        let (Some(a), Some(b)) = (git_repo("load-a"), git_repo("load-b")) else {
+            return;
+        };
+        setup(cx);
+        cx.update(crate::install_core);
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        let side = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| Workspace::ensure_panel(ws, "side", window, cx))
+        };
+        let loading =
+            |cx: &mut VisualTestContext| cx.update(|_, cx| ws.read(cx).project_loading(cx));
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(a.clone(), window, cx)));
+        // Core still reads whatever it had open: nothing is built to read it.
+        assert!(loading(cx));
+        assert!(side(&ws, cx).is_none());
+        // The per-window panel doesn't follow the repo.
+        assert!(
+            cx.update(|window, cx| Workspace::ensure_panel(&ws, "term", window, cx))
+                .is_some()
+        );
+        // What a key asks of the panel meanwhile runs once it's built.
+        let ran = Rc::new(std::cell::Cell::new(false));
+        let r = ran.clone();
+        cx.update(|window, cx| {
+            Workspace::with_panel(&ws, "side", window, cx, move |_, _, _| r.set(true))
+        });
+        assert!(!ran.get());
+        cx.run_until_parked();
+        assert!(ran.get());
+        let first = side(&ws, cx).expect("built once the repo is open");
+        // A worktree switch keeps the panel, and what it holds: it follows the switch itself.
+        cx.update(|_, cx| ws.update(cx, |ws, cx| ws.switch_worktree(b.clone(), cx)));
+        assert!(loading(cx));
+        let during = side(&ws, cx).expect("kept while the switch loads");
+        assert_eq!(first.view().entity_id(), during.view().entity_id());
+        cx.run_until_parked();
+        assert!(!loading(cx));
+        let after = side(&ws, cx).unwrap();
+        assert_eq!(first.view().entity_id(), after.view().entity_id());
+    }
+
+    /// A repo git can't open builds no panel to read it, and what a key asked meanwhile goes.
+    #[gpui_kit::test]
+    fn a_failed_open_builds_no_per_project_panel(cx: &mut TestAppContext) {
+        setup(cx);
+        cx.update(crate::install_core);
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        let ran = Rc::new(std::cell::Cell::new(false));
+        let r = ran.clone();
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_project(PathBuf::from("/nonexistent/gitviber-failed"), window, cx)
+            });
+            Workspace::with_panel(&ws, "side", window, cx, move |_, _, _| r.set(true));
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let state = ws.read(cx).project().unwrap().read(cx).state().clone();
+            assert!(matches!(state, RepoState::Failed(_)), "{state:?}");
+            assert!(!ws.read(cx).project_loading(cx));
+            assert!(Workspace::ensure_panel(&ws, "side", window, cx).is_none());
+        });
+        assert!(!ran.get());
     }
 
     #[gpui_kit::test]

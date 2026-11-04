@@ -196,8 +196,9 @@ pub struct Palette {
     _matching: Option<Task<()>>,
     /// `rows` are an earlier query's: the files' matching for this one is still running.
     stale: bool,
-    /// Quick open's lists, observed once files were asked for: a listing landing shows up.
-    _listed: Option<Subscription>,
+    /// Quick open's lists and the project, observed once files were asked for: a listing
+    /// landing, or the repo opening when nothing else lists it, shows up.
+    _listed: Vec<Subscription>,
     _live: Live,
 }
 
@@ -410,7 +411,7 @@ impl Palette {
                 matching: Arc::default(),
                 _matching: None,
                 stale: false,
-                _listed: None,
+                _listed: Vec::new(),
                 _live: Live::new("Palette"),
             };
             if mode == Mode::Files {
@@ -457,13 +458,19 @@ impl Palette {
             .quick_open()
             .map(|source| source(&ctx, cx));
         self.listing = Some(quick_open::status(&ctx, cx));
-        if self._listed.is_none() {
-            self._listed = Some(cx.observe_global::<QuickOpenFiles>(|p, cx| p.listed(cx)));
+        if self._listed.is_empty() {
+            self._listed
+                .push(cx.observe_global::<QuickOpenFiles>(|p, cx| p.listed(cx)));
+            if let Some(project) = &ctx.project {
+                self._listed
+                    .push(cx.observe(project, |p, _, cx| p.listed(cx)));
+            }
         }
     }
 
-    /// Quick open's lists changed. Asking its source writes that global again, so it's asked
-    /// only when this project's status moved (a listing landed or failed), or this would loop.
+    /// Quick open's lists or the project changed. Asking its source writes that global again, so
+    /// it's asked only when this project's status moved (the repo opened, a listing landed or
+    /// failed), or this would loop.
     fn listed(&mut self, cx: &mut Context<Self>) {
         let ctx = self.panel_context(cx);
         if self.listing.as_ref() == Some(&quick_open::status(&ctx, cx)) {
@@ -786,7 +793,9 @@ impl Palette {
                 "Open a repository to find its files · type > for commands".into()
             }
             _ => match &self.listing {
-                None | Some(QuickOpenStatus::Listing) => "Listing files…".into(),
+                None | Some(QuickOpenStatus::Opening | QuickOpenStatus::Listing) => {
+                    "Listing files…".into()
+                }
                 Some(QuickOpenStatus::Failed(err)) => {
                     unlisted(err, crate::dialogs::needs_git::old(cx)).into()
                 }
@@ -1397,6 +1406,13 @@ mod tests {
     /// A committed repository holding `a.rs` and `b.md`, opened in `host`'s workspace with the
     /// files crate's quick open; nothing has listed its files yet.
     fn open_repo(name: &str, host: &Entity<Host>, cx: &mut VisualTestContext) -> PathBuf {
+        let repo = start_opening(name, host, cx);
+        cx.run_until_parked();
+        repo
+    }
+
+    /// `open_repo` with core still opening it.
+    fn start_opening(name: &str, host: &Entity<Host>, cx: &mut VisualTestContext) -> PathBuf {
         let repo = gitviber_ui::test_support::temp_dir(&format!("palette-repo-{name}"));
         std::fs::write(repo.join("a.rs"), "fn main() {}\n").unwrap();
         std::fs::write(repo.join("b.md"), "# b\n").unwrap();
@@ -1424,7 +1440,6 @@ mod tests {
         });
         let ws = cx.update(|_, cx| host.read(cx).ws.clone());
         cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(repo.clone(), window, cx)));
-        cx.run_until_parked();
         repo
     }
 
@@ -1454,6 +1469,44 @@ mod tests {
         });
         cx.run_until_parked();
         assert_eq!(rows(cx).0, ["a.rs"]);
+        _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// ⌘P while the repo still opens, with no explorer to list its files: they show up once
+    /// it's open, not "Listing files…" for as long as the palette stays.
+    #[gpui_kit::test]
+    fn files_show_up_after_a_load_without_an_explorer(cx: &mut TestAppContext) {
+        let (host, cx) = window("loading", cx);
+        let repo = start_opening("loading", &host, cx);
+        let ws = cx.update(|_, cx| host.read(cx).ws.clone());
+        let palette = cx
+            .update(|window, cx| Palette::show(Mode::Files, &ws, window, cx))
+            .unwrap();
+        let built = cx.update(|_, cx| {
+            ws.read(cx)
+                .built_panel(gitviber_files::explorer::PANEL_ID)
+                .is_some()
+        });
+        assert!(!built, "nothing else lists the files");
+        assert_eq!(
+            cx.update(|_, cx| palette.read(cx).empty_text(cx)),
+            "Listing files…"
+        );
+        cx.update(|_, cx| {
+            palette.update(cx, |p, cx| {
+                p.query = "a".into();
+                p.rank(cx);
+            })
+        });
+        cx.run_until_parked();
+        let rows = cx.update(|_, cx| {
+            let p = palette.read(cx);
+            p.rows
+                .iter()
+                .map(|r| r.label.to_string())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(rows, ["a.rs"]);
         _ = std::fs::remove_dir_all(&repo);
     }
 

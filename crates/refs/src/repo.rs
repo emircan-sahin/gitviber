@@ -32,6 +32,9 @@ impl Global for States {}
 pub enum RepoEvent {
     /// Status, branches, worktrees or the journal were read again.
     Changed,
+    /// A worktree switch started: what views read is the last worktree's. `Changed` follows
+    /// with the next one's.
+    Switching,
     /// An action finished: views that read more (History's log) read again too.
     Acted,
 }
@@ -141,6 +144,16 @@ impl RepoState {
             project,
             |this: &mut Self, project, event: &ProjectEvent, cx| match event {
                 ProjectEvent::RepoChanged(change) => this.refresh_parts(change.git, cx),
+                // The bar's branch and counts are the last worktree's, and so is a read on its
+                // way: it would put them back.
+                ProjectEvent::Switching => {
+                    this.status = None;
+                    this.journal = None;
+                    this.reading = None;
+                    this.again = None;
+                    cx.emit(RepoEvent::Switching);
+                    cx.notify();
+                }
                 ProjectEvent::Opened | ProjectEvent::Switched { .. } => {
                     this.root = project.read(cx).root().to_path_buf();
                     // The last worktree's: its undo history and HEAD aren't this one's.
@@ -150,6 +163,10 @@ impl RepoState {
                 }
                 ProjectEvent::Failed(e) => {
                     this.error = Some(e.clone().into());
+                    // A failed switch stays on its worktree, whose status went as it started.
+                    if project.read(cx).is_repo() {
+                        this.refresh(cx);
+                    }
                     cx.notify();
                 }
             },
@@ -257,11 +274,12 @@ impl RepoState {
     /// `git`: HEAD, refs or the index moved, so branches, worktrees and the journal may have too;
     /// else only the working tree changed, and status says all of it.
     fn refresh_parts(&mut self, git: bool, cx: &mut Context<Self>) {
-        // A plain folder has no git to read: its file changes would only fail here.
+        // A plain folder has no git to read: its file changes would only fail here. Mid-switch,
+        // core may read either worktree: `Switched` reads the next one.
         if self
             .project
             .upgrade()
-            .is_some_and(|p| p.read(cx).is_folder())
+            .is_some_and(|p| p.read(cx).is_folder() || p.read(cx).is_loading())
         {
             return;
         }
@@ -770,6 +788,44 @@ mod tests {
         state.update(cx, |s, _| s.ended(run));
         cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(other.clone(), window, cx)));
         assert_eq!(root(cx), Some(other));
+    }
+
+    /// The top bar's branch goes as a worktree switch starts, and a read already on its way
+    /// doesn't bring it back: the next worktree's comes once it's open.
+    #[gpui_kit::test]
+    fn a_switch_clears_the_branch_till_the_next_worktree_is_read(cx: &mut TestAppContext) {
+        let (ws, state, cx) = setup(cx);
+        let next = scratch("bar-next");
+        git(&next, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        git(&next, &["checkout", "-q", "-b", "other"]);
+        let branch =
+            |cx: &mut VisualTestContext| state.read_with(cx, |s, _| s.branch().map(str::to_string));
+        assert_eq!(branch(cx).as_deref(), Some("main"));
+        state.update(cx, |s, cx| s.refresh(cx));
+        cx.update(|_, cx| ws.update(cx, |ws, cx| ws.switch_worktree(next.clone(), cx)));
+        assert_eq!(branch(cx), None);
+        assert!(state.read_with(cx, |s, _| s.reading.is_none()));
+        // Refreshes mid-switch read nothing: core may have either worktree open.
+        state.update(cx, |s, cx| s.refresh(cx));
+        assert!(state.read_with(cx, |s, _| s.reading.is_none()));
+        cx.run_until_parked();
+        assert_eq!(branch(cx).as_deref(), Some("other"));
+        assert_eq!(state.read_with(cx, |s, _| s.root().clone()), next);
+    }
+
+    /// A switch git couldn't open stays on its worktree: the branch, gone as it started, is
+    /// read again.
+    #[gpui_kit::test]
+    fn a_failed_switch_reads_the_branch_again(cx: &mut TestAppContext) {
+        let (ws, state, cx) = setup(cx);
+        let missing = std::env::temp_dir().join("gitviber-refs-no-such-worktree");
+        let branch =
+            |cx: &mut VisualTestContext| state.read_with(cx, |s, _| s.branch().map(str::to_string));
+        cx.update(|_, cx| ws.update(cx, |ws, cx| ws.switch_worktree(missing, cx)));
+        assert_eq!(branch(cx), None);
+        cx.run_until_parked();
+        assert_eq!(branch(cx).as_deref(), Some("main"));
+        assert_eq!(state.read_with(cx, |s, _| s.root().clone()), here());
     }
 
     #[gpui_kit::test]

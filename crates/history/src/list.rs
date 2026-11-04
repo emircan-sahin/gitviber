@@ -11,8 +11,8 @@ use gitviber_core::{Res, api, git};
 use gitviber_refs::RepoState;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{
-    ChangeKind, FileIcon, LineCounts, PathLabel, RelativeTime, StatusLetter, full_date, now_unix,
-    relative_time,
+    ChangeKind, FileIcon, LineCounts, PanelSkeleton, PathLabel, RelativeTime, StatusLetter,
+    full_date, now_unix, relative_time,
 };
 use gitviber_ui::{ActiveAppTheme, AppTheme, Workspace};
 use gpui_kit::assets::IconName;
@@ -308,11 +308,13 @@ impl CommitList {
         });
         let sub = cx.subscribe(
             &repo,
-            |this: &mut Self, _, event: &gitviber_refs::RepoEvent, cx| {
-                if let gitviber_refs::RepoEvent::Changed = event {
+            |this: &mut Self, _, event: &gitviber_refs::RepoEvent, cx| match event {
+                gitviber_refs::RepoEvent::Changed => {
                     this.remotes = remotes_of(&this.repo, cx);
                     this.repo_changed(cx);
                 }
+                gitviber_refs::RepoEvent::Switching => this.switching(cx),
+                gitviber_refs::RepoEvent::Acted => {}
             },
         );
         // The active tab marks its file's row.
@@ -438,6 +440,11 @@ impl CommitList {
         }
         self.source = source;
         self.options = options;
+        self.forget();
+        self.reload(cx);
+    }
+
+    fn forget(&mut self) {
         self.commits.clear();
         self.rows.clear();
         self.line = FirstParentLine::default();
@@ -446,7 +453,24 @@ impl CommitList {
         self.loaded = false;
         self.state.reset(0);
         self.items.clear();
-        self.reload(cx);
+    }
+
+    /// A worktree switch started: the list is the last worktree's, and so is a read on its way.
+    /// The skeleton shows till the next one's `Changed` reads it again, as it is (a search too).
+    fn switching(&mut self, cx: &mut Context<Self>) {
+        // A list of fixed commits is the same in every worktree.
+        if matches!(self.source, Source::Between { .. }) {
+            return;
+        }
+        self.forget();
+        self.seq += 1;
+        self.reading = None;
+        self.paging = None;
+        self.again = false;
+        self.has_more = false;
+        self.error = None;
+        self.cursor = None;
+        cx.notify();
     }
 
     /// HEAD or the refs may have moved: read again what's loaded.
@@ -1896,11 +1920,17 @@ impl Render for CommitList {
             self.dragging = None;
             self.drag_label = None;
         }
+        if self.commits.is_empty() && self.error.is_none() && !self.loaded {
+            return div()
+                .size_full()
+                .track_focus(&self.focus)
+                .child(PanelSkeleton::new())
+                .into_any_element();
+        }
         if self.commits.is_empty() {
-            let text: SharedString = match (&self.error, self.loaded) {
-                (Some(e), _) => e.clone(),
-                (None, true) => self.options.empty.clone(),
-                (None, false) => "Loading…".into(),
+            let text: SharedString = match &self.error {
+                Some(e) => e.clone(),
+                None => self.options.empty.clone(),
             };
             return div()
                 .size_full()

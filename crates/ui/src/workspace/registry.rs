@@ -39,7 +39,8 @@ pub struct PanelSpec {
     pub title: SharedString,
     /// Lower comes first in the panel's tabs.
     pub order: i32,
-    /// Built again for each project; else built once per window and kept (the terminal).
+    /// Built again for each project, once core has it open, and kept through its worktree
+    /// switches; else built once per window and kept (the terminal).
     pub per_project: bool,
     build: BuildPanel,
 }

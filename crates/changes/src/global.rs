@@ -23,7 +23,8 @@ pub fn install(cx: &mut App) {
     on::<review::Branch>(cx, true, |p, _, cx| p.review_branch(false, cx));
 }
 
-/// `act` on the panel of the active window's workspace; `show`: the panel comes into view first.
+/// `act` on the panel of the active window's workspace, once its repo is open if it's opening;
+/// `show`: the panel comes into view first.
 fn on<A: Action>(cx: &mut App, show: bool, act: Act) {
     cx.on_action(move |_: &A, cx| {
         let Some(handle) = cx.active_window() else {
@@ -39,11 +40,11 @@ fn on<A: Action>(cx: &mut App, show: bool, act: Act) {
                     if show {
                         ws.update(cx, |ws, cx| ws.show_panel("changes", cx));
                     }
-                    let panel = Workspace::ensure_panel(&ws, "changes", window, cx)
-                        .and_then(|p| p.view().downcast::<ChangesPanel>().ok());
-                    if let Some(panel) = panel {
-                        panel.update(cx, |p, cx| act(p, window, cx));
-                    }
+                    Workspace::with_panel(&ws, "changes", window, cx, move |p, window, cx| {
+                        if let Ok(panel) = p.view().downcast::<ChangesPanel>() {
+                            panel.update(cx, |p, cx| act(p, window, cx));
+                        }
+                    });
                 })
                 .ok();
         });
