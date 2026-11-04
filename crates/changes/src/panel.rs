@@ -5613,6 +5613,60 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[gpui_kit::test]
+    fn discarded_lines_say_so_and_come_back_with_undo(cx: &mut TestAppContext) {
+        use gitviber_diff::{LineAction, LineRange, Side};
+        let dir = repo("discard-lines");
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(dir.clone(), window, cx)));
+        cx.run_until_parked();
+        let p = panel(&host, cx);
+        let sel = cx.update(|_, cx| {
+            let a = p.read(cx).lists.unstaged[0].clone();
+            selection_of(Kind::Unstaged, a)
+        });
+        let tab = cx
+            .update(|window, cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.open(sel, false, window, cx);
+                    ws.active_view(window, cx)
+                })
+            })
+            .and_then(|v| v.downcast::<ChangeTab>().ok())
+            .expect("a diff tab");
+        cx.run_until_parked();
+        let diff = cx.update(|_, cx| tab.read(cx).diff().cloned().expect("a diff"));
+        // One file of this throwaway repo goes to the Trash.
+        diff.update(cx, |v, cx| {
+            v.select_lines(
+                LineRange {
+                    side: Side::New,
+                    start: 2,
+                    end: 2,
+                },
+                cx,
+            );
+            v.line_action(LineAction::Discard, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one\n");
+        let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+        let done = toasts
+            .iter()
+            .find(|t| t.title.as_deref() == Some("Discarded lines of a.txt"))
+            .expect("a toast for the discard");
+        let undo = done.action.clone().expect("Undo");
+        assert_eq!(undo.label, "Undo");
+        cx.update(|window, cx| (undo.run)(window, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "one\ntwo\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A worktree switch brings back that worktree's branch review (or none), and leaves the
     /// one it left saved with it.
     #[gpui_kit::test]

@@ -64,6 +64,8 @@ pub enum DiffEvent {
     OpenFile(String),
     /// Lines were staged, unstaged, discarded, stashed or reverted.
     LinesChanged,
+    /// Lines of `path` were discarded, as journal entry `entry` (⌘Z's), when one was recorded.
+    Discarded { path: String, entry: Option<u64> },
     /// The edited new side was saved.
     Saved(String),
     /// Something to tell the user: a failed stage, a copied patch.
@@ -1398,7 +1400,9 @@ impl DiffView {
             let result = cx
                 .background_spawn(async move {
                     use gitviber_core::api;
-                    match (action, compare) {
+                    let last = || api::journal::journal_last(&core).ok().flatten();
+                    let before = last();
+                    let conflicts = match (action, compare) {
                         (LineAction::Stash, _) => {
                             api::stash::stash_lines(&core, String::new(), request).map(|_| vec![])
                         }
@@ -1413,12 +1417,14 @@ impl DiffView {
                             },
                         ),
                         _ => api::changes::change_lines(&core, request).map(|_| vec![]),
-                    }
+                    }?;
+                    let entry = last().filter(|a| Some(*a) != before);
+                    Ok::<_, String>((conflicts, entry))
                 })
                 .await;
             this.update(cx, |this, cx| {
                 match result {
-                    Ok(conflicts) => {
+                    Ok((conflicts, entry)) => {
                         if !conflicts.is_empty() {
                             this.notice(
                                 NoticeLevel::Info,
@@ -1437,6 +1443,13 @@ impl DiffView {
                                 Some("Name it in Stashes."),
                                 cx,
                             );
+                        }
+                        // One click took the lines: the host says so, with Undo.
+                        if action == LineAction::Discard {
+                            cx.emit(DiffEvent::Discarded {
+                                path: path.clone(),
+                                entry,
+                            });
                         }
                         cx.emit(DiffEvent::LinesChanged);
                     }
