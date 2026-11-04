@@ -13,7 +13,7 @@ use gitviber_ui::state::PanelSizes;
 use gitviber_ui::widgets::{CountBadge, Pressable as _};
 use gitviber_ui::workspace::{
     ChangesOf, PanelContext, ProjectEvent, Registry, Selection, Slot, TabGroup, Toast, Workspace,
-    WorkspaceEvent, clear_recent_projects, not_found,
+    WorkspaceEvent, clear_recent_projects,
 };
 use gitviber_ui::{ActiveAppTheme, Settings, UiState, theme, windows};
 use gpui_kit::component::InteractiveElementExt as _;
@@ -94,7 +94,6 @@ pub struct WorkspaceView {
     find_resent: Rc<Cell<Resent>>,
     /// Repaints the memory readout now and then, while it shows.
     _memory_tick: Option<Task<()>>,
-    _open_recent: Option<Task<()>>,
     _project: Option<Subscription>,
     /// Whether the open worktree is still there, while that's being looked at.
     _gone: Option<Task<()>>,
@@ -249,7 +248,6 @@ impl WorkspaceView {
             title: String::new(),
             find_resent: Rc::default(),
             _memory_tick: memory_tick,
-            _open_recent: None,
             _project: None,
             _gone: None,
             terminal_news: None,
@@ -307,7 +305,7 @@ impl WorkspaceView {
         };
         let candidates = fallback_order(&UiState::get(cx).recent_projects, &root, main.as_deref());
         let found = cx.background_spawn(async move {
-            if root.is_dir() {
+            if open_repo::missing(&root) != Some(Found::Gone) {
                 return None;
             }
             let next = candidates
@@ -436,26 +434,7 @@ impl WorkspaceView {
     }
 
     fn open_recent(&mut self, action: &OpenRecent, _: &mut Window, cx: &mut Context<Self>) {
-        let folder = PathBuf::from(action.path.as_ref());
-        let workspace = self.workspace.downgrade();
-        // Off the UI thread: a gone network mount can take seconds to say so.
-        self._open_recent = Some(cx.spawn(async move |_, cx| {
-            let at = folder.clone();
-            let found = cx
-                .background_spawn(async move { open_repo::look(&at) })
-                .await;
-            cx.update(|cx| {
-                if found != Found::Gone {
-                    return open_repo::act(found, Request::folder(folder), cx);
-                }
-                // It stays, pin, folder and color too: the drive may only be unplugged.
-                crate::projects::mark_stale(cx);
-                let path = folder.to_string_lossy();
-                if let Some(workspace) = workspace.upgrade() {
-                    workspace.update(cx, |ws, cx| ws.toast(not_found(&path), cx));
-                }
-            });
-        }));
+        open_repo::open_saved(PathBuf::from(action.path.as_ref()), cx);
     }
 
     /// ⌃1–⌃4 in the classic preset, ⌃⇧G Changes in the VS Code one.

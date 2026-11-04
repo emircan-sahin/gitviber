@@ -158,8 +158,10 @@ fn take(launch: bool, cx: &mut App) {
             for t in toasts {
                 toast(t, cx);
             }
-            if let Some(gone) = &resolved.gone {
-                toast(not_found(&gone.to_string_lossy()), cx);
+            match &resolved.gone {
+                Some((root, Found::Denied(words))) => toast(open_repo::denied(root, words), cx),
+                Some((root, _)) => toast(not_found(&root.to_string_lossy()), cx),
+                None => {}
             }
             match (last.map(|i| &resolved.taken.open[i]), resolved.asked) {
                 (Some(target), Some(found)) => open_repo::act(found, request(target), cx),
@@ -183,8 +185,9 @@ struct Resolved {
     asked: Option<Found>,
     /// What a launch reopens, by its top level; looked for only when nothing was handed over.
     recent: Option<PathBuf>,
-    /// The project used last, which a launch would have reopened, when its folder is gone.
-    gone: Option<PathBuf>,
+    /// The project used last, which a launch would have reopened, when its folder is gone or
+    /// can't be read (`open_repo::missing`).
+    gone: Option<(PathBuf, Found)>,
 }
 
 /// What was handed over and where it is. Reads the disk and asks git: a gone network mount can
@@ -245,10 +248,11 @@ impl Reopen {
         self.projects.iter().find_map(|p| repo(p))
     }
 
-    /// The project used last, when its folder isn't there: another one opens in its place, and
-    /// the launch says why. Reads the disk: off the UI thread.
-    fn gone(&self) -> Option<PathBuf> {
-        self.projects.first().filter(|p| !p.is_dir()).cloned()
+    /// The project used last, when its folder isn't there or can't be read: another one opens
+    /// in its place, and the launch says why. Reads the disk: off the UI thread.
+    fn gone(&self) -> Option<(PathBuf, Found)> {
+        let first = self.projects.first()?;
+        Some((first.clone(), open_repo::missing(first)?))
     }
 }
 
@@ -383,6 +387,7 @@ mod tests {
                 projects: projects.iter().map(|p| p.to_path_buf()).collect(),
             }
             .gone()
+            .map(|(p, _)| p)
         };
         assert_eq!(first_gone(&[&app, &site]), None);
         std::fs::remove_dir_all(&app).unwrap();

@@ -13,8 +13,8 @@ use gitviber_files::{OpenOptions, Reveal};
 use gitviber_refs::errors::GitFix;
 use gitviber_refs::toast::{Action, git_failed};
 use gitviber_ui::Workspace;
-use gitviber_ui::projects::project_name;
-use gitviber_ui::workspace::{Toast, settle_edits};
+use gitviber_ui::projects::{home_dir, home_relative, project_name};
+use gitviber_ui::workspace::{Toast, not_found, settle_edits};
 use gpui_kit::{App, AppContext as _};
 
 use crate::help::toast;
@@ -24,7 +24,10 @@ use crate::help::toast;
 pub enum Found {
     /// A repository, by its worktree's top level.
     Repo(PathBuf),
+    /// Nothing is there now.
     Gone,
+    /// The OS won't let the app read it (macOS privacy: Documents, Desktop, a drive): its words.
+    Denied(String),
     NotARepo,
     /// In no repository, and too big to be a plain project: see `too_wide`.
     TooWide,
@@ -34,8 +37,8 @@ pub enum Found {
 
 /// Asks git about `folder`. Blocks on git (a stalled network volume, seconds): off the UI thread.
 pub fn look(folder: &Path) -> Found {
-    if !folder.is_dir() {
-        return Found::Gone;
+    if let Some(missing) = missing(folder) {
+        return missing;
     }
     match git::toplevel(folder) {
         Ok(top) => Found::Repo(PathBuf::from(top)),
@@ -52,6 +55,57 @@ pub fn look(folder: &Path) -> Found {
         }
         Err(e) => Found::Failed(e),
     }
+}
+
+/// Gone or Denied, by the folder's stat; None goes on to git, which reports any other error.
+/// Reads the disk: off the UI thread.
+pub fn missing(folder: &Path) -> Option<Found> {
+    use std::io::ErrorKind;
+    match std::fs::metadata(folder) {
+        Ok(m) if m.is_dir() => None,
+        Ok(_) => Some(Found::Gone),
+        Err(e) => match e.kind() {
+            ErrorKind::NotFound | ErrorKind::NotADirectory => Some(Found::Gone),
+            ErrorKind::PermissionDenied => Some(Found::Denied(e.to_string())),
+            _ => None,
+        },
+    }
+}
+
+/// `folder` can't be read: what refused, and where access is given.
+pub fn denied(folder: &Path, words: &str) -> Toast {
+    let path = folder.to_string_lossy();
+    let at = home_relative(&path, home_dir().as_deref());
+    let message = if cfg!(target_os = "macos") {
+        format!(
+            "macOS didn't let GitViber read {at}. Allow it in System Settings → Privacy & \
+             Security → Files and Folders, or Full Disk Access."
+        )
+    } else {
+        format!("GitViber isn't allowed to read {at}.")
+    };
+    Toast::error(message)
+        .title(format!("Couldn't open {}", project_name(&path)))
+        .detail(words.to_string())
+}
+
+/// A saved project (Open Recent, the projects list, the picker), opened once git has said what
+/// its folder is. A gone one stays listed, pin, folder and color too (the drive may only be
+/// unplugged), and the warning offers Locate….
+pub fn open_saved(folder: PathBuf, cx: &mut App) {
+    let at = folder.clone();
+    let found = cx.background_spawn(async move { look(&at) });
+    cx.spawn(async move |cx| {
+        let found = found.await;
+        cx.update(|cx| {
+            if found != Found::Gone {
+                return act(found, Request::folder(folder), cx);
+            }
+            crate::projects::mark_stale(cx);
+            toast(not_found(&folder.to_string_lossy()), cx);
+        });
+    })
+    .detach();
 }
 
 /// A folder no plain project is made of: `/` and the folders right in it, a home folder and the
@@ -109,6 +163,7 @@ pub fn act(found: Found, request: Request, cx: &mut App) {
                 .title("No such file or folder"),
             cx,
         ),
+        Found::Denied(words) => toast(denied(&request.folder, &words), cx),
         // A file's folder isn't one to make a project of (a file dropped from the desktop would
         // open the desktop), unless the plain project open is where it is.
         Found::NotARepo | Found::TooWide if request.file.is_some() => {
@@ -447,6 +502,48 @@ mod tests {
         assert_eq!(root, Some(plain));
     }
 
+    /// A saved project whose folder is gone leaves the open one as it was and says so, off the
+    /// UI thread; one that's there opens.
+    #[gpui_kit::test]
+    fn a_gone_saved_project_keeps_the_open_one(cx: &mut TestAppContext) {
+        let dir = gitviber_ui::test_support::temp_dir("open-saved-gone");
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        for d in [&a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+            git(d, &["init", "-q"]);
+        }
+        let (a, b) = (a.canonicalize().unwrap(), b.canonicalize().unwrap());
+        gitviber_ui::test_support::config_dir("open-saved-gone-config");
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            crate::placeholders::register(cx);
+        });
+        let window: AnyWindowHandle = cx
+            .add_window(|window, cx| {
+                let view = crate::workspace_view::main_view(Some(a.clone()), window, cx);
+                gpui_kit::base::Root::new(view, window, cx)
+            })
+            .into();
+        let cx = &mut VisualTestContext::from_window(window, cx);
+        cx.run_until_parked();
+        let ws = cx.update(|window, cx| Workspace::for_window(window, cx).unwrap());
+        let root = |cx: &mut VisualTestContext| {
+            ws.read_with(cx, |ws, cx| {
+                ws.project().map(|p| p.read(cx).root().to_path_buf())
+            })
+        };
+        let shown =
+            |cx: &mut VisualTestContext| cx.update(|window, cx| window.notifications(cx).len());
+        assert_eq!(shown(cx), 0);
+        app(cx).update(|cx| open_saved(dir.join("gone"), cx));
+        cx.run_until_parked();
+        assert_eq!(root(cx), Some(a.clone()), "the open project stays");
+        assert_eq!(shown(cx), 1, "the not-found warning");
+        app(cx).update(|cx| open_saved(b.clone(), cx));
+        cx.run_until_parked();
+        assert_eq!(root(cx), Some(b));
+    }
+
     #[test]
     fn git_is_asked_what_a_folder_is_in() {
         let dir = std::env::temp_dir().join(format!("gitviber-open-repo-{}", std::process::id()));
@@ -460,6 +557,22 @@ mod tests {
         assert_eq!(look(&repo.join("sub")), Found::Repo(repo.clone()));
         assert_eq!(look(&plain), Found::NotARepo);
         assert_eq!(look(&dir.join("gone")), Found::Gone);
+        assert_eq!(look(&plain.join("gone/deeper")), Found::Gone);
+        // A folder the app may not read isn't gone: it has its own message.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let locked = dir.join("locked");
+            std::fs::create_dir_all(locked.join("inner")).unwrap();
+            let mode = |m| std::fs::Permissions::from_mode(m);
+            std::fs::set_permissions(&locked, mode(0o000)).unwrap();
+            let as_root = std::fs::read_dir(&locked).is_ok();
+            let found = look(&locked.join("inner"));
+            std::fs::set_permissions(&locked, mode(0o755)).unwrap();
+            if !as_root {
+                assert!(matches!(found, Found::Denied(_)), "{found:?}");
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

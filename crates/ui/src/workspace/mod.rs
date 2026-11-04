@@ -31,8 +31,8 @@ use gpui_kit::{
 
 pub use item::{Panel, PanelHandle, SaveDone, Tab, TabHandle, TabIcon, TabItem, save_signal};
 pub use project::{
-    LocateProject, Project, ProjectEvent, RepoState, clear_recent_projects, forget_project,
-    not_found, set_locate_project,
+    Project, ProjectEvent, RepoState, SavedProjectHooks, clear_recent_projects, forget_project,
+    not_found, open_saved_project, set_saved_project_hooks,
 };
 pub use registry::{
     BarItem, BarSlot, PanelContext, PanelSpec, QuickOpen, QuickOpenSource, Registry, RenderBarItem,
@@ -236,11 +236,6 @@ impl Workspace {
             .is_some_and(|p| p.read(cx).root() == root)
         {
             return;
-        }
-        // A moved folder leaves the open project as it is. Without core (a test) the made-up
-        // roots aren't on disk.
-        if crate::has_core(cx) && !root.is_dir() {
-            return self.toast(not_found(&root.to_string_lossy()), cx);
         }
         if self.switch_refused(cx) {
             return;
@@ -1917,41 +1912,20 @@ mod tests {
         });
     }
 
-    /// A saved project moved away: picking it leaves the open one and its tabs as they are and
-    /// says it wasn't found, with Locate… and Remove from List; the removal can be undone.
+    /// A saved project moved away says it wasn't found, with Locate… and Remove from List; the
+    /// removal can be undone.
     #[gpui_kit::test]
-    fn a_moved_project_leaves_the_open_one_and_offers_locate(cx: &mut TestAppContext) {
-        let Some(a) = git_repo("found") else {
-            return;
-        };
+    fn a_moved_project_offers_locate_and_a_removal_that_can_be_undone(cx: &mut TestAppContext) {
         setup(cx);
-        cx.update(crate::install_core);
-        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
-        let ws = host.read_with(cx, |h, _| h.0.clone());
-        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(a.clone(), window, cx)));
-        cx.run_until_parked();
-        let moved = a.with_file_name("ws-moved-away");
-        let moved_key = moved.to_string_lossy().into_owned();
-        cx.update(|window, cx| {
-            UiState::update(cx, |s| s.add_recent_project(&moved_key));
-            ws.update(cx, |ws, cx| {
-                ws.open_tab("kept", false, |_, cx| cx.new(|_| Doc), window, cx);
-                ws.take_toasts();
-                ws.open_project(moved.clone(), window, cx);
-            })
-        });
-        cx.run_until_parked();
-        let toasts = cx.update(|_, cx| {
-            let ws = ws.read(cx);
-            assert_eq!(ws.project().unwrap().read(cx).root(), a.as_path());
-            assert_eq!(ws.tabs().len(), 1);
-            ws.toasts.clone()
-        });
-        let [toast] = &toasts[..] else {
-            panic!("one toast: {toasts:?}")
-        };
+        let (_, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let moved_key = "/tmp/gitviber-ws-moved-away".to_string();
+        cx.update(|_, cx| UiState::update(cx, |s| s.add_recent_project(&moved_key)));
+        let toast = not_found(&moved_key);
         assert_eq!(toast.kind, ToastKind::Warning);
-        assert_eq!(toast.title.as_deref(), Some("ws-moved-away wasn't found"));
+        assert_eq!(
+            toast.title.as_deref(),
+            Some("gitviber-ws-moved-away wasn't found")
+        );
         assert!(!toast.autohides(), "its buttons are the way on");
         let labels: Vec<_> = toast
             .action

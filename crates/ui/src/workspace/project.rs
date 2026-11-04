@@ -258,15 +258,26 @@ impl Project {
 
 // MARK: The saved projects
 
-/// The app's Locate…: asks where a moved project is now, puts it in the old one's place in the
-/// list and opens it.
-pub type LocateProject = Rc<dyn Fn(&str, &mut App)>;
+/// The app's ways with a saved project. `open` looks at its folder off the UI thread first, and
+/// a gone one gets `not_found`; `locate` asks where a moved one is now, puts it in the old one's
+/// place in the list and opens it.
+#[derive(Clone)]
+pub struct SavedProjectHooks {
+    pub open: Rc<dyn Fn(&str, &mut App)>,
+    pub locate: Rc<dyn Fn(&str, &mut App)>,
+}
 
-struct LocateGlobal(LocateProject);
-impl Global for LocateGlobal {}
+impl Global for SavedProjectHooks {}
 
-pub fn set_locate_project(cx: &mut App, locate: LocateProject) {
-    cx.set_global(LocateGlobal(locate));
+pub fn set_saved_project_hooks(cx: &mut App, hooks: SavedProjectHooks) {
+    cx.set_global(hooks);
+}
+
+/// Opens a saved project in the main window, as Open Recent does. Nothing without the app.
+pub fn open_saved_project(root: &str, cx: &mut App) {
+    if let Some(open) = cx.try_global::<SavedProjectHooks>().map(|h| h.open.clone()) {
+        open(root, cx);
+    }
 }
 
 /// A saved project whose folder isn't where it was, however it was asked for: the picker, Open
@@ -279,8 +290,11 @@ pub fn not_found(root: &str) -> Toast {
     ))
     .title(format!("{} wasn't found", project_name(root)))
     .action("Locate…", move |_, cx| {
-        if let Some(LocateGlobal(locate_in)) = cx.try_global::<LocateGlobal>() {
-            locate_in.clone()(&locate, cx);
+        if let Some(locate_in) = cx
+            .try_global::<SavedProjectHooks>()
+            .map(|h| h.locate.clone())
+        {
+            locate_in(&locate, cx);
         }
     })
     .action("Remove from List", move |window, cx| {
