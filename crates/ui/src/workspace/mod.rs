@@ -30,7 +30,10 @@ use gpui_kit::{
 };
 
 pub use item::{Panel, PanelHandle, SaveDone, Tab, TabHandle, TabIcon, TabItem, save_signal};
-pub use project::{Project, ProjectEvent, RepoState};
+pub use project::{
+    LocateProject, Project, ProjectEvent, RepoState, clear_recent_projects, forget_project,
+    not_found, set_locate_project,
+};
 pub use registry::{
     BarItem, BarSlot, PanelContext, PanelSpec, QuickOpen, QuickOpenSource, Registry, RenderBarItem,
     Slot, register_bar_item, register_bar_item_default, register_panel, register_panel_default,
@@ -146,6 +149,9 @@ pub struct Workspace {
     /// (`watch_focus`), by a click too, and as a focus key takes it. Pressed again, the key gives
     /// it back (`focus_back`). Weak, so a closed tab's view isn't kept for it.
     focus_trail: Vec<(WeakFocusHandle, Option<Part>)>,
+    /// Focus is in the center, as of the last frame: where it goes on when the view it was in
+    /// closes (`refocus_lost`).
+    center_had_focus: bool,
     _focus_watch: Vec<Subscription>,
     panels: HashMap<&'static str, PanelHandle>,
     toasts: Vec<Toast>,
@@ -180,6 +186,7 @@ impl Workspace {
             bottom_maximized: false,
             center_focus: cx.focus_handle(),
             focus_trail: Vec::new(),
+            center_had_focus: false,
             _focus_watch: Vec::new(),
             panels: HashMap::new(),
             toasts: Vec::new(),
@@ -229,6 +236,11 @@ impl Workspace {
             .is_some_and(|p| p.read(cx).root() == root)
         {
             return;
+        }
+        // A moved folder leaves the open project as it is. Without core (a test) the made-up
+        // roots aren't on disk.
+        if crate::has_core(cx) && !root.is_dir() {
+            return self.toast(not_found(&root.to_string_lossy()), cx);
         }
         if self.switch_refused(cx) {
             return;
@@ -1209,10 +1221,36 @@ impl Workspace {
             ])
             .map(|(handle, part)| {
                 cx.on_focus_out(&handle, window, move |ws, e, _, _| {
+                    if part == Part::Center {
+                        ws.center_had_focus = false;
+                    }
                     ws.note_focus(e.blurred, Some(part))
                 })
             })
             .collect();
+        let center = self.center_focus.clone();
+        self._focus_watch.extend([
+            cx.on_focus_in(&center, window, |ws, _, _| ws.center_had_focus = true),
+            cx.on_focus_lost(window, |ws, window, cx| {
+                ws.refocus_lost(window, cx);
+            }),
+        ]);
+    }
+
+    /// Nothing has focus as the view that had it closed (⌘W on the focused tab): from the center,
+    /// it goes on to the tab shown now, or the center, so the keys still reach it. False when
+    /// it was elsewhere.
+    pub fn refocus_lost(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.center_had_focus || self.terminal_maximized() {
+            return false;
+        }
+        if let Some(key) = self.tabs.active_key().cloned() {
+            self.ensure_built(&key, window, cx);
+        }
+        let tab = self.tabs.active().and_then(|t| t.item.focus_handle(cx));
+        tab.unwrap_or_else(|| self.center_focus.clone())
+            .focus(window, cx);
+        true
     }
 
     fn note_focus(&mut self, handle: WeakFocusHandle, part: Option<Part>) {
@@ -1877,6 +1915,59 @@ mod tests {
                     .is_none()
             );
         });
+    }
+
+    /// A saved project moved away: picking it leaves the open one and its tabs as they are and
+    /// says it wasn't found, with Locate… and Remove from List; the removal can be undone.
+    #[gpui_kit::test]
+    fn a_moved_project_leaves_the_open_one_and_offers_locate(cx: &mut TestAppContext) {
+        let Some(a) = git_repo("found") else {
+            return;
+        };
+        setup(cx);
+        cx.update(crate::install_core);
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(a.clone(), window, cx)));
+        cx.run_until_parked();
+        let moved = a.with_file_name("ws-moved-away");
+        let moved_key = moved.to_string_lossy().into_owned();
+        cx.update(|window, cx| {
+            UiState::update(cx, |s| s.add_recent_project(&moved_key));
+            ws.update(cx, |ws, cx| {
+                ws.open_tab("kept", false, |_, cx| cx.new(|_| Doc), window, cx);
+                ws.take_toasts();
+                ws.open_project(moved.clone(), window, cx);
+            })
+        });
+        cx.run_until_parked();
+        let toasts = cx.update(|_, cx| {
+            let ws = ws.read(cx);
+            assert_eq!(ws.project().unwrap().read(cx).root(), a.as_path());
+            assert_eq!(ws.tabs().len(), 1);
+            ws.toasts.clone()
+        });
+        let [toast] = &toasts[..] else {
+            panic!("one toast: {toasts:?}")
+        };
+        assert_eq!(toast.kind, ToastKind::Warning);
+        assert_eq!(toast.title.as_deref(), Some("ws-moved-away wasn't found"));
+        assert!(!toast.autohides(), "its buttons are the way on");
+        let labels: Vec<_> = toast
+            .action
+            .iter()
+            .chain(&toast.more)
+            .map(|a| a.label.clone())
+            .collect();
+        assert_eq!(labels, ["Locate…", "Remove from List"]);
+        let listed = |cx: &mut VisualTestContext| {
+            cx.update(|_, cx| UiState::get(cx).recent_projects.contains(&moved_key))
+        };
+        let undo = cx.update(|_, cx| forget_project(&moved_key, cx));
+        assert!(!listed(cx));
+        assert!(undo.autohides());
+        cx.update(|window, cx| (undo.action.unwrap().run)(window, cx));
+        assert!(listed(cx));
     }
 
     /// A folder outside any repository opens as a plain project and is listed; `git init` (here,

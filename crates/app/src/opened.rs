@@ -10,7 +10,7 @@ use std::time::Duration;
 use gitviber_core::opened::{Taken, Target};
 use gitviber_core::{Core, Event, api, git};
 use gitviber_files::Reveal;
-use gitviber_ui::workspace::Toast;
+use gitviber_ui::workspace::{Toast, not_found};
 use gitviber_ui::{CoreEvents, UiState};
 use gpui_kit::{App, AppContext as _, Global, Subscription, Task};
 
@@ -158,6 +158,9 @@ fn take(launch: bool, cx: &mut App) {
             for t in toasts {
                 toast(t, cx);
             }
+            if let Some(gone) = &resolved.gone {
+                toast(not_found(&gone.to_string_lossy()), cx);
+            }
             match (last.map(|i| &resolved.taken.open[i]), resolved.asked) {
                 (Some(target), Some(found)) => open_repo::act(found, request(target), cx),
                 _ => {
@@ -180,6 +183,8 @@ struct Resolved {
     asked: Option<Found>,
     /// What a launch reopens, by its top level; looked for only when nothing was handed over.
     recent: Option<PathBuf>,
+    /// The project used last, which a launch would have reopened, when its folder is gone.
+    gone: Option<PathBuf>,
 }
 
 /// What was handed over and where it is. Reads the disk and asks git: a gone network mount can
@@ -190,13 +195,14 @@ fn resolve(core: &Core, reopen: Option<Reopen>) -> Resolved {
         .open
         .last()
         .map(|t| open_repo::look(Path::new(&t.folder)));
-    let recent = reopen
-        .filter(|_| taken.open.is_empty())
-        .and_then(Reopen::find);
+    let reopen = reopen.filter(|_| taken.open.is_empty());
+    let gone = reopen.as_ref().and_then(Reopen::gone);
+    let recent = reopen.and_then(Reopen::find);
     Resolved {
         taken,
         asked,
         recent,
+        gone,
     }
 }
 
@@ -237,6 +243,12 @@ impl Reopen {
             }
         }
         self.projects.iter().find_map(|p| repo(p))
+    }
+
+    /// The project used last, when its folder isn't there: another one opens in its place, and
+    /// the launch says why. Reads the disk: off the UI thread.
+    fn gone(&self) -> Option<PathBuf> {
+        self.projects.first().filter(|p| !p.is_dir()).cloned()
     }
 }
 
@@ -365,8 +377,19 @@ mod tests {
         assert_eq!(reopen(&fix, &[&site, &app]), Some(site.clone()));
         std::fs::remove_dir_all(&fix).unwrap();
         assert_eq!(reopen(&fix, &[&app, &site]), Some(app.clone()));
+        let first_gone = |projects: &[&Path]| {
+            Reopen {
+                last: None,
+                projects: projects.iter().map(|p| p.to_path_buf()).collect(),
+            }
+            .gone()
+        };
+        assert_eq!(first_gone(&[&app, &site]), None);
         std::fs::remove_dir_all(&app).unwrap();
         assert_eq!(reopen(&app, &[&app, &site]), Some(site.clone()));
+        // The one used last is gone: the launch says so.
+        assert_eq!(first_gone(&[&app, &site]), Some(app.clone()));
+        assert_eq!(first_gone(&[&site, &app]), None);
         assert_eq!(reopen(&fix, &[&app]), None);
         assert_eq!(reopen(&fix, &[]), None);
     }

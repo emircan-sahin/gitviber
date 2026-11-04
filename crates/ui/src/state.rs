@@ -119,6 +119,13 @@ pub struct UiState {
     pub keymap_preset_told: bool,
 }
 
+/// `UiState::saved_projects`, for `restore_projects`.
+#[derive(Clone, Debug)]
+pub struct SavedProjects {
+    recent: Vec<String>,
+    org: ProjectOrg,
+}
+
 const RECENT_PROJECTS: usize = 20;
 pub(crate) const RECENT_COMMANDS: usize = 30;
 /// Agent worktrees come and go; keep only the most recently used.
@@ -169,15 +176,37 @@ impl UiState {
         self.project_org.relocate(old, new);
     }
 
-    /// Clear Recent: the projects the user pinned or put in a folder stay.
-    pub fn clear_recent_projects(&mut self) {
+    /// Clear Recent: the projects the user pinned or put in a folder stay, and `open`, the open
+    /// project's main folder.
+    pub fn clear_recent_projects(&mut self, open: Option<&str>) {
         let (keep, gone): (Vec<String>, Vec<String>) = std::mem::take(&mut self.recent_projects)
             .into_iter()
-            .partition(|p| self.project_org.organized(p));
+            .partition(|p| self.project_org.organized(p) || Some(p.as_str()) == open);
         for p in &gone {
             self.project_org.forget(p);
         }
         self.recent_projects = keep;
+    }
+
+    /// The saved projects and their arrangement as they are now, for an Undo.
+    pub fn saved_projects(&self) -> SavedProjects {
+        SavedProjects {
+            recent: self.recent_projects.clone(),
+            org: self.project_org.clone(),
+        }
+    }
+
+    /// Puts the saved projects back as `saved` had them; one opened since stays on top.
+    pub fn restore_projects(&mut self, saved: SavedProjects) {
+        let since: Vec<String> = self
+            .recent_projects
+            .iter()
+            .filter(|p| !saved.recent.contains(p))
+            .cloned()
+            .collect();
+        self.recent_projects = since.into_iter().chain(saved.recent).collect();
+        self.project_org = saved.org;
+        self.project_org.assign_colors(&self.recent_projects);
     }
 
     pub fn add_recent_command(&mut self, id: &str) {
@@ -363,11 +392,35 @@ mod tests {
         // Located where it already was: it stays in the list.
         s.relocate_project("/q/pinned", "/q/pinned");
         assert!(s.recent_projects.contains(&"/q/pinned".to_string()));
-        s.clear_recent_projects();
+        s.clear_recent_projects(None);
         assert_eq!(s.recent_projects, ["/p/filed", "/q/pinned"]);
         s.forget_project("/q/pinned");
         assert_eq!(s.recent_projects, ["/p/filed"]);
         assert!(s.project_org.pinned.is_empty());
+    }
+
+    #[test]
+    fn clear_recent_keeps_the_open_project_and_undo_puts_the_rest_back() {
+        let mut s = UiState::default();
+        for p in ["/p/c", "/p/b", "/p/a"] {
+            s.add_recent_project(p);
+        }
+        s.project_org.set_color("/p/b", Some("red"));
+        let before = s.clone();
+        let saved = s.saved_projects();
+        s.clear_recent_projects(Some("/p/b"));
+        assert_eq!(s.recent_projects, ["/p/b"]);
+        s.forget_project("/p/b");
+        assert!(s.recent_projects.is_empty());
+        // Opened meanwhile: it stays, on top.
+        s.add_recent_project("/p/new");
+        s.restore_projects(saved);
+        assert_eq!(s.recent_projects, ["/p/new", "/p/a", "/p/b", "/p/c"]);
+        assert_eq!(
+            s.project_org.colors.get("/p/b"),
+            before.project_org.colors.get("/p/b")
+        );
+        assert!(s.project_org.colors.contains_key("/p/new"));
     }
 
     #[test]

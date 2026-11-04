@@ -4,12 +4,18 @@
 //! fetch their own, following the events.
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use gitviber_core::{Event, watch};
-use gpui_kit::{AppContext as _, Context, EventEmitter, SharedString, Subscription, Task};
+use gpui_kit::{
+    App, AppContext as _, Context, EventEmitter, Global, SharedString, Subscription, Task,
+};
 
+use super::Toast;
 use crate::backend::{self, CoreEvents, has_core};
 use crate::memory::Live;
+use crate::projects::{home_dir, home_relative, project_name};
+use crate::state::{SavedProjects, UiState};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RepoState {
@@ -248,4 +254,65 @@ impl Project {
         cx.emit(ProjectEvent::RepoChanged(change));
         cx.notify();
     }
+}
+
+// MARK: The saved projects
+
+/// The app's Locate…: asks where a moved project is now, puts it in the old one's place in the
+/// list and opens it.
+pub type LocateProject = Rc<dyn Fn(&str, &mut App)>;
+
+struct LocateGlobal(LocateProject);
+impl Global for LocateGlobal {}
+
+pub fn set_locate_project(cx: &mut App, locate: LocateProject) {
+    cx.set_global(LocateGlobal(locate));
+}
+
+/// A saved project whose folder isn't where it was, however it was asked for: the picker, Open
+/// Recent, a launch. It stays until closed, as its buttons are the way on.
+pub fn not_found(root: &str) -> Toast {
+    let at = home_relative(root, home_dir().as_deref());
+    let (locate, forget) = (root.to_string(), root.to_string());
+    Toast::warning(format!(
+        "Nothing is at {at} now: it was moved or renamed, or its drive isn't connected."
+    ))
+    .title(format!("{} wasn't found", project_name(root)))
+    .action("Locate…", move |_, cx| {
+        if let Some(LocateGlobal(locate_in)) = cx.try_global::<LocateGlobal>() {
+            locate_in.clone()(&locate, cx);
+        }
+    })
+    .action("Remove from List", move |window, cx| {
+        forget_project(&forget, cx).show(window, cx)
+    })
+}
+
+/// Takes `root` off the saved projects, with its pin, folder and color; the toast it gives back
+/// has the Undo.
+pub fn forget_project(root: &str, cx: &mut App) -> Toast {
+    let saved = UiState::get(cx).saved_projects();
+    UiState::update(cx, |s| s.forget_project(root));
+    restorable(
+        format!("Removed {} from the list", project_name(root)),
+        saved,
+    )
+}
+
+/// Clear Menu: every saved project but the pinned, the filed and `open` (the open project's
+/// main folder) goes. The toast it gives back has the Undo; None when nothing went.
+pub fn clear_recent_projects(open: Option<&str>, cx: &mut App) -> Option<Toast> {
+    let saved = UiState::get(cx).saved_projects();
+    let before = UiState::get(cx).recent_projects.len();
+    UiState::update(cx, |s| s.clear_recent_projects(open));
+    let cleared = before - UiState::get(cx).recent_projects.len();
+    let what = if cleared == 1 { "project" } else { "projects" };
+    (cleared > 0).then(|| restorable(format!("Cleared {cleared} {what} from the list"), saved))
+}
+
+fn restorable(message: String, saved: SavedProjects) -> Toast {
+    Toast::success(message).undo(move |_, cx| {
+        let saved = saved.clone();
+        UiState::update(cx, |s| s.restore_projects(saved));
+    })
 }

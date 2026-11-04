@@ -6,12 +6,13 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use gitviber_core::api;
 use gitviber_ui::actions::{project as project_cmds, terminal as term_cmds};
 use gitviber_ui::projects::{DropOn, Place, home_dir, home_relative, project_name};
 use gitviber_ui::widgets::{DraggedProject, Ends, list_step, project_tile};
-use gitviber_ui::workspace::{Slot, Toast};
+use gitviber_ui::workspace::{Slot, Toast, forget_project, set_locate_project};
 use gitviber_ui::{ActiveAppTheme, UiState, Workspace};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -103,7 +104,13 @@ pub fn shown_order(list: &[String], gone: impl Fn(&str) -> bool) -> Vec<String> 
 }
 
 fn forget(path: &str, cx: &mut App) {
-    UiState::update(cx, |s| s.forget_project(path));
+    let removed = forget_project(path, cx);
+    toast(removed, cx);
+}
+
+/// The not-found warning's Locate… (`gitviber_ui::workspace::not_found`) is this one.
+pub fn install(cx: &mut App) {
+    set_locate_project(cx, Rc::new(locate));
 }
 
 fn toggle_pin(path: &str, cx: &mut App) {
