@@ -393,6 +393,39 @@ pub fn set_open(
     Ok(pull_from(&v))
 }
 
+/// What marks a draft ready, from the PR as REST reads it: only GraphQL can, by its node id.
+fn ready_variables(pull: &Value) -> Result<Value, String> {
+    let id = pull["node_id"]
+        .as_str()
+        .ok_or("GitHub didn't say which pull request this is.")?;
+    Ok(json!({ "id": id }))
+}
+
+/// Takes a draft out of draft; GitHub then asks its reviewers.
+pub fn ready_for_review(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    number: u64,
+) -> Result<(), String> {
+    let r = target(session, repo, to)?;
+    let pull = call(
+        session,
+        repo,
+        Method::Get,
+        &r.api(&format!("/pulls/{number}")),
+    )?;
+    graphql(
+        session,
+        repo,
+        "mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) {
+            pullRequest { isDraft }
+        } }",
+        ready_variables(&pull)?,
+    )
+    .map(|_| ())
+}
+
 /// The review's body. With `commit`, the head the user reviewed: an approval then stays on
 /// that commit rather than on one pushed while they read.
 fn review_body(event: &str, body: &str, commit: Option<&str>) -> Value {
@@ -538,6 +571,15 @@ mod tests {
             merge_body("octopus", Some("main")),
             json!({ "merge_method": "merge" })
         );
+    }
+
+    #[test]
+    fn ready_for_review_names_the_pull_request_by_its_node_id() {
+        assert_eq!(
+            ready_variables(&json!({ "number": 7, "node_id": "PR_kwFake7" })),
+            Ok(json!({ "id": "PR_kwFake7" }))
+        );
+        assert!(ready_variables(&json!({ "number": 7 })).is_err());
     }
 
     #[test]
