@@ -151,7 +151,7 @@ fn set_badge(_: usize) {}
 
 /// The worktrees every window's open repo has: a pane of one window may run in a worktree nested
 /// in another's.
-fn known_worktrees(live: &[WeakEntity<TerminalPanel>], cx: &App) -> Vec<PathBuf> {
+fn all_known_worktrees(live: &[WeakEntity<TerminalPanel>], cx: &App) -> Vec<PathBuf> {
     live.iter()
         .filter_map(|p| p.upgrade())
         .flat_map(|p| p.read(cx).known_worktrees(cx))
@@ -161,7 +161,7 @@ fn known_worktrees(live: &[WeakEntity<TerminalPanel>], cx: &App) -> Vec<PathBuf>
 /// A worktree's look, for its chip: the most urgent of its panes' (any window's).
 pub fn agents_in(dir: &Path, cx: &App) -> Option<gitviber_ui::widgets::Look> {
     let live = cx.try_global::<LivePanels>()?;
-    let worktrees = known_worktrees(&live.0, cx);
+    let worktrees = all_known_worktrees(&live.0, cx);
     let look = agent::most_urgent(live.0.iter().filter_map(|p| p.upgrade()).flat_map(|p| {
         let p = p.read(cx);
         p.panes
@@ -202,7 +202,7 @@ pub(crate) fn ui_look(l: Look) -> gitviber_ui::widgets::Look {
 /// focused pane first. What text handed to it (a review's Ask Agent) does: `agent::handoff_to`.
 pub fn worktree_agent(worktree: &Path, cx: &App) -> Option<PaneAgent> {
     let live = cx.try_global::<LivePanels>()?;
-    let worktrees = known_worktrees(&live.0, cx);
+    let worktrees = all_known_worktrees(&live.0, cx);
     live.0.iter().filter_map(|p| p.upgrade()).find_map(|p| {
         let p = p.read(cx);
         let id = p.agent_pane(worktree, &worktrees, cx)?;
@@ -248,7 +248,7 @@ pub fn paste_to_agent(worktree: &Path, text: &str, window: &mut Window, cx: &mut
     let Some(live) = cx.try_global::<LivePanels>() else {
         return false;
     };
-    let worktrees = known_worktrees(&live.0, cx);
+    let worktrees = all_known_worktrees(&live.0, cx);
     let Some((panel, id)) = live.0.iter().filter_map(|p| p.upgrade()).find_map(|p| {
         let id = p.read(cx).agent_pane(worktree, &worktrees, cx)?;
         Some((p, id))
