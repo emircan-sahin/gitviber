@@ -550,11 +550,11 @@ fn go_rebase(
 }
 
 /// Changes that the other branch's files would overwrite: git refuses, so they are left here in
-/// a stash (Stashes in Changes brings them back), once asked.
+/// a stash, once asked. `again` switches then, told the branch they were left on.
 fn switching(
     state: &Entity<RepoState>,
     to: String,
-    again: impl Fn(&Entity<RepoState>, &mut Window, &mut App) + 'static,
+    again: impl Fn(&Entity<RepoState>, String, &mut Window, &mut App) + 'static,
 ) -> impl Fn(&str, &mut Window, &mut App) -> bool + 'static {
     let weak = state.downgrade();
     let again = std::rc::Rc::new(again);
@@ -578,7 +578,7 @@ fn switching(
             cx,
         );
         let (weak, again) = (weak.clone(), again.clone());
-        let message = format!("Left on {here} when switching to {to}");
+        let message = left_message(&here, &to);
         after_yes(rx, window, cx, move |window, cx| {
             let core = gitviber_ui::core(cx);
             let stash = cx.background_spawn(async move {
@@ -588,7 +588,7 @@ fn switching(
             cx.spawn(async move |cx| {
                 let stashed = stash.await;
                 let _ = handle.update(cx, |_, window, cx| match stashed {
-                    Ok(()) => with(&weak, window, cx, |s, w, cx| again(s, w, cx)),
+                    Ok(()) => with(&weak, window, cx, |s, w, cx| again(s, here, w, cx)),
                     Err(e) => Note::error("Could not stash your changes")
                         .detail(e)
                         .show(window, cx),
@@ -598,6 +598,71 @@ fn switching(
         });
         true
     }
+}
+
+fn left_message(here: &str, to: &str) -> String {
+    format!("Left on {here} when switching to {to}")
+}
+
+/// A stash `switching` made on `branch`, as git lists it: "On main: Left on main when …".
+fn left_on(message: &str, branch: &str) -> bool {
+    message
+        .split_once(": ")
+        .and_then(|(_, m)| m.strip_prefix("Left on "))
+        .and_then(|m| m.strip_prefix(branch))
+        .is_some_and(|m| m.starts_with(" when switching to "))
+}
+
+/// Runs `then` with a Restore changes button when a switch away from `branch` left changes in
+/// a stash: arriving back is when they're wanted. Popped here, they don't clash as they would
+/// on the branch that forced the stash.
+fn with_left_on(
+    state: &Entity<RepoState>,
+    branch: String,
+    window: &mut Window,
+    cx: &mut App,
+    then: impl FnOnce(Option<Action>, &mut Window, &mut App) + 'static,
+) {
+    let core = gitviber_ui::core(cx);
+    let on = branch.clone();
+    let found = cx.background_spawn(async move {
+        let stashes = api::stash::stashes(&core).ok()?;
+        stashes.into_iter().find(|s| left_on(&s.message, &on))
+    });
+    let (weak, handle) = (state.downgrade(), window.window_handle());
+    cx.spawn(async move |cx| {
+        let found = found.await;
+        let _ = handle.update(cx, |_, window, cx| {
+            let restore = found.map(|stash| {
+                let weak = weak.clone();
+                Action::new("Restore changes", move |window, cx| {
+                    let sha = stash.sha.clone();
+                    with(&weak, window, cx, |s, w, cx| {
+                        let action = GitAction::new("Restore changes")
+                            .untracked()
+                            .done("Changes restored")
+                            .conflicts("They clash with what's here now. Resolve them in Changes; the stash stays in Stashes until you drop it.");
+                        go(s, action, move |core, _| api::stash::stash_apply(core, sha, true), w, cx)
+                    })
+                })
+            });
+            then(restore, window, cx)
+        });
+    })
+    .detach();
+}
+
+/// What a switch's success toast says of stashed changes: those it just left on `left`, and
+/// those an earlier switch left on the branch it arrived at.
+fn in_stashes(left: Option<&str>, restorable: bool) -> Option<String> {
+    let lines: Vec<String> = [
+        left.map(|l| format!("Your changes on {l} are in Stashes.")),
+        restorable.then(|| "The changes you left here earlier are in Stashes.".to_string()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 /// Names the folder that switched: a branch another worktree holds opens that worktree instead.
@@ -671,33 +736,56 @@ pub fn unless_left_behind(
 pub fn switch_branch(state: &Entity<RepoState>, name: String, window: &mut Window, cx: &mut App) {
     let weak = state.downgrade();
     unless_left_behind(state, "Switch", window, cx, move |window, cx| {
-        with(&weak, window, cx, |s, w, cx| switch_now(s, name, w, cx))
+        with(&weak, window, cx, |s, w, cx| {
+            switch_now(s, name, None, w, cx)
+        })
     });
 }
 
-fn switch_now(state: &Entity<RepoState>, name: String, window: &mut Window, cx: &mut App) {
-    let again = name.clone();
-    // .net(): a Git LFS repository downloads the branch's files first.
-    let action = GitAction::new("Switch branch")
-        .net()
-        .done(switched(state, &name, cx))
-        .on_error(switching(state, name.clone(), move |s, w, cx| {
-            switch_branch(s, again.clone(), w, cx)
-        }));
-    go(
+/// `left`: the branch whose changes were just stashed for this switch.
+fn switch_now(
+    state: &Entity<RepoState>,
+    name: String,
+    left: Option<String>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let weak = state.downgrade();
+    with_left_on(
         state,
-        action,
-        move |core, op| {
-            plain(api::branches::switch_branch(
-                core,
-                name,
-                false,
-                op.id.clone(),
-                op.progress(),
-            ))
-        },
+        name.clone(),
         window,
         cx,
+        move |restore, window, cx| {
+            with(&weak, window, cx, |s, w, cx| {
+                let again = name.clone();
+                // .net(): a Git LFS repository downloads the branch's files first.
+                let mut action = GitAction::new("Switch branch")
+                    .net()
+                    .done(switched(s, &name, cx))
+                    .on_error(switching(s, name.clone(), move |s, left, w, cx| {
+                        switch_now(s, again.clone(), Some(left), w, cx)
+                    }));
+                if let Some(d) = in_stashes(left.as_deref(), restore.is_some()) {
+                    action = action.detail(d);
+                }
+                go(
+                    s,
+                    action.also(restore),
+                    move |core, op| {
+                        plain(api::branches::switch_branch(
+                            core,
+                            name,
+                            false,
+                            op.id.clone(),
+                            op.progress(),
+                        ))
+                    },
+                    w,
+                    cx,
+                );
+            })
+        },
     );
 }
 
@@ -729,7 +817,7 @@ pub fn create_branch_here(
 pub fn detach_here(state: &Entity<RepoState>, b: Branch, window: &mut Window, cx: &mut App) {
     let weak = state.downgrade();
     unless_left_behind(state, "Check out", window, cx, move |window, cx| {
-        with(&weak, window, cx, |s, w, cx| detach_now(s, b, w, cx))
+        with(&weak, window, cx, |s, w, cx| detach_now(s, b, None, w, cx))
     });
 }
 
@@ -772,15 +860,24 @@ pub fn checkout_commit(
     rx
 }
 
-fn detach_now(state: &Entity<RepoState>, b: Branch, window: &mut Window, cx: &mut App) {
+fn detach_now(
+    state: &Entity<RepoState>,
+    b: Branch,
+    left: Option<String>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let root = folder_name(&state.read(cx).root().to_string_lossy()).to_string();
     let again = b.clone();
+    let detail = in_stashes(left.as_deref(), false).into_iter().chain([
+        "No branch is moved: commits made here belong to no branch until you create one.".into(),
+    ]);
     let action = GitAction::new("Check out")
         .net()
         .done(format!("Checked out {} in {root}, detached", b.name))
-        .detail("No branch is moved: commits made here belong to no branch until you create one.")
-        .on_error(switching(state, b.name.clone(), move |s, w, cx| {
-            detach_here(s, again.clone(), w, cx)
+        .detail(detail.collect::<Vec<_>>().join("\n"))
+        .on_error(switching(state, b.name.clone(), move |s, left, w, cx| {
+            detach_now(s, again.clone(), Some(left), w, cx)
         }));
     go(
         state,
@@ -812,25 +909,12 @@ pub fn switch_remote(state: &Entity<RepoState>, b: Branch, window: &mut Window, 
         return;
     }
     let go = {
-        let (weak, name, b) = (state.downgrade(), name.clone(), b.clone());
+        let (weak, b) = (state.downgrade(), b.clone());
         move |window: &mut Window, cx: &mut App| {
             let Some(state) = weak.upgrade() else { return };
             unless_left_behind(&state, "Switch", window, cx, move |window, cx| {
                 with(&weak, window, cx, |s, w, cx| {
-                    let again = b.clone();
-                    let action = GitAction::new("Switch branch")
-                        .done(switched(s, &name, cx))
-                        .on_error(switching(s, name.clone(), move |s, w, cx| {
-                            switch_remote(s, again.clone(), w, cx)
-                        }));
-                    let remote = b.name.clone();
-                    go(
-                        s,
-                        action,
-                        move |core, _| plain(api::branches::switch_tracking(core, remote)),
-                        w,
-                        cx,
-                    );
+                    switch_tracking(s, b, None, w, cx)
                 })
             })
         }
@@ -856,6 +940,45 @@ pub fn switch_remote(state: &Entity<RepoState>, b: Branch, window: &mut Window, 
         }
         None => go(window, cx),
     }
+}
+
+/// The local branch `b` (a remote one) names, made to track it if it isn't there yet.
+fn switch_tracking(
+    state: &Entity<RepoState>,
+    b: Branch,
+    left: Option<String>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let name = b.short_name().to_string();
+    let weak = state.downgrade();
+    with_left_on(
+        state,
+        name.clone(),
+        window,
+        cx,
+        move |restore, window, cx| {
+            with(&weak, window, cx, |s, w, cx| {
+                let again = b.clone();
+                let mut action = GitAction::new("Switch branch")
+                    .done(switched(s, &name, cx))
+                    .on_error(switching(s, name.clone(), move |s, left, w, cx| {
+                        switch_tracking(s, again.clone(), Some(left), w, cx)
+                    }));
+                if let Some(d) = in_stashes(left.as_deref(), restore.is_some()) {
+                    action = action.detail(d);
+                }
+                let remote = b.name.clone();
+                go(
+                    s,
+                    action.also(restore),
+                    move |core, _| plain(api::branches::switch_tracking(core, remote)),
+                    w,
+                    cx,
+                );
+            })
+        },
+    );
 }
 
 /// Merged is deleted outright: nothing is lost; merged upstream too, once core checks it again.
@@ -1554,6 +1677,31 @@ mod tests {
         );
         assert_eq!(under_root("/", main), "/app");
         assert_eq!(under_root("/w", "/Users/me/code/app/"), "/w/app");
+    }
+
+    #[test]
+    fn a_stash_left_by_a_switch_is_found_on_its_own_branch_only() {
+        let made = format!("On main: {}", left_message("main", "feat/x"));
+        assert!(left_on(&made, "main"));
+        assert!(!left_on(&made, "mai"));
+        assert!(!left_on(&made, "feat/x"));
+        assert!(!left_on("On main: my own notes", "main"));
+        assert!(!left_on("WIP on main: 1a2b3c4 subject", "main"));
+    }
+
+    #[test]
+    fn a_switch_says_where_stashed_changes_are() {
+        assert_eq!(in_stashes(None, false), None);
+        assert_eq!(
+            in_stashes(Some("main"), false).as_deref(),
+            Some("Your changes on main are in Stashes.")
+        );
+        assert_eq!(
+            in_stashes(Some("main"), true).as_deref(),
+            Some(
+                "Your changes on main are in Stashes.\nThe changes you left here earlier are in Stashes."
+            )
+        );
     }
 
     #[test]
