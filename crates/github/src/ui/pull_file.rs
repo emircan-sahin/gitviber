@@ -4,7 +4,7 @@
 //! commits' lines aren't the head's, so they take no comments.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use gitviber_core::api;
 use gitviber_core::git::FileChange;
@@ -32,8 +32,8 @@ use crate::model::{Target, repo_of};
 use crate::ui::common::{Attachments, Blocks, ago, error_text, text_button, theme};
 use crate::ui::markdown_input::MarkdownInput;
 
-/// Comments are kept fresh a minute at a time while the file shows.
-const AGE: Duration = Duration::from_secs(60);
+/// Comments are kept fresh a minute at a time while the file or its PR shows.
+pub(crate) const AGE: Duration = Duration::from_secs(60);
 /// Drafts kept aside for other threads and lines, the latest.
 const DRAFTS: usize = 16;
 const POST_KEY: &str = if cfg!(target_os = "macos") {
@@ -54,6 +54,24 @@ struct Thread {
     replies: Vec<usize>,
 }
 
+/// A PR's line comments, kept by the cache: one read serves its page (a count per file) and
+/// every file tab of it.
+pub(crate) fn comments_key(pull_url: &str) -> String {
+    format!("pr-comments:{pull_url}")
+}
+
+pub(crate) fn load_comments(
+    cx: &mut App,
+    target: Target,
+    number: u64,
+    pull_url: &str,
+    max_age: Duration,
+) {
+    Cache::load(cx, &comments_key(pull_url), max_age, move |core| {
+        api::github::pr_review_comments(core, target.clone(), number)
+    });
+}
+
 pub struct PullFileView {
     range: PullRange,
     file: Arc<FileChange>,
@@ -61,13 +79,17 @@ pub struct PullFileView {
     web: String,
     ws: WeakEntity<Workspace>,
     diff: Entity<DiffView>,
+    /// The PR's comments as last read: this file's are taken from it when it changes.
+    all: Option<Arc<Vec<ReviewComment>>>,
     comments: Arc<Vec<ReviewComment>>,
-    /// Indexes into `comments`: this file's threads, outdated ones (no line) left out.
+    /// Indexes into `comments`: this file's threads on a line now, then the outdated ones (the
+    /// diff moved on past their line), shown folded.
     threads: Vec<Thread>,
+    outdated: Vec<Thread>,
+    outdated_open: bool,
     blocks: Blocks,
     text_stale: bool,
     attachments: Attachments,
-    comments_at: Option<Instant>,
     comments_error: Option<String>,
     draft: Option<Draft>,
     composer: Entity<MarkdownInput>,
@@ -79,7 +101,6 @@ pub struct PullFileView {
     clear: bool,
     wakes: Wakes,
     focus: FocusHandle,
-    _load: Task<()>,
     _post: Task<()>,
     _signed: Task<()>,
     _subs: Vec<Subscription>,
@@ -172,7 +193,7 @@ impl PullFileView {
                 }
             }),
             cx.observe_global::<Cache>(|this: &mut Self, cx| {
-                if Cache::wakes(cx) != this.wakes {
+                if this.sync(cx) || Cache::wakes(cx) != this.wakes {
                     cx.notify();
                 }
             }),
@@ -184,12 +205,14 @@ impl PullFileView {
             web,
             ws,
             diff,
+            all: None,
             comments: Arc::new(vec![]),
             threads: vec![],
+            outdated: vec![],
+            outdated_open: false,
             blocks: Blocks::default(),
             text_stale: false,
             attachments: Attachments::default(),
-            comments_at: None,
             comments_error: None,
             draft: None,
             composer,
@@ -199,13 +222,12 @@ impl PullFileView {
             clear: false,
             wakes: Cache::wakes(cx),
             focus: cx.focus_handle(),
-            _load: Task::ready(()),
             _post: Task::ready(()),
             _signed: Task::ready(()),
             _subs: subs,
             _live: Live::new("PullFileView"),
         };
-        view.load(cx);
+        view.load(false, cx);
         view
     }
 
@@ -220,38 +242,45 @@ impl PullFileView {
         })
     }
 
-    fn load(&mut self, cx: &mut Context<Self>) {
-        let (Some(number), Some(_)) = (self.range.number, self.range.pull_url.as_ref()) else {
+    /// Asks for the PR's comments unless the cache has them younger than `AGE` (`force`: now).
+    fn load(&mut self, force: bool, cx: &mut Context<Self>) {
+        let (Some(number), Some(url)) = (self.range.number, self.range.pull_url.clone()) else {
             return;
         };
-        self.comments_at = Some(Instant::now());
-        let (core, target) = (crate::core(cx), self.target.clone());
-        self._load = cx.spawn(async move |this, cx| {
-            let read = cx
-                .background_spawn(
-                    async move { api::github::pr_review_comments(&core, target, number) },
-                )
-                .await;
-            this.update(cx, |this, cx| {
-                match read {
-                    Ok(all) => this.landed(all, cx),
-                    Err(e) => this.comments_error = Some(e),
-                }
-                cx.notify();
-            })
-            .ok();
-        });
+        let age = if force { Duration::ZERO } else { AGE };
+        load_comments(cx, self.target.clone(), number, &url, age);
+        self.sync(cx);
     }
 
-    fn landed(&mut self, all: Vec<ReviewComment>, cx: &mut Context<Self>) {
+    /// Takes this file's threads from the cache's answer when it's a new one; true if anything
+    /// shown changed.
+    fn sync(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(url) = &self.range.pull_url else {
+            return false;
+        };
+        let read = Cache::read::<Vec<ReviewComment>>(cx, &comments_key(url));
+        let mut changed = read.error != self.comments_error;
+        self.comments_error = read.error;
+        if let Some(all) = read.data
+            && !self.all.as_ref().is_some_and(|a| Arc::ptr_eq(a, &all))
+        {
+            self.landed(&all, cx);
+            self.all = Some(all);
+            changed = true;
+        }
+        changed
+    }
+
+    fn landed(&mut self, all: &[ReviewComment], cx: &mut Context<Self>) {
         // Only this file's: the rest of the PR's threads aren't kept.
         let mine: Vec<ReviewComment> = all
-            .into_iter()
+            .iter()
             .filter(|c| c.path == self.file.path)
+            .cloned()
             .collect();
         let mut threads: Vec<Thread> = Vec::new();
         for (i, c) in mine.iter().enumerate() {
-            if c.reply_to.is_none() && c.line.is_some() {
+            if c.reply_to.is_none() {
                 threads.push(Thread {
                     root: i,
                     replies: vec![],
@@ -265,10 +294,14 @@ impl PullFileView {
                 t.replies.push(i);
             }
         }
+        let (mut threads, mut outdated): (Vec<Thread>, Vec<Thread>) = threads
+            .into_iter()
+            .partition(|t| mine[t.root].line.is_some());
         threads.sort_by_key(|t| mine[t.root].line);
+        outdated.sort_by_key(|t| mine[t.root].original_line);
         self.comments = Arc::new(mine);
         self.threads = threads;
-        self.comments_error = None;
+        self.outdated = outdated;
         self.text_stale = true;
         self.wants_signed(cx);
     }
@@ -378,7 +411,7 @@ impl PullFileView {
                     Ok(_) => {
                         this.draft = None;
                         this.clear = true;
-                        this.load(cx);
+                        this.load(true, cx);
                     }
                     Err(e) => {
                         this.ws
@@ -454,6 +487,98 @@ impl PullFileView {
             .into_any_element()
     }
 
+    /// One thread: its place (a click scrolls the diff there; an outdated one has none to go
+    /// to), its comments, and its reply box. `ti`: its index among all threads shown.
+    fn thread_view(&self, ti: usize, th: &Thread, cx: &mut Context<Self>) -> AnyElement {
+        let t = theme(cx);
+        let root = &self.comments[th.root];
+        let side = if root.side == "LEFT" {
+            Side::Old
+        } else {
+            Side::New
+        };
+        let place: AnyElement = match root.line {
+            Some(line) => {
+                let line = line as u32;
+                let place = if side == Side::Old {
+                    format!("Removed line {line}")
+                } else {
+                    format!("Line {line}")
+                };
+                text_button(("thread-line", ti), place, &t)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.diff
+                            .update(cx, |d, cx| d.scroll_to_line(LinePos { side, line }, cx));
+                    }))
+                    .into_any_element()
+            }
+            None => div()
+                .text_size(rems(0.69))
+                .text_color(t.subtle)
+                .child(match root.original_line {
+                    Some(line) => format!("Outdated · was line {line}"),
+                    None => "Outdated".into(),
+                })
+                .into_any_element(),
+        };
+        let mut thread = div()
+            .m(px(8.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(t.border_strong)
+            .bg(t.panel)
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .px(px(10.))
+                    .pt(px(6.))
+                    .child(place),
+            );
+        for &ci in std::iter::once(&th.root).chain(&th.replies) {
+            let c = &self.comments[ci];
+            thread = thread.child(
+                div()
+                    .px(px(10.))
+                    .py(px(6.))
+                    .border_b_1()
+                    .border_color(t.border)
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(6.))
+                            .text_size(rems(0.69))
+                            .child(div().font_weight(t.medium()).child(c.author.clone()))
+                            .child(div().text_color(t.subtle).child(ago(&c.created_at))),
+                    )
+                    .children(self.blocks.get(ci).map(|md| div().pt(px(4.)).child(md))),
+            );
+        }
+        let id = root.id;
+        let waiting = self.drafts.iter().any(|(d, _)| *d == Draft::Reply(id));
+        if self.draft == Some(Draft::Reply(id)) {
+            thread = thread.child(self.composer("Reply".into(), cx));
+        } else {
+            thread = thread.child(
+                div().p(px(8.)).child(
+                    Button::new(("reply", ti))
+                        .ghost()
+                        .xsmall()
+                        .label(if waiting {
+                            "Reply… (draft)"
+                        } else {
+                            "Reply…"
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.start(Draft::Reply(id), window, cx)
+                        })),
+                ),
+            );
+        }
+        thread.into_any_element()
+    }
+
     fn threads_view(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let waiting: Vec<LineRange> = self
             .drafts
@@ -464,6 +589,7 @@ impl PullFileView {
             })
             .collect();
         if self.threads.is_empty()
+            && self.outdated.is_empty()
             && self.draft.is_none()
             && waiting.is_empty()
             && self.comments_error.is_none()
@@ -471,7 +597,12 @@ impl PullFileView {
             return None;
         }
         let t = theme(cx);
-        let n: usize = self.threads.iter().map(|th| 1 + th.replies.len()).sum();
+        let n: usize = self
+            .threads
+            .iter()
+            .chain(&self.outdated)
+            .map(|th| 1 + th.replies.len())
+            .sum();
         let folded = self.folded;
         let head = div()
             .id("threads-head")
@@ -541,77 +672,45 @@ impl PullFileView {
                 );
             }
             for (ti, th) in self.threads.iter().enumerate() {
-                let root = &self.comments[th.root];
-                let (line, side) = (
-                    root.line.unwrap_or(0) as u32,
-                    if root.side == "LEFT" {
-                        Side::Old
-                    } else {
-                        Side::New
-                    },
+                list = list.child(self.thread_view(ti, th, cx));
+            }
+            if !self.outdated.is_empty() {
+                let open = self.outdated_open;
+                let n = self.outdated.len();
+                list = list.child(
+                    div().flex().items_center().px(px(12.)).py(px(6.)).child(
+                        text_button(
+                            "outdated",
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .child(
+                                    Icon::new(if open {
+                                        IconName::ChevronDown
+                                    } else {
+                                        IconName::ChevronRight
+                                    })
+                                    .xsmall(),
+                                )
+                                .child(format!(
+                                    "{n} outdated thread{}",
+                                    if n == 1 { "" } else { "s" }
+                                )),
+                            &t,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.outdated_open = !this.outdated_open;
+                            cx.notify();
+                        })),
+                    ),
                 );
-                let place = if side == Side::Old {
-                    format!("Removed line {line}")
-                } else {
-                    format!("Line {line}")
-                };
-                let mut thread = div()
-                    .m(px(8.))
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(t.border_strong)
-                    .bg(t.panel)
-                    .overflow_hidden()
-                    .child(div().flex().items_center().px(px(10.)).pt(px(6.)).child(
-                        text_button(("thread-line", ti), place, &t).on_click(cx.listener(
-                            move |this, _, _, cx| {
-                                this.diff.update(cx, |d, cx| {
-                                    d.scroll_to_line(LinePos { side, line }, cx)
-                                });
-                            },
-                        )),
-                    ));
-                for &ci in std::iter::once(&th.root).chain(&th.replies) {
-                    let c = &self.comments[ci];
-                    thread = thread.child(
-                        div()
-                            .px(px(10.))
-                            .py(px(6.))
-                            .border_b_1()
-                            .border_color(t.border)
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap(px(6.))
-                                    .text_size(rems(0.69))
-                                    .child(div().font_weight(t.medium()).child(c.author.clone()))
-                                    .child(div().text_color(t.subtle).child(ago(&c.created_at))),
-                            )
-                            .children(self.blocks.get(ci).map(|md| div().pt(px(4.)).child(md))),
-                    );
+                if open {
+                    let at = self.threads.len();
+                    for (i, th) in self.outdated.iter().enumerate() {
+                        list = list.child(self.thread_view(at + i, th, cx));
+                    }
                 }
-                let id = root.id;
-                let waiting = self.drafts.iter().any(|(d, _)| *d == Draft::Reply(id));
-                thread = if self.draft == Some(Draft::Reply(id)) {
-                    thread.child(self.composer("Reply".into(), cx))
-                } else {
-                    thread.child(
-                        div().p(px(8.)).child(
-                            Button::new(("reply", ti))
-                                .ghost()
-                                .xsmall()
-                                .label(if waiting {
-                                    "Reply… (draft)"
-                                } else {
-                                    "Reply…"
-                                })
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.start(Draft::Reply(id), window, cx)
-                                })),
-                        ),
-                    )
-                };
-                list = list.child(thread);
             }
         }
         Some(
@@ -686,9 +785,7 @@ impl Render for PullFileView {
         let wakes = Cache::wakes(cx);
         if wakes != self.wakes {
             self.wakes = wakes;
-            if self.comments_at.is_some_and(|at| at.elapsed() > AGE) {
-                self.load(cx);
-            }
+            self.load(false, cx);
         }
         if std::mem::take(&mut self.clear) {
             self.composer
@@ -732,6 +829,52 @@ mod tests {
             let file = Arc::new(crate::leak_tests::file("src/zeta.rs"));
             PullFileView::new(ws.downgrade(), range, file, window, cx)
         })
+    }
+
+    fn comment(id: u64, line: Option<u64>, reply_to: Option<u64>) -> ReviewComment {
+        ReviewComment {
+            id,
+            reply_to,
+            path: "src/zeta.rs".into(),
+            line,
+            original_line: Some(9),
+            side: "RIGHT".into(),
+            author: "zeta-bot".into(),
+            body: format!("note {id}"),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            url: String::new(),
+        }
+    }
+
+    #[gpui_kit::test]
+    fn outdated_threads_are_kept_folded_and_the_pages_read_is_shared(cx: &mut TestAppContext) {
+        let (view, cx) = open_file(cx);
+        // The PR page's read lands in the cache: the file's tab takes its threads from it.
+        let mut other = comment(5, Some(1), None);
+        other.path = "src/other.rs".into();
+        let all = vec![
+            comment(1, Some(4), None),
+            comment(2, None, None),
+            comment(3, None, Some(2)),
+            other,
+        ];
+        let key = comments_key("https://github.com/o/r/pull/1");
+        cx.update(|_, cx| Cache::load(cx, &key, Duration::ZERO, move |_| Ok(all.clone())));
+        cx.run_until_parked();
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.comments.len(), 3);
+            assert_eq!(v.threads.len(), 1);
+            // The outdated root keeps its reply, folded away until asked for.
+            assert_eq!(v.outdated.len(), 1);
+            assert_eq!(v.outdated[0].replies.len(), 1);
+            assert!(!v.outdated_open);
+        });
+        // Opened, it draws with its reply box like any thread.
+        view.update(cx, |v, cx| {
+            v.outdated_open = true;
+            cx.notify();
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
     }
 
     #[gpui_kit::test]

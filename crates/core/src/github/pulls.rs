@@ -463,7 +463,7 @@ pub fn review(
 
 /// A comment on a line of a PR's diff. `line` is where it sits now, on its `side` (LEFT, the
 /// old file; RIGHT, the new one); none when the diff moved on past it (outdated).
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewComment {
     pub id: u64,
@@ -471,6 +471,8 @@ pub struct ReviewComment {
     pub reply_to: Option<u64>,
     pub path: String,
     pub line: Option<u64>,
+    /// Where it was put, kept once it's outdated.
+    pub original_line: Option<u64>,
     pub side: String,
     pub author: String,
     pub body: String,
@@ -484,6 +486,7 @@ fn review_comment(c: &Value) -> ReviewComment {
         reply_to: c["in_reply_to_id"].as_u64(),
         path: string(&c["path"]),
         line: c["line"].as_u64(),
+        original_line: c["original_line"].as_u64(),
         side: c["side"].as_str().unwrap_or("RIGHT").to_string(),
         author: string(&c["user"]["login"]),
         body: string(&c["body"]),

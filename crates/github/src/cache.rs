@@ -1,8 +1,9 @@
 //! Stale-while-revalidate for GitHub's lists: the account, PR and issue lists and counts, labels.
 //! A view shows the last answer at once and asks again in the background at most every
 //! `MIN_AGE`; views asking for the same key share one request. Bounded to `MAX_ENTRIES`, the
-//! least recently used going first. Bodies, threads and files never come here: their tab reads
-//! and holds them, so closing it frees them.
+//! least recently used going first. Bodies, conversations and files never come here: their tab
+//! reads and holds them, so closing it frees them. A PR's line comments do, since its page and
+//! its file tabs share one read.
 //!
 //! GitHub doesn't say when something changes there (an issue closed by a push, a teammate's
 //! review), so shown views recheck on window focus and every `POLL`, each within its max age;

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use gitviber_core::api;
 use gitviber_core::git::{FileChange, PullMode};
-use gitviber_core::github::{Annotation, CheckFailure, PullDetail, PullFiles};
+use gitviber_core::github::{Annotation, CheckFailure, PullDetail, PullFiles, ReviewComment};
 use gitviber_markdown::MarkdownView;
 use gitviber_refs::repo::plain;
 use gitviber_refs::{GitAction, RepoState, ops};
@@ -54,6 +54,7 @@ use crate::ui::common::{
 use crate::ui::dialogs::{ReviewDialog, confirm};
 use crate::ui::markdown_input::MarkdownInput;
 use crate::ui::page_find::{FindHost, Key, Marks, PageFind, Parts};
+use crate::ui::pull_file::{AGE as COMMENTS_AGE, comments_key, load_comments};
 
 /// The files only change with the two commits: rarely worth reading again.
 const FILES_AGE: Duration = Duration::from_secs(600);
@@ -112,6 +113,9 @@ pub struct PullView {
     files_error: Option<String>,
     files_for: Option<(String, String)>,
     files_at: Option<Instant>,
+    /// The PR's line comments as last read (shared with its file tabs), counted by path.
+    line_comments: Option<Arc<Vec<ReviewComment>>>,
+    comment_counts: Arc<HashMap<String, usize>>,
     pick: Option<CommitRun>,
     picked_files: Option<(String, String, Arc<Vec<FileChange>>)>,
     picked_error: Option<String>,
@@ -190,6 +194,11 @@ impl PullView {
             }),
             // The account decides what the page offers.
             super::observe_cache(|this: &Self| this.wakes, cx),
+            cx.observe_global::<Cache>(|this: &mut Self, cx| {
+                if this.sync_comments(cx) {
+                    cx.notify();
+                }
+            }),
             cx.observe_window_activation(window, |_, window, cx| {
                 if window.is_window_active() {
                     Cache::wake(cx);
@@ -216,6 +225,8 @@ impl PullView {
             files_error: None,
             files_for: None,
             files_at: None,
+            line_comments: None,
+            comment_counts: Arc::default(),
             pick: None,
             picked_files: None,
             picked_error: None,
@@ -348,6 +359,13 @@ impl PullView {
             self.polls = 0;
         }
         self.watch_ci(cx);
+        load_comments(
+            cx,
+            self.target.clone(),
+            self.number,
+            &self.url,
+            COMMENTS_AGE,
+        );
         let shas = (d.pull.base_sha.clone(), d.pull.head_sha.clone());
         if self.files_for.as_ref() != Some(&shas)
             || self.files_at.is_some_and(|at| at.elapsed() > FILES_AGE)
@@ -355,6 +373,26 @@ impl PullView {
             self.load_files(cx);
         }
         cx.notify();
+    }
+
+    /// Counts the line comments by file when the cache has a new answer; true if it had.
+    fn sync_comments(&mut self, cx: &App) -> bool {
+        let read = Cache::read::<Vec<ReviewComment>>(cx, &comments_key(&self.url));
+        let Some(all) = read.data else { return false };
+        if self
+            .line_comments
+            .as_ref()
+            .is_some_and(|c| Arc::ptr_eq(c, &all))
+        {
+            return false;
+        }
+        let mut counts = HashMap::new();
+        for c in all.iter() {
+            *counts.entry(c.path.clone()).or_insert(0) += 1;
+        }
+        self.comment_counts = Arc::new(counts);
+        self.line_comments = Some(all);
+        true
     }
 
     /// A run on the head finished or started since the last read: read the checks and the merge
@@ -1252,6 +1290,20 @@ impl TabItem for PullView {
             .as_ref()
             .is_some_and(|b| !b.read(cx).value(cx).trim().is_empty())
     }
+}
+
+/// A file's line comments in Files changed, counted with the outdated ones.
+fn comment_chip(n: usize, t: &AppTheme) -> AnyElement {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(3.))
+        .text_size(rems(0.69))
+        .text_color(t.subtle)
+        .child(Icon::new(IconName::MessageSquare).xsmall())
+        .child(n.to_string())
+        .into_any_element()
 }
 
 fn branch_chip(name: impl IntoElement, t: &AppTheme) -> AnyElement {
@@ -2421,6 +2473,8 @@ impl PullView {
         if let Some((files, range)) = shown {
             let weak = cx.weak_entity();
             let count = files.len();
+            // The picked commits' lines aren't the head's, where the comments are.
+            let counts = range.is_none().then(|| self.comment_counts.clone());
             let list = uniform_list("pull-files", count, move |r, _, cx| {
                 let t = theme(cx);
                 r.map(|ix| {
@@ -2443,6 +2497,10 @@ impl PullView {
                                 .flex_1()
                                 .min_w_0()
                                 .child(path_label(&marks, ix, &f.path, cx)),
+                        )
+                        .when_some(
+                            counts.as_ref().and_then(|c| c.get(&f.path)).copied(),
+                            |d, n| d.child(comment_chip(n, &t)),
                         )
                         .child(LineCounts::new(f.additions, f.deletions))
                         .child(StatusLetter(gitviber_ui::widgets::ChangeKind::from_letter(
@@ -3517,5 +3575,46 @@ mod tests {
         // Its conflicts come first: the box offers to resolve them.
         d.mergeable = Some(false);
         assert!(!offers_ready(&d, &rights(true, true, false)));
+    }
+
+    fn line_comment(id: u64, path: &str, line: Option<u64>) -> ReviewComment {
+        ReviewComment {
+            id,
+            reply_to: None,
+            path: path.into(),
+            line,
+            original_line: Some(3),
+            side: "RIGHT".into(),
+            author: "zeta-bot".into(),
+            body: format!("note {id}"),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            url: String::new(),
+        }
+    }
+
+    #[gpui_kit::test]
+    fn files_changed_counts_each_files_line_comments(cx: &mut TestAppContext) {
+        let (view, cx) = open_page(cx);
+        view.update(cx, |v, cx| {
+            fill(v);
+            cx.notify();
+        });
+        let key = comments_key(&pull(1).url);
+        cx.update(|_, cx| {
+            Cache::load(cx, &key, Duration::ZERO, |_| {
+                Ok(vec![
+                    line_comment(11, "src/zeta.rs", Some(4)),
+                    line_comment(12, "src/zeta.rs", None),
+                    line_comment(13, "src/f1.rs", Some(2)),
+                ])
+            })
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.comment_counts.get("src/zeta.rs"), Some(&2));
+            assert_eq!(v.comment_counts.get("src/f1.rs"), Some(&1));
+            assert_eq!(v.comment_counts.get("src/f2.rs"), None);
+        });
+        draw(cx);
     }
 }
