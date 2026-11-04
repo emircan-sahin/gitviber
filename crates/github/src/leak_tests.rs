@@ -1,7 +1,6 @@
 //! Opening and closing the GitHub views gives their memory back: PR, issue and PR file tabs,
 //! the two panels, and the dialogs' entities, ten times over, leave no entity behind.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use gitviber_core::git::FileChange;
@@ -101,17 +100,15 @@ fn closed_tabs_and_panels_leave_nothing_behind(cx: &mut TestAppContext) {
         Host(ws)
     });
     let ws = host.read_with(cx, |h, _| h.0.clone());
+    // Plain folders: one git couldn't open would build no panels.
+    let roots = [0, 1].map(|n| gitviber_ui::test_support::temp_dir(&format!("github-leak-{n}")));
     let round = |n: u64, cx: &mut gpui_kit::VisualTestContext| {
         cx.update(|window, cx| {
             ws.update(cx, |ws, cx| {
-                ws.open_project(
-                    PathBuf::from(format!("/tmp/gitviber-github-leak-{}", n % 2)),
-                    window,
-                    cx,
-                );
+                ws.open_project(roots[(n % 2) as usize].clone(), window, cx);
             });
         });
-        // The panels are built once core has the repo (here, once it said it couldn't).
+        // The panels are built once core has the folder open.
         cx.run_until_parked();
         cx.update(|window, cx| {
             assert!(Workspace::ensure_panel(&ws, "pulls", window, cx).is_some());

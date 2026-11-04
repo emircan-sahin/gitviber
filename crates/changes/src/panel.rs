@@ -399,6 +399,7 @@ impl ChangesPanel {
                         this.epoch += 1;
                         this.start(cx);
                     }
+                    ProjectEvent::Switching => this.switching(cx),
                     ProjectEvent::Switched { .. } => {
                         this.tools = None;
                         this.epoch += 1;
@@ -410,6 +411,8 @@ impl ChangesPanel {
                         });
                         this.read(cx);
                     }
+                    // A failed switch stays on its worktree: read again.
+                    ProjectEvent::Failed(_) if this.repo_open(cx) => this.read(cx),
                     ProjectEvent::Failed(e) => {
                         this.error = Some(e.clone());
                         cx.notify();
@@ -519,15 +522,33 @@ impl ChangesPanel {
     }
 
     /// Whether git can read the repo yet: until the project opens it says "No repository is
-    /// open", and a plain folder has none. Only the app's core opens a project; without one (a
-    /// test), or without a project, the core the panel reads is open already.
+    /// open", and a plain folder has none; mid-switch core may read either worktree. Only the
+    /// app's core opens a project; without one (a test), or without a project, the core the
+    /// panel reads is open already.
     fn repo_open(&self, cx: &App) -> bool {
         !gitviber_ui::has_core(cx)
-            || self
-                .ctx
-                .project
-                .as_ref()
-                .is_none_or(|p| p.read(cx).is_repo())
+            || self.ctx.project.as_ref().is_none_or(|p| {
+                let p = p.read(cx);
+                p.is_repo() && !p.is_loading()
+            })
+    }
+
+    /// A worktree switch started: what was read is the last worktree's, and so is a read on its
+    /// way. The skeleton shows till the next one's read lands; filter, sections and the commit
+    /// draft stay.
+    fn switching(&mut self, cx: &mut Context<Self>) {
+        self.loaded = false;
+        self.error = None;
+        self.reading = false;
+        self.again = false;
+        self._read = Task::ready(());
+        self.operation = None;
+        self.sync_bisect(cx);
+        self.lists = Lists::default();
+        self.stashes.clear();
+        self.submodules.clear();
+        self.rebuild(cx);
+        cx.notify();
     }
 
     fn workspace(&self) -> Option<Entity<Workspace>> {
@@ -5442,8 +5463,12 @@ mod tests {
         let project = ws.read_with(cx, |ws, _| ws.project().cloned().unwrap());
         let switch = |from: &Path, to: &Path, cx: &mut VisualTestContext| {
             let (from, to) = (from.to_path_buf(), to.to_path_buf());
+            // The last worktree's lists go as the switch starts; the next one's are read.
+            project.update(cx, |_, cx| cx.emit(ProjectEvent::Switching));
+            assert!(!p.read_with(cx, |p, _| p.loaded));
             project.update(cx, |_, cx| cx.emit(ProjectEvent::Switched { from, to }));
             cx.run_until_parked();
+            assert!(p.read_with(cx, |p, _| p.loaded));
         };
         let reviewed = |cx: &mut VisualTestContext| {
             p.read_with(cx, |p, _| p.review.as_ref().map(|r| r.reference.clone()))

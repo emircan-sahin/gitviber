@@ -593,12 +593,20 @@ impl NotesSection {
                     ProjectEvent::RepoChanged(_) => {
                         this._check = ReviewNotes::check(cx, &this.root);
                     }
-                    ProjectEvent::Opened | ProjectEvent::Switched { .. } => {
+                    // The last worktree's notes go till the next one is open; a failed switch
+                    // stays on its worktree.
+                    ProjectEvent::Switching => {
+                        this.root.clear();
+                        this._check = Task::ready(());
+                        cx.notify();
+                    }
+                    ProjectEvent::Opened
+                    | ProjectEvent::Switched { .. }
+                    | ProjectEvent::Failed(_) => {
                         this.root = project.read(cx).root().to_string_lossy().into_owned();
                         this._check = ReviewNotes::check(cx, &this.root);
                         cx.notify();
                     }
-                    ProjectEvent::Failed(_) => {}
                 },
             ));
         }

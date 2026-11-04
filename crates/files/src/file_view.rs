@@ -192,7 +192,7 @@ impl FileView {
                         this.load_web(cx);
                         this.load(window, cx);
                     }
-                    ProjectEvent::Failed(_) => {}
+                    ProjectEvent::Switching | ProjectEvent::Failed(_) => {}
                 },
             ));
             self.load_web(cx);

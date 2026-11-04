@@ -250,7 +250,7 @@ fn follow_projects(cx: &mut App) {
                     }
                     return;
                 }
-                ProjectEvent::Failed(_) => return,
+                ProjectEvent::Switching | ProjectEvent::Failed(_) => return,
             }
             // A plain folder has no remote to ask GitHub about; the last repository's lists go.
             if project.is_folder() {
