@@ -57,7 +57,7 @@ pub struct RepoState {
     /// A change came in while a read ran: read again once it's done.
     again: Option<bool>,
     actions: Vec<Task<()>>,
-    _project: Option<Subscription>,
+    _project: Vec<Subscription>,
     _live: Live,
 }
 
@@ -150,10 +150,22 @@ impl RepoState {
                 }
                 ProjectEvent::Failed(e) => {
                     this.error = Some(e.clone().into());
+                    // A failed switch stays on its worktree, whose status went as it started.
+                    if project.read(cx).is_repo() {
+                        this.refresh(cx);
+                    }
                     cx.notify();
                 }
             },
         );
+        // A worktree switch starting: the bar's branch and counts are the last worktree's.
+        let loading = cx.observe(project, |this: &mut Self, project, cx| {
+            if project.read(cx).is_loading() && this.status.is_some() {
+                this.status = None;
+                this.journal = None;
+                cx.notify();
+            }
+        });
         let mut state = RepoState {
             project: project.downgrade(),
             root: project.read(cx).root().to_path_buf(),
@@ -169,7 +181,7 @@ impl RepoState {
             reading: None,
             again: None,
             actions: Vec::new(),
-            _project: Some(sub),
+            _project: vec![sub, loading],
             _live: Live::new("RepoState"),
         };
         if project.read(cx).is_repo() {
@@ -257,11 +269,12 @@ impl RepoState {
     /// `git`: HEAD, refs or the index moved, so branches, worktrees and the journal may have too;
     /// else only the working tree changed, and status says all of it.
     fn refresh_parts(&mut self, git: bool, cx: &mut Context<Self>) {
-        // A plain folder has no git to read: its file changes would only fail here.
+        // A plain folder has no git to read: its file changes would only fail here. Mid-switch,
+        // core may read either worktree: `Switched` reads the next one.
         if self
             .project
             .upgrade()
-            .is_some_and(|p| p.read(cx).is_folder())
+            .is_some_and(|p| p.read(cx).is_folder() || p.read(cx).is_loading())
         {
             return;
         }
