@@ -259,7 +259,10 @@ pub struct CreatePullDialog {
     draft: bool,
     maintainer_edits: bool,
     issue_url: Option<String>,
-    busy: bool,
+    /// The commits HEAD has beyond the base, once counted: none makes no pull request.
+    commits: Option<u32>,
+    /// What Create is doing: pushing the branch, then creating.
+    busy: Option<&'static str>,
     suggesting: bool,
     _draft: Task<()>,
     _branches: Task<()>,
@@ -370,7 +373,8 @@ impl CreatePullDialog {
             draft: false,
             maintainer_edits: true,
             issue_url,
-            busy: false,
+            commits: None,
+            busy: None,
             suggesting: false,
             _draft: Task::ready(()),
             _branches: Task::ready(()),
@@ -427,6 +431,7 @@ impl CreatePullDialog {
     /// the branch name. Counted against the chosen base in the repository the PR goes to.
     fn read_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.base_ref = None;
+        self.commits = None;
         let (core, upstream, original, base, head) = (
             crate::core(cx),
             self.upstream(),
@@ -461,6 +466,7 @@ impl CreatePullDialog {
             };
             this.update_in(cx, |this, window, cx| {
                 this.base_ref = Some(base_ref);
+                this.commits = Some(draft.commits);
                 let one = (draft.commits == 1).then_some(draft.subject).flatten();
                 if !this.typed.0 {
                     let title = one.clone().unwrap_or_else(|| branch_title(&head));
@@ -590,10 +596,18 @@ impl CreatePullDialog {
     /// request is the window's, so a dialog closed meanwhile still gets its PR opened.
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let title = self.title.read(cx).value().trim().to_string();
-        if title.is_empty() || self.busy || self.status.push_elsewhere.is_some() {
+        if title.is_empty()
+            || self.busy.is_some()
+            || self.status.push_elsewhere.is_some()
+            || self.empty().is_some()
+        {
             return;
         }
-        self.busy = true;
+        self.busy = Some(if self.status.needs_push() {
+            "Pushing branch…"
+        } else {
+            "Creating…"
+        });
         let body = self.body.read(cx).value(cx).to_string();
         let target: Target = self.upstream().then(|| self.target.full_name());
         let (core, head, base, draft, edits) = (
@@ -604,36 +618,49 @@ impl CreatePullDialog {
             self.maintainer_edits,
         );
         let (ws, me) = (self.ws.clone(), cx.weak_entity());
+        let push_core = core.clone();
+        let branch = head.clone();
         window
             .spawn(cx, async move |cx| {
-                let made = cx
+                let pushed = cx
                     .background_spawn(async move {
+                        let core = push_core;
                         let now = read_status(&core)?;
-                        if now.branch.as_deref() != Some(head.as_str()) {
-                            return Err(format!("{head} isn't checked out any more."));
+                        if now.branch.as_deref() != Some(branch.as_str()) {
+                            return Err(format!("{branch} isn't checked out any more."));
                         }
                         if let Some(remote) = now.push_elsewhere {
                             return Err(format!(
-                                "{head} pushes to {remote}, but a pull request needs it on origin."
+                                "{branch} pushes to {remote}, but a pull request needs it on origin."
                             ));
                         }
                         // GitHub can only open a PR from a branch it has: publish or push the latest first.
                         if now.needs_push() {
-                            api::sync::push(
-                                &core,
-                                None,
-                                None,
-                                None,
-                                "pr-create-push".into(),
-                                |_| {},
-                            )?;
+                            api::sync::push(&core, None, None, None, "pr-create-push".into(), |_| {})
+                                .map_err(|e| format!("Pushing {branch} failed: {e}"))?;
                         }
-                        api::github::pr_create(&core, target, title, body, head, base, draft, edits)
+                        Ok(())
                     })
                     .await;
+                let made = match pushed {
+                    Ok(()) => {
+                        cx.update(|_, cx| {
+                            me.update(cx, |this, cx| {
+                                this.busy = Some("Creating…");
+                                cx.notify();
+                            })
+                        })
+                        .ok();
+                        cx.background_spawn(async move {
+                            api::github::pr_create(&core, target, title, body, head, base, draft, edits)
+                        })
+                        .await
+                    }
+                    Err(e) => Err(e),
+                };
                 cx.update(|window, cx| {
                     let open = me.update(cx, |this, cx| {
-                        this.busy = false;
+                        this.busy = None;
                         cx.notify();
                     });
                     match made {
@@ -665,6 +692,14 @@ impl CreatePullDialog {
     }
 }
 
+impl CreatePullDialog {
+    /// "No commits between main and fix": GitHub would refuse it, after the push.
+    fn empty(&self) -> Option<String> {
+        (self.commits == Some(0))
+            .then(|| format!("No commits between {} and {}", self.base, self.head))
+    }
+}
+
 impl Render for CreatePullDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx);
@@ -687,6 +722,7 @@ impl Render for CreatePullDialog {
         let title_empty = self.title.read(cx).value().trim().is_empty();
         let can_suggest = Settings::get(cx).suggest_enabled;
         let mine_both = self.typed.0 && self.typed.1;
+        let empty = self.empty();
         let bases = self.bases.clone();
         let weak = cx.weak_entity();
         div()
@@ -694,6 +730,7 @@ impl Render for CreatePullDialog {
             .flex_col()
             .gap(px(8.))
             .child(div().text_size(rems(0.75)).text_color(t.muted_foreground).font_family(t.fonts.code.clone()).child(format!("{head} → {base_name}{pushes}")))
+            .when_some(empty.clone(), |d, empty| d.child(div().text_size(rems(0.75)).text_color(t.removed).child(empty)))
             .when_some(self.status.push_elsewhere.clone(), |d, remote| {
                 d.child(
                     div()
@@ -777,8 +814,8 @@ impl Render for CreatePullDialog {
                         Button::new("create-pull")
                             .primary()
                             .small()
-                            .label(if self.busy { "Creating…" } else { "Create" })
-                            .disabled(self.busy || title_empty || self.status.push_elsewhere.is_some())
+                            .label(self.busy.unwrap_or("Create"))
+                            .disabled(self.busy.is_some() || title_empty || empty.is_some() || self.status.push_elsewhere.is_some())
                             .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
                     ),
             )
@@ -1064,8 +1101,70 @@ fn lean_or_plain(
 
 #[cfg(test)]
 mod tests {
-    use super::lean_or_plain;
+    use super::*;
+    use crate::ui::pulls_panel::BranchStatus;
+    use gpui_kit::TestAppContext;
     use std::cell::RefCell;
+
+    fn access() -> Access {
+        Access {
+            owner: "o".into(),
+            name: "r".into(),
+            default_branch: Some("main".into()),
+            push: true,
+            triage: false,
+            admin: false,
+            issues: true,
+            allow_merge_commit: None,
+            allow_squash_merge: None,
+            allow_rebase_merge: None,
+        }
+    }
+
+    #[gpui_kit::test]
+    fn create_says_it_pushes_first_and_refuses_a_branch_with_no_commits(cx: &mut TestAppContext) {
+        crate::leak_tests::setup(cx);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let ws = cx.new(Workspace::new);
+            let status = BranchStatus {
+                branch: Some("fix".into()),
+                follows: None,
+                push_elsewhere: None,
+                pushed: false,
+            };
+            CreatePullDialog::new(
+                ws.downgrade(),
+                access(),
+                access(),
+                "fix".into(),
+                status,
+                window,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        // Nothing beyond the base: said, and Create does nothing.
+        view.update_in(cx, |v, window, cx| {
+            v.commits = Some(0);
+            v.submit(window, cx);
+        });
+        view.read_with(cx, |v, _| {
+            assert_eq!(
+                v.empty().as_deref(),
+                Some("No commits between main and fix")
+            );
+            assert_eq!(v.busy, None);
+        });
+        // An unpushed branch is pushed first, and the button says so.
+        view.update_in(cx, |v, window, cx| {
+            v.commits = Some(2);
+            v.submit(window, cx);
+        });
+        assert_eq!(view.read_with(cx, |v, _| v.busy), Some("Pushing branch…"));
+        // The push found no repository: the button is back for another try.
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |v, _| v.busy), None);
+    }
 
     #[test]
     fn an_old_claude_is_asked_again_without_the_lean_flags() {
