@@ -338,7 +338,7 @@ fn explorer_lists_creates_and_renames_and_quick_open_lists_files(cx: &mut TestAp
 /// At launch the explorer is built while the repo is still opening: it lists once it's open,
 /// with no "No repository is open" toast, and a root that can't be listed still says so.
 #[gpui_kit::test]
-fn explorer_built_while_the_repo_opens_lists_once_open(cx: &mut TestAppContext) {
+fn explorer_waits_for_the_repo_to_open_then_lists(cx: &mut TestAppContext) {
     setup(cx);
     let repo = temp_repo("explorer-launch");
     cx.update(|cx| {
@@ -346,20 +346,18 @@ fn explorer_built_while_the_repo_opens_lists_once_open(cx: &mut TestAppContext) 
     });
     let (host, cx) = cx.add_window_view(|_, cx| WsHost(cx.new(Workspace::new)));
     let ws = host.read_with(cx, |h, _| h.0.clone());
+    let early = cx.update(|window, cx| {
+        Workspace::register_window(&ws, window, cx);
+        ws.update(cx, |ws, cx| ws.open_project(repo.clone(), window, cx));
+        Workspace::ensure_panel(&ws, crate::explorer::PANEL_ID, window, cx)
+    });
+    // Not built while the repo opens: a listing then would read whatever core had open, or fail.
+    assert!(early.is_none());
+    cx.run_until_parked();
     let panel = cx
-        .update(|window, cx| {
-            Workspace::register_window(&ws, window, cx);
-            ws.update(cx, |ws, cx| ws.open_project(repo.clone(), window, cx));
-            Workspace::ensure_panel(&ws, crate::explorer::PANEL_ID, window, cx)
-        })
+        .update(|window, cx| Workspace::ensure_panel(&ws, crate::explorer::PANEL_ID, window, cx))
         .unwrap();
     let panel = panel.view().downcast::<crate::ExplorerPanel>().unwrap();
-    // Nothing lists yet: on real threads that listing beats the open and fails, while this
-    // executor happens to run the open first.
-    cx.update(|_, cx| {
-        let project = ws.read(cx).project().unwrap().read(cx);
-        assert!(!project.is_open() && !panel.read(cx).is_listing());
-    });
     cx.run_until_parked();
     assert_eq!(cx.update(|_, cx| panel.read(cx).row_paths()), vec!["src"]);
     let titles = |cx: &mut gpui_kit::VisualTestContext| -> Vec<String> {

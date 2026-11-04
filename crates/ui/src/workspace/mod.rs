@@ -149,7 +149,9 @@ pub struct Workspace {
     _focus_watch: Vec<Subscription>,
     panels: HashMap<&'static str, PanelHandle>,
     toasts: Vec<Toast>,
-    _project_events: Option<Subscription>,
+    /// The project's open or worktree switch is on its way: no per-project panel is built.
+    project_loading: bool,
+    _project_events: Vec<Subscription>,
     _live: Live,
 }
 
@@ -183,7 +185,8 @@ impl Workspace {
             _focus_watch: Vec::new(),
             panels: HashMap::new(),
             toasts: Vec::new(),
-            _project_events: None,
+            project_loading: false,
+            _project_events: Vec::new(),
             _live: Live::new("Workspace"),
         }
     }
@@ -256,7 +259,11 @@ impl Workspace {
         }
         self.drop_project(cx);
         let project = cx.new(|cx| Project::new(root, cx));
-        self._project_events = Some(cx.subscribe_in(&project, window, Self::on_project_event));
+        self.project_loading = project.read(cx).is_loading();
+        self._project_events = vec![
+            cx.subscribe_in(&project, window, Self::on_project_event),
+            cx.observe(&project, Self::follow_loading),
+        ];
         self.project = Some(project);
         // Without core (a test) nothing opens it: it's taken as open where it was asked.
         if !crate::has_core(cx) {
@@ -319,6 +326,25 @@ impl Workspace {
             ProjectEvent::Opened => self.opened(cx),
             ProjectEvent::RepoChanged(_) => {}
         }
+    }
+
+    /// A worktree switch starting drops the per-project panels, as another project does: they'd
+    /// show the last worktree's lists until the next one's came. They're built again once it's open.
+    fn follow_loading(&mut self, project: Entity<Project>, cx: &mut Context<Self>) {
+        let loading = project.read(cx).is_loading();
+        if loading == self.project_loading {
+            return;
+        }
+        self.project_loading = loading;
+        if loading {
+            self.drop_project_panels(cx);
+        }
+        cx.notify();
+    }
+
+    /// Whether the project's repo is on its way, its per-project panels not built yet.
+    pub fn project_loading(&self) -> bool {
+        self.project_loading
     }
 
     /// Opens another worktree of the open repo in this window (the worktree picker).
@@ -411,6 +437,18 @@ impl Workspace {
 
     fn drop_project(&mut self, cx: &mut Context<Self>) {
         self.save_snapshot(cx);
+        self.drop_project_panels(cx);
+        self.clear_tabs();
+        self.tabs_root = None;
+        self.project_loading = false;
+        self._project_events.clear();
+        if self.project.take().is_some() && crate::has_core(cx) {
+            // Its watcher stops; a project opened next overtakes this in core's queue.
+            crate::backend::close_repo(cx);
+        }
+    }
+
+    fn drop_project_panels(&mut self, cx: &App) {
         let per_project: Vec<&'static str> = Registry::get(cx)
             .all_panels()
             .iter()
@@ -418,13 +456,6 @@ impl Workspace {
             .map(|p| p.id)
             .collect();
         self.panels.retain(|id, _| !per_project.contains(id));
-        self.clear_tabs();
-        self.tabs_root = None;
-        self._project_events = None;
-        if self.project.take().is_some() && crate::has_core(cx) {
-            // Its watcher stops; a project opened next overtakes this in core's queue.
-            crate::backend::close_repo(cx);
-        }
     }
 
     fn clear_tabs(&mut self) {
@@ -1091,7 +1122,7 @@ impl Workspace {
             return Some(panel.clone());
         }
         let spec = Registry::get(cx).panel(id).cloned()?;
-        if spec.per_project && ws.project.is_none() {
+        if spec.per_project && (ws.project.is_none() || ws.project_loading) {
             return None;
         }
         // A per-window panel outlives projects: it reads the current one from the workspace, so
@@ -1123,7 +1154,7 @@ impl Workspace {
             return Some(panel.clone());
         }
         let spec = Registry::get(cx).panel(id).cloned()?;
-        if spec.per_project && self.project.is_none() {
+        if spec.per_project && (self.project.is_none() || self.project_loading) {
             return None;
         }
         let ctx = PanelContext {
@@ -1834,6 +1865,38 @@ mod tests {
             .ok()?
             .success();
         ok.then(|| dir.canonicalize().unwrap_or(dir))
+    }
+
+    #[gpui_kit::test]
+    fn per_project_panels_wait_for_the_repo_and_go_with_a_switch(cx: &mut TestAppContext) {
+        let (Some(a), Some(b)) = (git_repo("load-a"), git_repo("load-b")) else {
+            return;
+        };
+        setup(cx);
+        cx.update(crate::install_core);
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        let side = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| Workspace::ensure_panel(ws, "side", window, cx))
+        };
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(a.clone(), window, cx)));
+        // Core still reads whatever it had open: nothing is built to read it.
+        assert!(cx.update(|_, cx| ws.read(cx).project_loading()));
+        assert!(side(&ws, cx).is_none());
+        // The per-window panel doesn't follow the repo.
+        assert!(
+            cx.update(|window, cx| Workspace::ensure_panel(&ws, "term", window, cx))
+                .is_some()
+        );
+        cx.run_until_parked();
+        let first = side(&ws, cx).expect("built once the repo is open");
+        cx.update(|_, cx| ws.update(cx, |ws, cx| ws.switch_worktree(b.clone(), cx)));
+        assert!(cx.update(|_, cx| ws.read(cx).built_panel("side").is_none()));
+        assert!(side(&ws, cx).is_none());
+        cx.run_until_parked();
+        let second = side(&ws, cx).expect("built again for the next worktree");
+        assert_ne!(first.view().entity_id(), second.view().entity_id());
+        assert!(!cx.update(|_, cx| ws.read(cx).project_loading()));
     }
 
     #[gpui_kit::test]

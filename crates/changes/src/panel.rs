@@ -25,7 +25,7 @@ use gitviber_ui::actions::{git, review};
 use gitviber_ui::keymap::editor;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{
-    ChangeKind, FileIcon, LineCounts, PathLabel, RelativeTime, StatusLetter,
+    ChangeKind, FileIcon, LineCounts, PanelSkeleton, PathLabel, RelativeTime, StatusLetter,
 };
 use gitviber_ui::workspace::{
     ChangesOf, GuideOf, Panel, PanelContext, ProjectEvent, Selection, Toast, Workspace,
@@ -3643,7 +3643,10 @@ impl Render for ChangesPanel {
                     .text_size(px(12.))
                     .child(format!("Could not read the repository: {e}"))
                     .into_any_element(),
-                (_, false) => div().flex_1().into_any_element(),
+                (_, false) => div()
+                    .flex_1()
+                    .child(PanelSkeleton::new())
+                    .into_any_element(),
                 _ => list.into_any_element(),
             })
             .child(self.notes.clone())
@@ -4478,6 +4481,8 @@ mod tests {
         setup(cx);
         let (ws, host, cx) = open(cx, &dir);
         cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(dir.clone(), window, cx)));
+        // Its panels are built once the repo is open.
+        cx.run_until_parked();
         // The workspace's own panel drawn, and the left side closed, focus nowhere in it.
         let panel = cx.update(|window, cx| {
             ws.update(cx, |ws, cx| {

@@ -14,7 +14,7 @@ use gitviber_core::{Core, api};
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::keymap::explorer;
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::{ChangeKind, FileIcon};
+use gitviber_ui::widgets::{ChangeKind, FileIcon, PanelSkeleton};
 use gitviber_ui::workspace::{
     Panel, PanelContext, PanelHandle, Project, ProjectEvent, Toast, Workspace, WorkspaceEvent,
 };
@@ -368,11 +368,6 @@ impl ExplorerPanel {
     #[cfg(test)]
     pub(crate) fn set_open_for_test(&mut self, path: &str, open: bool, cx: &mut Context<Self>) {
         self.set_open(path, open, cx);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_listing(&self) -> bool {
-        !self.listings.is_empty()
     }
 
     #[cfg(test)]
@@ -1809,6 +1804,10 @@ impl Render for ExplorerPanel {
                     )
                 },
             )
+            // The root's first listing (a network volume takes seconds).
+            .when(count == 0 && !self.listings.is_empty(), |d| {
+                d.child(PanelSkeleton::new())
+            })
             .child(
                 uniform_list(
                     "explorer-rows",

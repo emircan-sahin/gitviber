@@ -41,6 +41,8 @@ pub struct Project {
     root: PathBuf,
     name: SharedString,
     state: RepoState,
+    /// An open or a worktree switch is on its way: core may still read the last one.
+    loading: bool,
     revision: u64,
     _open: Option<Task<()>>,
     /// A plain folder looking for the `.git` that would make it a repository.
@@ -83,6 +85,7 @@ impl Project {
             name: folder_name(&root),
             root: root.clone(),
             state: RepoState::Opening,
+            loading: false,
             revision: 0,
             _open: None,
             _recheck: None,
@@ -104,13 +107,17 @@ impl Project {
         if from.is_none() && !upgrading {
             self.state = RepoState::Opening;
         }
+        self.loading = !upgrading;
         let answer = backend::open_repo(cx, root);
         self._open = Some(cx.spawn(async move |this, cx| {
-            // None: a newer open or a close overtook this one.
-            let Ok(Some(opened)) = answer.await else {
-                return;
-            };
+            let answer = answer.await;
             let _ = this.update(cx, |this, cx| {
+                this.loading = false;
+                // None: a newer open or a close overtook this one.
+                let Ok(Some(opened)) = answer else {
+                    cx.notify();
+                    return;
+                };
                 match opened {
                     // Still no repository: nothing changed for what shows it.
                     Ok(repo) if upgrading && !repo.git => {}
@@ -172,6 +179,12 @@ impl Project {
     /// Open, as a repository or as a plain folder: its files can be read.
     pub fn is_open(&self) -> bool {
         matches!(self.state, RepoState::Open { .. } | RepoState::Folder)
+    }
+
+    /// An open or a worktree switch is on its way: what a view would read now is the last
+    /// repo's, so the workspace builds no per-project panel until it lands.
+    pub fn is_loading(&self) -> bool {
+        self.loading
     }
 
     /// Open as a git repository: git's views have something to show.

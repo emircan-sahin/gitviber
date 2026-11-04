@@ -10,7 +10,7 @@ use gitviber_ui::actions::{diff, editor, file, repo, review, tab, terminal, view
 use gitviber_ui::keymap::{CODE_AREA_CONTEXT, ROOT_CONTEXT};
 use gitviber_ui::memory::{self, Live};
 use gitviber_ui::state::PanelSizes;
-use gitviber_ui::widgets::{CountBadge, Pressable as _};
+use gitviber_ui::widgets::{CountBadge, PanelSkeleton, Pressable as _};
 use gitviber_ui::workspace::{
     ChangesOf, PanelContext, ProjectEvent, Registry, Selection, Slot, TabGroup, Toast, Workspace,
     WorkspaceEvent,
@@ -657,6 +657,9 @@ impl WorkspaceView {
         let panel = active
             .filter(|_| folder.is_none())
             .and_then(|id| Workspace::ensure_panel(&self.workspace, id, window, cx));
+        // Its panel is built once the repo is open; till then it shows nothing of the last one.
+        let waiting =
+            panel.is_none() && active.is_some() && self.workspace.read(cx).project_loading();
         reachable(panel.as_ref().and_then(|p| p.focus_handle(cx)));
         let t = cx.app_theme().clone();
         let focus = self.workspace.read(cx).slot_focus(slot).clone();
@@ -753,6 +756,7 @@ impl WorkspaceView {
                     .flex_1()
                     .min_h_0()
                     .children(panel.map(|p| cached(p.view())))
+                    .when(waiting, |d| d.child(PanelSkeleton::new()))
                     .children(folder.map(|p| gitviber_refs::folder::empty_state(&p, cx)))
                     .when(explorer, |d| d.child(self.explorer_buttons(cx))),
             )

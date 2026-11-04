@@ -110,6 +110,10 @@ fn closed_tabs_and_panels_leave_nothing_behind(cx: &mut TestAppContext) {
                     cx,
                 );
             });
+        });
+        // The panels are built once core has the repo (here, once it said it couldn't).
+        cx.run_until_parked();
+        cx.update(|window, cx| {
             assert!(Workspace::ensure_panel(&ws, "pulls", window, cx).is_some());
             assert!(Workspace::ensure_panel(&ws, "issues", window, cx).is_some());
             ws.update(cx, |ws, cx| {
