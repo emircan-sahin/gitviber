@@ -50,11 +50,12 @@ Give every agent its own worktree and switch between them from the top bar.
   A repository set to skip LFS downloads (`GIT_LFS_SKIP_SMUDGE`, `git lfs install --skip-smudge`)
   keeps its pointers, and a checkout git would refuse anyway downloads nothing first.
 
-### Terminals per worktree
+### Terminals
 
-Every worktree keeps its own terminals, so nothing gets lost when you hop between them. A terminal
-can open in another project or any folder too. Drag a terminal's tab to reorder them, or use Move
-Left / Move Right in its menu; the order is kept with the rest.
+Your terminals belong to the window: switching project or worktree leaves every one running and in
+its place, and a new one starts in the project that's open. A terminal can open in another project
+or any folder too; a tab from another project shows its name beside the branch. Drag a terminal's
+tab to reorder them, or use Move Left / Move Right in its menu; the order is kept with the rest.
 
 ### Knowing when an agent needs you
 
@@ -69,11 +70,11 @@ Left / Move Right in its menu; the order is kept with the rest.
 
 ### Resuming
 
-Each worktree's terminals come back at launch with their splits, names and last 1,000 lines. Quit
-with Claude Code, Codex, Gemini CLI or opencode still running, and the restored terminal has the
-command that resumes the conversation typed at the prompt (Settings → Terminal can run it instead,
-or leave it out). Quit asks first while a command runs or an agent is mid-turn. **Resume a
-conversation** picks up any older Claude Code conversation in a worktree.
+Your terminals come back at launch with their splits, names and last 1,000 lines. Quit with Claude
+Code, Codex, Gemini CLI or opencode still running, and the restored terminal has the command that
+resumes the conversation typed at the prompt (Settings → Terminal can run it instead, or leave it
+out). Quit asks first while a command runs or an agent is mid-turn. **Resume a conversation** picks
+up any older Claude Code conversation in a worktree.
 
 ---
 

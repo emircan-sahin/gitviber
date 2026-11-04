@@ -1,13 +1,13 @@
 //! GitViber's terminal: alacritty's emulation painted by a GPUI element, with tabs, splits and
-//! zoom, a set of tabs per worktree, shell integration marks and find. Built for running Claude
-//! Code and Codex in it.
+//! zoom (the window's, whatever project is open), shell integration marks and find. Built for
+//! running Claude Code and Codex in it.
 //!
 //! The app mounts one [`TerminalPanel`] and calls [`init`] once:
 //!
 //! ```ignore
 //! gitviber_terminal::init(cx);
 //! let panel = cx.new(|cx| TerminalPanel::new(core, root, config, theme, window, cx));
-//! panel.update(cx, |p, cx| p.set_worktree(other_root, window, cx)); // swaps the tab set
+//! panel.update(cx, |p, cx| p.set_worktree(other_root, cx)); // where new terminals start
 //! ```
 //!
 //! - [`TerminalPanel`]: the bottom panel, its toolbar (new tab, split, kill, zoom, maximize,

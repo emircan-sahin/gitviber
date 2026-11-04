@@ -96,8 +96,7 @@ fn main() {
         let first = if a.memtest { None } else { run(&a.run) };
         // `--restore` takes up the offer the toast makes, and shows what came back.
         if a.restore {
-            let root = panel.read(cx).worktree().to_path_buf();
-            panel.update(cx, |p, cx| p.accept_restore(&root, window, cx));
+            panel.update(cx, |p, cx| p.accept_restore(window, cx));
         }
         if !panel.read(cx).has_terminals() {
             panel.update(cx, |p, cx| p.open_terminal(root.clone(), first, window, cx));

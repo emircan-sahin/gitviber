@@ -1,8 +1,8 @@
-//! The session save: each worktree's tabs (names, splits, where each shell was, the agent it ran)
+//! The session save: every window's tabs (names, splits, where each shell was, the agent it ran)
 //! in terminals.json, and each pane's history in a file of its own beside it, so saving one pane
-//! doesn't rewrite them all. A worktree's are restored the first time it shows in a run, its
-//! agents resumed as Settings → Terminal says. A round runs SAVE_MS after output, taking the
-//! stalest pane due (serializing is milliseconds a pane), and everything goes at quit.
+//! doesn't rewrite them all. They're offered back in the next run's first window, its agents
+//! resumed as Settings → Terminal says. A round runs SAVE_MS after output, taking the stalest
+//! pane due (serializing is milliseconds a pane), and everything goes at quit.
 
 use std::collections::{BTreeMap, HashSet};
 use std::time::Instant;
@@ -22,6 +22,7 @@ use crate::layout::{Layout, Split};
 const FILE: &str = "terminals.json";
 const HISTORY_DIR: &str = "terminal-history";
 const HINT_KEY: &str = "agentNotifyHint";
+const TABS_KEY: &str = "tabs";
 
 fn path() -> PathBuf {
     config_dir().join(FILE)
@@ -68,13 +69,17 @@ pub(super) struct SavedPane {
     pub agent: Option<Value>,
 }
 
-/// terminals.json: each worktree's set by its path, and whether the hint to turn notifications on
-/// was shown.
+/// terminals.json: the tabs to offer next run, and whether the hint to turn notifications on was
+/// shown.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Store {
-    sets: BTreeMap<String, SavedSet>,
+    /// Last run's tabs, offered once in this one.
+    saved: SavedSet,
+    /// Each window's tabs this run, by its panel's `save_key`: written one window after another.
+    windows: BTreeMap<u64, SavedSet>,
+    offered: bool,
     hint_shown: bool,
-    /// Sets were dropped as read: the file is written again, and their histories go.
+    /// Tabs were dropped as read: the file is written again, and their histories go.
     stale: bool,
 }
 
@@ -83,32 +88,56 @@ impl gpui::Global for Store {}
 impl Store {
     fn read() -> Store {
         let text = std::fs::read_to_string(path()).unwrap_or_default();
-        Store::parse(&text, |root| Path::new(root).is_dir())
+        Store::parse(&text, |dir| Path::new(dir).is_dir())
     }
 
-    /// The sets of worktrees still there (`exists`): a removed one's would come back, and resume
-    /// its old conversation, should a new worktree take its path.
+    /// The tabs whose folders are still there (`exists`): a removed worktree's would come back,
+    /// and resume its old conversation, should a new worktree take its path. A save from when
+    /// each worktree had its own tabs comes back as one list, the most recently used last.
     fn parse(text: &str, exists: impl Fn(&str) -> bool) -> Store {
-        let Ok(map) = serde_json::from_str::<serde_json::Map<String, Value>>(text) else {
+        let Ok(mut map) = serde_json::from_str::<serde_json::Map<String, Value>>(text) else {
             return Store::default();
         };
-        let mut store = Store::default();
-        for (k, v) in map {
-            if k == HINT_KEY {
-                store.hint_shown = v.as_bool().unwrap_or(false);
-            } else if !exists(&k) {
-                store.stale = true;
-            } else if let Ok(set) = serde_json::from_value::<SavedSet>(v) {
-                store.sets.insert(k, set);
+        let hint_shown = map.remove(HINT_KEY).and_then(|v| v.as_bool()) == Some(true);
+        let (saved, old) = match map.remove(TABS_KEY) {
+            Some(v) => (serde_json::from_value(v).unwrap_or_default(), false),
+            None => {
+                let sets: Vec<SavedSet> = map
+                    .into_iter()
+                    .filter_map(|(_, v)| serde_json::from_value(v).ok())
+                    .collect();
+                let n = sets.len();
+                let sets = last_session(sets);
+                let dropped = sets.len() < n;
+                (merge(sets), dropped)
             }
+        };
+        let (saved, gone) = present(saved, exists);
+        Store {
+            saved,
+            hint_shown,
+            stale: old || gone,
+            ..Default::default()
         }
-        store
+    }
+
+    /// What the file holds: the windows' tabs, or last run's until a window has saved.
+    fn tabs(&self) -> SavedSet {
+        if self.windows.is_empty() {
+            self.saved.clone()
+        } else {
+            merge(self.windows.values().cloned().collect())
+        }
     }
 
     fn text(&self) -> String {
         let mut map = serde_json::Map::new();
-        for (k, set) in &self.sets {
-            map.insert(k.clone(), serde_json::to_value(set).unwrap_or_default());
+        let tabs = self.tabs();
+        if !tabs.groups.is_empty() {
+            map.insert(
+                TABS_KEY.into(),
+                serde_json::to_value(tabs).unwrap_or_default(),
+            );
         }
         if self.hint_shown {
             map.insert(HINT_KEY.into(), Value::Bool(true));
@@ -116,15 +145,71 @@ impl Store {
         serde_json::to_string_pretty(&Value::Object(map)).unwrap_or_default()
     }
 
-    /// The history files some set still names.
+    /// The history files the file names, and last run's all this run: any window's offer may
+    /// still be taken up. They go at the next run's first write.
     fn named(&self) -> HashSet<String> {
-        self.sets
-            .values()
-            .flat_map(|s| &s.groups)
-            .flat_map(|g| &g.panes)
-            .filter_map(|p| p.history.clone())
-            .collect()
+        let mut out = history_names(&self.tabs());
+        out.extend(history_names(&self.saved));
+        out
     }
+}
+
+fn history_names(set: &SavedSet) -> HashSet<String> {
+    set.groups
+        .iter()
+        .flat_map(|g| &g.panes)
+        .filter_map(|p| p.history.clone())
+        .collect()
+}
+
+/// The per-worktree sets saved within a day of the newest, oldest first: that save kept a set for
+/// every folder ever shown, and the rest would all come back at once. One without a time stays.
+fn last_session(mut sets: Vec<SavedSet>) -> Vec<SavedSet> {
+    const DAY: f64 = 24. * 3600.;
+    let newest = sets.iter().map(|s| s.saved_at).fold(0., f64::max);
+    sets.retain(|s| s.saved_at <= 0. || s.saved_at >= newest - DAY);
+    sets.sort_by(|a, b| a.saved_at.total_cmp(&b.saved_at));
+    sets
+}
+
+/// `sets` one after another, open on the tab the most recently saved one had open.
+fn merge(sets: Vec<SavedSet>) -> SavedSet {
+    let mut out = SavedSet::default();
+    for set in sets.into_iter().filter(|s| !s.groups.is_empty()) {
+        if set.saved_at >= out.saved_at {
+            out.saved_at = set.saved_at;
+            out.active = out.groups.len() + set.active.min(set.groups.len() - 1);
+        }
+        out.groups.extend(set.groups);
+    }
+    out
+}
+
+/// `set` without the panes whose folder is gone; true when one was.
+fn present(set: SavedSet, exists: impl Fn(&str) -> bool) -> (SavedSet, bool) {
+    let (active, mut gone) = (set.active, false);
+    let mut out = SavedSet {
+        saved_at: set.saved_at,
+        ..Default::default()
+    };
+    for (i, mut g) in set.groups.into_iter().enumerate() {
+        let n = g.panes.len();
+        g.panes.retain(|p| exists(&p.cwd));
+        if g.panes.len() < n {
+            gone = true;
+            // Its splits and focus index the panes it had.
+            g.layout = None;
+            g.focused = 0;
+        }
+        if i == active {
+            out.active = out.groups.len();
+        }
+        if !g.panes.is_empty() {
+            out.groups.push(g);
+        }
+    }
+    out.active = out.active.min(out.groups.len().saturating_sub(1));
+    (out, gone)
 }
 
 fn store(cx: &mut App) -> &mut Store {
@@ -133,12 +218,6 @@ fn store(cx: &mut App) -> &mut Store {
     }
     cx.global_mut::<Store>()
 }
-
-/// Worktrees whose saved terminals came back this run, in any window: once each.
-#[derive(Default)]
-struct Restored(HashSet<PathBuf>);
-
-impl gpui::Global for Restored {}
 
 pub(super) fn notify_hint_shown(cx: &mut App) -> bool {
     store(cx).hint_shown
@@ -233,14 +312,16 @@ fn layout_value(l: &Layout, index: &impl Fn(PaneId) -> usize) -> Value {
     }
 }
 
-/// The old app's save (`gitviber.terminals`: one list of tabs for every worktree, each pane's
-/// history inline): its tabs by the folder their first pane opened in, histories into files.
-fn from_legacy(saved: &Value, write: &mut dyn FnMut(&str, &str)) -> BTreeMap<String, SavedSet> {
-    let mut out: BTreeMap<String, SavedSet> = BTreeMap::new();
-    let saved_at = saved
-        .get("savedAt")
-        .and_then(Value::as_f64)
-        .map_or(0., |ms| ms / 1000.);
+/// The old app's save (`gitviber.terminals`: one list of tabs, each pane's history inline): its
+/// tabs, histories into files.
+fn from_legacy(saved: &Value, write: &mut dyn FnMut(&str, &str)) -> SavedSet {
+    let mut out = SavedSet {
+        saved_at: saved
+            .get("savedAt")
+            .and_then(Value::as_f64)
+            .map_or(0., |ms| ms / 1000.),
+        ..Default::default()
+    };
     let active = saved.get("active").and_then(Value::as_u64).unwrap_or(0) as usize;
     let Some(groups) = saved.get("groups").and_then(Value::as_array) else {
         return out;
@@ -283,15 +364,10 @@ fn from_legacy(saved: &Value, write: &mut dyn FnMut(&str, &str)) -> BTreeMap<Str
         {
             continue;
         }
-        let key = panes[0].cwd.clone();
-        let set = out.entry(key).or_insert_with(|| SavedSet {
-            saved_at,
-            ..Default::default()
-        });
         if gi == active {
-            set.active = set.groups.len();
+            out.active = out.groups.len();
         }
-        set.groups.push(SavedGroup {
+        out.groups.push(SavedGroup {
             name: g.get("name").and_then(Value::as_str).map(String::from),
             focused: g.get("focused").and_then(Value::as_u64).unwrap_or(0) as usize,
             layout: g.get("layout").cloned(),
@@ -309,18 +385,18 @@ pub(crate) fn import_legacy(cx: &mut App) {
     let hint = gitviber_ui::legacy::value("gitviber.agentNotifyHint")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let sets = gitviber_ui::legacy::value("gitviber.terminals").map(|v| {
+    let tabs = gitviber_ui::legacy::value("gitviber.terminals").map(|v| {
         let dir = history_dir();
         from_legacy(&v, &mut |name, text| {
             let _ = std::fs::create_dir_all(&dir);
             let _ = write_atomic(&dir.join(name), text);
         })
     });
-    if sets.as_ref().is_none_or(|s| s.is_empty()) && !hint {
+    if tabs.as_ref().is_none_or(|s| s.groups.is_empty()) && !hint {
         return;
     }
     let s = store(cx);
-    s.sets = sets.unwrap_or_default();
+    s.saved = tabs.unwrap_or_default();
     s.hint_shown = hint;
     let text = s.text();
     write_in_background(cx, path(), text);
@@ -484,7 +560,7 @@ impl TerminalPanel {
             }
             slot.history_saved = true;
         }
-        self.write_sets(all, cx);
+        self.write_tabs(all, cx);
         if !all && self.panes.values().any(|s| s.view.read(cx).is_dirty()) {
             self.save_soon(cx);
         }
@@ -551,27 +627,14 @@ impl TerminalPanel {
         }
     }
 
-    /// The sets this panel has, into the store: the file is written when one changed, and history
-    /// files no set names any more go.
-    fn write_sets(&mut self, now: bool, cx: &mut Context<Self>) {
-        // The worktrees whose saved terminals this panel took up: another window's are its own.
-        let sets: Vec<(String, Option<SavedSet>)> = self
-            .restored_here
-            .iter()
-            // Offered and nothing opened there since: the saved ones stay for the offer.
-            .filter(|root| {
-                !self.offers.contains_key(*root)
-                    || self.sets.get(*root).is_some_and(|s| !s.groups.is_empty())
-            })
-            .map(|root| {
-                let saved = self
-                    .sets
-                    .get(root)
-                    .filter(|s| !s.groups.is_empty())
-                    .map(|set| self.saved_set(set, cx));
-                (root.to_string_lossy().into_owned(), saved)
-            })
-            .collect();
+    /// This window's tabs into the store: the file is written when they changed, and history
+    /// files it no longer names go.
+    fn write_tabs(&mut self, now: bool, cx: &mut Context<Self>) {
+        // Offered and none opened since: last run's stay for the offer.
+        let mine = match &self.offer {
+            Some(offer) if self.tabs.groups.is_empty() => offer.clone(),
+            _ => self.saved_set(&self.tabs, cx),
+        };
         let same = |a: &SavedSet, b: &SavedSet| {
             SavedSet {
                 saved_at: 0.,
@@ -583,26 +646,12 @@ impl TerminalPanel {
         };
         let s = store(cx);
         let mut changed = std::mem::take(&mut s.stale);
-        // Worktrees removed since (Clean up, `git worktree remove`): their tabs and histories go.
-        let gone: Vec<String> = s
-            .sets
-            .keys()
-            .filter(|k| !Path::new(k).is_dir())
-            .cloned()
-            .collect();
-        for root in gone {
-            s.sets.remove(&root);
+        if s.windows
+            .get(&self.save_key)
+            .is_none_or(|old| !same(old, &mine))
+        {
+            s.windows.insert(self.save_key, mine);
             changed = true;
-        }
-        for (root, saved) in sets {
-            match saved {
-                Some(saved) if s.sets.get(&root).is_none_or(|old| !same(old, &saved)) => {
-                    s.sets.insert(root, saved);
-                    changed = true;
-                }
-                None if s.sets.remove(&root).is_some() => changed = true,
-                _ => {}
-            }
         }
         if !changed {
             return;
@@ -667,35 +716,36 @@ impl TerminalPanel {
         self.save(true, cx);
     }
 
-    /// `root`'s terminals from the last run, offered the first time it shows in this one: asked,
-    /// not automatic, as each starts a shell. Until then (or if the toast is closed) the save
-    /// keeps them, unless terminals opened there since take their place.
-    pub(super) fn restore(&mut self, root: &Path, _: &mut Window, cx: &mut Context<Self>) {
-        if self.bound.is_none() || !cx.default_global::<Restored>().0.insert(root.to_path_buf()) {
+    /// Last run's terminals, offered in this run's first window: asked, not automatic, as each
+    /// starts a shell. Until then (or if the toast is closed) the save keeps them, unless
+    /// terminals opened since take their place.
+    pub(super) fn restore(&mut self, cx: &mut Context<Self>) {
+        if self.bound.is_none() {
             return;
         }
-        self.restored_here.insert(root.to_path_buf());
-        let key = root.to_string_lossy().into_owned();
-        let Some(saved) = store(cx).sets.get(&key).cloned() else {
+        let s = store(cx);
+        if std::mem::replace(&mut s.offered, true) || s.saved.groups.is_empty() {
             return;
-        };
+        }
+        let saved = s.saved.clone();
+        s.windows.insert(self.save_key, saved.clone());
         let (title, folders) = offer_text(&saved, resume_mode(cx));
-        self.offers.insert(root.to_path_buf(), saved);
-        let (weak, at) = (cx.weak_entity(), root.to_path_buf());
+        self.offer = Some(saved);
+        let weak = cx.weak_entity();
         let toast = Toast::info(folders)
             .title(title)
             .action("Restore", move |window, cx| {
-                let _ = weak.update(cx, |p, cx| p.accept_restore(&at, window, cx));
+                let _ = weak.update(cx, |p, cx| p.accept_restore(window, cx));
             });
         if let Some(ws) = self.workspace() {
             ws.update(cx, |ws, cx| ws.toast(toast, cx));
         }
     }
 
-    /// The offered terminals of `root`, beside any opened since; its agents resumed where their
-    /// folder is still there.
-    pub fn accept_restore(&mut self, root: &Path, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(saved) = self.offers.remove(root) else {
+    /// The offered terminals, after any opened since; their agents resumed where their folder is
+    /// still there.
+    pub fn accept_restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(saved) = self.offer.take() else {
             return;
         };
         let mode = resume_mode(cx);
@@ -767,13 +817,10 @@ impl TerminalPanel {
             return;
         }
         let active = groups.get(saved.active).or(groups.first()).map(|g| g.id);
-        let set = self.sets.entry(root.to_path_buf()).or_default();
-        set.groups.extend(groups);
-        set.active = active;
+        self.tabs.groups.extend(groups);
+        self.tabs.active = active;
         self.apply_dims(cx);
-        if root == self.root
-            && let Some(ws) = self.workspace()
-        {
+        if let Some(ws) = self.workspace() {
             ws.update(cx, |ws, cx| ws.set_open(Slot::Bottom, true, cx));
             self.focus_active(window, cx);
         }
@@ -849,7 +896,7 @@ mod tests {
             .update(cx, |p, cx| p.ask_shell_dirs(true, cx))
             .detach();
         cx.run_until_parked();
-        let saved = panel.read_with(cx, |p, cx| p.saved_set(p.set().expect("a set"), cx));
+        let saved = panel.read_with(cx, |p, cx| p.saved_set(&p.tabs, cx));
         assert_eq!(
             saved.groups[0].panes[0].dir.as_deref(),
             sub.to_str(),
@@ -893,7 +940,7 @@ mod tests {
             p.open_terminal(base.clone(), None, window, cx);
             p.split(Dir::Col, None, window, cx);
             // A divider dragged: the first tab's sizes aren't even.
-            let set = p.set_mut();
+            let set = &mut p.tabs;
             let g = &mut set.groups[0];
             g.layout = layout::resize(&g.layout, &[], &[30., 70.]);
             g.focused = g.panes[0];
@@ -902,7 +949,7 @@ mod tests {
         type Tab = (Vec<PaneId>, Layout, PaneId);
         let tabs = |cx: &mut VisualTestContext| -> (Vec<Tab>, Option<usize>) {
             panel.read_with(cx, |p, _| {
-                let s = p.set().expect("a set");
+                let s = &p.tabs;
                 let tabs = s
                     .groups
                     .iter()
@@ -914,11 +961,10 @@ mod tests {
         let (before, open) = tabs(cx);
         assert!(matches!(&before[0].1, Layout::Split(s) if s.sizes == [30., 70.]));
         panel.update_in(cx, |p, window, cx| {
-            let saved = p.saved_set(p.set().expect("a set"), cx);
+            let saved = p.saved_set(&p.tabs, cx);
             p.close_all(cx);
-            let root = p.root.clone();
-            p.offers.insert(root.clone(), saved);
-            p.accept_restore(&root, window, cx);
+            p.offer = Some(saved);
+            p.accept_restore(window, cx);
         });
         let (after, reopened) = tabs(cx);
         assert_eq!((after.len(), reopened), (before.len(), open));
@@ -937,7 +983,7 @@ mod tests {
     }
 
     #[test]
-    fn the_old_apps_tabs_go_to_their_folders_with_their_histories_in_files() {
+    fn the_old_apps_tabs_come_back_in_their_order_with_their_histories_in_files() {
         let old = serde_json::json!({
             "savedAt": 1_700_000_000_000u64,
             "active": 1,
@@ -951,18 +997,22 @@ mod tests {
             ]
         });
         let mut files = vec![];
-        let sets = from_legacy(&old, &mut |name, text| {
+        let tabs = from_legacy(&old, &mut |name, text| {
             files.push((name.to_string(), text.to_string()))
         });
-        assert_eq!(sets.keys().collect::<Vec<_>>(), ["/w/a", "/w/b"]);
-        let a = &sets["/w/a"];
-        assert_eq!((a.groups.len(), a.saved_at), (2, 1_700_000_000.));
-        let b = &sets["/w/b"];
+        let cwds: Vec<&str> = tabs
+            .groups
+            .iter()
+            .map(|g| g.panes[0].cwd.as_str())
+            .collect();
+        assert_eq!(cwds, ["/w/a", "/w/b", "/w/a"]);
+        assert_eq!(tabs.saved_at, 1_700_000_000.);
+        let (a, b) = (&tabs.groups[0], &tabs.groups[1]);
         assert_eq!(
-            (b.active, b.groups[0].name.as_deref(), b.groups[0].focused),
-            (0, Some("api"), 1)
+            (tabs.active, b.name.as_deref(), b.focused),
+            (1, Some("api"), 1)
         );
-        let srv = &b.groups[0].panes[1];
+        let srv = &b.panes[1];
         assert_eq!(
             (srv.dir.as_deref(), srv.name.as_deref()),
             (Some("/w/b/src"), Some("srv"))
@@ -973,14 +1023,11 @@ mod tests {
         );
         // Empty histories make no file; the others are written as they were.
         assert_eq!(files.len(), 2);
-        assert_eq!(
-            a.groups[0].panes[0].history.as_deref(),
-            Some(files[0].0.as_str())
-        );
+        assert_eq!(a.panes[0].history.as_deref(), Some(files[0].0.as_str()));
         assert!(files[0].1.starts_with("\u{1b}[31mred"));
-        assert!(b.groups[0].panes[0].history.is_none());
+        assert!(b.panes[0].history.is_none());
         assert_eq!(
-            saved_layout(b.groups[0].layout.as_ref(), 2),
+            saved_layout(b.layout.as_ref(), 2),
             Layout::Split(Split {
                 dir: Dir::Row,
                 children: vec![Layout::Pane(0), Layout::Pane(1)],
@@ -1194,7 +1241,7 @@ mod tests {
     }
 
     #[test]
-    fn a_set_reads_back_as_written() {
+    fn the_tabs_read_back_as_written() {
         let set = SavedSet {
             saved_at: 5.,
             active: 0,
@@ -1213,19 +1260,143 @@ mod tests {
             hint_shown: true,
             ..Default::default()
         };
-        // A removed worktree's set is left out, and the file marked for writing again.
-        let text = r#"{"/gone": {"groups": []}, "/w": {"active": 0}, "agentNotifyHint": true}"#;
-        let read = Store::parse(text, |k| k == "/w");
-        assert_eq!(read.sets.keys().collect::<Vec<_>>(), ["/w"]);
-        assert!(read.stale && read.hint_shown);
-        assert!(!Store::parse(r#"{"/w": {}}"#, |_| true).stale);
-        store.sets.insert("/w".into(), set.clone());
-        let back: serde_json::Map<String, Value> = serde_json::from_str(&store.text()).unwrap();
+        store.windows.insert(1, set.clone());
+        let read = Store::parse(&store.text(), |_| true);
         assert_eq!(
-            serde_json::from_value::<SavedSet>(back["/w"].clone()).unwrap(),
-            set
+            (read.saved, read.hint_shown, read.stale),
+            (set, true, false)
         );
-        assert_eq!(back[HINT_KEY], Value::Bool(true));
         assert_eq!(store.named(), HashSet::from(["ab.ans".to_string()]));
+    }
+
+    fn tab(cwds: &[&str], name: &str) -> SavedGroup {
+        SavedGroup {
+            name: Some(name.into()),
+            focused: cwds.len() - 1,
+            layout: Some(
+                json!({"dir": "row", "children": (0..cwds.len()).collect::<Vec<_>>(), "sizes": vec![1; cwds.len()]}),
+            ),
+            panes: cwds
+                .iter()
+                .map(|c| SavedPane {
+                    cwd: c.to_string(),
+                    ..Default::default()
+                })
+                .collect(),
+        }
+    }
+
+    fn names(set: &SavedSet) -> Vec<&str> {
+        set.groups
+            .iter()
+            .filter_map(|g| g.name.as_deref())
+            .collect()
+    }
+
+    /// A save from when each worktree had its own tabs: every worktree's come back as one list,
+    /// the most recently used last and its open tab open; a removed folder's panes are left out.
+    #[test]
+    fn a_save_of_tabs_per_worktree_reads_back_as_one_list() {
+        let set = |at: f64, active: usize, groups: Vec<SavedGroup>| SavedSet {
+            saved_at: at,
+            active,
+            groups,
+        };
+        let old = json!({
+            "/w/app": set(30., 1, vec![tab(&["/w/app"], "a1"), tab(&["/w/app"], "a2")]),
+            "/w/app/.wt/fix": set(10., 0, vec![tab(&["/w/app/.wt/fix", "/gone"], "f1")]),
+            "/w/api": set(20., 0, vec![tab(&["/gone"], "gone"), tab(&["/w/api"], "p1")]),
+            "agentNotifyHint": true,
+        });
+        let read = Store::parse(&old.to_string(), |dir| dir != "/gone");
+        assert_eq!(names(&read.saved), ["f1", "p1", "a1", "a2"]);
+        assert_eq!(read.saved.active, 3, "the newest set's open tab");
+        assert_eq!(read.saved.saved_at, 30.);
+        assert!(read.hint_shown && read.stale);
+        // A split that lost a pane is a row of the rest.
+        let f1 = &read.saved.groups[0];
+        assert_eq!((f1.panes.len(), f1.focused, &f1.layout), (1, 0, &None));
+        // Written back as one list.
+        let back: Value = serde_json::from_str(&read.text()).unwrap();
+        assert_eq!(back.as_object().unwrap().len(), 2, "{back}");
+        let tabs: SavedSet = serde_json::from_value(back[TABS_KEY].clone()).unwrap();
+        assert_eq!(tabs, read.saved);
+    }
+
+    /// Of a save of tabs per worktree, only the sets saved within a day of the newest come back:
+    /// it kept every folder ever shown. Sets without a time all stay.
+    #[test]
+    fn a_save_of_tabs_per_worktree_offers_only_its_last_session() {
+        let set = |at: f64, name: &str| SavedSet {
+            saved_at: at,
+            active: 0,
+            groups: vec![tab(&["/w/a"], name)],
+        };
+        let t = 1_700_000_000.;
+        let old = json!({
+            "/w/a": set(t, "now"),
+            "/w/b": set(t - 3600., "hour ago"),
+            "/w/c": set(t - 30. * 86400., "month ago"),
+        });
+        let read = Store::parse(&old.to_string(), |_| true);
+        assert_eq!(names(&read.saved), ["hour ago", "now"]);
+        assert!(read.stale, "written back without the old set");
+
+        let untimed = json!({ "/w/a": set(0., "a"), "/w/b": set(0., "b") });
+        let read = Store::parse(&untimed.to_string(), |_| true);
+        assert_eq!(names(&read.saved).len(), 2);
+        assert!(!read.stale);
+    }
+
+    /// Last run's histories stay named all this run, after every window saved its own tabs:
+    /// another window's offer may still be taken up.
+    #[test]
+    fn last_runs_histories_stay_named_through_this_run() {
+        let mut old = tab(&["/w/a"], "a");
+        old.panes[0].history = Some("old.ans".into());
+        let mut store = Store {
+            saved: SavedSet {
+                groups: vec![old],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        store.windows.insert(
+            1,
+            SavedSet {
+                groups: vec![tab(&["/w/b"], "b")],
+                ..Default::default()
+            },
+        );
+        assert!(store.named().contains("old.ans"));
+    }
+
+    /// Two windows' tabs go one after the other; a window's offer stands in for it until it has
+    /// tabs of its own.
+    #[test]
+    fn every_windows_tabs_are_saved_together() {
+        let mut store = Store {
+            saved: SavedSet {
+                groups: vec![tab(&["/w/a"], "last run")],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            names(&store.tabs()),
+            ["last run"],
+            "nothing saved this run yet"
+        );
+        let one = SavedSet {
+            saved_at: 2.,
+            active: 1,
+            groups: vec![tab(&["/w/a"], "x"), tab(&["/w/b"], "y")],
+        };
+        store.windows.insert(1, store.saved.clone());
+        store.windows.insert(2, one);
+        let tabs = store.tabs();
+        assert_eq!((names(&tabs), tabs.active), (vec!["last run", "x", "y"], 2));
+        store.windows.insert(2, SavedSet::default());
+        assert_eq!(names(&store.tabs()), ["last run"]);
     }
 }
