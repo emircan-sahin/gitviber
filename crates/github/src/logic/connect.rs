@@ -119,11 +119,16 @@ pub fn no_github_text(gate: Gate, subject: &str) -> (&'static str, String) {
             ),
         );
     }
+    // Not "repoint origin": a repository on another host is fine where it is.
+    let what = if subject == "Pull requests" {
+        "Pull requests and checks".to_string()
+    } else {
+        subject
+    };
     (
         "Origin isn't on GitHub",
         format!(
-            "{subject} come from github.com, and this repository's origin is elsewhere. Point it \
-             at a GitHub repository in Settings > Git."
+            "{what} work with GitHub repositories, and this repository's origin is on another host."
         ),
     )
 }
@@ -153,6 +158,23 @@ mod tests {
         assert!(note.starts_with("The login in use can't see octo-one/secret on GitHub."));
         assert!(note.contains("may be private") && note.contains("see its issues"));
         assert!(hidden_note(None, "issues").contains("can't see this repository"));
+    }
+
+    #[test]
+    fn another_host_is_not_told_to_move() {
+        let (_, pulls) = no_github_text(Gate::NotGitHub, "pull requests");
+        assert!(pulls.starts_with("Pull requests and checks work with GitHub repositories"));
+        assert!(!pulls.contains("Settings"));
+        let (_, issues) = no_github_text(Gate::NotGitHub, "issues");
+        assert!(issues.starts_with("Issues work with GitHub repositories"));
+    }
+
+    /// Expired is signed out too: the same screen, which then says why.
+    #[test]
+    fn an_expired_login_gets_the_sign_in_screen() {
+        let signed_out = Some(Gate::SignIn { hidden: false });
+        assert_eq!(gate(true, Some(github::EXPIRED), None, None), signed_out);
+        assert_eq!(gate(false, None, Some(github::EXPIRED), None), signed_out);
     }
 
     #[test]
