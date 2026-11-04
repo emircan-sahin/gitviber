@@ -875,7 +875,8 @@ pub enum Then {
 impl Render for CommitBox {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.app_theme().clone();
-        let plan = plan(self.facts_for_plan(cx));
+        let facts = self.facts_for_plan(cx);
+        let plan = plan(facts);
         let length = self.summary_text(cx).chars().count();
         let sign_off = self.sign_off(cx);
         let suggest_on = Settings::get(cx).suggest_enabled;
@@ -963,7 +964,7 @@ impl Render for CommitBox {
                         cx.listener(|this, _: &Paste, window, cx| this.paste_summary(window, cx)),
                     )
                     .child(Input::new(&self.summary).small())
-                    .when(self.ask_summary && length == 0, |el| {
+                    .when(self.ask_summary && facts.summary_empty, |el| {
                         el.child(
                             div()
                                 .pt_1()
