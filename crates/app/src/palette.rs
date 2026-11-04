@@ -17,6 +17,7 @@ use gitviber_files::quick_open::{self, QuickOpenFiles, QuickOpenStatus};
 use gitviber_ui::fuzzy::{self, Candidate, Candidates, Match, prepare_query};
 use gitviber_ui::keymap::{self, Category, ROOT_CONTEXT};
 use gitviber_ui::memory::Live;
+use gitviber_ui::projects::{home_dir, home_relative, project_name};
 use gitviber_ui::state::bump;
 use gitviber_ui::widgets::{
     ChangeKind, FileIcon, Keycaps, PAGE, StatusLetter, key_hint, key_hints,
@@ -177,12 +178,16 @@ pub struct Palette {
     root: Option<PathBuf>,
     /// The commands that applied where focus was.
     commands: Vec<Listed>,
+    /// The others, to name one a query only finds there.
+    unavailable: Vec<Listed>,
+    /// The best of `unavailable` for a query no command here matches.
+    unavailable_hit: Option<SharedString>,
     quick: Option<QuickOpen>,
     /// Where quick open's list stood when `quick` was asked for.
     listing: Option<QuickOpenStatus>,
     recent: Vec<String>,
     changes: Option<Vec<(Selection, Arc<FileChange>, &'static str)>>,
-    projects: Vec<String>,
+    projects: Vec<ListedProject>,
     error: Option<SharedString>,
     rows: Vec<Row>,
     /// Where each section of `rows` starts, when the list has sections.
@@ -231,6 +236,27 @@ impl Listed {
         hits.into_iter()
             .filter_map(|h| h.checked_sub(skip))
             .collect()
+    }
+}
+
+/// A project as the palette lists it: its folder's name, its place under it. Both are matched.
+struct ListedProject {
+    path: String,
+    name: SharedString,
+    place: SharedString,
+    search: String,
+}
+
+impl ListedProject {
+    fn new(path: String, home: Option<&str>) -> Self {
+        let name = project_name(&path).to_string();
+        let place = home_relative(&path, home);
+        Self {
+            search: format!("{name} {place}"),
+            name: name.into(),
+            place: place.into(),
+            path,
+        }
     }
 }
 
@@ -353,14 +379,13 @@ impl Palette {
         }
         let ws = workspace.read(cx);
         let available = window.available_actions(cx);
-        let commands: Vec<Listed> = keymap::all_commands()
+        let (commands, unavailable): (Vec<Listed>, Vec<Listed>) = keymap::all_commands()
             .filter(|c| c.id != "workbench.showCommands")
-            .filter(|c| {
-                let name = c.action().name();
-                available.iter().any(|a| a.name() == name)
-            })
             .map(|c| Listed::new(c, Some(ws)))
-            .collect();
+            .partition(|l| {
+                let name = l.command.action().name();
+                available.iter().any(|a| a.name() == name)
+            });
         let project = ws.project().cloned();
         let root = project.as_ref().map(|p| p.read(cx).root().to_path_buf());
         let main = project.as_ref().and_then(|p| {
@@ -368,11 +393,12 @@ impl Palette {
                 .main_worktree()
                 .map(|m| m.to_string_lossy().into_owned())
         });
-        let projects: Vec<String> = UiState::get(cx)
+        let home = home_dir();
+        let projects: Vec<ListedProject> = UiState::get(cx)
             .recent_projects
             .iter()
             .filter(|p| main.as_deref() != Some(p.as_str()))
-            .cloned()
+            .map(|p| ListedProject::new(p.clone(), home.as_deref()))
             .collect();
         let recent = root
             .as_ref()
@@ -396,6 +422,8 @@ impl Palette {
                 workspace: weak_ws,
                 root,
                 commands,
+                unavailable,
+                unavailable_hit: None,
                 quick: None,
                 listing: None,
                 recent,
@@ -503,6 +531,7 @@ impl Palette {
 
     fn rank_rows(&mut self, cx: &mut Context<Self>) {
         let query = self.query.to_string();
+        self.unavailable_hit = None;
         if let Some(q) = query.strip_prefix('>') {
             let recent = &UiState::get(cx).recent_commands;
             self.rows = rank(
@@ -540,6 +569,12 @@ impl Palette {
                 }
             })
             .collect();
+            if self.rows.is_empty() && !q.trim().is_empty() {
+                let hit = rank(q, &self.unavailable, |l| l.search.as_str(), false, |_| None);
+                self.unavailable_hit = hit
+                    .first()
+                    .map(|(at, _)| self.unavailable[*at].label.clone());
+            }
             return;
         }
         self.rows = match self.mode {
@@ -567,23 +602,32 @@ impl Palette {
                     })
                     .collect()
             }
-            Mode::Projects => rank(&query, &self.projects, |p| p.as_str(), true, |_| None)
-                .into_iter()
-                .map(|(at, m)| {
-                    let path = &self.projects[at];
-                    Row {
-                        label: path.clone().into(),
-                        hits: m.hits,
-                        hint: None,
-                        keys: None,
-                        icon: Some(IconName::FolderGit2),
-                        group: None,
-                        path: false,
-                        status: None,
-                        run: Run::Terminal { cwd: path.into() },
-                    }
-                })
-                .collect(),
+            Mode::Projects => rank(
+                &query,
+                &self.projects,
+                |p| p.search.as_str(),
+                true,
+                |_| None,
+            )
+            .into_iter()
+            .map(|(at, m)| {
+                let p = &self.projects[at];
+                let named = p.name.chars().count();
+                Row {
+                    label: p.name.clone(),
+                    hits: m.hits.into_iter().filter(|h| *h < named).collect(),
+                    hint: Some(p.place.clone()),
+                    keys: None,
+                    icon: Some(IconName::FolderGit2),
+                    group: None,
+                    path: false,
+                    status: None,
+                    run: Run::Terminal {
+                        cwd: (&p.path).into(),
+                    },
+                }
+            })
+            .collect(),
         };
     }
 
@@ -770,7 +814,13 @@ impl Palette {
 
     fn empty_text(&self, cx: &App) -> SharedString {
         if self.query.starts_with('>') {
-            return "No matching commands".into();
+            return match &self.unavailable_hit {
+                Some(label) => {
+                    format!("'{label}' isn't available here: it needs a file or panel in focus")
+                        .into()
+                }
+                None => "No matching commands".into(),
+            };
         }
         if let Some(e) = &self.error {
             return e.clone();
@@ -1473,6 +1523,66 @@ mod tests {
         assert!(shown.starts_with("Could not list files: "), "{shown}");
         assert!(shown.contains("index"), "{shown}");
         _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// A query only commands that don't apply here match names one, rather than saying there's
+    /// no such command.
+    #[gpui_kit::test]
+    fn a_command_that_needs_focus_elsewhere_is_named(cx: &mut TestAppContext) {
+        let (host, cx) = window("unavailable", cx);
+        let ws = cx.update(|_, cx| host.read(cx).ws.clone());
+        let palette = cx
+            .update(|window, cx| Palette::show(Mode::Commands, &ws, window, cx))
+            .unwrap();
+        cx.run_until_parked();
+        cx.simulate_input("toggle blame");
+        cx.run_until_parked();
+        assert!(labels(&palette, cx).is_empty());
+        let shown = cx.update(|_, cx| palette.read(cx).empty_text(cx));
+        assert_eq!(
+            shown.as_ref(),
+            "'Toggle Blame' isn't available here: it needs a file or panel in focus"
+        );
+        cx.simulate_input("qqqzzz");
+        cx.run_until_parked();
+        let shown = cx.update(|_, cx| palette.read(cx).empty_text(cx));
+        assert_eq!(shown.as_ref(), "No matching commands");
+    }
+
+    /// New Terminal in Project lists each project by its folder's name over where it is, and
+    /// finds it by either.
+    #[gpui_kit::test]
+    fn projects_are_named_and_found_by_their_place_too(cx: &mut TestAppContext) {
+        let (host, cx) = window("projects", cx);
+        cx.update(|_, cx| {
+            let list = ["/w/code/app", "/w/site/web"].map(String::from).to_vec();
+            UiState::update(cx, |s| s.recent_projects = list);
+        });
+        let ws = cx.update(|_, cx| host.read(cx).ws.clone());
+        let palette = cx
+            .update(|window, cx| Palette::show(Mode::Projects, &ws, window, cx))
+            .unwrap();
+        cx.run_until_parked();
+        let rows = |cx: &mut VisualTestContext| {
+            cx.update(|_, cx| {
+                let p = palette.read(cx);
+                let hint = |r: &Row| r.hint.as_ref().map(|h| h.to_string());
+                p.rows
+                    .iter()
+                    .map(|r| (r.label.to_string(), hint(r)))
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(
+            rows(cx),
+            [
+                ("app".into(), Some("/w/code/app".into())),
+                ("web".into(), Some("/w/site/web".into()))
+            ]
+        );
+        cx.simulate_input("site");
+        cx.run_until_parked();
+        assert_eq!(rows(cx), [("web".into(), Some("/w/site/web".into()))]);
     }
 
     /// Made-up repository paths, deterministic, `n` of them.
