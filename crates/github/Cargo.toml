@@ -21,7 +21,7 @@ gitviber-refs = { path = "../refs" }
 gitviber-history = { path = "../history" }
 # A pull request's menu opens its guided review.
 gitviber-review = { path = "../review" }
-# The sign-in screen runs gh's login in a terminal tab.
+# The sign-in screen runs gh's login in a terminal tab; already in the tree through gitviber-review.
 gitviber-terminal = { path = "../terminal" }
 serde.workspace = true
 serde_json.workspace = true

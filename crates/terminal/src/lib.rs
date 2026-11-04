@@ -55,7 +55,7 @@ pub use marks::{CommandEnd, end_text, end_title, format_duration, short_command}
 pub use pane::{FindResult, PaneEvent, TerminalPane};
 pub use panel::{
     PanelEvent, TerminalPanel, WorktreeInfo, agents_in, calling, config_from, paste_to_agent,
-    save_before_quit, stopped_by_quit, theme_from, worktree_agent,
+    run_in_new_tab, save_before_quit, stopped_by_quit, theme_from, window_panel, worktree_agent,
 };
 
 use gpui::{App, KeyBinding, NoAction};

@@ -3,7 +3,6 @@
 //! do, and only the second may make the OS ask for a Keychain password. Also what shows when
 //! origin isn't on GitHub.
 
-use gitviber_terminal::TerminalPanel;
 use gitviber_ui::AppTheme;
 use gitviber_ui::keymap::IS_MAC;
 use gitviber_ui::memory::Live;
@@ -26,8 +25,6 @@ use crate::ui::dialogs::AddRemoteDialog;
 const LOGIN: &str = "gh auth login";
 /// A new login for gh's account, in place of the one GitHub refused.
 const REFRESH: &str = "gh auth refresh";
-/// The terminal panel's id, as the terminal crate registers it.
-const TERMINAL: &str = "terminal";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Way {
@@ -129,33 +126,21 @@ impl ConnectView {
     }
 }
 
-/// `line` in a new terminal tab of the open repository, the terminal panel shown. Without a
-/// terminal in this window it's copied instead.
+/// `line` in a new terminal tab of the open repository. Without a terminal in this window it's
+/// copied instead.
 fn run_in_terminal(line: &str, window: &mut Window, cx: &mut App) {
     let cwd = crate::core(cx)
         .repo()
         .ok()
         .or_else(std::env::home_dir)
         .unwrap_or_default();
-    let panel = Workspace::for_window(window, cx).and_then(|ws| {
-        ws.update(cx, |ws, cx| ws.show_panel(TERMINAL, cx));
-        // Built outside the workspace's update: the terminal panel reads the workspace as it's made.
-        Workspace::ensure_panel(&ws, TERMINAL, window, cx)?
-            .view()
-            .downcast::<TerminalPanel>()
-            .ok()
-    });
-    match panel {
-        // The panel only types it: its Enter runs it.
-        Some(p) => p.update(cx, |p, cx| {
-            p.open_terminal(cwd, Some(format!("{line}\r")), window, cx)
-        }),
-        None => copy(
+    if !gitviber_terminal::run_in_new_tab(cwd, line, window, cx) {
+        copy(
             line,
             "Command copied: this window has no terminal",
             window,
             cx,
-        ),
+        );
     }
 }
 
