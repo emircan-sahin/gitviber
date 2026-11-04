@@ -17,14 +17,15 @@ use gpui_kit::{
 };
 
 use crate::cache::{Cache, Read};
-use crate::logic::connect::{Gate, gate, hidden_note, no_github_text, signed_out_note};
+use crate::logic::connect::{
+    Gate, gate, hidden_note, no_github_text, shows_expired, signed_out_note,
+};
 use crate::model::{Account, is_expired, is_not_connected};
 use crate::ui::common::{copy, error_text, theme};
 use crate::ui::dialogs::AddRemoteDialog;
 
+/// Also what replaces a login GitHub refused: whether gh or git's store held it isn't known here.
 const LOGIN: &str = "gh auth login";
-/// A new login for gh's account, in place of the one GitHub refused.
-const REFRESH: &str = "gh auth refresh";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Way {
@@ -43,10 +44,9 @@ pub struct ConnectView {
     gh: Option<bool>,
     busy: Option<Way>,
     missed: Option<Way>,
-    /// A check found the login GitHub refused, handed back as it was.
-    refused: Option<Way>,
-    /// Hidden, a check found a login, and GitHub may still answer 404 with it.
-    checked: bool,
+    /// Hidden or expired, the way a check found a login, which GitHub may still answer 404 to
+    /// or refuse.
+    checked: Option<Way>,
     error: Option<String>,
     _look: Task<()>,
     _live: Live,
@@ -61,8 +61,7 @@ impl ConnectView {
             gh: None,
             busy: None,
             missed: None,
-            refused: None,
-            checked: false,
+            checked: None,
             error: None,
             _look: Task::ready(()),
             _live: Live::new("ConnectView"),
@@ -81,16 +80,12 @@ impl ConnectView {
 
     /// `failure`: the account's or the list's error, which tells expired from signed out.
     fn set_state(&mut self, hidden: bool, failure: Option<&str>, cx: &mut Context<Self>) {
-        // Kept while the account is read again (no error then), so the words don't flash.
-        let expired = failure
-            .filter(|e| is_not_connected(e))
-            .map_or(self.expired, is_expired);
+        let expired = shows_expired(hidden, failure, self.expired);
         if self.hidden != hidden || self.expired != expired {
             self.hidden = hidden;
             self.expired = expired;
             self.missed = None;
-            self.refused = None;
-            self.checked = false;
+            self.checked = None;
             cx.notify();
         }
     }
@@ -98,8 +93,7 @@ impl ConnectView {
     fn look(&mut self, way: Way, cx: &mut Context<Self>) {
         self.busy = Some(way);
         self.missed = None;
-        self.refused = None;
-        self.checked = false;
+        self.checked = None;
         self.error = None;
         let task = crate::account::connect(way == Way::Store, cx);
         self._look = cx.spawn(async move |this, cx| {
@@ -111,9 +105,10 @@ impl ConnectView {
                 this.busy = None;
                 this.gh = Some(gh);
                 match result {
-                    // The same login, most likely: if GitHub still says 404, the screen says so.
-                    Ok(()) => this.checked = this.hidden,
-                    Err(e) if is_expired(&e) => this.refused = Some(way),
+                    // The same login, most likely: if GitHub still says 404 or refuses it, the
+                    // screen says so.
+                    Ok(()) => this.checked = (this.hidden || this.expired).then_some(way),
+                    Err(e) if is_expired(&e) => this.checked = Some(way),
                     // Still none: the screen stays, and says so.
                     Err(e) if is_not_connected(&e) => this.missed = Some(way),
                     Err(e) => this.error = Some(format!("Could not look for a login: {e}")),
@@ -177,11 +172,10 @@ fn step(n: &'static str, title: &'static str, t: &AppTheme) -> gpui_kit::Div {
 impl Render for ConnectView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx);
-        // A login was found (hidden, expired) or gh is there: no install to suggest.
-        let install = !self.hidden && !self.expired && self.gh != Some(true);
-        let command = if self.expired {
-            REFRESH.to_string()
-        } else if IS_MAC && install {
+        // A login found (hidden, expired) may be git's: only gh's own absence asks to install it.
+        // Unknown yet counts as there, so the command doesn't change under the user.
+        let install = self.gh == Some(false);
+        let command = if IS_MAC && install {
             format!("brew install gh && {LOGIN}")
         } else {
             LOGIN.to_string()
@@ -189,9 +183,8 @@ impl Render for ConnectView {
         let origin = Cache::origin(cx);
         let (title, note) = if self.expired {
             (
-                "GitHub rejected gh's login".to_string(),
-                "It's expired or revoked. Refresh it with the GitHub CLI, then check again."
-                    .to_string(),
+                "GitHub rejected your login".to_string(),
+                "It's expired or revoked. Sign in again, then check again.".to_string(),
             )
         } else if self.hidden {
             (
@@ -212,7 +205,12 @@ impl Render for ConnectView {
         // After a check, until the account is read again with what it found.
         let reading = crate::account::current_account(cx).loading;
         let busy = self.busy.is_some() || reading;
-        let still = self.checked && !busy;
+        let still = |way: Way| self.checked == Some(way) && !busy;
+        let still_gh = still(Way::Gh).then_some(if self.expired {
+            "GitHub still rejects gh's login."
+        } else {
+            "GitHub still doesn't show it to this login."
+        });
         let small = |s: &str| {
             div()
                 .mt(px(6.))
@@ -239,7 +237,7 @@ impl Render for ConnectView {
                     .flex_col()
                     .gap(px(8.))
                     .child(
-                        step("1", if self.expired { "Refresh gh's login" } else { "With the GitHub CLI (recommended)" }, &t)
+                        step("1", if self.expired { "Sign in again with the GitHub CLI" } else { "With the GitHub CLI (recommended)" }, &t)
                             .when(!IS_MAC && install, |d| d.child(small("Install gh (cli.github.com), then:")))
                             .child(
                                 div()
@@ -250,13 +248,14 @@ impl Render for ConnectView {
                                     .child(Button::new("copy-login").ghost().xsmall().icon(IconName::Copy).tooltip("Copy command").on_click(move |_, window, cx: &mut App| copy(&command, "Command copied", window, cx))),
                             )
                             .child(
-                                div().mt(px(8.)).flex().flex_wrap().gap(px(6.)).child(
+                                // Off macOS gh's install is the user's to pick: a run would only fail.
+                                div().mt(px(8.)).flex().flex_wrap().gap(px(6.)).when(IS_MAC || !install, |d| d.child(
                                     Button::new("run-login")
                                         .small()
                                         .icon(IconName::SquareTerminal)
                                         .label("Run in Terminal")
                                         .on_click(move |_, window, cx: &mut App| run_in_terminal(&run, window, cx)),
-                                ).child(
+                                )).child(
                                     Button::new("look-gh")
                                         .small()
                                         .icon(IconName::RefreshCw)
@@ -267,8 +266,7 @@ impl Render for ConnectView {
                                 ),
                             )
                             .when(self.missed == Some(Way::Gh), |d| d.child(small(missed_gh)))
-                            .when(self.refused == Some(Way::Gh), |d| d.child(small("gh still has the login GitHub rejected.")))
-                            .when(still, |d| d.child(small("GitHub still doesn't show it to this login."))),
+                            .when_some(still_gh, |d, s| d.child(small(s))),
                     )
                     // gh's login is asked first, so the stored one can't stand in for it here.
                     .when(!self.hidden, |d| d.child(
@@ -289,7 +287,7 @@ impl Render for ConnectView {
                                 ),
                             )
                             .when(self.missed == Some(Way::Store), |d| d.child(small("Git has no login stored for github.com.")))
-                            .when(self.refused == Some(Way::Store), |d| d.child(small("GitHub rejected the login git stored (expired or revoked)."))),
+                            .when(still(Way::Store), |d| d.child(small("GitHub rejected the login git stored (expired or revoked)."))),
                     )),
             )
     }
