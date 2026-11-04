@@ -1,8 +1,9 @@
 //! Opening and closing the GitHub views gives their memory back: PR, issue and PR file tabs,
 //! the two panels, and the dialogs' entities, ten times over, leave no entity behind.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard};
 
 use gitviber_core::git::FileChange;
 use gitviber_ui::workspace::{PullRange, Selection, TabGroup, Workspace};
@@ -31,7 +32,23 @@ impl Render for Host {
     }
 }
 
+/// The live counts are the process's: a view another test holds would read as a leak. Every test
+/// that makes views shares this until its thread ends; the leak test takes it alone.
+static VIEWS: RwLock<()> = RwLock::new(());
+
+thread_local! {
+    static SHARING: RefCell<Option<RwLockReadGuard<'static, ()>>> = const { RefCell::new(None) };
+}
+
 pub(crate) fn setup(cx: &mut TestAppContext) {
+    SHARING.with(|held| {
+        held.borrow_mut()
+            .get_or_insert_with(|| VIEWS.read().unwrap_or_else(PoisonError::into_inner));
+    });
+    init(cx);
+}
+
+fn init(cx: &mut TestAppContext) {
     gitviber_ui::test_support::config_dir("github-test");
     cx.update(|cx| {
         gitviber_ui::init(cx);
@@ -94,7 +111,8 @@ pub(crate) fn file(path: &str) -> FileChange {
 
 #[gpui_kit::test]
 fn closed_tabs_and_panels_leave_nothing_behind(cx: &mut TestAppContext) {
-    setup(cx);
+    let _alone = VIEWS.write().unwrap_or_else(PoisonError::into_inner);
+    init(cx);
     let (host, cx) = cx.add_window_view(|window, cx| {
         let ws = cx.new(Workspace::new);
         Workspace::register_window(&ws, window, cx);
