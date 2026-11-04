@@ -99,22 +99,24 @@ impl Store {
             return Store::default();
         };
         let hint_shown = map.remove(HINT_KEY).and_then(|v| v.as_bool()) == Some(true);
-        let saved = match map.remove(TABS_KEY) {
-            Some(v) => serde_json::from_value(v).unwrap_or_default(),
+        let (saved, old) = match map.remove(TABS_KEY) {
+            Some(v) => (serde_json::from_value(v).unwrap_or_default(), false),
             None => {
-                let mut sets: Vec<SavedSet> = map
+                let sets: Vec<SavedSet> = map
                     .into_iter()
                     .filter_map(|(_, v)| serde_json::from_value(v).ok())
                     .collect();
-                sets.sort_by(|a, b| a.saved_at.total_cmp(&b.saved_at));
-                merge(sets)
+                let n = sets.len();
+                let sets = last_session(sets);
+                let dropped = sets.len() < n;
+                (merge(sets), dropped)
             }
         };
-        let (saved, stale) = present(saved, exists);
+        let (saved, gone) = present(saved, exists);
         Store {
             saved,
             hint_shown,
-            stale,
+            stale: old || gone,
             ..Default::default()
         }
     }
@@ -143,9 +145,12 @@ impl Store {
         serde_json::to_string_pretty(&Value::Object(map)).unwrap_or_default()
     }
 
-    /// The history files the file names.
+    /// The history files the file names, and last run's all this run: any window's offer may
+    /// still be taken up. They go at the next run's first write.
     fn named(&self) -> HashSet<String> {
-        history_names(&self.tabs())
+        let mut out = history_names(&self.tabs());
+        out.extend(history_names(&self.saved));
+        out
     }
 }
 
@@ -155,6 +160,16 @@ fn history_names(set: &SavedSet) -> HashSet<String> {
         .flat_map(|g| &g.panes)
         .filter_map(|p| p.history.clone())
         .collect()
+}
+
+/// The per-worktree sets saved within a day of the newest, oldest first: that save kept a set for
+/// every folder ever shown, and the rest would all come back at once. One without a time stays.
+fn last_session(mut sets: Vec<SavedSet>) -> Vec<SavedSet> {
+    const DAY: f64 = 24. * 3600.;
+    let newest = sets.iter().map(|s| s.saved_at).fold(0., f64::max);
+    sets.retain(|s| s.saved_at <= 0. || s.saved_at >= newest - DAY);
+    sets.sort_by(|a, b| a.saved_at.total_cmp(&b.saved_at));
+    sets
 }
 
 /// `sets` one after another, open on the tab the most recently saved one had open.
@@ -649,13 +664,11 @@ impl TerminalPanel {
             write_in_background(cx, path(), text);
         }
         let dir = history_dir();
-        // An offer still standing reads its histories when taken up.
-        let mut live: HashSet<String> = self
+        let live: HashSet<String> = self
             .panes
             .values()
             .filter_map(|s| s.history_file.clone())
             .collect();
-        live.extend(self.offer.as_ref().map(history_names).unwrap_or_default());
         cx.background_spawn(async move {
             let Ok(entries) = std::fs::read_dir(&dir) else {
                 return;
@@ -1308,6 +1321,54 @@ mod tests {
         assert_eq!(back.as_object().unwrap().len(), 2, "{back}");
         let tabs: SavedSet = serde_json::from_value(back[TABS_KEY].clone()).unwrap();
         assert_eq!(tabs, read.saved);
+    }
+
+    /// Of a save of tabs per worktree, only the sets saved within a day of the newest come back:
+    /// it kept every folder ever shown. Sets without a time all stay.
+    #[test]
+    fn a_save_of_tabs_per_worktree_offers_only_its_last_session() {
+        let set = |at: f64, name: &str| SavedSet {
+            saved_at: at,
+            active: 0,
+            groups: vec![tab(&["/w/a"], name)],
+        };
+        let t = 1_700_000_000.;
+        let old = json!({
+            "/w/a": set(t, "now"),
+            "/w/b": set(t - 3600., "hour ago"),
+            "/w/c": set(t - 30. * 86400., "month ago"),
+        });
+        let read = Store::parse(&old.to_string(), |_| true);
+        assert_eq!(names(&read.saved), ["hour ago", "now"]);
+        assert!(read.stale, "written back without the old set");
+
+        let untimed = json!({ "/w/a": set(0., "a"), "/w/b": set(0., "b") });
+        let read = Store::parse(&untimed.to_string(), |_| true);
+        assert_eq!(names(&read.saved).len(), 2);
+        assert!(!read.stale);
+    }
+
+    /// Last run's histories stay named all this run, after every window saved its own tabs:
+    /// another window's offer may still be taken up.
+    #[test]
+    fn last_runs_histories_stay_named_through_this_run() {
+        let mut old = tab(&["/w/a"], "a");
+        old.panes[0].history = Some("old.ans".into());
+        let mut store = Store {
+            saved: SavedSet {
+                groups: vec![old],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        store.windows.insert(
+            1,
+            SavedSet {
+                groups: vec![tab(&["/w/b"], "b")],
+                ..Default::default()
+            },
+        );
+        assert!(store.named().contains("old.ans"));
     }
 
     /// Two windows' tabs go one after the other; a window's offer stands in for it until it has
