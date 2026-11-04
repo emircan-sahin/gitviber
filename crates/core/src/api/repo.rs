@@ -220,12 +220,14 @@ pub fn folder_repo(_core: &Core, path: String) -> Res<FolderRepo> {
     let dir = Path::new(&path);
     let main = git::main_worktree(dir);
     let top = git::toplevel(dir).ok();
+    let linked = match (&main, &top) {
+        (Some(m), Some(t)) => Path::new(t) == dir && m != t,
+        _ => false,
+    };
     Ok(FolderRepo {
         branch: git::current_branch(dir),
-        linked: main.is_some()
-            && top.as_deref().is_some_and(|t| Path::new(t) == dir)
-            && main != top,
         main,
+        linked,
     })
 }
 
@@ -434,6 +436,56 @@ mod open_tests {
             let _ = std::fs::remove_dir_all(d);
         }
         let _ = std::fs::remove_file(&link);
+    }
+
+    /// A terminal's folder as its tab shows it: a linked worktree's top is linked, with its
+    /// branch; the main worktree and a folder inside a linked one aren't; a plain or missing
+    /// folder reads as nothing.
+    #[test]
+    fn a_folder_reads_as_its_tab_shows_it() {
+        let Some(dir) = repo("folder-repo") else {
+            return;
+        };
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-C"])
+                .arg(&dir)
+                .args(args)
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        let linked = dir.with_extension("wt");
+        let _ = std::fs::remove_dir_all(&linked);
+        assert!(git(&["commit", "-q", "--allow-empty", "-m", "first"]));
+        let wt = linked.to_string_lossy();
+        assert!(git(&["worktree", "add", "-q", &wt, "-b", "side"]));
+        std::fs::create_dir_all(linked.join("src")).unwrap();
+        let core = Core::new(Arc::new(|_| {}));
+        let read = |p: &Path| folder_repo(&core, p.to_string_lossy().into_owned()).unwrap();
+        let main = Some(dir.to_string_lossy().into_owned());
+
+        let at_main = read(&dir);
+        assert_eq!((at_main.linked, &at_main.main), (false, &main));
+        let at_linked = read(&linked);
+        assert_eq!(
+            (
+                at_linked.linked,
+                at_linked.branch.as_deref(),
+                &at_linked.main
+            ),
+            (true, Some("side"), &main)
+        );
+        assert!(!read(&linked.join("src")).linked);
+        assert_eq!(read(&dir.join("nowhere")), FolderRepo::default());
+        let plain = dir.with_extension("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        // The temp dir may sit in a repository here.
+        if git::toplevel(&plain).is_err() {
+            assert_eq!(read(&plain), FolderRepo::default());
+        }
+        for d in [&linked, &plain, &dir] {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 
     /// A core whose RepoChanged events come out of the receiver.
