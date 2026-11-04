@@ -8,8 +8,8 @@ use crate::dialogs::{self, Ask, Choice};
 use crate::model::conflicts::{Unsure, resolve_question, unsure};
 use crate::model::list::{
     ChangesView, Item, Kind, Lists, Mtimes, NESTED_EXPLAINED, file_sig, files, folder_key,
-    items_of, kept_by_restore, left_out, range_of, stageable, sum_lines, toggled, unstage_paths,
-    untracked_folder, viewed_key,
+    folder_targets, items_of, kept_by_restore, left_out, range_of, stageable, sum_lines, toggled,
+    unstage_paths, untracked, untracked_folder, viewed_key,
 };
 use crate::model::text::{describe_stash, ignore_pattern};
 use crate::model::tree::folders_of;
@@ -1055,14 +1055,9 @@ impl ChangesPanel {
             Some(Row::Item(Item::File { change, .. })) => {
                 Some((change.kind, self.targets(change.kind, &change.key())))
             }
-            Some(Row::Item(Item::Folder { kind, files, .. })) => Some((
-                *kind,
-                files
-                    .iter()
-                    .filter(|f| f.nested.is_none())
-                    .cloned()
-                    .collect(),
-            )),
+            Some(Row::Item(Item::Folder { kind, files, .. })) => {
+                Some((*kind, folder_targets(files)))
+            }
             Some(_) => None,
             None => {
                 let key = self.open_key.as_deref()?;
@@ -1516,35 +1511,19 @@ impl ChangesPanel {
 
     fn stash_dialog(&mut self, paths: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         let some = !paths.is_empty();
-        let untracked_count = self
-            .lists
-            .unstaged
-            .iter()
-            .filter(|f| f.status == "?")
-            .count();
+        let untracked_text = untracked(&self.lists.unstaged);
         // On, as Stash and Switch does: "leaves the working tree clean" then holds.
-        let untracked = Rc::new(Cell::new(untracked_count > 0));
+        let untracked = Rc::new(Cell::new(untracked_text.is_some()));
         let staged_only = Rc::new(Cell::new(false));
         let mut choices = vec![];
         if !some {
             choices.push(Choice {
                 label: format!(
                     "Include {}",
-                    if untracked_count > 0 {
-                        format!(
-                            "{untracked_count} untracked {}",
-                            if untracked_count == 1 {
-                                "file"
-                            } else {
-                                "files"
-                            }
-                        )
-                    } else {
-                        "untracked files".into()
-                    }
+                    untracked_text.as_deref().unwrap_or("untracked files")
                 )
                 .into(),
-                enabled: untracked_count > 0,
+                enabled: untracked_text.is_some(),
                 checked: untracked.clone(),
             });
             choices.push(Choice {
@@ -1578,12 +1557,25 @@ impl ChangesPanel {
                     .iter()
                     .any(|f| f.path == *p && f.status == "?")
             });
+        let takes_untracked = if some {
+            some_untracked
+        } else {
+            untracked_text.is_some()
+        };
         dialogs::ask_text(
             window,
             cx,
             Ask {
                 title: title.into(),
-                description: format!("{description} Apply or pop them later from Stashes.").into(),
+                description: format!(
+                    "{description} Apply or pop them later from Stashes.{}",
+                    if takes_untracked {
+                        " Stashed untracked files are off the disk until then."
+                    } else {
+                        ""
+                    }
+                )
+                .into(),
                 placeholder: "Message (optional)",
                 initial: String::new(),
                 ok_label: "Stash",
@@ -2327,11 +2319,7 @@ impl ChangesPanel {
                 files: inside,
             }) => {
                 let key = folder_key(kind, &path);
-                let rows: Vec<Arc<FileChange>> = inside
-                    .iter()
-                    .filter(|f| f.nested.is_none())
-                    .cloned()
-                    .collect();
+                let rows = folder_targets(&inside);
                 base()
                     .pl(px(6. + depth as f32 * 12.))
                     .cursor_pointer()
@@ -3941,40 +3929,26 @@ mod tests {
         });
     }
 
-    /// A window with a workspace and the panel in it on `dir`, the status read. No Project: the
-    /// test reads the repo again itself after each action.
+    /// A window with a workspace and the panel in it on `dir`, the status read, under the window
+    /// root dialogs need. No Project: the test reads the repo again itself after each action.
     fn open<'a>(
         cx: &'a mut TestAppContext,
         dir: &Path,
     ) -> (Entity<Workspace>, Entity<Host>, &'a mut VisualTestContext) {
-        open_with(cx, dir, false)
-    }
-
-    /// `open`; `root`: under the window root dialogs need.
-    fn open_with<'a>(
-        cx: &'a mut TestAppContext,
-        dir: &Path,
-        root: bool,
-    ) -> (Entity<Workspace>, Entity<Host>, &'a mut VisualTestContext) {
         let core = cx.update(|cx| crate::core(cx));
         gitviber_core::api::repo::open_repo(&core, dir.to_string_lossy().into_owned()).unwrap();
         let ws = cx.update(|cx| cx.new(Workspace::new));
-        let empty = || Host {
-            panel: None,
-            center: None,
-        };
-        let (host, cx) = if root {
-            let mut host = None;
-            let handle = cx.add_window(|window, cx| {
-                let h = cx.new(|_| empty());
-                host = Some(h.clone());
-                gpui_kit::base::Root::new(h, window, cx)
+        let mut host = None;
+        let handle = cx.add_window(|window, cx| {
+            let h = cx.new(|_| Host {
+                panel: None,
+                center: None,
             });
-            let cx = VisualTestContext::from_window(*handle, cx).into_mut();
-            (host.unwrap(), cx)
-        } else {
-            cx.add_window_view(|_, _| empty())
-        };
+            host = Some(h.clone());
+            gpui_kit::base::Root::new(h, window, cx)
+        });
+        let cx = VisualTestContext::from_window(*handle, cx).into_mut();
+        let host = host.unwrap();
         cx.update(|window, cx| Workspace::register_window(&ws, window, cx));
         cx.update(|window, cx| {
             let ctx = ws.update(cx, |ws, cx| ws.context(cx));
@@ -4110,6 +4084,28 @@ mod tests {
             .find(|t| t.title.as_deref() == Some("Commit not run"))
             .expect("a toast with the reason");
         assert_eq!(not_run.message.as_ref(), "Nothing to commit.");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The hint asked for one worktree's summary; another's empty draft isn't asked yet.
+    #[gpui_kit::test]
+    fn the_summary_hint_stays_with_its_worktree(cx: &mut TestAppContext) {
+        let dir = repo("ask-summary");
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let commit = panel(&host, cx).read_with(cx, |p, _| p.commit.clone());
+        cx.update(|window, cx| commit.update(cx, |b, cx| b.commit(None, window, cx)));
+        assert!(commit.read_with(cx, |b, _| b.ask_summary));
+        cx.update(|window, cx| {
+            commit.update(cx, |b, cx| {
+                let facts = RepoFacts {
+                    root: "/made/up/other".into(),
+                    ..b.facts().clone()
+                };
+                b.set_facts(facts, window, cx);
+            })
+        });
+        assert!(!commit.read_with(cx, |b, _| b.ask_summary));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5100,6 +5096,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// An agent staged part of a file since the list was read: "Commit all" stops before it
+    /// stages, so a failure can't unstage the agent's version.
+    #[gpui_kit::test]
+    fn commit_all_leaves_what_was_staged_meanwhile(cx: &mut TestAppContext) {
+        let dir = repo("staged-meanwhile");
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        std::fs::write(dir.join("a.txt"), "agent's first\n").unwrap();
+        git(&dir, &["add", "a.txt"]);
+        std::fs::write(dir.join("a.txt"), "agent's second\n").unwrap();
+        let commit = panel(&host, cx).read_with(cx, |p, _| p.commit.clone());
+        cx.update(|window, cx| {
+            commit.update(cx, |b, cx| {
+                b.write_message("Add things", "", window, cx);
+                b.commit(None, window, cx);
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(git(&dir, &["rev-list", "--count", "HEAD"]).trim(), "1");
+        assert_eq!(git(&dir, &["show", ":a.txt"]), "agent's first\n");
+        assert_eq!(git(&dir, &["diff", "--cached", "--name-only"]), "a.txt\n");
+        let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+        assert!(
+            toasts
+                .iter()
+                .any(|t| t.message.contains("staged since the list was read")),
+            "{:?}",
+            toasts
+                .iter()
+                .map(|t| t.message.to_string())
+                .collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[gpui_kit::test]
     fn a_detached_head_is_said_above_the_commit_button(cx: &mut TestAppContext) {
         let dir = repo("detached");
@@ -5110,7 +5141,7 @@ mod tests {
         let detached = |cx: &mut VisualTestContext| {
             p.update(cx, |p, cx| p.read(cx));
             cx.run_until_parked();
-            commit.read_with(cx, |b, _| b.facts.detached)
+            commit.read_with(cx, |b, _| b.facts().detached)
         };
         assert!(!detached(cx));
         git(&dir, &["checkout", "-q", "--detach"]);
@@ -5127,7 +5158,7 @@ mod tests {
     fn stash_changes_takes_the_untracked_files_too(cx: &mut TestAppContext) {
         let dir = repo("stash-all");
         setup(cx);
-        let (_ws, host, cx) = open_with(cx, &dir, true);
+        let (_ws, host, cx) = open(cx, &dir);
         let p = panel(&host, cx);
         cx.update(|window, cx| p.update(cx, |p, cx| p.stash_dialog(vec![], window, cx)));
         cx.run_until_parked();
@@ -5144,7 +5175,7 @@ mod tests {
         git(&dir, &["stash", "push", "-q", "-m", "saved", "--", "b.txt"]);
         let sha = git(&dir, &["rev-parse", "stash@{0}"]).trim().to_string();
         setup(cx);
-        let (ws, host, cx) = open_with(cx, &dir, true);
+        let (ws, host, cx) = open(cx, &dir);
         let p = panel(&host, cx);
         cx.update(|window, cx| {
             p.update(cx, |p, cx| {
