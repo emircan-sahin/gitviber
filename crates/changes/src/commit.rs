@@ -4,7 +4,7 @@
 //! runs as the top bar's activity, so hooks that lint or test for minutes can be cancelled.
 
 use crate::co_authors::CoAuthorPicker;
-use crate::model::commit::{Facts, SUMMARY_LIMIT, plan};
+use crate::model::commit::{Facts, NO_MESSAGE, SUMMARY_LIMIT, plan};
 use crate::model::list::{files, left_out, stageable};
 use crate::model::text::{
     SUGGEST_PROMPT, author_name, command_line, parse_suggestion, paste_message, plain_line,
@@ -94,6 +94,8 @@ pub struct CommitBox {
     co_authors: Vec<String>,
     amend: Option<Amend>,
     no_verify: bool,
+    /// A commit was asked for with no summary: the field says so until it has one.
+    pub(crate) ask_summary: bool,
     /// While a commit runs: the window's repo stays put until it ends (its push is for it).
     busy: Option<RepoHold>,
     suggesting: bool,
@@ -133,6 +135,7 @@ impl CommitBox {
             co_authors: vec![],
             amend: None,
             no_verify: false,
+            ask_summary: false,
             busy: None,
             suggesting: false,
             start: Default::default(),
@@ -409,8 +412,20 @@ impl CommitBox {
         cx: &mut Context<Self>,
     ) {
         let plan = plan(self.facts_for_plan(cx));
-        if plan.blocked.is_some() {
-            return;
+        match plan.blocked {
+            Some(NO_MESSAGE) => {
+                self.ask_summary = true;
+                self.focus_message(window, cx);
+                cx.notify();
+                return;
+            }
+            // The button already says it's committing.
+            Some(_) if self.busy.is_some() => return,
+            Some(why) => {
+                self.toast(Toast::info(format!("{why}.")).title("Commit not run"), cx);
+                return;
+            }
+            None => self.ask_summary = false,
         }
         self.drop_suggestion(cx);
         // Hooks can run for minutes: the worktree stays open until the commit (and its push) is done.
@@ -944,6 +959,15 @@ impl Render for CommitBox {
                         cx.listener(|this, _: &Paste, window, cx| this.paste_summary(window, cx)),
                     )
                     .child(Input::new(&self.summary).small())
+                    .when(self.ask_summary && length == 0, |el| {
+                        el.child(
+                            div()
+                                .pt_1()
+                                .text_size(px(11.))
+                                .text_color(t.modified)
+                                .child(NO_MESSAGE),
+                        )
+                    })
                     .when(length > 50, |el| {
                         el.child(
                             div()

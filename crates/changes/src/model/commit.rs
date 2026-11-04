@@ -3,6 +3,9 @@
 /// Past this, `git log --oneline` and GitHub cut the summary off.
 pub const SUMMARY_LIMIT: usize = 72;
 
+/// The one reason the box answers itself, under the summary.
+pub const NO_MESSAGE: &str = "Write a commit message first";
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Facts<'a> {
     pub staged: usize,
@@ -41,7 +44,7 @@ pub fn plan(f: Facts) -> Plan {
         Some("Nothing to commit")
     } else if f.summary_empty && (!f.amend || f.edited) {
         // An amend left unedited keeps its message.
-        Some("Write a commit message first")
+        Some(NO_MESSAGE)
     } else {
         None
     };
@@ -106,7 +109,7 @@ mod tests {
                 ..Default::default()
             })
             .blocked,
-            Some("Write a commit message first")
+            Some(NO_MESSAGE)
         );
         assert_eq!(
             plan(Facts {
@@ -135,7 +138,7 @@ mod tests {
                 ..Default::default()
             })
             .blocked,
-            Some("Write a commit message first")
+            Some(NO_MESSAGE)
         );
     }
 }

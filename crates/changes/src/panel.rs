@@ -4000,8 +4000,9 @@ mod tests {
     fn cmd_enter_commits_the_message_as_written(cx: &mut TestAppContext) {
         let dir = repo("cmd-enter");
         setup(cx);
-        let (_ws, host, cx) = open(cx, &dir);
-        let commit = panel(&host, cx).read_with(cx, |p, _| p.commit.clone());
+        let (ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        let commit = p.read_with(cx, |p, _| p.commit.clone());
         let write = |summary: &'static str, cx: &mut VisualTestContext| {
             cx.update(|window, cx| {
                 commit.update(cx, |b, cx| {
@@ -4019,11 +4020,27 @@ mod tests {
             "First\nSecond"
         );
         assert_eq!(git(&dir, &["rev-list", "--count", "HEAD"]).trim(), "1");
+        // The summary is asked for in place, with the cursor in it, not in a toast.
+        assert!(commit.read_with(cx, |b, _| b.ask_summary));
+        assert!(cx.update(|window, cx| commit.read(cx).message_focused(window, cx)));
+        assert!(ws.update(cx, |ws, _| ws.take_toasts()).is_empty());
         write("Add things", cx);
         assert_eq!(
             git(&dir, &["log", "-1", "--format=%B"]).trim_end(),
             "Add things\n\nFirst\nSecond"
         );
+        assert!(!commit.read_with(cx, |b, _| b.ask_summary));
+        // Any other reason it can't run is said in a toast.
+        p.update(cx, |p, cx| p.read(cx));
+        cx.run_until_parked();
+        ws.update(cx, |ws, _| ws.take_toasts());
+        write("Again", cx);
+        let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+        let not_run = toasts
+            .iter()
+            .find(|t| t.title.as_deref() == Some("Commit not run"))
+            .expect("a toast with the reason");
+        assert_eq!(not_run.message.as_ref(), "Nothing to commit.");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
