@@ -49,30 +49,19 @@ pub fn init(cx: &mut App) {
     register_opener(cx, "vault", open_selection);
 }
 
-/// Shows the vault's tree: the Explorer shown, its vault section opened and focused (once the
-/// repo is open, while it loads). Nothing more when Obsidian lists no vault to show (or is
-/// turned off).
-pub fn show_vault(workspace: &Entity<Workspace>, window: &mut Window, cx: &mut App) {
+/// Shows the vault's tree: the Explorer shown, its vault section opened and focused. False when Obsidian lists no vault to show (or is turned off).
+pub fn show_vault(workspace: &Entity<Workspace>, window: &mut Window, cx: &mut App) -> bool {
     workspace.update(cx, |ws, cx| ws.show_panel(explorer::PANEL_ID, cx));
     // Built outside the workspace's update: a panel may read the workspace as it's made.
-    Workspace::with_panel(
-        workspace,
-        explorer::PANEL_ID,
-        window,
-        cx,
-        |p, window, cx| {
-            let section = p
-                .view()
-                .downcast::<ExplorerPanel>()
-                .ok()
-                .and_then(|e| e.read(cx).section())
-                .and_then(|s| s.view().downcast::<VaultSection>().ok())
-                .filter(|s| s.read(cx).shown(cx));
-            if let Some(section) = section {
-                section.update(cx, |s, cx| s.open_and_focus(window, cx));
-            }
-        },
-    );
+    let section = Workspace::ensure_panel(workspace, explorer::PANEL_ID, window, cx)
+        .and_then(|p| p.view().downcast::<ExplorerPanel>().ok())
+        .and_then(|e| e.read(cx).section())
+        .and_then(|s| s.view().downcast::<VaultSection>().ok());
+    let Some(section) = section.filter(|s| s.read(cx).shown(cx)) else {
+        return false;
+    };
+    section.update(cx, |s, cx| s.open_and_focus(window, cx));
+    true
 }
 
 fn open_selection(selection: &Selection, window: &mut Window, cx: &mut App) -> Option<TabHandle> {
