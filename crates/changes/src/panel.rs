@@ -535,20 +535,30 @@ impl ChangesPanel {
 
     /// A worktree switch started: what was read is the last worktree's, and so is a read on its
     /// way. The skeleton shows till the next one's read lands; filter, sections and the commit
-    /// draft stay.
+    /// draft stay, but the box has nothing to commit, nor a HEAD to amend, until then.
     fn switching(&mut self, cx: &mut Context<Self>) {
         self.loaded = false;
         self.error = None;
         self.reading = false;
         self.again = false;
         self._read = Task::ready(());
+        self._head = Task::ready(());
+        self._review = Task::ready(());
         self.operation = None;
         self.sync_bisect(cx);
         self.lists = Lists::default();
+        self.branch = None;
+        self.head = None;
+        self.pushed = false;
         self.stashes.clear();
         self.submodules.clear();
+        if let Some(r) = self.review.as_mut() {
+            r.base = None;
+            r.files.clear();
+            r.error = None;
+        }
         self.rebuild(cx);
-        cx.notify();
+        self.commit_facts(cx);
     }
 
     fn workspace(&self) -> Option<Entity<Workspace>> {
@@ -5487,6 +5497,72 @@ mod tests {
         );
         switch(&a, &b, cx);
         assert_eq!(reviewed(cx).as_deref(), Some("refs/heads/later"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Mid-switch the box holds nothing of the last worktree's: no files, no branch, no HEAD to
+    /// amend, so neither Commit nor Amend runs until the next worktree is read, or this one
+    /// again after a switch that failed.
+    #[gpui_kit::test]
+    fn the_commit_box_commits_nothing_mid_switch(cx: &mut TestAppContext) {
+        let dir = repo("commit-switch");
+        git(&dir, &["add", "a.txt"]);
+        setup(cx);
+        let ws = cx.update(|cx| cx.new(Workspace::new));
+        let (host, cx) = cx.add_window_view(|_, _| Host {
+            panel: None,
+            center: None,
+        });
+        let core = cx.update(|_, cx| crate::core(cx));
+        api::repo::open_repo(&core, dir.to_string_lossy().into_owned()).unwrap();
+        cx.update(|window, cx| {
+            Workspace::register_window(&ws, window, cx);
+            ws.update(cx, |ws, cx| ws.open_project(dir.clone(), window, cx));
+            let ctx = ws.update(cx, |ws, cx| ws.context(cx));
+            let panel = cx.new(|cx| ChangesPanel::new(&ctx, window, cx));
+            host.update(cx, |h, cx| {
+                h.panel = Some(panel);
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+        let p = panel(&host, cx);
+        let commit = p.read_with(cx, |p, _| p.commit.clone());
+        let project = ws.read_with(cx, |ws, _| ws.project().cloned().unwrap());
+        let facts = |cx: &mut VisualTestContext| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            commit.read_with(cx, |b, _| {
+                let f = b.facts();
+                (f.lists.staged.len(), f.branch.clone(), f.head.is_some())
+            })
+        };
+        assert_eq!(facts(cx), (1, Some("main".into()), true));
+        cx.update(|window, cx| commit.update(cx, |b, cx| b.toggle_amend(true, window, cx)));
+        let head = git(&dir, &["rev-parse", "HEAD"]);
+
+        project.update(cx, |_, cx| cx.emit(ProjectEvent::Switching));
+        assert_eq!(facts(cx), (0, None, false));
+        cx.update(|window, cx| commit.update(cx, |b, cx| b.commit(None, window, cx)));
+        assert!(!commit.read_with(cx, |b, _| b.committing()));
+        cx.run_until_parked();
+        assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head, "nothing amended");
+
+        project.update(cx, |_, cx| {
+            cx.emit(ProjectEvent::Switched {
+                from: dir.clone(),
+                to: dir.clone(),
+            })
+        });
+        assert_eq!(facts(cx), (1, Some("main".into()), true));
+
+        project.update(cx, |_, cx| cx.emit(ProjectEvent::Switching));
+        assert_eq!(facts(cx), (0, None, false));
+        project.update(cx, |_, cx| {
+            cx.emit(ProjectEvent::Failed("no worktree".into()))
+        });
+        assert_eq!(facts(cx), (1, Some("main".into()), true));
+        assert!(p.read_with(cx, |p, _| p.loaded));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
