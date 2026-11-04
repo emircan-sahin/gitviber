@@ -41,7 +41,7 @@ fn in_front(cx: &mut App, f: impl FnOnce(&Entity<RepoState>, &mut Window, &mut A
 pub(crate) enum Op {
     Fetch,
     Pull,
-    /// Publishes a branch with no upstream yet.
+    /// Pushes, and publishes a branch with no upstream yet.
     Push,
     Sync,
     Publish,
@@ -158,14 +158,19 @@ fn unless_blocked(
 ) {
     let state = s.read(cx);
     let blocked = match (state.busy().cloned(), state.status.clone()) {
-        (Some(b), _) => why(format!("Wait for {b} to finish."), None),
-        (None, None) => why("The repository is still being read.", None),
+        (Some(b), _) => WhyNot {
+            reason: format!("Wait for {b} to finish."),
+            fix: None,
+        },
+        (None, None) => WhyNot {
+            reason: "The repository is still being read.".into(),
+            fix: None,
+        },
         (None, Some(st)) => match why_not(op, &st) {
             None => return go(s, &st, window, cx),
-            blocked => blocked,
+            Some(blocked) => blocked,
         },
     };
-    let Some(blocked) = blocked else { return };
     let fix = blocked.fix.map(|fix| match fix {
         Unblock::Publish => {
             let weak = s.downgrade();
@@ -178,7 +183,7 @@ fn unless_blocked(
             })
         }
         Unblock::NewBranch => Action::new("New branch…", |window, cx| {
-            crate::branches::open_new_branch("HEAD".into(), window, cx)
+            window.dispatch_action(Box::new(git::NewBranch), cx)
         }),
     });
     let note = Note::not_run(op.verb(), blocked.reason).action(fix);
@@ -200,7 +205,13 @@ fn publish(s: &Entity<RepoState>, st: &RepoStatus, window: &mut Window, cx: &mut
 fn choose_remote(s: &Entity<RepoState>, st: &RepoStatus, window: &mut Window, cx: &mut App) {
     let title = format!("Publish {} to", st.branch.clone().unwrap_or_default());
     let (weak, remotes) = (s.downgrade(), st.remotes.clone());
-    window.open_dialog(cx, move |dialog, _, _| {
+    let first = std::cell::Cell::new(true);
+    window.open_dialog(cx, move |dialog, window, _| {
+        // Opened from a key, it should take Enter: once drawn, focus moves from the dialog
+        // into its first tab stop, the first remote.
+        if first.replace(false) {
+            window.on_next_frame(|window, cx| window.focus_next(cx));
+        }
         let buttons = remotes.iter().enumerate().map(|(i, r)| {
             let (weak, remote) = (weak.clone(), r.clone());
             Button::new(("publish-to", i))
