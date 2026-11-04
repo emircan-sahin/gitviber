@@ -11,8 +11,8 @@ use gitviber_core::{Res, api, git};
 use gitviber_refs::RepoState;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{
-    ChangeKind, FileIcon, LineCounts, PathLabel, RelativeTime, StatusLetter, full_date, now_unix,
-    relative_time,
+    ChangeKind, FileIcon, LineCounts, PanelSkeleton, PathLabel, RelativeTime, StatusLetter,
+    full_date, now_unix, relative_time,
 };
 use gitviber_ui::{ActiveAppTheme, AppTheme, Workspace};
 use gpui_kit::assets::IconName;
@@ -1896,11 +1896,17 @@ impl Render for CommitList {
             self.dragging = None;
             self.drag_label = None;
         }
+        if self.commits.is_empty() && self.error.is_none() && !self.loaded {
+            return div()
+                .size_full()
+                .track_focus(&self.focus)
+                .child(PanelSkeleton::new())
+                .into_any_element();
+        }
         if self.commits.is_empty() {
-            let text: SharedString = match (&self.error, self.loaded) {
-                (Some(e), _) => e.clone(),
-                (None, true) => self.options.empty.clone(),
-                (None, false) => "Loading…".into(),
+            let text: SharedString = match &self.error {
+                Some(e) => e.clone(),
+                None => self.options.empty.clone(),
             };
             return div()
                 .size_full()

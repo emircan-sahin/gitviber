@@ -9,7 +9,7 @@ use std::time::Duration;
 use gitviber_core::api;
 use gitviber_ui::actions::editor;
 use gitviber_ui::memory::Live;
-use gitviber_ui::widgets::CountBadge;
+use gitviber_ui::widgets::{CountBadge, PanelSkeleton};
 use gitviber_ui::workspace::{Panel, PanelContext, ProjectEvent, Slot};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
@@ -591,6 +591,9 @@ impl PullsPanel {
                 &t,
                 cx,
             ));
+        }
+        if loaded.is_none() && error.is_none() {
+            col = col.child(PanelSkeleton::new());
         }
         if loaded.is_some() && rows.is_empty() {
             let text = if !self.controls.needle.is_empty()
