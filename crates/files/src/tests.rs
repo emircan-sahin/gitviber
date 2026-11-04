@@ -375,6 +375,10 @@ fn explorer_built_while_the_repo_opens_lists_once_open(cx: &mut TestAppContext) 
     cx.update(|_, cx| panel.update(cx, |p, cx| p.refresh(cx)));
     cx.run_until_parked();
     assert!(cx.update(|_, cx| panel.read(cx).root_failed().is_some()));
+    assert!(
+        cx.update(|_, cx| panel.read(cx).row_paths()).is_empty(),
+        "no stale rows under the error"
+    );
     std::fs::rename(repo.with_extension("moved"), &repo).unwrap();
     cx.update(|_, cx| panel.update(cx, |p, cx| p.refresh(cx)));
     cx.run_until_parked();

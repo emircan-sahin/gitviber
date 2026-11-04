@@ -306,7 +306,7 @@ impl ExplorerPanel {
                     Listed::Changed | Listed::Closed => this.rebuild(cx),
                     Listed::RootFailed(e) => {
                         this.root_failed = Some(e.into());
-                        cx.notify();
+                        this.rebuild(cx);
                     }
                     Listed::Same | Listed::Stale => {}
                 }
@@ -1042,9 +1042,7 @@ impl ExplorerPanel {
         };
         // Their tabs close without asking: what's typed in them is lost, said here.
         let paths: Vec<&str> = top.iter().map(|e| e.path.as_ref()).collect();
-        let unsaved = crate::unsaved_in(&self.workspace, &paths, cx);
-        let detail = (!unsaved.is_empty())
-            .then(|| format!("Unsaved edits in {} are lost.", unsaved.join(", ")));
+        let detail = unsaved_lost(&crate::unsaved_in(&self.workspace, &paths, cx));
         let answer = window.prompt(
             PromptLevel::Warning,
             &message,
@@ -1761,6 +1759,18 @@ pub(crate) fn discarded(what: &str, many: bool) -> Toast {
         "The old version is in the Trash."
     })
     .title(format!("Discarded {what}"))
+}
+
+/// The Trash's confirm detail for files with unsaved edits: the first few, then a count, so a
+/// big folder doesn't make a wall of names.
+pub(crate) fn unsaved_lost(paths: &[String]) -> Option<String> {
+    const SHOWN: usize = 3;
+    let names = match paths.len() {
+        0 => return None,
+        n if n <= SHOWN => paths.join(", "),
+        n => format!("{} and {} more", paths[..SHOWN].join(", "), n - SHOWN),
+    };
+    Some(format!("Unsaved edits in {names} are lost."))
 }
 
 /// What Undo of a discard reports: the file is back, or git's words why not.
