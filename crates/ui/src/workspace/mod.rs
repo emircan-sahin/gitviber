@@ -41,7 +41,7 @@ pub use selection::{
     page_label, register_opener, selection_key, selection_path,
 };
 pub use tabs::{ClosedTab, Opened, TabEntry, TabGroup, Tabs};
-pub use toast::{Toast, ToastAction, ToastClosed, ToastKind, ToastRun};
+pub use toast::{Toast, ToastAction, ToastClosed, ToastKind, ToastRun, selectable_text};
 pub use viewed::ViewedMarks;
 
 use crate::memory::Live;

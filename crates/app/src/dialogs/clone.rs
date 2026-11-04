@@ -11,7 +11,7 @@ use gitviber_core::api;
 use gitviber_core::network::{CANCELLED, Progress};
 use gitviber_ui::actions::file;
 use gitviber_ui::memory::Live;
-use gitviber_ui::workspace::Toast;
+use gitviber_ui::workspace::{Toast, selectable_text};
 use gitviber_ui::{ActiveAppTheme, Settings, Workspace};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::WindowExt as _;
@@ -518,8 +518,7 @@ impl Render for CloneDialog {
                         .max_h(px(160.))
                         .overflow_y_scroll()
                         .text_size(rems(0.71875))
-                        .text_color(t.destructive)
-                        .child(e),
+                        .child(selectable_text("clone-error-text", &e, t.destructive, cx)),
                 )
             })
     }
