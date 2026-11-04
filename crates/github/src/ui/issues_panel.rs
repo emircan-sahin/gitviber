@@ -331,6 +331,8 @@ impl IssuesPanel {
                 ("list-error", pane),
                 e,
                 loaded.is_some(),
+                read.loading,
+                cx.listener(|this, _, _, cx| this.ask(true, cx)),
                 &t,
                 cx,
             ));

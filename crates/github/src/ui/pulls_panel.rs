@@ -588,6 +588,8 @@ impl PullsPanel {
                 ("list-error", pane as usize),
                 e,
                 loaded.is_some(),
+                loading,
+                cx.listener(|this, _, _, cx| this.ask(true, cx)),
                 &t,
                 cx,
             ));
@@ -994,17 +996,31 @@ impl Render for PullsPanel {
                     })
             })
         });
-        let new_label: SharedString = if let Some(f) = &self.status.follows {
-            format!("This branch is pull request {f}").into()
+        // Why New is off, as its tooltip: never a disabled button that doesn't say.
+        let origin = account.as_ref().and_then(|a| a.origin.as_ref());
+        let blocked: Option<SharedString> = if let Some(f) = &self.status.follows {
+            Some(format!("This branch is pull request {f}").into())
         } else if let Some(p) = current {
-            format!("#{} already open for this branch", p.number).into()
+            Some(format!("#{} already open for this branch", p.number).into())
+        } else if self.status.branch.is_none() {
+            Some("Check out a branch first".into())
+        } else if origin.is_none() && acct.loading {
+            Some("Reading your GitHub account…".into())
+        } else if let Some(o) = origin.filter(|o| !o.push) {
+            Some(
+                format!(
+                    "You can't push to {}. Fork it to open a pull request",
+                    o.full_name()
+                )
+                .into(),
+            )
+        } else if origin.is_none() {
+            Some("Your GitHub account couldn't be read".into())
         } else {
-            "New pull request".into()
+            None
         };
-        let can_create = self.status.branch.is_some()
-            && self.status.follows.is_none()
-            && current.is_none()
-            && account.as_ref().is_some_and(|a| a.origin.is_some());
+        let can_create = blocked.is_none();
+        let new_label = blocked.unwrap_or_else(|| "New pull request".into());
         let fork = upstream.is_some() && account.as_ref().is_some_and(|a| a.parent.is_some());
         let own_counts = self.counts("origin", cx);
         let header_counts = if account.is_none() || fork {
