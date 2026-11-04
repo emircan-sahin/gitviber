@@ -31,6 +31,11 @@ pub struct Session {
     /// When a lookup last found no token. For NO_TOKEN_GAP nothing looks again: a screen makes a
     /// dozen calls, and every one used to run gh and git's credential helper.
     missing: Mutex<Option<Instant>>,
+    /// The last token GitHub answered 401 to. gh hands back an expired or revoked one as it is,
+    /// and taking it again looped the sign-in screen with nothing said.
+    refused: Mutex<Option<String>>,
+    /// That miss was `refused` handed back: EXPIRED, not NOT_CONNECTED, until the gap ends.
+    missing_expired: AtomicBool,
     /// The user connected through git's credential store before (kept by the page): it may be
     /// asked once a session without being clicked.
     store_allowed: AtomicBool,
@@ -101,6 +106,8 @@ impl Session {
             etags: Mutex::default(),
             agent: OnceLock::new(),
             missing: Mutex::default(),
+            refused: Mutex::default(),
+            missing_expired: AtomicBool::new(false),
             store_allowed: AtomicBool::new(false),
             store_asked: AtomicBool::new(false),
             looking: Mutex::default(),
@@ -124,7 +131,12 @@ impl Session {
         let missing = *self.missing.lock().unwrap_or_else(|e| e.into_inner());
         // The gap is gh's active account's: a picked one's lookup is its own message, asked afresh.
         if account.is_none() && missing.is_some_and(|at| at.elapsed() < NO_TOKEN_GAP) {
-            return Err(NOT_CONNECTED.to_string());
+            return Err(if self.missing_expired.load(Ordering::Relaxed) {
+                EXPIRED
+            } else {
+                NOT_CONNECTED
+            }
+            .to_string());
         }
         // `swap`: of several first calls, only one may ask the store.
         let store = self.store_allowed.load(Ordering::Relaxed)
@@ -167,12 +179,17 @@ impl Session {
                         .then(|| self.tools.store(repo).map(|v| (v, "git")))
                         .flatten()
                 });
+                let refused = found.as_ref().is_some_and(|(v, _)| self.is_refused(v));
                 *self.missing.lock().unwrap_or_else(|e| e.into_inner()) =
-                    found.is_none().then(Instant::now);
+                    (found.is_none() || refused).then(Instant::now);
+                self.missing_expired.store(refused, Ordering::Relaxed);
                 found.ok_or_else(|| NOT_CONNECTED.to_string())?
             }
         };
         let (value, source) = found;
+        if self.is_refused(&value) {
+            return Err(EXPIRED.to_string());
+        }
         let token = Token {
             value,
             source,
@@ -214,7 +231,17 @@ impl Session {
             .is_some_and(|t| t.account == account)
     }
 
-    fn forget(&self) {
+    fn is_refused(&self, value: &str) -> bool {
+        self.refused
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_deref()
+            == Some(value)
+    }
+
+    /// GitHub answered 401 to `value`: dropped, and not taken again from gh or the store.
+    fn forget(&self, value: &str) {
+        *self.refused.lock().unwrap_or_else(|e| e.into_inner()) = Some(value.to_string());
         let old = self.token.lock().unwrap_or_else(|e| e.into_inner()).take();
         // The store would hand back the same refused token, and a click is what asks it again.
         if old.is_some_and(|t| t.source == "git") {
@@ -285,6 +312,26 @@ impl Etags {
 
 /// Recognized by the UI to show setup steps instead of an error.
 pub const NOT_CONNECTED: &str = "github:not-connected";
+/// A login was found, and GitHub refused it (expired or revoked): signing in again fixes it.
+pub const EXPIRED: &str = "github:expired";
+/// The first line of an error when GitHub couldn't be reached; the transport's words follow.
+pub const UNREACHABLE: &str = "Can't reach GitHub. Check your connection.";
+
+/// ureq's failure before any answer: no network (or DNS, or a timeout) says so plainly.
+fn transport_error(e: ureq::Error) -> String {
+    match e {
+        ureq::Error::HostNotFound
+        | ureq::Error::ConnectionFailed
+        | ureq::Error::Io(_)
+        | ureq::Error::Timeout(_) => format!("{UNREACHABLE}\n{e}"),
+        e => format!("GitHub request failed: {e}"),
+    }
+}
+
+/// Whether `gh` is on the search path: "install gh" and "sign in with gh" are different steps.
+pub fn gh_installed() -> bool {
+    process::resolve("gh").is_absolute()
+}
 
 fn agent(session: &Session) -> &ureq::Agent {
     session.agent.get_or_init(|| {
@@ -407,7 +454,7 @@ pub(super) fn request(
             Method::Put(body) => headers!(agent.put(&url)).send_json(body),
             Method::Patch(body) => headers!(agent.patch(&url)).send_json(body),
         };
-        let mut resp = result.map_err(|e| format!("GitHub request failed: {e}"))?;
+        let mut resp = result.map_err(transport_error)?;
         let status = resp.status().as_u16();
         if status == 304 {
             if let Some(body) = session
@@ -424,15 +471,20 @@ pub(super) fn request(
             }
             return Err("GitHub sent no data (304).".into());
         }
-        if let Some(e) = response_error(session, &mut resp) {
+        if let Some(e) = response_error(session, &token.value, &mut resp) {
             // A token gh replaced since it was read (a new login, the account signed out and in
             // again): asked for afresh once, so the call doesn't fail on the stale one.
-            if e == NOT_CONNECTED && !renewed {
+            if e == EXPIRED && !renewed {
                 renewed = true;
-                if let Some(fresh) = session.token(repo).ok().filter(|t| t.value != token.value) {
-                    token = fresh;
-                    auth = format!("Bearer {}", token.value);
-                    continue;
+                match session.token(repo) {
+                    Ok(fresh) if fresh.value != token.value => {
+                        token = fresh;
+                        auth = format!("Bearer {}", token.value);
+                        continue;
+                    }
+                    // Signed out meanwhile, or gh handed the refused one back.
+                    Err(now) => return Err(now),
+                    Ok(_) => {}
                 }
             }
             return Err(e);
@@ -471,8 +523,8 @@ pub(super) fn text_tail(
         .header("X-GitHub-Api-Version", "2022-11-28")
         .header("User-Agent", "GitViber")
         .call()
-        .map_err(|e| format!("GitHub request failed: {e}"))?;
-    if let Some(e) = response_error(session, &mut resp) {
+        .map_err(transport_error)?;
+    if let Some(e) = response_error(session, &token.value, &mut resp) {
         return Err(e);
     }
     let mut reader = resp.body_mut().as_reader();
@@ -503,6 +555,7 @@ pub(super) fn text_tail(
 /// 401 from where GitHub redirected (a log's storage) says nothing about the token.
 fn response_error(
     session: &Session,
+    token: &str,
     resp: &mut ureq::http::Response<ureq::Body>,
 ) -> Option<String> {
     use ureq::ResponseExt;
@@ -510,9 +563,15 @@ fn response_error(
     if status < 400 {
         return None;
     }
-    if status == 401 && resp.get_uri().host() == Some("api.github.com") {
-        session.forget();
-        return Some(NOT_CONNECTED.to_string());
+    // api.github.com, or a test's stand-in.
+    let api = session
+        .api
+        .split("://")
+        .nth(1)
+        .and_then(|a| a.split([':', '/']).next());
+    if status == 401 && resp.get_uri().host() == api {
+        session.forget(token);
+        return Some(EXPIRED.to_string());
     }
     let header = |name: &str| {
         resp.headers()
@@ -755,7 +814,7 @@ mod tests {
             ..Fake::default()
         });
         s.connect(Path::new(REPO), true).unwrap();
-        s.forget();
+        s.forget("stored");
         assert!(s.token(Path::new(REPO)).is_err());
         assert_eq!(calls(&f), (1, 1));
     }
@@ -884,10 +943,79 @@ mod tests {
             ..Fake::default()
         });
         s.token(Path::new(REPO)).unwrap();
-        s.forget();
+        s.forget("old");
         assert!(!s.has_token());
         *f.gh.lock().unwrap() = Some("new".into());
         assert_eq!(s.token(Path::new(REPO)).unwrap().value, "new");
+    }
+
+    /// gh still holds the token GitHub refused: told apart from no login, on every call and on a
+    /// click, until gh has another.
+    #[test]
+    fn a_refused_token_handed_back_is_expired() {
+        let (s, f) = session(Fake {
+            gh: Mutex::new(Some("stale-1".into())),
+            ..Fake::default()
+        });
+        s.token(Path::new(REPO)).unwrap();
+        s.forget("stale-1");
+        for _ in 0..5 {
+            assert_eq!(s.token(Path::new(REPO)).err().as_deref(), Some(EXPIRED));
+        }
+        assert_eq!(calls(&f), (2, 0), "the gap holds for an expired login too");
+        assert_eq!(s.connect(Path::new(REPO), false), Err(EXPIRED.to_string()));
+        *f.gh.lock().unwrap() = None;
+        assert_eq!(
+            s.connect(Path::new(REPO), false),
+            Err(NOT_CONNECTED.to_string())
+        );
+        *f.gh.lock().unwrap() = Some("fresh-2".into());
+        assert_eq!(s.connect(Path::new(REPO), false), Ok("gh"));
+        assert_eq!(s.token(Path::new(REPO)).unwrap().value, "fresh-2");
+    }
+
+    #[test]
+    fn a_picked_accounts_refused_token_is_expired() {
+        let (s, _) = session(Fake {
+            gh: Mutex::new(Some("stale-1".into())),
+            ..Fake::default()
+        });
+        s.pick(Some("octo-one".into()));
+        s.forget("stale-1");
+        assert_eq!(s.token(Path::new(REPO)).err().as_deref(), Some(EXPIRED));
+    }
+
+    /// GitHub's 401: the call fails as expired, and gh's same token isn't sent again.
+    #[test]
+    fn a_401_with_the_same_token_from_gh_is_expired() {
+        let (s, log) = fake::serve_status(vec![(
+            "/user".into(),
+            401,
+            r#"{"message":"Bad credentials"}"#.into(),
+        )]);
+        let user = || call(&s, Path::new(REPO), Method::Get, "/user");
+        assert_eq!(user().err().as_deref(), Some(EXPIRED));
+        assert_eq!(user().err().as_deref(), Some(EXPIRED));
+        assert_eq!(
+            log.lock().unwrap().len(),
+            1,
+            "no request with the refused token"
+        );
+    }
+
+    #[test]
+    fn no_network_says_so_with_the_transport_words_after() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let (mut s, _) = fake::serve(vec![]);
+        s.api = format!("http://127.0.0.1:{port}");
+        let e = call(&s, Path::new(REPO), Method::Get, "/user").unwrap_err();
+        let (first, rest) = e.split_once('\n').expect("the transport's words follow");
+        assert_eq!(first, UNREACHABLE);
+        assert!(!rest.is_empty());
     }
 
     /// `gh` as a script in a folder of its own: what it prints, and the arguments it got.
@@ -1039,6 +1167,11 @@ pub(super) mod fake {
     /// Answers each path (query left out) with its JSON, anything else with a 404, and logs every
     /// request as "METHOD /path?query". The session reads with a fixed token.
     pub fn serve(routes: Vec<(String, String)>) -> (Session, Arc<Mutex<Vec<String>>>) {
+        serve_status(routes.into_iter().map(|(p, b)| (p, 200, b)).collect())
+    }
+
+    /// `serve` with each path's status too.
+    pub fn serve_status(routes: Vec<(String, u16, String)>) -> (Session, Arc<Mutex<Vec<String>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -1058,9 +1191,9 @@ pub(super) mod fake {
                 let path = target.split('?').next().unwrap_or_default();
                 let (status, body) = routes
                     .iter()
-                    .find(|(p, _)| p == path)
-                    .map_or((404, r#"{"message":"Not Found"}"#), |(_, b)| {
-                        (200, b.as_str())
+                    .find(|(p, ..)| p == path)
+                    .map_or((404, r#"{"message":"Not Found"}"#), |(_, s, b)| {
+                        (*s, b.as_str())
                     });
                 let _ = write!(
                     stream,
