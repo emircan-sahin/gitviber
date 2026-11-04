@@ -787,6 +787,7 @@ impl Workspace {
 
     /// The tab under `key` stands for `selection` now and keeps its view, typing and all (its
     /// file was renamed). False when `key` isn't open or another tab is open on `selection`.
+    /// Not `retarget_tab`: that one builds a new view, and unsaved typing must survive here.
     pub fn rename_tab(&mut self, key: &str, selection: Selection, cx: &mut Context<Self>) -> bool {
         let new_key: SharedString = selection_key(&selection).into();
         let Some(tab) = self.tabs.get(key) else {
@@ -1732,6 +1733,49 @@ mod tests {
             })
         });
         assert_eq!(built.get(), 4);
+    }
+
+    #[gpui_kit::test]
+    fn a_renamed_tab_keeps_its_view_and_place(cx: &mut TestAppContext) {
+        setup(cx);
+        let (host, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        let ws = host.read_with(cx, |h, _| h.0.clone());
+        let built = std::rc::Rc::new(std::cell::Cell::new(0));
+        register_file_opener(cx, built.clone());
+        let key = |path: &str| SharedString::from(selection_key(&file_tab(path)));
+        cx.update(|window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_project(PathBuf::from("/tmp/gitviber-project-rename"), window, cx);
+                ws.open(file_tab("a"), false, window, cx);
+                ws.open_beside(file_tab("p"), key("a"), window, cx);
+                ws.open(file_tab("b"), true, window, cx);
+                let view = ws.tabs().active().unwrap().item.view().unwrap();
+                assert!(ws.rename_tab(&key("b"), file_tab("b2"), cx));
+                let b2 = ws.tabs().get(&key("b2")).unwrap();
+                assert!(b2.preview);
+                assert_eq!(b2.item.view().unwrap().entity_id(), view.entity_id());
+                assert_eq!(ws.tabs().active_key(), Some(&key("b2")));
+                assert_eq!(ws.shown.first(), Some(&key("b2")));
+                assert!(!ws.shown.contains(&key("b")));
+                assert!(ws.rename_tab(&key("p"), file_tab("p2"), cx));
+                assert_eq!(ws.tabs().get(&key("p2")).unwrap().opener, Some(key("a")));
+                let snap = ws.snapshot();
+                assert_eq!(snap.active.as_deref(), Some(key("b2").as_ref()));
+                let saved = snap
+                    .tabs
+                    .iter()
+                    .find(|t| t.key == key("b2").as_ref())
+                    .unwrap();
+                assert_eq!(saved.sel["path"], "b2");
+                assert!(saved.preview);
+                // Onto an open tab, or from none: refused, nothing moves.
+                assert!(!ws.rename_tab(&key("a"), file_tab("p2"), cx));
+                assert!(!ws.rename_tab(&key("gone"), file_tab("x"), cx));
+                let keys: Vec<_> = ws.tabs().tabs().iter().map(|t| t.key.clone()).collect();
+                assert_eq!(keys, [key("a"), key("p2"), key("b2")]);
+            })
+        });
+        assert_eq!(built.get(), 3);
     }
 
     #[gpui_kit::test]
