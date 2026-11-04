@@ -805,6 +805,21 @@ mod tests {
         assert_eq!(state.read_with(cx, |s, _| s.root().clone()), next);
     }
 
+    /// A switch git couldn't open stays on its worktree: the branch, gone as it started, is
+    /// read again.
+    #[gpui_kit::test]
+    fn a_failed_switch_reads_the_branch_again(cx: &mut TestAppContext) {
+        let (ws, state, cx) = setup(cx);
+        let missing = std::env::temp_dir().join("gitviber-refs-no-such-worktree");
+        let branch =
+            |cx: &mut VisualTestContext| state.read_with(cx, |s, _| s.branch().map(str::to_string));
+        cx.update(|_, cx| ws.update(cx, |ws, cx| ws.switch_worktree(missing, cx)));
+        assert_eq!(branch(cx), None);
+        cx.run_until_parked();
+        assert_eq!(branch(cx).as_deref(), Some("main"));
+        assert_eq!(state.read_with(cx, |s, _| s.root().clone()), here());
+    }
+
     #[gpui_kit::test]
     fn an_action_never_runs_in_a_worktree_opened_since(cx: &mut TestAppContext) {
         let (_ws, state, cx) = setup(cx);
