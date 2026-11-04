@@ -110,7 +110,11 @@ fn secret(message: &str) -> Option<GitErrorHelp> {
 
 /// The network never got to the remote: offline, DNS, a timeout, a refused or dropped connection.
 fn unreachable(line: &str) -> bool {
+    // "fatal: unable to access '<url>': <why>"; only the why, not the URL.
     if let Some(rest) = line.strip_prefix("fatal: unable to access '") {
+        let Some((_, why)) = rest.split_once("': ") else {
+            return false;
+        };
         return [
             "Could not resolve host",
             "Could not resolve proxy",
@@ -123,7 +127,7 @@ fn unreachable(line: &str) -> bool {
             "Recv failure",
         ]
         .iter()
-        .any(|why| rest.contains(why));
+        .any(|p| why.contains(p));
     }
     [
         "ssh: Could not resolve hostname ",
@@ -207,11 +211,16 @@ pub fn explain_git_error(message: &str) -> Option<GitErrorHelp> {
         ));
     }
     // Unmerged files with nothing in progress: changes a rewrite, pull or stash pop brought back
-    // from the stash that conflicted. An undo's reset says the first.
+    // from the stash that conflicted. An undo's reset says the first, a hard reset's stash the
+    // last two (the worktree one for an intent-to-add file).
     if message.lines().any(reset_in_merge)
         || starts(
             message,
-            &["error: you need to resolve your current index first"],
+            &[
+                "error: you need to resolve your current index first",
+                "Cannot save the current index state",
+                "Cannot save the current worktree state",
+            ],
         )
     {
         return Some(help(
@@ -286,9 +295,16 @@ pub fn explain_git_error(message: &str) -> Option<GitErrorHelp> {
         return Some(found);
     }
     if message.lines().any(protected) {
+        let force = message
+            .lines()
+            .any(|l| l.starts_with("remote: error: Cannot force-push to this branch"));
         return Some(help(
             "This branch is protected on the remote",
-            "It takes changes only through a pull request. Put your commits on a new branch, publish it and open a pull request.",
+            if force {
+                "It doesn't take force pushes, so rewritten commits can't replace the ones it has. Put your commits on a new branch, publish it and open a pull request."
+            } else {
+                "It takes changes only through a pull request. Put your commits on a new branch, publish it and open a pull request."
+            },
             Some(Protected),
         ));
     }
@@ -442,6 +458,20 @@ fatal: Authentication failed for 'https://github.com/owner/repo.git/'";
         );
         assert_eq!(
             fix("f1: needs merge\nerror: you need to resolve your current index first"),
+            Some(GitFix::Conflicted)
+        );
+        let not_kept =
+            "Your uncommitted changes couldn't be kept in Stashes, so nothing was reset.";
+        assert_eq!(
+            fix(&format!(
+                "{not_kept}\na: unmerged (0123456789abcdef0123456789abcdef01234567)\nCannot save the current index state"
+            )),
+            Some(GitFix::Conflicted)
+        );
+        assert_eq!(
+            fix(&format!(
+                "{not_kept}\nerror: Entry 'n' not uptodate. Cannot merge.\nCannot save the current worktree state"
+            )),
             Some(GitFix::Conflicted)
         );
     }
@@ -606,6 +636,13 @@ remote:        https://github.com/owner/repo/security/secret-scanning/unblock-se
             );
         }
         assert_ne!(fix(BAD_TOKEN), Some(GitFix::Unreachable));
+        // The why decides, not words in the URL.
+        assert_eq!(
+            fix(
+                "fatal: unable to access 'https://example.com/Connection refused/r.git/': The requested URL returned error: 404"
+            ),
+            None
+        );
     }
 
     #[test]
@@ -628,6 +665,14 @@ To gitlab.com:owner/repo.git
         for m in [gh006, ruleset, gitlab] {
             assert_eq!(fix(m), Some(GitFix::Protected), "{m}");
         }
+        let protected = |m: &str| explain_git_error(m).unwrap().explanation;
+        assert!(protected(gh006).contains("only through a pull request"));
+        let force = "remote: error: GH006: Protected branch update failed for refs/heads/main.
+remote: error: Cannot force-push to this branch
+To github.com:owner/repo.git
+ ! [remote rejected] main -> main (protected branch hook declined)";
+        assert_eq!(fix(force), Some(GitFix::Protected));
+        assert!(protected(force).contains("doesn't take force pushes"));
         // Push protection's own rule violation stays a secret.
         assert_eq!(fix(PUSH_PROTECTION), Some(GitFix::Secret));
     }
