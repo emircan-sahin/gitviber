@@ -61,6 +61,8 @@ pub(crate) struct Started {
     /// Nested repositories "commit everything" left out.
     pub skipped: usize,
     pub amended: bool,
+    /// What "commit everything" staged itself, unstaged again if the commit doesn't happen.
+    pub staged: Vec<String>,
 }
 
 /// A message nobody wrote in: blank, or still the `start` it began as.
@@ -440,6 +442,7 @@ impl CommitBox {
             then,
             skipped,
             amended: options.amend,
+            staged: if auto { paths.clone() } else { vec![] },
         };
         self._task = cx.spawn_in(window, async move |this, cx| {
             // Nothing staged means "commit everything", the common case after an agent run.
@@ -447,10 +450,16 @@ impl CommitBox {
                 let core = core.clone();
                 let paths = paths.clone();
                 cx.background_spawn(async move {
-                    if auto {
-                        api::changes::stage(&core, paths, false)?;
+                    let staged = if auto {
+                        api::changes::stage(&core, paths.clone(), false)
+                    } else {
+                        Ok(())
+                    };
+                    let large = staged.and_then(|()| api::changes::large_staged(&core));
+                    if large.is_err() && auto {
+                        api::changes::unstage(&core, paths).ok();
                     }
-                    api::changes::large_staged(&core)
+                    large
                 })
                 .await
             };
@@ -549,11 +558,18 @@ impl CommitBox {
         let net = NetActivity::global(cx);
         let op = net.update(cx, |a, cx| a.start("Commit".into(), cx));
         let (id, progress) = (op.id.clone(), op.progress());
+        let (staged, repo) = (started.staged.clone(), started.repo.clone());
         let work = cx.background_spawn(async move {
-            tracked(&core, |core| {
+            let out = tracked(&core, |core| {
                 api::changes::commit(core, message, options, id, progress)
             })
-            .map(|((), entry)| entry)
+            .map(|((), entry)| entry);
+            // A failed or cancelled "Commit all" leaves the index as it found it: empty, so
+            // fixes made for the next try are committed too.
+            if out.is_err() && !staged.is_empty() && core.repo().ok() == repo {
+                api::changes::unstage(&core, staged).ok();
+            }
+            out
         });
         // Detached, holding the box weakly: dropping it wouldn't stop git, only leave the top bar
         // showing a commit that ended.

@@ -4988,6 +4988,8 @@ mod tests {
         });
         cx.run_until_parked();
         assert_eq!(git(&dir, &["rev-list", "--count", "HEAD"]).trim(), "1");
+        // "Commit all" staged everything itself: the failure leaves the index empty again.
+        assert_eq!(git(&dir, &["diff", "--cached", "--name-only"]), "");
         // The top bar's activity ended with it.
         assert!(!cx.update(|_, cx| NetActivity::global(cx).read(cx).is_running()));
         let toasts = ws.update(cx, |ws, _| ws.take_toasts());
@@ -5005,6 +5007,10 @@ mod tests {
             "Add things"
         );
         assert_eq!(git(&dir, &["rev-list", "--count", "HEAD"]).trim(), "2");
+        assert_eq!(
+            git(&dir, &["show", "--name-only", "--format=", "HEAD"]),
+            "a.txt\nb.txt\nc.txt\n"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5259,6 +5265,7 @@ mod tests {
             then: Some(crate::commit::Then::Push),
             skipped: 0,
             amended: false,
+            staged: vec![],
         };
         cx.update(|window, cx| {
             commit.update(cx, |b, cx| b.committed(Ok(Some(7)), started(), window, cx))
