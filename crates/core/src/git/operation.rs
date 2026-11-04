@@ -1,10 +1,10 @@
 //! Merge, rebase and bisect, and finishing or calling off one stopped on conflicts.
 
 use super::{
-    command, hooks_named, run, run_text, run_with, stage, validate_ref, validate_rev, with_paths,
-    Operation, REF_KINDS,
+    hooks_named, run, run_commit, run_text, run_with, stage, validate_ref, validate_rev,
+    with_paths, Operation, REF_KINDS,
 };
-use crate::network::{self, Net};
+use crate::network::Net;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -260,11 +260,14 @@ pub fn rebase(
     run_stoppable(repo, &args)
 }
 
-pub fn op_continue(repo: &Path) -> Result<bool, String> {
+/// The tests' short form, with the hooks run; Journal::record takes it as a plain fn.
+#[cfg(test)]
+pub(crate) fn op_continue(repo: &Path) -> Result<bool, String> {
     op_continue_with(repo, false)
 }
 
-/// `op_continue`; `no_verify`: a merge's commit skips the commit hooks, after one stopped it.
+/// Continues the stopped operation; `no_verify`: a merge's commit skips the commit hooks,
+/// after one stopped it.
 pub fn op_continue_with(repo: &Path, no_verify: bool) -> Result<bool, String> {
     let op = operation(repo).ok_or("Nothing to continue.")?;
     match op.kind.as_str() {
@@ -288,14 +291,8 @@ fn merge_commit(repo: &Path, no_verify: bool) -> Result<bool, String> {
     if no_verify {
         args.push("--no-verify");
     }
-    let out = network::run_local(
-        command(repo, &args),
-        "git commit",
-        &Net::default(),
-        None,
-        false,
-    )
-    .map_err(|f| hooks_named(repo, f, no_verify));
+    let out =
+        run_commit(repo, &args, &Net::default(), None).map_err(|f| hooks_named(repo, f, no_verify));
     stoppable(repo, out)
 }
 

@@ -72,15 +72,9 @@ pub fn commit(repo: &Path, message: &str, opts: &CommitOptions, net: &Net) -> Re
         args.extend(["-F", "-"]);
         Some(message.as_bytes())
     };
-    let mut cmd = command(repo, &args);
-    // It has no paths, and hooks inherit its environment: lint-staged's `git stash --keep-index`
-    // restores the index with `:/`, which literal pathspecs turn into a file of that name.
-    cmd.env_remove("GIT_LITERAL_PATHSPECS");
     let stash = tip(repo, "refs/stash");
     let head = tip(repo, "HEAD");
-    // ssh-keygen asks for a key's passphrase through SSH_ASKPASS when it has no terminal.
-    let ssh_signing = super::config_value(repo, None, "gpg.format").as_deref() == Some("ssh");
-    match network::run_local(cmd, "git commit", net, input, ssh_signing) {
+    match run_commit(repo, &args, net, input) {
         Ok(_) => Ok(()),
         // Not a file's change: a hook's own git (lint-staged's stash) writes the reflogs too.
         Err(f) if f.message == CANCELLED && made(repo, head.as_deref(), message, opts.amend) => {
@@ -91,6 +85,22 @@ pub fn commit(repo: &Path, message: &str, opts: &CommitOptions, net: &Net) -> Re
         }
         Err(f) => Err(hooks_named(repo, f, opts.no_verify)),
     }
+}
+
+/// Runs a `git commit`, the form's or a merge's, with what its hooks and signing need.
+pub(crate) fn run_commit(
+    repo: &Path,
+    args: &[&str],
+    net: &Net,
+    input: Option<&[u8]>,
+) -> Result<Vec<u8>, network::Failed> {
+    let mut cmd = command(repo, args);
+    // It has no paths, and hooks inherit its environment: lint-staged's `git stash --keep-index`
+    // restores the index with `:/`, which literal pathspecs turn into a file of that name.
+    cmd.env_remove("GIT_LITERAL_PATHSPECS");
+    // ssh-keygen asks for a key's passphrase through SSH_ASKPASS when it has no terminal.
+    let ssh_signing = super::config_value(repo, None, "gpg.format").as_deref() == Some("ssh");
+    network::run_local(cmd, "git commit", net, input, ssh_signing)
 }
 
 /// A failed `git commit`'s words, with HOOKS_HINT naming the hooks that ran when one of them
