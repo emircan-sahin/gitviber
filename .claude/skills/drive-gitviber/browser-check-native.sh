@@ -166,7 +166,7 @@ no_window() {
   return 1
 }
 # Key codes, as a US keyboard has them; the app reads them through the Mac's layout.
-K_B=11 K_L=37 K_R=15 K_F=3 K_M=46 K_C=8 K_T=17 K_W=13 K_H=4 K_0=29 K_EQUAL=24 K_A=0 K_RET=36 K_ESC=53
+K_L=37 K_R=15 K_F=3 K_M=46 K_C=8 K_T=17 K_W=13 K_H=4 K_0=29 K_EQUAL=24 K_A=0 K_RET=36 K_ESC=53
 
 # ---- the checks: each a function check_<name>, recording one row or more. NEEDS names what of
 # `gitviber browser help` it uses; a check whose needs aren't there is skipped.
@@ -783,13 +783,17 @@ check_hidden_window() {
 beacon() { grep -o 'GET /beacon?[^ ]*' $STATE/www.log | tail -1 }
 served() { grep -c "\"GET $1 " $STATE/www.log }
 
+# A new tab the way the default (VS Code) keys leave it: the top bar's globe, which ⇧⌘B ran
+# under the classic keys. The window's size is fixed above, so the globe stays at this point.
+new_user_tab() { click 1237 20; sleep 0.3 }
+
 check_user_tab() {
   local why
   why=$(no_window) && { record user_tab SKIP "$why"; return }
-  key $K_B cmd,shift
+  new_user_tab
   until_ok 5 'strip | grep -q "New Tab"'
   local ok=$?
-  pass_if "⇧⌘B opens a browser tab" '(( ok == 0 ))' "strip: $(strip | tr -s ' ' | head -c 100)"
+  pass_if "the globe opens a browser tab" '(( ok == 0 ))' "strip: $(strip | tr -s ' ' | head -c 100)"
 }
 
 check_user_address() {
@@ -1012,7 +1016,7 @@ check_memory() {
   why=$(no_window) && { record "memory: 10 of your tabs opened and closed, twice" SKIP "$why"; return }
   start=$(footprint_mb)
   for round in 1 2; do
-    for (( i = 1; i <= 10; i++ )); do key $K_B cmd,shift; type_text "127.0.0.1:$SW/?m$i"; key $K_RET; sleep 0.7; done
+    for (( i = 1; i <= 10; i++ )); do new_user_tab; type_text "127.0.0.1:$SW/?m$i"; key $K_RET; sleep 0.7; done
     sleep 2
     (( round == 1 )) && mid=$(footprint_mb)
     # ⌘W from the page area: the tab's own close, not a terminal pane's.
