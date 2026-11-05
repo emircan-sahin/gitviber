@@ -1129,6 +1129,7 @@ impl Render for WorkspaceView {
                 let op = repo.as_deref().and_then(|s| s.operation.as_ref());
                 gitviber_changes::operation_actions(d, op)
             })
+            .map(|d| gitviber_github::pull_actions(d, repo.as_deref()))
             .child(top)
             .child(body)
             .child(status)

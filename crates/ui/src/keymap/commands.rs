@@ -44,7 +44,7 @@ workbench: [ShowCommands, QuickOpen, OpenChange, OpenSettings, ShortcutOverlay],
     conflict: [AcceptCurrent, AcceptIncoming, AcceptBoth, MarkResolved, UseEdit, CancelEdit],
     worktree: [OpenTerminal, Merge, Rename, Remove],
     project: [Forget],
-    github: [PostComment],
+    github: [PostComment, CreatePull, OpenBranchPull],
     app: [About, CheckForUpdates, InstallCli, Quit, Hide, HideOthers, ShowAll],
     help: [Readme, Shortcuts, ReportBug, CopyDiagnostics, ShowLogs, ReleaseNotes, License],
 }
@@ -746,6 +746,14 @@ pub static COMMANDS: &[Command] = &[
     )
     .local("IssueComment")
     .over_text(),
+    // Only while origin is on GitHub (the window's root listens then).
+    cmd::<github::CreatePull>("github.createPull", "Create Pull Request…", GitHub, &[]),
+    cmd::<github::OpenBranchPull>(
+        "github.openBranchPull",
+        "Open Pull Request for This Branch",
+        GitHub,
+        &[],
+    ),
     // Only while suggestions are set up in Settings.
     cmd::<git::SuggestMessage>("git.suggestMessage", "Suggest Commit Message", Git, &[]),
     // Only while a merge, rebase, cherry-pick or revert is stopped (the window's root listens then).

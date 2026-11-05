@@ -1,5 +1,6 @@
 //! The views: the PRs and Issues panels, a PR's, a PR file's and an issue's tab, their dialogs.
 
+mod commands;
 mod comment_box;
 pub(crate) mod common;
 mod connect;
@@ -26,6 +27,7 @@ use gitviber_ui::workspace::{
 };
 use gpui_kit::{App, AppContext as _, Context, Entity, Global, Subscription, WeakEntity, Window};
 
+pub use commands::pull_actions;
 pub use issue_view::IssueView;
 pub use issues_panel::IssuesPanel;
 pub use pull_file::PullFileView;
