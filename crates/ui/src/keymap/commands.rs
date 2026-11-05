@@ -40,7 +40,8 @@ workbench: [ShowCommands, QuickOpen, OpenChange, OpenSettings, ShortcutOverlay],
     terminal: [Toggle, Focus, NewInProject, ShowAgents, ResumeConversation, New, Split, SplitDown, Clear, Close, PrevPane, NextPane, FocusLeft, FocusRight, FocusUp, FocusDown, ToggleMaximize, ZoomPane, EqualizePanes, RenamePane, FontZoomIn, FontZoomOut, FontZoomReset, PrevCommand, NextCommand, Hints, FocusTabs],
     browser: [Open, FocusAddress, Reload, Back, Forward, Inspect, Pick, ToggleDevice, ClearData, Find, FindNext, FindPrev, ZoomIn, ZoomOut, ZoomReset, ToggleReader],
     explorer: [Rename, Delete],
-    git: [SwitchBranch, NewBranch, CompareBranches, SwitchWorktree, NewWorktree, Fetch, Pull, Push, Sync, ApplyPatch, Undo, Redo, ToggleStage, Discard, Commit, RenameBranch, SelectAllChanges, CreateTag, SuggestMessage],
+    git: [SwitchBranch, NewBranch, CompareBranches, SwitchWorktree, NewWorktree, Fetch, Pull, Push, Sync, ApplyPatch, Undo, Redo, ToggleStage, Discard, Commit, RenameBranch, SelectAllChanges, CreateTag, SuggestMessage, Continue, Abort, Skip, Stash, PopStash, CommitAndPush, ToggleAmend],
+    conflict: [AcceptCurrent, AcceptIncoming, AcceptBoth, MarkResolved, UseEdit, CancelEdit],
     worktree: [OpenTerminal, Merge, Rename, Remove],
     project: [Forget],
     github: [PostComment],
@@ -747,7 +748,44 @@ pub static COMMANDS: &[Command] = &[
     .over_text(),
     // Only while suggestions are set up in Settings.
     cmd::<git::SuggestMessage>("git.suggestMessage", "Suggest Commit Message", Git, &[]),
+    // Only while a merge, rebase, cherry-pick or revert is stopped (the window's root listens then).
+    cmd::<git::Continue>("git.continue", "Continue Merge or Rebase", Git, &[]),
+    cmd::<git::Abort>("git.abort", "Abort Merge or Rebase", Git, &[]),
+    cmd::<git::Skip>("git.skip", "Skip Commit in Rebase", Git, &[]),
+    cmd::<git::Stash>("git.stash", "Stash Changes…", Git, &[]),
+    cmd::<git::PopStash>("git.popStash", "Pop Latest Stash", Git, &[]),
+    cmd::<git::CommitAndPush>("git.commitAndPush", "Commit & Push", Git, &[]),
+    cmd::<git::ToggleAmend>("git.toggleAmend", "Toggle Amend", Git, &[]),
+    // The block F7 / ⇧F7 went to; once chosen, the keys move on to the next one left. Digits
+    // type in the box a block is edited in.
+    cmd::<conflict::AcceptCurrent>("conflict.acceptCurrent", "Accept Current", Git, &["1"])
+        .local(CONFLICT),
+    cmd::<conflict::AcceptIncoming>("conflict.acceptIncoming", "Accept Incoming", Git, &["2"])
+        .local(CONFLICT),
+    cmd::<conflict::AcceptBoth>("conflict.acceptBoth", "Accept Both", Git, &["3"]).local(CONFLICT),
+    cmd::<conflict::MarkResolved>(
+        "conflict.markResolved",
+        "Mark Conflict Resolved",
+        Git,
+        &["cmd+enter"],
+    )
+    .local(CONFLICT),
+    // The box a block is written in by hand: done with it, or back to the block's sides.
+    cmd::<conflict::UseEdit>("conflict.useEdit", "Use Edited Block", Git, &["cmd+enter"])
+        .local("ConflictEdit")
+        .over_text(),
+    cmd::<conflict::CancelEdit>(
+        "conflict.cancelEdit",
+        "Cancel Editing Block",
+        Git,
+        &["escape"],
+    )
+    .local("ConflictEdit")
+    .over_text(),
 ];
+
+/// The conflict editor, out of the box a block is written in by hand.
+pub const CONFLICT: &str = "ConflictView && !Input";
 
 /// Menu bar items that aren't key commands; the palette lists them too.
 pub static MENU_COMMANDS: &[Command] = &[

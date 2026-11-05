@@ -64,6 +64,53 @@ impl ChangesPanel {
         Some(id)
     }
 
+    /// `path`'s conflict was resolved in its tab: the tab goes on to the conflicted file in its
+    /// place in the list. After the last one it follows the file into Staged (`follow_git`).
+    pub(crate) fn resolved(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(ws) = self.workspace() else { return };
+        // Its tab, as a conflict or, moved by a read that landed first, staged.
+        let Some((_, file)) = relocate(&self.lists, Kind::Conflict, path) else {
+            return;
+        };
+        let tabs =
+            [Kind::Conflict, Kind::Staged].map(|k| selection_key(&selection_of(k, file.clone())));
+        // As drawn; the ones a folded folder or the filter hides after, as listed.
+        let shown = self.file_keys();
+        let mut files: Vec<&Arc<FileChange>> = self.lists.conflicted.iter().collect();
+        files.sort_by_key(|f| {
+            let k = selection_key(&selection_of(Kind::Conflict, (*f).clone()));
+            shown.iter().position(|s| *s == k).unwrap_or(usize::MAX)
+        });
+        // The next one, else the one before; out of the list already (that read), the first.
+        let next = match files.iter().position(|f| f.path == path) {
+            Some(at) => files
+                .get(at + 1)
+                .or_else(|| at.checked_sub(1).and_then(|i| files.get(i))),
+            None => files.first(),
+        };
+        let Some(to) = next.map(|f| selection_of(Kind::Conflict, (*f).clone())) else {
+            return;
+        };
+        if self.open_key.as_ref().is_some_and(|k| tabs.contains(k)) {
+            self.open_key = Some(selection_key(&to));
+        }
+        // The tab is looked up when the move runs: a read's move into Staged (`follow_git`),
+        // asked for before this one, runs first.
+        let (handle, ws) = (self.window, ws.downgrade());
+        cx.defer(move |cx| {
+            handle
+                .update(cx, |_, window, cx| {
+                    ws.update(cx, |ws, cx| {
+                        if let Some(tab) = tabs.iter().find(|k| ws.tabs().get(k).is_some()) {
+                            ws.retarget_tab(tab, to, window, cx);
+                        }
+                    })
+                    .ok();
+                })
+                .ok();
+        });
+    }
+
     pub(super) fn is_leaving(&self, key: &str) -> bool {
         self.leaving.iter().any(|l| l.keys.iter().any(|k| k == key))
     }

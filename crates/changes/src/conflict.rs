@@ -20,6 +20,8 @@ use gitviber_diff::language::language_for;
 use gitviber_diff::model::indent::indent_unit;
 use gitviber_diff::{DiffStyle, code_line};
 use gitviber_terminal::agent::{Handoff, handoff_to};
+use gitviber_ui::actions::{conflict, diff};
+use gitviber_ui::keymap::shortcut_label;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{FileIcon, PathLabel, Toggle as _};
 use gitviber_ui::workspace::{Toast, Workspace};
@@ -31,9 +33,9 @@ use gpui_kit::component::input::{Textarea, TextareaState};
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable, Font,
-    Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Task, Window, div, prelude::FluentBuilder as _,
-    px,
+    Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Task, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -151,6 +153,11 @@ pub struct ConflictView {
     /// Folded runs of text between conflicts opened, by segment.
     open_runs: HashSet<usize>,
     preview: bool,
+    /// The block the keys choose for (F7 / ⇧F7 move it), outlined while the view has focus.
+    cursor: usize,
+    /// Without blocks: the side 1 or 2 picked, outlined; ⌘↵ keeps it.
+    whole_pick: Option<GitSide>,
+    scroll: ScrollHandle,
     /// In a rebase the sides swap meaning: HEAD is the base, incoming the user's own commit.
     rebase: bool,
     /// The merge tool git's config names.
@@ -188,6 +195,9 @@ impl ConflictView {
             open_bases: HashSet::new(),
             open_runs: HashSet::new(),
             preview: false,
+            cursor: 0,
+            whole_pick: None,
+            scroll: ScrollHandle::new(),
             rebase: false,
             merge_tool: None,
             in_tool: false,
@@ -245,6 +255,7 @@ impl ConflictView {
                     let n = blocks.len();
                     this.choices.retain(|i, _| *i < n);
                     this.editing.retain(|i, _| *i < n);
+                    this.cursor = this.cursor.min(n.saturating_sub(1));
                     this.bases = r.bases;
                     this.state = State::Loaded(Loaded {
                         unit: r.unit,
@@ -294,7 +305,9 @@ impl ConflictView {
         }
     }
 
+    /// A card's buttons and the keys; a click there takes the keys' cursor along.
     fn choose(&mut self, block: usize, kind: Pick, cx: &mut Context<Self>) {
+        self.cursor = block;
         if let Some(b) = self.blocks().get(block) {
             let choice = Choice::of(b, kind);
             self.choices.insert(block, choice);
@@ -310,12 +323,14 @@ impl ConflictView {
     }
 
     fn undo(&mut self, block: usize, cx: &mut Context<Self>) {
+        self.cursor = block;
         self.choices.remove(&block);
         cx.notify();
     }
 
     /// Both sides in a text box, to write the block as it should be.
     fn edit(&mut self, block: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.cursor = block;
         let Some(b) = self.blocks().get(block).copied() else {
             return;
         };
@@ -337,16 +352,21 @@ impl ConflictView {
         cx.notify();
     }
 
-    fn use_edit(&mut self, block: usize, cx: &mut Context<Self>) {
+    /// The box's text becomes the block's; the keys go on from the view.
+    fn use_edit(&mut self, block: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.cursor = block;
         if let Some(state) = self.editing.remove(&block) {
             let text = state.read(cx).value();
             self.choices.insert(block, Choice::custom(&text));
+            self.focus.focus(window, cx);
             cx.notify();
         }
     }
 
-    fn cancel_edit(&mut self, block: usize, cx: &mut Context<Self>) {
+    fn cancel_edit(&mut self, block: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.cursor = block;
         self.editing.remove(&block);
+        self.focus.focus(window, cx);
         cx.notify();
     }
 
@@ -355,6 +375,152 @@ impl ConflictView {
             self.open_bases.insert(block);
         }
         cx.notify();
+    }
+
+    /// F7 / ⇧F7: the next or previous block, brought into view.
+    fn step(&mut self, by: isize, cx: &mut Context<Self>) {
+        let n = self.blocks().len();
+        if n == 0 || self.leave_preview(cx) {
+            return;
+        }
+        self.cursor = self.cursor.saturating_add_signed(by).min(n - 1);
+        self.show_cursor();
+        cx.notify();
+    }
+
+    /// The keys act on blocks in sight: the first key in Preview goes back to them, to the
+    /// keys' block, and does nothing else.
+    fn leave_preview(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.preview {
+            return false;
+        }
+        self.preview = false;
+        self.show_cursor();
+        cx.notify();
+        true
+    }
+
+    /// The scroll's children are the file's segments, one each.
+    fn show_cursor(&self) {
+        let State::Loaded(Loaded {
+            parsed: Some(p), ..
+        }) = &self.state
+        else {
+            return;
+        };
+        let seg = p
+            .segments
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| matches!(s, Segment::Conflict(_)))
+            .nth(self.cursor);
+        if let Some((seg, _)) = seg.filter(|_| !self.preview) {
+            self.scroll.scroll_to_top_of_item(seg);
+        }
+    }
+
+    /// The first block after `from` with no choice yet, going round.
+    fn next_open(&self, from: usize) -> Option<usize> {
+        let n = self.blocks().len();
+        (1..=n)
+            .map(|d| (from + d) % n)
+            .find(|i| !self.choices.contains_key(i))
+    }
+
+    /// The keys decided block `from`: on to the next one left.
+    fn advance(&mut self, from: usize) {
+        if let Some(next) = self.next_open(from) {
+            self.cursor = next;
+            self.show_cursor();
+        }
+    }
+
+    /// 1, 2, 3: the cursor's block takes a side; an open one then hands the cursor to the next
+    /// block left. A side chosen before is replaced; text written by hand never is, only a
+    /// click on its card undoes it. Without blocks the key only picks a side of the whole file.
+    fn pick(&mut self, kind: Pick, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || !matches!(self.state, State::Loaded(_)) || self.leave_preview(cx) {
+            return;
+        }
+        if self.blocks().is_empty() {
+            self.whole_pick = match kind {
+                Pick::Ours => Some(GitSide::Ours),
+                Pick::Theirs => Some(GitSide::Theirs),
+                _ => return,
+            };
+            return cx.notify();
+        }
+        let at = self.cursor;
+        let by_hand = self.editing.contains_key(&at)
+            || self
+                .choices
+                .get(&at)
+                .is_some_and(|c| c.kind == Pick::Custom);
+        if by_hand {
+            let why = Toast::info("It was written by hand. Undo it on its card to pick a side.");
+            return self.toast(why.title(format!("Conflict {} kept", at + 1)), window, cx);
+        }
+        let open = !self.choices.contains_key(&at);
+        self.choose(at, kind, cx);
+        if open {
+            self.advance(at);
+        }
+    }
+
+    /// ⌘↵ in the box a block is written in: Use this, and on to the next block left.
+    fn done_editing(&mut self, block: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.use_edit(block, window, cx);
+        self.advance(block);
+    }
+
+    /// ⌘↵: Mark resolved, or the side 1 or 2 picked of a whole file. With blocks left, the
+    /// cursor goes to the first and the toast says so.
+    fn mark_resolved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let State::Loaded(l) = &self.state else {
+            return;
+        };
+        let as_is = self.whole_choice(l).as_is;
+        if self.busy {
+            return;
+        }
+        let n = self.blocks().len();
+        if n == 0 {
+            if self.whole_pick.is_some() || as_is {
+                self.resolve_whole(self.whole_pick, window, cx);
+            } else {
+                let why = Toast::info("Pick the side of the file to keep.");
+                self.toast(why.title("Mark resolved not run"), window, cx);
+            }
+            return;
+        }
+        let Some(first) = (0..n).find(|i| !self.choices.contains_key(i)) else {
+            return self.save(window, cx);
+        };
+        let left = n - self.choices.len();
+        self.preview = false;
+        self.cursor = first;
+        self.show_cursor();
+        cx.notify();
+        let why = Toast::info(format!(
+            "{left} {} no choice yet.",
+            if left == 1 {
+                "block has"
+            } else {
+                "blocks have"
+            }
+        ));
+        self.toast(why.title("Mark resolved not run"), window, cx);
+    }
+
+    /// Resolved: the tab goes on to the next conflicted file in Changes.
+    fn move_on(&self, window: &Window, cx: &mut App) {
+        let panel = Workspace::for_window(window, cx).and_then(|ws| {
+            let p = ws.read(cx).built_panel("changes")?.view();
+            p.downcast::<crate::ChangesPanel>().ok()
+        });
+        if let Some(p) = panel {
+            p.update(cx, |p, cx| p.resolved(&self.path, cx));
+        }
     }
 
     fn toast(&self, toast: Toast, window: &Window, cx: &mut App) {
@@ -400,6 +566,9 @@ impl ConflictView {
                 .await;
             this.update_in(cx, |this, window, cx| {
                 this.busy = false;
+                if matches!(result, Ok(Saved::Done)) {
+                    this.move_on(window, cx);
+                }
                 let toast = match result {
                     Ok(Saved::Done) => Toast::success(path.clone()).title("Conflict resolved"),
                     Ok(Saved::Changed) => Toast::error(
@@ -426,6 +595,7 @@ impl ConflictView {
     ) {
         let (core, path) = (crate::core(cx), self.path.clone());
         let as_is = side.is_none();
+        self.whole_pick = None;
         self.busy = true;
         cx.notify();
         self._save = cx.spawn_in(window, async move |this, cx| {
@@ -440,6 +610,9 @@ impl ConflictView {
                 .await;
             this.update_in(cx, |this, window, cx| {
                 this.busy = false;
+                if result.is_ok() {
+                    this.move_on(window, cx);
+                }
                 let toast = match (result, as_is) {
                     (Ok(()), true) => Toast::success(path.clone()).title("Marked resolved"),
                     (Ok(()), false) => Toast::success(path.clone()).title("Conflict resolved"),
@@ -579,8 +752,15 @@ impl ConflictView {
                 if let Some(s) = self.editing.get(&b) {
                     s.update(cx, |s, cx| s.set_value(text, window, cx));
                 }
-                self.use_edit(b, cx);
+                self.use_edit(b, window, cx);
             }
+            TestAct::Open(b, text) => {
+                self.edit(b, window, cx);
+                if let Some(s) = self.editing.get(&b) {
+                    s.update(cx, |s, cx| s.set_value(text, window, cx));
+                }
+            }
+            TestAct::Preview => self.preview = true,
             TestAct::Save => self.save(window, cx),
             TestAct::Whole(side) => self.resolve_whole(side, window, cx),
         }
@@ -624,6 +804,9 @@ pub(crate) enum TestAct {
     Choose(usize, Pick),
     All(Pick),
     Edit(usize, String),
+    /// The block's edit box open with this text in it, and focused.
+    Open(usize, String),
+    Preview,
     Save,
     Whole(Option<GitSide>),
 }
@@ -773,10 +956,10 @@ impl ConflictView {
     }
 
     #[allow(clippy::too_many_arguments)]
-    /// Block `i` of `n`, segment `seg`.
+    /// Block `i` of `n`, segment `seg`; `at`: the keys' block.
     fn card(
         &self,
-        (i, n, seg): (usize, usize, usize),
+        (i, n, seg, at): (usize, usize, usize, bool),
         b: &Block,
         names: (&str, &str),
         t: &AppTheme,
@@ -808,11 +991,13 @@ impl ConflictView {
             vec![
                 button("cancel", "Cancel")
                     .ghost()
-                    .on_click(cx.listener(move |this, _, _, cx| this.cancel_edit(i, cx)))
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.cancel_edit(i, window, cx)),
+                    )
                     .into_any_element(),
                 button("use", "Use this")
                     .primary()
-                    .on_click(cx.listener(move |this, _, _, cx| this.use_edit(i, cx)))
+                    .on_click(cx.listener(move |this, _, window, cx| this.use_edit(i, window, cx)))
                     .into_any_element(),
             ]
         } else {
@@ -850,6 +1035,15 @@ impl ConflictView {
                 .font_family(look.style.font_family.clone())
                 .font_features(look.font.features.clone())
                 .text_size(look.style.font_size)
+                .key_context("ConflictEdit")
+                .on_action(cx.listener(move |this, _: &conflict::UseEdit, window, cx| {
+                    this.done_editing(i, window, cx)
+                }))
+                .on_action(
+                    cx.listener(move |this, _: &conflict::CancelEdit, window, cx| {
+                        this.cancel_edit(i, window, cx)
+                    }),
+                )
                 .child(Textarea::new(&state))
                 .into_any_element()
         } else {
@@ -881,7 +1075,7 @@ impl ConflictView {
             .rounded_md()
             .overflow_hidden()
             .border_1()
-            .border_color(tone.opacity(0.55))
+            .border_color(if at { t.primary } else { tone.opacity(0.55) })
             .child(
                 h_flex()
                     .h(px(32.))
@@ -971,10 +1165,12 @@ impl ConflictView {
     }
 
     /// Conflicts without text blocks (deletions, binaries, Git LFS files): a side of the whole
-    /// file.
-    fn whole(&self, l: &Loaded, t: &AppTheme, cx: &mut Context<Self>) -> AnyElement {
+    /// file. A click keeps it; 1 or 2 outlines it while the view has the keys, for ⌘↵ to keep.
+    fn whole(&self, l: &Loaded, keyed: bool, t: &AppTheme, cx: &mut Context<Self>) -> AnyElement {
         let w = self.whole_choice(l);
         let busy = self.busy;
+        let picked = self.whole_pick.filter(|_| keyed);
+        let keep_key = shortcut_label("conflict.markResolved", cx);
         let side = |ix: usize, git: GitSide, cx: &mut Context<Self>| {
             let (label, note) = w.sides[ix];
             v_flex()
@@ -983,7 +1179,11 @@ impl ConflictView {
                 .p_3()
                 .rounded_md()
                 .border_1()
-                .border_color(t.border_strong)
+                .border_color(if picked == Some(git) {
+                    t.primary
+                } else {
+                    t.border_strong
+                })
                 .bg(t.panel)
                 .when(!busy, |el| {
                     el.cursor_pointer()
@@ -1058,15 +1258,25 @@ impl ConflictView {
                             .gap_2()
                             .child(side(0, GitSide::Ours, cx))
                             .child(side(1, GitSide::Theirs, cx)),
-                    ),
+                    )
+                    .when_some(picked.and(keep_key), |el, key| {
+                        el.child(
+                            div()
+                                .mt_2()
+                                .text_size(px(11.5))
+                                .text_color(t.muted_foreground)
+                                .child(format!("{key} keeps the outlined side.")),
+                        )
+                    }),
             )
             .into_any_element()
     }
 }
 
 impl Render for ConflictView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let style = DiffStyle::get(cx).clone();
+        let keyed = self.focus.contains_focused(window, cx);
         if let State::Loaded(l) = &mut self.state {
             for h in l.colors.iter_mut().flatten() {
                 if !Arc::ptr_eq(h.theme(), &style.syntax) {
@@ -1095,7 +1305,7 @@ impl Render for ConflictView {
                 .text_color(t.muted_foreground)
                 .child(format!("Could not read the file: {e}"))
                 .into_any_element(),
-            State::Loaded(l) if n == 0 => self.whole(l, &t, cx),
+            State::Loaded(l) if n == 0 => self.whole(l, keyed, &t, cx),
             State::Loaded(l) => {
                 let parsed = l.parsed.as_ref().expect("blocks come from a parse");
                 let parts: Vec<AnyElement> = if self.preview {
@@ -1118,7 +1328,8 @@ impl Render for ConflictView {
                                 parts.push(self.text_run(seg, lines, &t, &look, cx))
                             }
                             Segment::Conflict(b) => {
-                                parts.push(self.card((block, n, seg), b, names, &t, &look, cx));
+                                let at = keyed && block == self.cursor;
+                                parts.push(self.card((block, n, seg, at), b, names, &t, &look, cx));
                                 block += 1;
                             }
                         }
@@ -1127,6 +1338,7 @@ impl Render for ConflictView {
                 };
                 div()
                     .id("conflict-scroll")
+                    .track_scroll(&self.scroll)
                     .size_full()
                     .overflow_y_scroll()
                     .py_2()
@@ -1141,7 +1353,26 @@ impl Render for ConflictView {
         let small = |id: &'static str, label: String| Button::new(id).xsmall().label(label);
         v_flex()
             .id("conflict-view")
+            .key_context("ConflictView")
             .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &diff::NextChange, _, cx| this.step(1, cx)))
+            .on_action(cx.listener(|this, _: &diff::PrevChange, _, cx| this.step(-1, cx)))
+            .on_action(
+                cx.listener(|this, _: &conflict::AcceptCurrent, window, cx| {
+                    this.pick(Pick::Ours, window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &conflict::AcceptIncoming, window, cx| {
+                    this.pick(Pick::Theirs, window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &conflict::AcceptBoth, window, cx| {
+                this.pick(Pick::Both, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &conflict::MarkResolved, window, cx| {
+                this.mark_resolved(window, cx)
+            }))
             .size_full()
             .bg(style.colors.background)
             .text_color(t.foreground)

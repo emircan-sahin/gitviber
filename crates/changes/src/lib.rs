@@ -21,6 +21,7 @@ mod toasts;
 
 pub use commit::CommitBox;
 pub use conflict::ConflictView;
+pub use global::operation_actions;
 pub use model::list::ChangesView;
 pub use panel::ChangesPanel;
 pub use tabs::ChangeTab;

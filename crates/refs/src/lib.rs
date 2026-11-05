@@ -55,11 +55,20 @@ fn switch_refusal(
     project: &Entity<gitviber_ui::workspace::Project>,
     cx: &App,
 ) -> Option<SharedString> {
-    let busy = held(cx).or_else(|| {
+    let busy = running(project, cx)?;
+    Some(format!("Wait for {busy} to finish.").into())
+}
+
+/// The git action running on the project's repo, or held over it (a commit): another one now
+/// would race it.
+pub fn running(
+    project: &Entity<gitviber_ui::workspace::Project>,
+    cx: &App,
+) -> Option<SharedString> {
+    held(cx).or_else(|| {
         let state = RepoState::existing(project, cx)?;
         state.read(cx).busy().cloned()
-    })?;
-    Some(format!("Wait for {busy} to finish.").into())
+    })
 }
 
 /// Keeps the window's repo where it is while it lives, as an action RepoState runs does: for
