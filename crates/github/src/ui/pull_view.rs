@@ -47,7 +47,7 @@ use crate::logic::pull_commits::{
 use crate::model::{Account, Check, CiState, PullItem, PullState, Target, repo_of};
 use crate::requests::{GithubRequest, PullSource, request};
 use crate::store::Store;
-use crate::ui::comment_box::CommentBox;
+use crate::ui::comment_box::{CommentBox, POST_KEY};
 use crate::ui::common::{
     Attachments, Blocks, ago, ci_badge, copy, error_text, github_failure, load_failed, open_url,
     pull_icon, pull_pill, refresh_error, section, section_part, text_button, theme,
@@ -1069,7 +1069,9 @@ impl PullView {
             None => {
                 let b = cx.new(|cx| {
                     MarkdownInput::new(self.web.clone(), self.url.clone(), window, cx, |t| {
-                        t.rows(4).placeholder("Leave a comment (markdown)")
+                        t.rows(4).placeholder(format!(
+                            "Leave a comment (markdown; {POST_KEY} to submit)"
+                        ))
                     })
                     .small()
                     .signed_by(self.target.clone(), self.number)
@@ -1089,6 +1091,7 @@ impl PullView {
         };
         ReviewDialog::open(
             cx.entity(),
+            self.reviews_done,
             body,
             self.review_pick,
             rights.own,
@@ -3857,5 +3860,48 @@ mod tests {
         });
         draw(cx);
         assert!(view.read_with(cx, |v, cx| v.comment_text(cx).is_empty()));
+    }
+
+    /// ⌘↵ in the review box submits the review, not a newline; a comment with no text waits.
+    #[gpui_kit::test]
+    fn cmd_enter_submits_the_review(cx: &mut TestAppContext) {
+        setup(cx);
+        let ws = cx.update(|cx| cx.new(Workspace::new));
+        let mut view = None;
+        let handle = cx.add_window(|window, cx| {
+            Workspace::register_window(&ws, window, cx);
+            let p = pull(1);
+            let v = cx.new(|cx| PullView::new(ws.downgrade(), p.url.clone(), Some(p), window, cx));
+            view = Some(v.clone());
+            let host = cx.new(|_| Host(ws.clone(), v));
+            gpui_kit::base::Root::new(gpui_kit::AnyView::from(host), window, cx)
+        });
+        let cx = VisualTestContext::from_window(*handle, cx).into_mut();
+        let view = view.unwrap();
+        view.update(cx, |v, cx| {
+            fill(v);
+            v.review_pick = Some(ReviewEvent::Comment);
+            cx.notify();
+        });
+        view.update_in(cx, |v, window, cx| v.review(window, cx));
+        draw(cx);
+        draw(cx);
+        let at = view.read_with(cx, |v, _| v.detail_at);
+        cx.simulate_keystrokes("cmd-enter");
+        cx.run_until_parked();
+        assert_eq!(
+            view.read_with(cx, |v, _| v.detail_at),
+            at,
+            "sent with no text"
+        );
+        cx.simulate_input("Looks good");
+        cx.simulate_keystrokes("cmd-enter");
+        cx.run_until_parked();
+        // Refused (there's no repository here): the page read again, the text kept as typed.
+        view.read_with(cx, |v, cx| {
+            assert!(v.detail_at > at, "never sent");
+            let body = v.review.as_ref().unwrap().read(cx).value(cx);
+            assert_eq!(body, "Looks good");
+        });
     }
 }
