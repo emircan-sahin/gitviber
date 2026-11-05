@@ -2,7 +2,7 @@
 //! reach the panel, built if it wasn't yet.
 
 use crate::ChangesPanel;
-use crate::panel::Act;
+use crate::panel::{Act, has_steps, skips};
 use gitviber_core::git::Operation;
 use gitviber_ui::actions::{changes, git, review};
 use gitviber_ui::workspace::{ChangesOf, Workspace};
@@ -23,29 +23,35 @@ pub fn install(cx: &mut App) {
     on::<review::Branch>(cx, true, |p, _, cx| p.review_branch(false, cx));
     // These check what the panel lists, so they wait for its first read.
     on::<git::Stash>(cx, false, |p, window, cx| {
-        p.once_read(|p, window, cx| p.stash_command(window, cx), window, cx)
+        p.once_read("Stash", |p, w, cx| p.stash_command(w, cx), window, cx)
     });
     on::<git::PopStash>(cx, false, |p, window, cx| {
-        p.once_read(|p, window, cx| p.pop_latest_stash(window, cx), window, cx)
+        p.once_read("Pop", |p, w, cx| p.pop_latest_stash(w, cx), window, cx)
     });
     on::<git::CommitAndPush>(cx, true, |p, window, cx| {
-        p.once_read(|p, window, cx| p.commit_and_push(window, cx), window, cx)
+        p.once_read(
+            "Commit & Push",
+            |p, w, cx| p.commit_and_push(w, cx),
+            window,
+            cx,
+        )
     });
     on::<git::ToggleAmend>(cx, true, |p, window, cx| {
-        p.once_read(|p, window, cx| p.toggle_amend(window, cx), window, cx)
+        p.once_read("Amend", |p, w, cx| p.toggle_amend(w, cx), window, cx)
     });
 }
 
 /// Continue, Abort and Skip on a window's root, there only while `op` is stopped for them: the
 /// palette and the menu bar offer what something listens for.
 pub fn operation_actions<E: InteractiveElement>(el: E, op: Option<&Operation>) -> E {
-    let Some(op) = op.filter(|o| o.kind != "bisect") else {
+    let Some(op) = op.filter(|o| has_steps(&o.kind)) else {
         return el;
     };
     let mut el = el
         .on_action(|_: &git::Continue, window, cx| {
             on_panel(window, cx, true, |p, window, cx| {
                 p.once_read(
+                    "Continue",
                     |p, w, cx| p.operation_command("continue", w, cx),
                     window,
                     cx,
@@ -54,13 +60,23 @@ pub fn operation_actions<E: InteractiveElement>(el: E, op: Option<&Operation>) -
         })
         .on_action(|_: &git::Abort, window, cx| {
             on_panel(window, cx, true, |p, window, cx| {
-                p.once_read(|p, w, cx| p.operation_command("abort", w, cx), window, cx)
+                p.once_read(
+                    "Abort",
+                    |p, w, cx| p.operation_command("abort", w, cx),
+                    window,
+                    cx,
+                )
             })
         });
-    if op.kind == "rebase" && !op.split {
+    if skips(&op.kind, op.split) {
         el = el.on_action(|_: &git::Skip, window, cx| {
             on_panel(window, cx, true, |p, window, cx| {
-                p.once_read(|p, w, cx| p.operation_command("skip", w, cx), window, cx)
+                p.once_read(
+                    "Skip",
+                    |p, w, cx| p.operation_command("skip", w, cx),
+                    window,
+                    cx,
+                )
             })
         });
     }

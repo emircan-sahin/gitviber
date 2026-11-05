@@ -56,7 +56,7 @@ mod follow;
 mod keys;
 mod menu;
 
-pub(crate) use commands::Act;
+pub(crate) use commands::{Act, has_steps, skips};
 use follow::Leaving;
 use keys::{Move, RowKey};
 
@@ -306,7 +306,7 @@ pub struct ChangesPanel {
     focus: FocusHandle,
     loaded: bool,
     /// Commands from outside the panel waiting for its first read (`once_read`).
-    after_read: Vec<commands::Act>,
+    after_read: Vec<(&'static str, commands::Act)>,
     error: Option<String>,
     root: String,
     branch: Option<String>,
@@ -547,7 +547,7 @@ impl ChangesPanel {
     /// draft stay, but the box has nothing to commit, nor a HEAD to amend, until then.
     fn switching(&mut self, cx: &mut Context<Self>) {
         self.loaded = false;
-        self.after_read.clear();
+        self.drop_after_read("Another worktree was opened while it waited.", cx);
         self.error = None;
         self.reading = false;
         self.again = false;
@@ -732,7 +732,7 @@ impl ChangesPanel {
                     }
                     Err(e) => {
                         this.error = Some(e);
-                        this.after_read.clear();
+                        this.drop_after_read("The changes could not be read.", cx);
                         cx.notify();
                     }
                 }
@@ -1696,6 +1696,9 @@ impl ChangesPanel {
     }
 
     fn apply_stash(&mut self, sha: String, pop: bool, cx: &mut Context<Self>) {
+        if self.apply_stash_blocked(pop, cx) {
+            return;
+        }
         let done = if pop { "Stash popped" } else { "Stash applied" };
         let weak = cx.entity().downgrade();
         let core = crate::core(cx);
@@ -1935,11 +1938,8 @@ impl ChangesPanel {
                         cx,
                     ),
                     Ok((false, entry)) if which != "abort" => {
-                        let done = Toast::success(format!(
-                            "{}{} finished",
-                            kind[..1.min(kind.len())].to_uppercase(),
-                            &kind[1.min(kind.len())..]
-                        ));
+                        let done =
+                            Toast::success(format!("{} finished", commands::capitalized(&kind)));
                         let ws = this.ctx.workspace.clone();
                         this.toast(with_undo(done, entry, repo, ws), cx)
                     }
@@ -1972,7 +1972,7 @@ impl ChangesPanel {
                                 });
                             fixes.push((GitFix::Hooks, without));
                         }
-                        let title = format!("{} failed", which[..1].to_uppercase() + &which[1..]);
+                        let title = format!("{} failed", commands::capitalized(which));
                         this.toast(git_error(title, &e, &fixes), cx)
                     }
                 }
@@ -3323,7 +3323,7 @@ impl ChangesPanel {
     fn render_banner(&self, t: &AppTheme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let op = self.operation.as_ref()?;
         // The bisect bar instead.
-        if op.kind == "bisect" {
+        if !has_steps(&op.kind) {
             return None;
         }
         let left = self.lists.conflicted.len();
@@ -3408,17 +3408,17 @@ impl ChangesPanel {
                                 .primary()
                                 .flex_1()
                                 .label("Continue")
-                                .disabled(self.operation_blocked("continue").is_some())
+                                .disabled(self.operation_blocked("continue", cx).is_some())
                                 .on_click(
                                     cx.listener(|this, _, w, cx| this.operation("continue", w, cx)),
                                 ),
                         )
-                        .when(op.kind == "rebase" && !op.split, |el| {
+                        .when(skips(&op.kind, op.split), |el| {
                             el.child(
                                 Button::new("op-skip")
                                     .small()
                                     .label("Skip commit")
-                                    .disabled(self.operation_blocked("skip").is_some())
+                                    .disabled(self.operation_blocked("skip", cx).is_some())
                                     .on_click(
                                         cx.listener(|this, _, w, cx| this.operation("skip", w, cx)),
                                     ),
@@ -3429,7 +3429,7 @@ impl ChangesPanel {
                                 .small()
                                 .danger()
                                 .label("Abort")
-                                .disabled(self.operation_blocked("abort").is_some())
+                                .disabled(self.operation_blocked("abort", cx).is_some())
                                 .on_click(
                                     cx.listener(|this, _, w, cx| this.operation("abort", w, cx)),
                                 ),
@@ -4516,7 +4516,6 @@ mod tests {
 
     #[gpui_kit::test]
     fn a_deleted_side_keeps_or_deletes_the_whole_file(cx: &mut TestAppContext) {
-        use crate::conflict::TestAct;
         // Theirs deletes the file, ours changes it: UD.
         let dir = gitviber_ui::test_support::temp_dir("changes-ud");
         git(&dir, &["init", "-q", "-b", "main"]);
@@ -4544,11 +4543,13 @@ mod tests {
             .expect("no blocks");
         assert_eq!(whole.sides[1].0, "Delete the file");
         assert!(!whole.as_is);
-        cx.update(|window, cx| {
-            view.update(cx, |v, cx| {
-                v.act_for_test(TestAct::Whole(Some(GitSide::Theirs)), window, cx)
-            })
-        });
+        // A digit only picks the side; ⌘↵ keeps it.
+        cx.update(|window, cx| view.read(cx).focus_handle(cx).focus(window, cx));
+        cx.simulate_keystrokes("2");
+        cx.run_until_parked();
+        assert!(dir.join("a.txt").exists(), "a digit alone writes nothing");
+        assert_eq!(git(&dir, &["status", "--porcelain"]).trim(), "UD a.txt");
+        cx.simulate_keystrokes("cmd-enter");
         cx.run_until_parked();
         assert!(
             !dir.join("a.txt").exists(),
@@ -6123,20 +6124,117 @@ mod tests {
             last_toast(&ws, cx).as_deref(),
             Some("Mark resolved not run")
         );
-        // Back to block 1 and on again: ⇧F7 and F7 move the cursor.
-        cx.dispatch_action(gitviber_ui::actions::diff::PrevChange);
-        cx.dispatch_action(gitviber_ui::actions::diff::NextChange);
+        // ⇧F7: back to block 1, whose side a key replaces, and the cursor stays; F7: block 2.
+        // Were F7 and ⇧F7 no-ops, block 2 would take both keys and block 1 keep incoming. They
+        // are bound on the workspace's root, which this window lacks: dispatched here.
+        use gitviber_ui::actions::diff::{NextChange, PrevChange};
+        cx.dispatch_action(PrevChange);
+        cx.simulate_keystrokes("1");
+        cx.dispatch_action(NextChange);
         cx.simulate_keystrokes("3 cmd-enter");
         cx.run_until_parked();
         assert_eq!(
             std::fs::read_to_string(dir.join("a.txt")).unwrap(),
-            "a\nB2\nc\nd\ne\nf\ng\nh\nI1\nI2\nj\n"
+            "a\nB1\nc\nd\ne\nf\ng\nh\nI1\nI2\nj\n"
         );
         assert_eq!(
             active_tab(&ws, cx).as_deref(),
             Some("conflict::b.txt"),
             "the tab moved on to the next conflict"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn last_message(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Option<String> {
+        cx.update(|_, cx| ws.update(cx, |ws, _| ws.take_toasts()))
+            .pop()
+            .map(|t| t.message.to_string())
+    }
+
+    /// Text written by hand is never replaced by a key; the edit box's ⌘↵ uses it and Esc
+    /// cancels it, the keys going on from the view either way.
+    #[gpui_kit::test]
+    fn keys_keep_hand_written_blocks(cx: &mut TestAppContext) {
+        use crate::conflict::TestAct;
+        let dir = two_conflicted("conflict-hand");
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let view = conflict_view(&host, "UU", cx);
+        let act = |a: TestAct, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| view.update(cx, |v, cx| v.act_for_test(a, window, cx)));
+            cx.run_until_parked();
+        };
+        cx.update(|window, cx| view.read(cx).focus_handle(cx).focus(window, cx));
+        // Esc leaves block 1 open, its digits for the view again: block 1 takes incoming.
+        act(TestAct::Open(0, "typed".into()), cx);
+        cx.simulate_keystrokes("escape 2");
+        // ⌘↵ in the box: block 2 is the text typed.
+        act(TestAct::Open(1, "mine".into()), cx);
+        cx.simulate_keystrokes("cmd-enter");
+        // Block 1's side is replaced; block 2's typed text isn't, the toast says so.
+        use gitviber_ui::actions::diff::{NextChange, PrevChange};
+        cx.dispatch_action(PrevChange);
+        cx.simulate_keystrokes("1");
+        cx.dispatch_action(NextChange);
+        cx.simulate_keystrokes("3");
+        cx.run_until_parked();
+        assert_eq!(last_toast(&ws, cx).as_deref(), Some("Conflict 2 kept"));
+        cx.simulate_keystrokes("cmd-enter");
+        cx.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "a\nB1\nc\nd\ne\nf\ng\nh\nmine\nj\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// In Preview the blocks aren't drawn: the first key goes back to them and chooses nothing.
+    #[gpui_kit::test]
+    fn a_key_in_preview_shows_the_blocks_first(cx: &mut TestAppContext) {
+        use crate::conflict::TestAct;
+        let dir = two_conflicted("conflict-preview");
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let view = conflict_view(&host, "UU", cx);
+        cx.update(|window, cx| {
+            view.read(cx).focus_handle(cx).focus(window, cx);
+            view.update(cx, |v, cx| v.act_for_test(TestAct::Preview, window, cx));
+        });
+        cx.simulate_keystrokes("1 cmd-enter");
+        cx.run_until_parked();
+        assert_eq!(
+            last_message(&ws, cx).as_deref(),
+            Some("2 blocks have no choice yet.")
+        );
+        // Out of Preview now, the keys choose.
+        cx.simulate_keystrokes("1 1 cmd-enter");
+        cx.run_until_parked();
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), OURS);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A read that landed before the editor's own word moved the tab into Staged already: the
+    /// tab still goes on to the next conflict.
+    #[gpui_kit::test]
+    fn a_resolved_conflict_moves_on_after_a_read_got_there_first(cx: &mut TestAppContext) {
+        let dir = two_conflicted("conflict-race");
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let p = project_panel(&dir, &ws, &host, cx);
+        let first = p.read_with(cx, |p, _| p.lists.conflicted[0].clone());
+        cx.update(|window, cx| {
+            p.update(cx, |p, cx| {
+                p.open(selection_of(Kind::Conflict, first), false, window, cx)
+            })
+        });
+        cx.run_until_parked();
+        git(&dir, &["add", "a.txt"]);
+        p.update(cx, |p, cx| p.read(cx));
+        cx.run_until_parked();
+        assert_eq!(active_tab(&ws, cx).as_deref(), Some("staged::a.txt"));
+        p.update(cx, |p, cx| p.resolved("a.txt", cx));
+        cx.run_until_parked();
+        assert_eq!(active_tab(&ws, cx).as_deref(), Some("conflict::b.txt"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -6178,7 +6276,7 @@ mod tests {
         let (ws, host, cx) = open(cx, &dir);
         let p = panel(&host, cx);
         let run = |act: commands::Act, cx: &mut VisualTestContext| {
-            cx.update(|window, cx| p.update(cx, |p, cx| p.once_read(act, window, cx)));
+            cx.update(|window, cx| p.update(cx, |p, cx| p.once_read("Test", act, window, cx)));
             cx.run_until_parked();
         };
         run(|p, w, cx| p.operation_command("continue", w, cx), cx);
@@ -6194,5 +6292,52 @@ mod tests {
         use gpui_kit::component::WindowExt as _;
         assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Stash and Pop wait for the action running: a second git command would race it.
+    #[gpui_kit::test]
+    fn stash_and_pop_wait_for_the_action_running(cx: &mut TestAppContext) {
+        let dir = repo("stash-busy");
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        p.update(cx, |p, _| p.busy = true);
+        let wait = Some("Wait for the action running to finish.");
+        cx.update(|window, cx| p.update(cx, |p, cx| p.stash_command(window, cx)));
+        assert_eq!(last_message(&ws, cx).as_deref(), wait);
+        p.update(cx, |p, cx| p.apply_stash("0".repeat(40), true, cx));
+        cx.run_until_parked();
+        let toast = cx
+            .update(|_, cx| ws.update(cx, |ws, _| ws.take_toasts()))
+            .pop();
+        let toast = toast.expect("a toast");
+        assert_eq!(toast.title.as_deref(), Some("Pop not run"));
+        assert_eq!(Some(toast.message.as_ref()), wait);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A command waiting for the first read says so when that read fails.
+    #[gpui_kit::test]
+    fn a_command_waiting_for_a_failed_read_says_not_run(cx: &mut TestAppContext) {
+        let dir = repo("read-fails");
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        cx.update(|window, cx| {
+            p.update(cx, |p, cx| {
+                p.loaded = false;
+                p.once_read("Stash", |p, w, cx| p.stash_command(w, cx), window, cx);
+            })
+        });
+        std::fs::remove_dir_all(&dir).unwrap();
+        p.update(cx, |p, cx| p.read(cx));
+        cx.run_until_parked();
+        assert!(p.read_with(cx, |p, _| p.error.is_some()), "the read failed");
+        let toast = cx
+            .update(|_, cx| ws.update(cx, |ws, _| ws.take_toasts()))
+            .pop();
+        let toast = toast.expect("a toast");
+        assert_eq!(toast.title.as_deref(), Some("Stash not run"));
+        assert_eq!(toast.message.as_ref(), "The changes could not be read.");
     }
 }
