@@ -6,6 +6,39 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.25] - 2026-11-05
+
+### Added
+
+- **Pull requests from the palette.** "Create Pull Request…" and "Open Pull Request for This Branch" work from anywhere; the second finds your branch's pull request even in a repository with hundreds open. On a fork, Create goes to the original repository unless you last picked your fork.
+- **A comment box at the end of a conversation.** Pull request and issue pages take a new comment at the bottom; ⌘↵ posts it even when it's scrolled out of view, and what you typed stays while it posts.
+- **Ready for review.** A draft pull request can be marked ready from its page, and Files changed counts each file's line comments, with outdated threads folded.
+- **Conflicts from the keyboard.** F7 and ⇧F7 move between conflict blocks, 1, 2 and 3 pick a side, and ⌘↵ resolves the file and opens the next conflict. Blocks you edited by hand are never overwritten by a key.
+- **Git steps in the palette and the Git menu.** Continue, abort and skip a merge or rebase, stash, pop, commit and push, or toggle amend; a step that can't run right now says why.
+- **Undo for discards.** Discarded diff lines and a dropped stash offer Undo, and Stash and Switch tells you where your changes went and offers them back when you return.
+- **Continue without hooks.** A merge a hook stopped can be finished without running it, and the commit box warns on a detached HEAD with a Create branch button.
+- **Errors you can copy.** Git's own words under an error's Details can be selected and copied, and error and crash toasts offer Show Logs and Report a Bug.
+
+### Changed
+
+- **Terminals belong to the window.** Terminal tabs stay put when you switch projects or worktrees, and each tab names its project and current branch.
+- **A repository switch shows a skeleton.** Panels never show the previous repository's data while the next one opens, and keys pressed meanwhile (⌘P, ⇧⌘F, ⌃⌘C) act once it's open. A worktree switch keeps your search, filters and panels.
+- **Git actions say why they didn't run.** Fetch, Pull, Push, Sync and Commit explain a refusal in place, disabled buttons say why in their tooltip, and an unreachable remote, a protected branch or unrelated histories are explained with a Retry.
+- **GitHub problems read in plain words.** An expired login, being offline and a failed secure connection are told apart everywhere, with Sign in or Retry; the sign-in screen runs `gh` in a terminal for you.
+- **Stash includes untracked files by default.** The stash dialog counts untracked files and folders separately.
+- **Keys act on the cursor row.** In Changes, S and ⌘⌫ stage or discard the row under the keyboard cursor, and toasts wait while the window is in the background.
+
+### Fixed
+
+- **A hard reset keeps your work.** Uncommitted changes go to Stashes first, and a reset that would overwrite untracked files the target commit has is refused, naming them.
+- **A failed Commit all leaves the index as it was,** and it stops if something was staged in the meantime.
+- **Unsaved edits survive the file changing on disk.** A file deleted, renamed or trashed under you keeps what you typed and asks before closing; a rename takes the new name's highlighting.
+- **A moved project says so.** It offers Locate…, a folder macOS won't let GitViber read says that instead, and removing projects from the list or with Clear Menu can be undone.
+- **The pull request page agrees with CI and GitHub** after every change, Esc keeps a line comment as a draft, and Review opens without a crash and submits with ⌘↵.
+- **SSH alias remotes** like `git@gh-work:owner/repo` count as GitHub, so their pull requests and issues list.
+- **Create Pull Request says when it pushes the branch,** and refuses a branch with no commits; after merging your own pull request, Switch to the base branch pulls from the right repository.
+- **⌘W keeps the keyboard in the center,** on the next tab.
+
 ## [0.1.24] - 2026-11-02
 
 ### Added
