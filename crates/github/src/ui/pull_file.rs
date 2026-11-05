@@ -36,7 +36,7 @@ use crate::ui::markdown_input::MarkdownInput;
 pub(crate) const AGE: Duration = Duration::from_secs(60);
 /// Drafts kept aside for other threads and lines, the latest.
 const DRAFTS: usize = 16;
-const POST_KEY: &str = if cfg!(target_os = "macos") {
+pub(crate) const POST_KEY: &str = if cfg!(target_os = "macos") {
     "⌘↵"
 } else {
     "Ctrl+Enter"

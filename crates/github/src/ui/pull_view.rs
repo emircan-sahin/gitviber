@@ -55,15 +55,10 @@ use crate::ui::common::{
 use crate::ui::dialogs::{ReviewDialog, confirm};
 use crate::ui::markdown_input::MarkdownInput;
 use crate::ui::page_find::{FindHost, Key, Marks, PageFind, Parts};
-use crate::ui::pull_file::{AGE as COMMENTS_AGE, comments_key, load_comments};
+use crate::ui::pull_file::{AGE as COMMENTS_AGE, POST_KEY, comments_key, load_comments};
 
 /// The files only change with the two commits: rarely worth reading again.
 const FILES_AGE: Duration = Duration::from_secs(600);
-const POST_KEY: &str = if cfg!(target_os = "macos") {
-    "⌘↵"
-} else {
-    "Ctrl+Enter"
-};
 /// What a merge or cherry-pick that stopped on conflicts says.
 const CONFLICTS: &str = "Stopped on conflicts: resolve them in Changes, then push.";
 /// How far past the page's view its list measures what it hasn't yet.
@@ -197,7 +192,7 @@ impl PullView {
             .unwrap_or_default();
         let repo = repo_of(&url);
         crate::ui::use_workspace_project(&ws, cx);
-        let subs = vec![
+        let mut subs = vec![
             cx.observe_global::<ci::Ci>(|this: &mut Self, cx| {
                 this.ci_moved(cx);
                 cx.notify();
@@ -235,7 +230,6 @@ impl PullView {
         page.splice_focusable(0..0, [Some(commits_focus.clone())]);
         // Text in the comment box keeps the tab, as the review's does.
         let input = comment.read(cx).input().clone();
-        let mut subs = subs;
         subs.push(
             cx.subscribe(&input, |this: &mut Self, _, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Change) {
