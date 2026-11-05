@@ -1,7 +1,7 @@
 //! What a list panel shows in place of its lists (no GitHub repository, no login, one GitHub
 //! doesn't show origin to), and what the signed-out screen says.
 
-use crate::model::is_not_connected;
+use crate::model::{is_expired, is_not_connected};
 
 /// Core's answers when origin isn't a repository on GitHub, before any request is made.
 const NO_ORIGIN: &str = "This repository has no 'origin' remote.";
@@ -16,6 +16,13 @@ pub enum Gate {
     NotGitHub,
     /// No login, or (`hidden`) one GitHub doesn't show origin to.
     SignIn { hidden: bool },
+}
+
+/// Whether the sign-in screen tells of an expired login, from `failure` (the account's or the
+/// list's error). With none, as the account is read again, it stays `was` so the words don't
+/// flash; hidden means GitHub took the login it was read with.
+pub fn shows_expired(hidden: bool, failure: Option<&str>, was: bool) -> bool {
+    !hidden && failure.map_or(was, is_expired)
 }
 
 /// GitHub's 404 for a repository the token can't see, as it answers for a private one to
@@ -119,19 +126,25 @@ pub fn no_github_text(gate: Gate, subject: &str) -> (&'static str, String) {
             ),
         );
     }
+    // Not "repoint origin": a repository on another host is fine where it is.
+    let what = if subject == "Pull requests" {
+        "Pull requests and checks".to_string()
+    } else {
+        subject
+    };
     (
         "Origin isn't on GitHub",
         format!(
-            "{subject} come from github.com, and this repository's origin is elsewhere. Point it \
-             at a GitHub repository in Settings > Git."
+            "{what} work with GitHub repositories, and this repository's origin is on another host."
         ),
     )
 }
 
 /// What the sign-in screen says when GitHub answered 404 for origin with the login found.
 pub fn hidden_note(origin: Option<&str>, subject: &str) -> String {
+    // An ssh alias was resolved by the call that got the 404: no `ssh -G` from here.
     let repo = origin
-        .and_then(gitviber_core::github::parse_remote)
+        .and_then(gitviber_core::github::github_remote)
         .map_or("this repository".to_string(), |r| {
             format!("{}/{}", r.owner, r.name)
         });
@@ -153,6 +166,35 @@ mod tests {
         assert!(note.starts_with("The login in use can't see octo-one/secret on GitHub."));
         assert!(note.contains("may be private") && note.contains("see its issues"));
         assert!(hidden_note(None, "issues").contains("can't see this repository"));
+    }
+
+    #[test]
+    fn another_host_is_not_told_to_move() {
+        let (_, pulls) = no_github_text(Gate::NotGitHub, "pull requests");
+        assert!(pulls.starts_with("Pull requests and checks work with GitHub repositories"));
+        assert!(!pulls.contains("Settings"));
+        let (_, issues) = no_github_text(Gate::NotGitHub, "issues");
+        assert!(issues.starts_with("Issues work with GitHub repositories"));
+    }
+
+    /// Expired is signed out too: the same screen, which then says why.
+    #[test]
+    fn an_expired_login_gets_the_sign_in_screen() {
+        let signed_out = Some(Gate::SignIn { hidden: false });
+        assert_eq!(gate(true, Some(github::EXPIRED), None, None), signed_out);
+        assert_eq!(gate(false, None, Some(github::EXPIRED), None), signed_out);
+    }
+
+    /// Expired, then a new login that can't see the private repo: the hidden note, not the
+    /// expired one; a read with no error yet keeps what was shown.
+    #[test]
+    fn an_expired_screen_gives_way_to_the_hidden_note() {
+        let hidden_404 = Some("GitHub 404: Not Found");
+        assert!(!shows_expired(true, hidden_404, true));
+        assert!(shows_expired(false, None, true));
+        assert!(!shows_expired(false, None, false));
+        assert!(shows_expired(false, Some(github::EXPIRED), false));
+        assert!(!shows_expired(false, Some(NOT_CONNECTED), true));
     }
 
     #[test]

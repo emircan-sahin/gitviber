@@ -86,6 +86,19 @@ pub fn short_ref(r: &str) -> &str {
 /// The last part of a path: a worktree's folder name.
 pub use gitviber_ui::projects::project_name as folder_name;
 
+/// 100000 → 100,000.
+pub fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// "1 commit", "3 commits".
 pub fn plural(n: usize, word: &str) -> String {
     format!("{n} {word}{}", if n == 1 { "" } else { "s" })

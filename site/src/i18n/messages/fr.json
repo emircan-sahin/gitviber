@@ -72,7 +72,7 @@
       },
       {
         "title": "Passez de l'un à l'autre.",
-        "text": "Chaque worktree garde ses propres terminaux et sa propre progression de revue, donc rien ne se perd quand vous changez. Quand un agent vous attend, un point apparaît sur son worktree."
+        "text": "Vos terminaux restent en place quand vous changez, et chaque worktree garde sa propre progression de revue, donc rien ne se perd. Quand un agent vous attend, un point apparaît sur son worktree."
       },
       {
         "title": "Partez de n'importe où.",

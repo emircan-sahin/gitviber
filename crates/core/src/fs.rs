@@ -230,9 +230,12 @@ pub fn kinds(root: &Path, rels: &[String]) -> Vec<Option<Kind>> {
         .collect()
 }
 
-/// Writes a file inside the repo (used to save a resolved conflict).
+/// Writes a file inside the repo (a resolved conflict, a file tab's save). A file tab saved
+/// after its folder went (a branch switch, an agent's `rm -r`) brings the folder back.
 pub fn write_file(root: &Path, rel: &str, content: &str) -> Result<(), String> {
-    std::fs::write(resolve(root, rel)?, content).map_err(|e| e.to_string())
+    let path = resolve(root, rel)?;
+    make_parents(root, rel, &path)?;
+    std::fs::write(path, content).map_err(|e| e.to_string())
 }
 
 pub fn read_file(root: &Path, rel: &str) -> FileText {
@@ -311,15 +314,22 @@ fn io_error(rel: &str, e: std::io::Error) -> String {
 /// A new entry's path, with the folders typed before its name ("a/b.ts") made.
 fn new_entry(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let path = resolve_entry(root, rel)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            let file = Path::new(rel).ancestors().find(|a| root.join(a).is_file());
-            file.map_or(e.to_string(), |f| {
-                format!("{} is a file, not a folder", f.display())
-            })
-        })?;
-    }
+    make_parents(root, rel, &path)?;
     Ok(path)
+}
+
+/// Makes the folders above `path` (`rel`, resolved); one that is a file now is named, not
+/// "File exists (os error 17)".
+fn make_parents(root: &Path, rel: &str, path: &Path) -> Result<(), String> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(parent).map_err(|e| {
+        let file = Path::new(rel).ancestors().find(|a| root.join(a).is_file());
+        file.map_or(e.to_string(), |f| {
+            format!("{} is a file, not a folder", f.display())
+        })
+    })
 }
 
 pub fn create_file(root: &Path, rel: &str) -> Result<(), String> {
@@ -863,6 +873,15 @@ mod tests {
             "keep"
         );
         create_file(root, "new/deeper/x.txt").unwrap();
+        write_file(root, "gone/again/y.txt", "back").unwrap();
+        assert_eq!(
+            write_file(root, "src/main.rs/y.txt", "x").unwrap_err(),
+            "src/main.rs is a file, not a folder"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("gone/again/y.txt")).unwrap(),
+            "back"
+        );
         assert!(root.join("new/deeper/x.txt").is_file());
         create_dir(root, "more/dir").unwrap();
         assert!(root.join("more/dir").is_dir());

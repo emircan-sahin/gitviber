@@ -1,5 +1,5 @@
-//! The terminal panel: a set of tabs per worktree, each tab one pane or a split of them, with the
-//! toolbar, numbered pane headers, zoom, find and the keys around them.
+//! The terminal panel: the window's tabs, each one pane or a split of them, with the toolbar,
+//! numbered pane headers, zoom, find and the keys around them.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gitviber_core::Core;
+use gitviber_core::api::repo::FolderRepo;
 use gpui::{
     AnyElement, AnyView, App, AppContext as _, Bounds, Context, DispatchPhase, Entity,
     EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton,
@@ -57,7 +58,7 @@ pub struct WorktreeInfo {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PanelEvent {
-    /// The open worktree's last terminal closed: the app hides the panel.
+    /// The last terminal closed: the app hides the panel.
     Empty,
     /// The panel covers the workspace, or is back in its place.
     MaximizeChanged(bool),
@@ -169,8 +170,10 @@ pub struct TerminalPanel {
     core: Arc<Core>,
     config: TerminalConfig,
     theme: TerminalTheme,
+    /// The open project's worktree (the home folder before one opens): new terminals start
+    /// there and links resolve against it. The tabs are the window's, wherever they run.
     root: PathBuf,
-    sets: HashMap<PathBuf, TabSet>,
+    tabs: TabSet,
     panes: HashMap<PaneId, PaneSlot>,
     maximized: bool,
     zoomed: bool,
@@ -189,10 +192,10 @@ pub struct TerminalPanel {
     /// The session save's next round.
     round: Option<Task<()>>,
     epoch: std::time::Instant,
-    /// The worktrees whose saved terminals this panel took up, and so saves.
-    restored_here: std::collections::HashSet<PathBuf>,
-    /// Last run's terminals offered and not taken up yet, by worktree.
-    offers: HashMap<PathBuf, saved::SavedSet>,
+    /// This window's place in the session save.
+    save_key: u64,
+    /// Last run's terminals, offered and not taken up yet.
+    offer: Option<saved::SavedSet>,
     divider: Option<DividerDrag>,
     split_bounds: SplitBounds,
     killing: bool,
@@ -202,10 +205,10 @@ pub struct TerminalPanel {
     strip_scroll: ScrollHandle,
     /// The open tab as last drawn: a newly opened one is scrolled into view.
     strip_shown: Option<u64>,
-    /// Branches of tabs outside the repo's worktrees, by tab, read once as each first shows:
-    /// nothing watches that folder, so a checkout there shows on a new tab.
-    outside_branches: HashMap<u64, Option<String>>,
-    branch_reads: HashMap<u64, Task<()>>,
+    /// Tabs outside the repo's worktrees, read once each time one leaves them: nothing watches
+    /// that folder, so a checkout there while it's outside shows on a new tab.
+    outside: HashMap<u64, FolderRepo>,
+    outside_reads: HashMap<u64, Task<()>>,
     /// Set when the panel lives in a workspace: its project's worktree, Settings and theme.
     bound: Option<Bound>,
     /// The home folder it started in while no project was open, until the first one opens.
@@ -261,13 +264,14 @@ fn pane_line(n: usize, title: &str, look: Option<&str>) -> String {
 }
 
 /// A tab's tooltip, and what a screen reader says for it: its name, where it runs (and what, for
-/// one pane), then a split's panes a line each, or the one dot's state. Read aloud, the branch
-/// is in it and "; pane" goes between panes so one doesn't run into the next.
+/// one pane), then a split's panes a line each, or the one dot's state. Read aloud, what shows
+/// beside its title (`aside`) is in it and "; pane" goes between panes so one doesn't run into
+/// the next.
 fn tab_label(
     name: Option<&str>,
     cwd: &str,
     program: Option<&str>,
-    branch: Option<&str>,
+    aside: Option<&str>,
     lines: &[String],
     look: Option<&str>,
 ) -> (String, String) {
@@ -291,7 +295,7 @@ fn tab_label(
     let count = split.then(|| format!("{} panes", lines.len()));
     let mut aria = [
         Some(head),
-        branch.map(String::from),
+        aside.map(String::from),
         count.or(look.map(String::from)),
     ]
     .into_iter()
@@ -302,6 +306,15 @@ fn tab_label(
         aria.push_str(&format!("; pane {l}"));
     }
     (tip, aria)
+}
+
+/// What a tab outside the open repo's worktrees says beside its title: its branch, after its
+/// project's name when that's another project's and the title doesn't say it already.
+fn tab_aside(title: &str, branch: Option<&str>, project: Option<&str>) -> Option<String> {
+    match (project.filter(|p| *p != title), branch) {
+        (Some(p), Some(b)) => Some(format!("{p} · {b}")),
+        (p, b) => p.or(b).map(String::from),
+    }
 }
 
 /// The key that flips a find option, Monaco's: ⌥⌘C / ⌥⌘W / ⌥⌘R on macOS, Alt+C / Alt+W / Alt+R
@@ -316,6 +329,36 @@ fn find_option_key(key: &str, m: &gpui::Modifiers, mac: bool) -> Option<u8> {
         "r" => Some(2),
         _ => None,
     }
+}
+
+/// The window's terminal panel; `show`: shown, and built if it wasn't yet. None in a window
+/// without a workspace.
+pub fn window_panel(
+    window: &mut Window,
+    cx: &mut App,
+    show: bool,
+) -> Option<Entity<TerminalPanel>> {
+    let ws = Workspace::for_window(window, cx)?;
+    let panel = if show {
+        ws.update(cx, |ws, cx| ws.show_panel("terminal", cx));
+        // Built outside the workspace's update: the panel reads the workspace as it's made.
+        Workspace::ensure_panel(&ws, "terminal", window, cx)
+    } else {
+        ws.read(cx).built_panel("terminal").cloned()
+    }?;
+    panel.view().downcast::<TerminalPanel>().ok()
+}
+
+/// `line` run in a new tab of the window's terminal, opened in `cwd`, the panel shown. False
+/// when the window has no terminal.
+pub fn run_in_new_tab(cwd: PathBuf, line: &str, window: &mut Window, cx: &mut App) -> bool {
+    let Some(panel) = window_panel(window, cx, true) else {
+        return false;
+    };
+    // The pane only types it: without its Enter it sat at the prompt.
+    let run = Some(format!("{line}\r"));
+    panel.update(cx, |p, cx| p.open_terminal(cwd, run, window, cx));
+    true
 }
 
 /// Runs `f` on the terminal panel of the window in front once the key dispatch is over (the
@@ -470,7 +513,7 @@ impl TerminalPanel {
             config,
             theme,
             root,
-            sets: HashMap::new(),
+            tabs: TabSet::default(),
             panes: HashMap::new(),
             maximized: false,
             zoomed: false,
@@ -485,8 +528,8 @@ impl TerminalPanel {
             agent_tasks: Vec::new(),
             round: None,
             epoch: std::time::Instant::now(),
-            restored_here: Default::default(),
-            offers: HashMap::new(),
+            save_key: fresh_id(),
+            offer: None,
             divider: None,
             split_bounds: Rc::default(),
             killing: false,
@@ -494,16 +537,16 @@ impl TerminalPanel {
             strip_focus: cx.focus_handle().tab_stop(true),
             strip_scroll: ScrollHandle::new(),
             strip_shown: None,
-            outside_branches: HashMap::new(),
-            branch_reads: HashMap::new(),
+            outside: HashMap::new(),
+            outside_reads: HashMap::new(),
             bound: None,
             home: None,
             recent: Vec::new(),
         }
     }
 
-    /// The panel for a workspace: the Core, Settings and theme are the app's, and the tab set
-    /// follows the project's worktree.
+    /// The panel for a workspace: the Core, Settings and theme are the app's, and a new terminal
+    /// starts in the project's worktree.
     pub fn for_workspace(ctx: &PanelContext, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // A per-window panel is given no project: the workspace's is the one open now.
         let project = ctx.project.clone().or_else(|| {
@@ -578,8 +621,7 @@ impl TerminalPanel {
             _project: project,
             _subscriptions: subscriptions,
         });
-        let root = this.root.clone();
-        this.restore(&root, window, cx);
+        this.restore(cx);
         // Shown for the first time: with a terminal in it, as ⌘J opens one.
         if open {
             cx.defer_in(window, |this, window, cx| {
@@ -602,11 +644,11 @@ impl TerminalPanel {
             cx.subscribe_in(
                 project,
                 window,
-                |this, project, event: &ProjectEvent, window, cx| match event {
-                    ProjectEvent::Switched { to, .. } => this.set_worktree(to.clone(), window, cx),
+                |this, project, event: &ProjectEvent, _, cx| match event {
+                    ProjectEvent::Switched { to, .. } => this.set_worktree(to.clone(), cx),
                     ProjectEvent::Opened => {
                         let root = project.read(cx).root().to_path_buf();
-                        this.set_worktree(root, window, cx);
+                        this.set_worktree(root, cx);
                     }
                     ProjectEvent::RepoChanged(_) => this.update_links(cx),
                     _ => {}
@@ -633,7 +675,7 @@ impl TerminalPanel {
                 let project = ws.read(cx).project().cloned();
                 if let Some(p) = &project {
                     let root = p.read(cx).root().to_path_buf();
-                    self.set_worktree(root, window, cx);
+                    self.set_worktree(root, cx);
                     if let Some(home) = self.home.take() {
                         let open = ws.read(cx).is_open(Slot::Bottom);
                         self.leave_home(home, open, window, cx);
@@ -661,9 +703,9 @@ impl TerminalPanel {
         }
     }
 
-    /// The first project opened: the terminals started in the home folder before it (a launch
-    /// draws one before its project is there) give way to one in the project; any typed into
-    /// or running a command move over to the project's tabs instead.
+    /// The first project opened: when the window's only terminals are untouched ones started in
+    /// the home folder before it (a launch draws one before its project is there), they give way
+    /// to one in the project.
     fn leave_home(
         &mut self,
         home: PathBuf,
@@ -674,29 +716,13 @@ impl TerminalPanel {
         if home == self.root {
             return;
         }
-        if let Some(set) = self.sets.remove(&home) {
-            let ids: Vec<PaneId> = set.groups.iter().flat_map(|g| g.panes.clone()).collect();
-            let used = ids.iter().any(|id| {
-                self.panes.get(id).is_some_and(|s| {
-                    let p = s.view.read(cx);
-                    p.was_used() || p.session.busy()
-                })
-            });
-            if used {
-                let here = self.set_mut();
-                here.active = here.active.or(set.active);
-                here.groups.extend(set.groups);
-                self.apply_dims(cx);
-            } else {
-                for id in ids {
-                    if let Some(slot) = self.panes.remove(&id) {
-                        slot.view.update(cx, |p, _| p.session.close());
-                    }
-                }
-                Self::release_memory_soon(cx);
-            }
+        let untouched = self.panes.values().all(|s| {
+            let p = s.view.read(cx);
+            p.cwd() == home && !p.was_used() && !p.session.busy()
+        });
+        if untouched && self.has_terminals() {
+            self.close_all(cx);
             self.save_soon(cx);
-            cx.notify();
         }
         if open && !self.has_terminals() {
             self.new_terminal(window, cx);
@@ -814,25 +840,21 @@ impl TerminalPanel {
         out
     }
 
-    /// Reads the branch of each shown tab outside `listed` once; forgets closed tabs'.
-    fn read_outside_branches(&mut self, listed: &[WorktreeInfo], cx: &mut Context<Self>) {
-        // Worktrees not listed yet: every tab would look outside.
+    /// Reads each tab outside `listed` once per stay there: a tab that came back in is read
+    /// again when it leaves, as its branch may have moved meanwhile.
+    fn read_outside(&mut self, listed: &[WorktreeInfo], cx: &mut Context<Self>) {
+        // Worktrees not listed yet: every tab would look outside, so only forget closed tabs.
         if listed.is_empty() {
+            let live: std::collections::HashSet<u64> =
+                self.tabs.groups.iter().map(|g| g.id).collect();
+            self.outside.retain(|id, _| live.contains(id));
+            self.outside_reads.retain(|id, _| live.contains(id));
             return;
         }
-        let live: std::collections::HashSet<u64> = self
-            .sets
-            .values()
-            .flat_map(|s| s.groups.iter().map(|g| g.id))
-            .collect();
-        self.outside_branches.retain(|id, _| live.contains(id));
-        self.branch_reads.retain(|id, _| live.contains(id));
-        let new: Vec<(u64, PathBuf)> = self
-            .set()
-            .map(|s| s.groups.iter())
-            .into_iter()
-            .flatten()
-            .filter(|g| !self.outside_branches.contains_key(&g.id))
+        let now: Vec<(u64, PathBuf)> = self
+            .tabs
+            .groups
+            .iter()
             .filter_map(|g| {
                 Some((
                     g.id,
@@ -846,42 +868,47 @@ impl TerminalPanel {
             })
             .filter(|(_, cwd)| !listed.iter().any(|w| &w.path == cwd))
             .collect();
+        self.outside
+            .retain(|id, _| now.iter().any(|(g, _)| g == id));
+        self.outside_reads
+            .retain(|id, _| now.iter().any(|(g, _)| g == id));
+        let new: Vec<(u64, PathBuf)> = now
+            .into_iter()
+            .filter(|(g, _)| !self.outside.contains_key(g))
+            .collect();
         for (gid, cwd) in new {
-            self.outside_branches.insert(gid, None);
+            self.outside.insert(gid, FolderRepo::default());
             let core = self.core.clone();
             let path = cwd.to_string_lossy().into_owned();
             let read = cx.spawn(async move |this, cx| {
-                let branch = cx
+                let read = cx
                     .background_spawn(async move {
-                        gitviber_core::api::repo::folder_branch(&core, path)
-                            .ok()
-                            .flatten()
+                        gitviber_core::api::repo::folder_repo(&core, path).unwrap_or_default()
                     })
                     .await;
                 let _ = this.update(cx, |this, cx| {
-                    this.branch_reads.remove(&gid);
-                    if let Some(slot) = this.outside_branches.get_mut(&gid)
-                        && branch.is_some()
+                    this.outside_reads.remove(&gid);
+                    if let Some(slot) = this.outside.get_mut(&gid)
+                        && read != FolderRepo::default()
                     {
-                        *slot = branch;
+                        *slot = read;
                         cx.notify();
                     }
                 });
             });
-            self.branch_reads.insert(gid, read);
+            self.outside_reads.insert(gid, read);
         }
+    }
+
+    /// The open project's main worktree (its root before refs has listed it).
+    fn project_main(&self, cx: &App) -> Option<PathBuf> {
+        let p = self.workspace()?.read(cx).project()?.read(cx);
+        Some(p.main_worktree().unwrap_or(p.root()).to_path_buf())
     }
 
     /// The saved projects other than this one: a terminal there leaves the window on this one.
     fn other_projects(&self, cx: &App) -> Vec<String> {
-        let main = self
-            .workspace()
-            .and_then(|ws| ws.read(cx).project().cloned())
-            .map(|p| {
-                let p = p.read(cx);
-                p.main_worktree().unwrap_or(p.root()).to_path_buf()
-            })
-            .unwrap_or_else(|| self.root.clone());
+        let main = self.project_main(cx).unwrap_or_else(|| self.root.clone());
         self.recent
             .iter()
             .filter(|p| Path::new(p) != main)
@@ -890,8 +917,8 @@ impl TerminalPanel {
     }
 
     /// A tab's color: its worktree's, as the picker shows it (picked, else its name's); a tab
-    /// elsewhere only one picked for its folder.
-    fn tab_hue(&self, cwd: &Path, cx: &mut Context<Self>) -> Option<gpui::Hsla> {
+    /// in another repo's `main` worktree or outside any only one picked for its folder.
+    fn tab_hue(&self, cwd: &Path, main: bool, cx: &mut Context<Self>) -> Option<gpui::Hsla> {
         use gitviber_refs::worktrees::{hue_color, worktree_hue, worktree_hues};
         let picked = gitviber_refs::store::colors(cx);
         let list: Vec<(String, bool)> = self
@@ -908,7 +935,7 @@ impl TerminalPanel {
         let key = cwd.to_string_lossy().into_owned();
         let hue = match worktree_hues(&list, &picked).get(&key) {
             Some(h) => *h,
-            None => worktree_hue(&key, true, &picked),
+            None => worktree_hue(&key, main, &picked),
         };
         let t = cx.try_global::<AppTheme>()?;
         hue.map(|h| hue_color(h, t.tint_l, t.tint_c, 1.))
@@ -930,18 +957,14 @@ impl TerminalPanel {
         }
     }
 
-    /// Shows `root`'s tabs; the other worktrees' keep running behind.
-    pub fn set_worktree(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    /// The worktree new terminals start in and links resolve against. Every tab stays as it is:
+    /// they're the window's, not a worktree's.
+    pub fn set_worktree(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         if root == self.root {
             return;
         }
-        self.restore(&root, window, cx);
         self.root = root;
         self.update_links(cx);
-        self.zoomed = false;
-        self.close_find_bar(cx);
-        // Another worktree starts with its code in view.
-        self.set_maximized(false, cx);
         cx.notify();
     }
 
@@ -983,14 +1006,11 @@ impl TerminalPanel {
         self.maximized
     }
 
-    /// Whether the open worktree has a terminal.
     pub fn has_terminals(&self) -> bool {
-        self.sets
-            .get(&self.root)
-            .is_some_and(|s| !s.groups.is_empty())
+        !self.tabs.groups.is_empty()
     }
 
-    /// Terminals started in `dir` or below it, in any worktree's set.
+    /// Terminals started in `dir` or below it.
     pub fn terminals_in(&self, dir: &Path, cx: &App) -> usize {
         self.panes
             .values()
@@ -1003,17 +1023,11 @@ impl TerminalPanel {
         self.panes.values().map(|s| &s.view)
     }
 
-    fn set(&self) -> Option<&TabSet> {
-        self.sets.get(&self.root)
-    }
-
-    fn set_mut(&mut self) -> &mut TabSet {
-        self.sets.entry(self.root.clone()).or_default()
-    }
-
     fn active_group(&self) -> Option<&Group> {
-        let set = self.set()?;
-        set.groups.iter().find(|g| Some(g.id) == set.active)
+        self.tabs
+            .groups
+            .iter()
+            .find(|g| Some(g.id) == self.tabs.active)
     }
 
     /// The focused pane of the open tab.
@@ -1081,15 +1095,14 @@ impl TerminalPanel {
     ) {
         let id = self.make_pane(cwd, None, run, window, cx);
         let gid = fresh_id();
-        let set = self.set_mut();
-        set.groups.push(Group {
+        self.tabs.groups.push(Group {
             id: gid,
             name: None,
             panes: vec![id],
             layout: Layout::Pane(id),
             focused: id,
         });
-        set.active = Some(gid);
+        self.tabs.active = Some(gid);
         self.apply_dims(cx);
         self.focus_active(window, cx);
         cx.notify();
@@ -1155,15 +1168,19 @@ impl TerminalPanel {
             (p.cwd().to_path_buf(), Some(now))
         };
         let id = self.make_pane(cwd, folder, run, window, cx);
-        let set = self.set_mut();
-        let Some(g) = set.groups.iter_mut().find(|g| g.panes.contains(&from)) else {
+        let Some(g) = self
+            .tabs
+            .groups
+            .iter_mut()
+            .find(|g| g.panes.contains(&from))
+        else {
             return;
         };
         let i = g.panes.iter().position(|&p| p == from).unwrap_or(0);
         g.panes.insert(i + 1, id);
         g.layout = layout::split_pane(&g.layout, from, id, dir);
         g.focused = id;
-        set.active = Some(g.id);
+        self.tabs.active = Some(g.id);
         // A zoomed pane's split shows the two side by side.
         self.zoomed = false;
         self.apply_dims(cx);
@@ -1186,12 +1203,9 @@ impl TerminalPanel {
             going.push(f.input.focus_handle(cx));
             self.close_find_bar(cx);
         }
-        let mut emptied = Vec::new();
-        for (root, set) in self.sets.iter_mut() {
-            let Some(gi) = set.groups.iter().position(|g| g.panes.contains(&id)) else {
-                continue;
-            };
-            let g = &mut set.groups[gi];
+        let mut last = false;
+        if let Some(gi) = self.tabs.groups.iter().position(|g| g.panes.contains(&id)) {
+            let g = &mut self.tabs.groups[gi];
             let i = g.panes.iter().position(|&p| p == id).unwrap_or(0);
             g.panes.retain(|&p| p != id);
             match layout::remove_pane(&g.layout, id) {
@@ -1202,30 +1216,26 @@ impl TerminalPanel {
                     }
                 }
                 None => {
-                    set.groups.remove(gi);
-                    if set
+                    self.tabs.groups.remove(gi);
+                    if self
+                        .tabs
                         .active
-                        .is_some_and(|a| !set.groups.iter().any(|g| g.id == a))
+                        .is_some_and(|a| !self.tabs.groups.iter().any(|g| g.id == a))
                     {
-                        set.active = set
+                        self.tabs.active = self
+                            .tabs
                             .groups
-                            .get(gi.min(set.groups.len().saturating_sub(1)))
+                            .get(gi.min(self.tabs.groups.len().saturating_sub(1)))
                             .map(|g| g.id);
                     }
-                    if set.groups.is_empty() {
-                        emptied.push(root.clone());
-                    }
+                    last = self.tabs.groups.is_empty();
                 }
             }
         }
-        self.sets.retain(|_, s| !s.groups.is_empty());
         // A name being typed for the pane, or for its tab that went with it.
         let renamed_gone = self.rename.as_ref().is_some_and(|r| match r.target {
             RenameTarget::Pane(p) => p == id,
-            RenameTarget::Tab(gid) => !self
-                .sets
-                .values()
-                .any(|s| s.groups.iter().any(|g| g.id == gid)),
+            RenameTarget::Tab(gid) => !self.tabs.groups.iter().any(|g| g.id == gid),
         });
         if renamed_gone && let Some(r) = self.rename.take() {
             going.push(r.input.focus_handle(cx));
@@ -1233,7 +1243,6 @@ impl TerminalPanel {
         self.apply_dims(cx);
         attention::agents_changed(cx);
         self.save_soon(cx);
-        let last = emptied.contains(&self.root);
         if last {
             self.set_maximized(false, cx);
             if let Some(ws) = self.workspace() {
@@ -1339,41 +1348,40 @@ impl TerminalPanel {
 
     fn close_group(&mut self, gid: u64, window: &mut Window, cx: &mut Context<Self>) {
         let ids = self
-            .set()
-            .and_then(|s| s.groups.iter().find(|g| g.id == gid))
+            .tabs
+            .groups
+            .iter()
+            .find(|g| g.id == gid)
             .map(|g| g.panes.clone())
             .unwrap_or_default();
         self.kill(ids, "this terminal", window, cx);
     }
 
-    /// Kills the open worktree's tab at `index`, asking first as ⌘W does.
+    /// Kills the tab at `index`, asking first as ⌘W does.
     pub fn close_tab_at(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(gid) = self.set().and_then(|s| s.groups.get(index)).map(|g| g.id) {
+        if let Some(gid) = self.tabs.groups.get(index).map(|g| g.id) {
             self.close_group(gid, window, cx);
         }
     }
 
     fn close_other_groups(&mut self, gid: u64, window: &mut Window, cx: &mut Context<Self>) {
         let ids = self
-            .set()
-            .map(|s| {
-                s.groups
-                    .iter()
-                    .filter(|g| g.id != gid)
-                    .flat_map(|g| g.panes.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
+            .tabs
+            .groups
+            .iter()
+            .filter(|g| g.id != gid)
+            .flat_map(|g| g.panes.clone())
+            .collect();
         self.kill(ids, "the other terminals", window, cx);
     }
 
-    /// Ends every terminal, in every worktree: the workspace closed.
+    /// Ends every terminal: the workspace closed.
     pub fn close_all(&mut self, cx: &mut Context<Self>) {
         for (_, slot) in self.panes.drain() {
             slot.view.update(cx, |p, _| p.session.close());
         }
         Self::release_memory_soon(cx);
-        self.sets.clear();
+        self.tabs = TabSet::default();
         self.find = None;
         self.rename = None;
         cx.notify();
@@ -1438,19 +1446,12 @@ impl TerminalPanel {
         if let Some(slot) = self.panes.get_mut(&id) {
             slot.rang = false;
         }
-        let Some(set) = self
-            .sets
-            .values_mut()
-            .find(|s| s.groups.iter().any(|g| g.panes.contains(&id)))
-        else {
+        let Some(g) = self.tabs.groups.iter_mut().find(|g| g.panes.contains(&id)) else {
             return;
         };
-        let Some(g) = set.groups.iter_mut().find(|g| g.panes.contains(&id)) else {
-            return;
-        };
-        let changed = g.focused != id || set.active != Some(g.id);
+        let changed = g.focused != id || self.tabs.active != Some(g.id);
         g.focused = id;
-        set.active = Some(g.id);
+        self.tabs.active = Some(g.id);
         if changed {
             self.apply_dims(cx);
             cx.notify();
@@ -1460,22 +1461,20 @@ impl TerminalPanel {
     /// The panes of a split other than the focused one fade by the setting.
     fn apply_dims(&self, cx: &mut Context<Self>) {
         let dim = self.config.inactive_dim / 100.;
-        for set in self.sets.values() {
-            for g in &set.groups {
-                for &id in &g.panes {
-                    let d = if g.panes.len() > 1 && id != g.focused {
-                        dim
-                    } else {
-                        0.
-                    };
-                    if let Some(slot) = self.panes.get(&id) {
-                        slot.view.update(cx, |p, cx| {
-                            if p.dim != d {
-                                p.dim = d;
-                                cx.notify();
-                            }
-                        });
-                    }
+        for g in &self.tabs.groups {
+            for &id in &g.panes {
+                let d = if g.panes.len() > 1 && id != g.focused {
+                    dim
+                } else {
+                    0.
+                };
+                if let Some(slot) = self.panes.get(&id) {
+                    slot.view.update(cx, |p, cx| {
+                        if p.dim != d {
+                            p.dim = d;
+                            cx.notify();
+                        }
+                    });
                 }
             }
         }
@@ -1493,7 +1492,7 @@ impl TerminalPanel {
     }
 
     fn activate_group(&mut self, gid: u64, window: &mut Window, cx: &mut Context<Self>) {
-        self.set_mut().active = Some(gid);
+        self.tabs.active = Some(gid);
         self.apply_dims(cx);
         self.focus_active(window, cx);
         cx.notify();
@@ -1506,7 +1505,7 @@ impl TerminalPanel {
         if self.strip_focus.is_focused(window) {
             return self.focus_active(window, cx);
         }
-        if self.set().is_some_and(|s| !s.groups.is_empty()) {
+        if !self.tabs.groups.is_empty() {
             window.focus(&self.strip_focus, cx);
         }
     }
@@ -1515,7 +1514,6 @@ impl TerminalPanel {
     /// Space or Esc go into the terminal, ⌫ kills it (⌘W too, as tab.close). ⌥←/⌥→ are
     /// tab.moveLeft/moveRight (`move_group`).
     fn strip_key(&mut self, e: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(set) = self.set() else { return };
         // Its binding is the panes' own: on the strip, its chord (as bound now) goes back in.
         let again = cx
             .all_bindings_for_input(std::slice::from_ref(&e.keystroke))
@@ -1528,14 +1526,14 @@ impl TerminalPanel {
         // A tab's name field has its own keys (a space is typed).
         if !self.strip_focus.is_focused(window)
             || e.keystroke.modifiers.modified()
-            || set.groups.is_empty()
+            || self.tabs.groups.is_empty()
         {
             return;
         }
-        let ids: Vec<u64> = set.groups.iter().map(|g| g.id).collect();
+        let ids: Vec<u64> = self.tabs.groups.iter().map(|g| g.id).collect();
         let at = ids
             .iter()
-            .position(|id| Some(*id) == set.active)
+            .position(|id| Some(*id) == self.tabs.active)
             .unwrap_or(0);
         let last = ids.len() - 1;
         match e.keystroke.key.as_str() {
@@ -1546,7 +1544,7 @@ impl TerminalPanel {
                     "home" => 0,
                     _ => last,
                 };
-                self.set_mut().active = Some(ids[to]);
+                self.tabs.active = Some(ids[to]);
                 self.apply_dims(cx);
                 cx.notify();
             }
@@ -1558,17 +1556,17 @@ impl TerminalPanel {
     }
 
     fn step_group(&mut self, dir: i32, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(set) = self.set() else { return };
-        let n = set.groups.len();
+        let n = self.tabs.groups.len();
         if n < 2 {
             return;
         }
-        let at = set
+        let at = self
+            .tabs
             .groups
             .iter()
-            .position(|g| Some(g.id) == set.active)
+            .position(|g| Some(g.id) == self.tabs.active)
             .unwrap_or(0);
-        let gid = set.groups[(at as i64 + dir as i64).rem_euclid(n as i64) as usize].id;
+        let gid = self.tabs.groups[(at as i64 + dir as i64).rem_euclid(n as i64) as usize].id;
         self.activate_group(gid, window, cx);
     }
 
@@ -1578,10 +1576,9 @@ impl TerminalPanel {
         if !gitviber_ui::keymap::for_focused_tabs() {
             return cx.propagate();
         }
-        let Some(set) = self.set() else { return };
         let g = match index {
-            Some(i) => set.groups.get(i),
-            None => set.groups.last(),
+            Some(i) => self.tabs.groups.get(i),
+            None => self.tabs.groups.last(),
         };
         if let Some(gid) = g.map(|g| g.id) {
             self.activate_group(gid, window, cx);
@@ -1686,8 +1683,7 @@ impl TerminalPanel {
     }
 
     fn equalize(&mut self, gid: u64, path: Option<Vec<usize>>, cx: &mut Context<Self>) {
-        let set = self.set_mut();
-        if let Some(g) = set.groups.iter_mut().find(|g| g.id == gid) {
+        if let Some(g) = self.tabs.groups.iter_mut().find(|g| g.id == gid) {
             g.layout = match &path {
                 Some(p) => layout::equalize(&g.layout, p, false),
                 None => layout::equalize(&g.layout, &[], true),
@@ -1752,7 +1748,7 @@ impl TerminalPanel {
                         }
                     }
                     RenameTarget::Tab(gid) => {
-                        if let Some(g) = self.set_mut().groups.iter_mut().find(|g| g.id == gid) {
+                        if let Some(g) = self.tabs.groups.iter_mut().find(|g| g.id == gid) {
                             g.name = name;
                         }
                     }
@@ -1777,10 +1773,7 @@ impl TerminalPanel {
     }
 
     fn group_title(&self, gid: u64, cx: &App) -> String {
-        let Some(g) = self
-            .set()
-            .and_then(|s| s.groups.iter().find(|g| g.id == gid))
-        else {
+        let Some(g) = self.tabs.groups.iter().find(|g| g.id == gid) else {
             return String::new();
         };
         if let Some(n) = &g.name {
@@ -1882,10 +1875,7 @@ impl TerminalPanel {
     }
 
     fn start_divider_drag(&mut self, gid: u64, path: Vec<usize>, index: usize, pos: Point<Pixels>) {
-        let Some(g) = self
-            .set()
-            .and_then(|s| s.groups.iter().find(|g| g.id == gid))
-        else {
+        let Some(g) = self.tabs.groups.iter().find(|g| g.id == gid) else {
             return;
         };
         let mut node = &g.layout;
@@ -1939,7 +1929,7 @@ impl TerminalPanel {
         sizes[d.index] = a + moved;
         sizes[d.index + 1] = b - moved;
         let (gid, path) = (d.group, d.path.clone());
-        if let Some(g) = self.set_mut().groups.iter_mut().find(|g| g.id == gid) {
+        if let Some(g) = self.tabs.groups.iter_mut().find(|g| g.id == gid) {
             g.layout = layout::resize(&g.layout, &path, &sizes);
         }
         cx.notify();
@@ -1956,12 +1946,14 @@ impl TerminalPanel {
     fn render_toolbar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let t = self.theme.clone();
         let set_groups: Vec<(u64, usize)> = self
-            .set()
-            .map(|s| s.groups.iter().map(|g| (g.id, g.panes.len())).collect())
-            .unwrap_or_default();
-        let active = self.set().and_then(|s| s.active);
+            .tabs
+            .groups
+            .iter()
+            .map(|g| (g.id, g.panes.len()))
+            .collect();
+        let active = self.tabs.active;
         let listed = self.repo_worktrees(cx);
-        self.read_outside_branches(&listed, cx);
+        self.read_outside(&listed, cx);
         let strip_focused = self.strip_focus.is_focused(window);
         if active != self.strip_shown {
             if let Some(at) = set_groups.iter().position(|(g, _)| Some(*g) == active) {
@@ -1982,7 +1974,7 @@ impl TerminalPanel {
             .on_action(cx.listener(|this, _: &tab::MoveLeft, _, cx| this.move_group(-1, cx)))
             .on_action(cx.listener(|this, _: &tab::MoveRight, _, cx| this.move_group(1, cx)))
             .on_action(cx.listener(|this, _: &tab::Close, window, cx| {
-                if let Some(gid) = this.set().and_then(|s| s.active) {
+                if let Some(gid) = this.tabs.active {
                     this.close_group(gid, window, cx);
                 }
             }))
@@ -2229,10 +2221,7 @@ impl TerminalPanel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let t = &self.theme;
-        let Some(g) = self
-            .set()
-            .and_then(|s| s.groups.iter().find(|g| g.id == gid))
-        else {
+        let Some(g) = self.tabs.groups.iter().find(|g| g.id == gid) else {
             return div().into_any_element();
         };
         let renaming = self
@@ -2246,12 +2235,21 @@ impl TerminalPanel {
             .get(&g.panes[0])
             .map(|s| s.view.read(cx).cwd().to_path_buf())
             .unwrap_or_default();
-        let branch = match listed.iter().find(|w| w.path == cwd) {
+        let outside = self.outside.get(&gid);
+        let aside = match listed.iter().find(|w| w.path == cwd) {
             Some(w) => w.branch.clone(),
-            None => self.outside_branches.get(&gid).cloned().flatten(),
+            None => {
+                let open = self.project_main(cx);
+                let project = outside
+                    .and_then(|o| o.main.as_deref())
+                    .filter(|m| open.as_deref() != Some(Path::new(m)))
+                    .map(|m| folder_name(Path::new(m)));
+                let branch = outside.and_then(|o| o.branch.as_deref());
+                tab_aside(&title, branch, project.as_deref())
+            }
         };
         let here = cwd == self.root;
-        let hue = self.tab_hue(&cwd, cx);
+        let hue = self.tab_hue(&cwd, !outside.is_some_and(|o| o.linked), cx);
         let order = layout::pane_order(&g.layout);
         let look = crate::agent::most_urgent(g.panes.iter().map(|id| self.look_of_pane(*id)));
         let look_tip = look.map(|l| self.look_label(&g.panes, l));
@@ -2275,7 +2273,7 @@ impl TerminalPanel {
             g.name.as_deref(),
             &cwd.to_string_lossy(),
             program.as_deref(),
-            branch.as_deref(),
+            aside.as_deref(),
             &lines,
             look_tip.as_deref(),
         );
@@ -2403,7 +2401,7 @@ impl TerminalPanel {
                     .child(title)
                     .into_any_element(),
             })
-            .when_some(branch, |d, b| {
+            .when_some(aside, |d, b| {
                 d.child(
                     div()
                         .min_w_0()
@@ -2640,9 +2638,7 @@ impl TerminalPanel {
     /// kill.
     fn render_header(&self, gid: u64, id: PaneId, cx: &mut Context<Self>) -> AnyElement {
         let t = &self.theme;
-        let g = self
-            .set()
-            .and_then(|s| s.groups.iter().find(|g| g.id == gid));
+        let g = self.tabs.groups.iter().find(|g| g.id == gid);
         let order = g.map(|g| layout::pane_order(&g.layout)).unwrap_or_default();
         let n = order.iter().position(|&p| p == id).map_or(0, |i| i + 1);
         let focused = g.is_some_and(|g| g.focused == id);
@@ -3091,6 +3087,22 @@ mod tests {
         );
     }
 
+    /// Another project's tab names it beside its branch, unless its title does already.
+    #[test]
+    fn another_projects_tab_says_which() {
+        assert_eq!(tab_aside("fix", Some("fix"), None), Some("fix".into()));
+        assert_eq!(
+            tab_aside("fix", Some("fix"), Some("api")),
+            Some("api · fix".into())
+        );
+        assert_eq!(
+            tab_aside("api", Some("main"), Some("api")),
+            Some("main".into())
+        );
+        assert_eq!(tab_aside("src", None, Some("api")), Some("api".into()));
+        assert_eq!(tab_aside("tmp", None, None), None);
+    }
+
     use gpui::{TestAppContext, VisualTestContext};
 
     /// Drawn panes start shells, whose reader threads wake them as in the app: the test scheduler
@@ -3169,7 +3181,7 @@ mod tests {
         }
         let groups = |cx: &mut VisualTestContext| {
             panel.read_with(cx, |p, _| {
-                let s = p.set().expect("a set");
+                let s = &p.tabs;
                 (s.groups.iter().map(|g| g.id).collect::<Vec<_>>(), s.active)
             })
         };
@@ -3244,7 +3256,7 @@ mod tests {
         // The open tab's place in the strip as drawn, and the strip's.
         let shown = |cx: &mut VisualTestContext| {
             panel.read_with(cx, |p, _| {
-                let s = p.set().expect("a set");
+                let s = &p.tabs;
                 let at = s
                     .groups
                     .iter()
@@ -3284,8 +3296,9 @@ mod tests {
     }
 
     /// A launch draws the terminal before its project opens: that first terminal, untouched, gives
-    /// way to one in the project; one typed into moves over to the project's tabs. A project
-    /// already open when the panel is built is where its first terminal starts.
+    /// way to one in the project; one typed into stays. A project already open when the panel is
+    /// built is where its first terminal starts. The tabs are the window's: another project
+    /// opened keeps them all and the open one, and a new terminal starts in that project.
     #[gpui::test]
     fn the_first_terminal_starts_in_the_project(cx: &mut TestAppContext) {
         let base = std::env::temp_dir().join(format!("gitviber-term-home-{}", std::process::id()));
@@ -3340,13 +3353,27 @@ mod tests {
         open(&ws, &a, cx);
         assert_eq!(panel.read_with(cx, |p, _| p.worktree().to_path_buf()), a);
         assert_eq!(cwds(&panel, cx), vec![a.clone()]);
-        assert!(panel.read_with(cx, |p, _| !p.sets.contains_key(&home)));
-        // Another project later is a switch: the first one's terminal stays where it is.
+        let tabs = |cx: &mut VisualTestContext| {
+            panel.read_with(cx, |p, _| (p.tabs.groups.len(), p.active_pane()))
+        };
+        let in_a = tabs(cx);
+        // Another project later is a switch: the first one's terminal stays, still the open one.
         open(&ws, &b, cx);
+        assert_eq!(panel.read_with(cx, |p, _| p.worktree().to_path_buf()), b);
         assert_eq!(cwds(&panel, cx), vec![a.clone()]);
+        assert_eq!(tabs(cx), in_a);
+        panel.update_in(cx, |p, window, cx| p.new_terminal(window, cx));
+        assert_eq!(cwds(&panel, cx), vec![a.clone(), b.clone()]);
+        let in_b = tabs(cx);
+        assert_eq!(in_b.0, 2);
+        assert_ne!(in_b.1, in_a.1);
+        // And back: both tabs, the one open before the switch still open.
+        open(&ws, &a, cx);
+        assert_eq!(cwds(&panel, cx), vec![a.clone(), b.clone()]);
+        assert_eq!(tabs(cx), in_b);
         panel.update(cx, |p, cx| p.close_all(cx));
 
-        // Typed into before the project came: kept, among the project's tabs.
+        // Typed into before the project came: kept.
         let ws = workspace(cx);
         let panel = panel_of(&ws, cx);
         cx.run_until_parked();
@@ -3418,7 +3445,7 @@ mod tests {
         assert!(shown(cx));
         assert_eq!(count(&p, cx), 1);
         assert_eq!(ws.update(cx, |ws, _| ws.take_toasts()).len(), 1);
-        p.update_in(cx, |p, window, cx| p.accept_restore(&home, window, cx));
+        p.update_in(cx, |p, window, cx| p.accept_restore(window, cx));
         assert_eq!(count(&p, cx), 2);
 
         ws.update(cx, |ws, cx| ws.set_open(Slot::Bottom, false, cx));
@@ -3437,6 +3464,59 @@ mod tests {
         ws.update(cx, |ws, cx| ws.toggle(Slot::Bottom, cx));
         cx.run_until_parked();
         assert_eq!(count(&p, cx), 1);
+
+        p.update(cx, |p, cx| p.close_all(cx));
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Another view's line runs in a new tab of the window's terminal, built outside the
+    /// workspace's update (built inside, its constructor reading the workspace panicked); a
+    /// look without `show` neither builds nor shows it.
+    #[gpui::test]
+    fn a_line_runs_in_a_new_tab_of_an_unbuilt_panel(cx: &mut TestAppContext) {
+        let base = std::env::temp_dir().join(format!("gitviber-term-run-{}", std::process::id()));
+        let (home, repo) = (base.join("home"), base.join("repo"));
+        for d in [&home, &repo] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        // SAFETY: nextest gives each test its own process; nothing else reads these meanwhile.
+        unsafe {
+            std::env::set_var("GITVIBER_CONFIG_DIR", base.join("config"));
+            std::env::set_var("HOME", &home);
+        }
+        cx.update(|cx| {
+            gitviber_ui::init(cx);
+            gitviber_ui::install_core(cx);
+            crate::init(cx);
+        });
+        let (_, cx) = cx.add_window_view(|_, _| Host);
+        let ws = cx.update(|window, cx| {
+            let ws = cx.new(Workspace::new);
+            Workspace::register_window(&ws, window, cx);
+            ws
+        });
+        assert!(
+            cx.update(|window, cx| window_panel(window, cx, false))
+                .is_none()
+        );
+        assert!(!ws.read_with(cx, |ws, _| ws.is_open(Slot::Bottom)));
+
+        assert!(cx.update(|window, cx| run_in_new_tab(repo.clone(), "gh auth login", window, cx)));
+        cx.run_until_parked();
+        assert!(ws.read_with(cx, |ws, _| ws.is_open(Slot::Bottom)));
+        let p = cx
+            .update(|window, cx| window_panel(window, cx, false))
+            .expect("built for the line");
+        let (cwd, run) = p.read_with(cx, |p, cx| {
+            let pane = p.active_pane().expect("the new tab");
+            let pane = pane.read(cx);
+            (pane.cwd().to_path_buf(), pane.run.clone())
+        });
+        assert_eq!(cwd, repo);
+        // Typed alone, it waited at the prompt for an Enter.
+        assert_eq!(run.as_deref(), Some("gh auth login\r"));
 
         p.update(cx, |p, cx| p.close_all(cx));
         cx.update(|window, _| window.remove_window());
@@ -3520,7 +3600,7 @@ mod tests {
         draw(cx);
         let groups = |cx: &mut VisualTestContext| {
             panel.read_with(cx, |p, _| {
-                let s = p.set().expect("a set");
+                let s = &p.tabs;
                 (s.groups.iter().map(|g| g.id).collect::<Vec<_>>(), s.active)
             })
         };
@@ -3572,7 +3652,7 @@ mod tests {
         draw(cx);
         let groups = |cx: &mut VisualTestContext| {
             panel.read_with(cx, |p, _| {
-                let s = p.set().expect("a set");
+                let s = &p.tabs;
                 (s.groups.iter().map(|g| g.id).collect::<Vec<_>>(), s.active)
             })
         };
@@ -3613,6 +3693,39 @@ mod tests {
         assert!(on_strip(cx));
         focus_tabs(cx);
         assert!(in_pane(cx), "pressed again, the shortcut goes back in");
+        panel.update(cx, |p, cx| p.close_all(cx));
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+    }
+
+    /// A tab read outside the repo is read again once it was back in and leaves again: its
+    /// branch may have moved meanwhile.
+    #[gpui::test]
+    fn a_tab_that_leaves_the_repo_again_is_read_again(cx: &mut TestAppContext) {
+        let (panel, _, cx) = beside(cx);
+        let b = std::env::temp_dir();
+        panel.update_in(cx, |p, window, cx| {
+            p.open_terminal(b.clone(), None, window, cx)
+        });
+        let gid = panel.read_with(cx, |p, _| p.tabs.groups[0].id);
+        let worktree = |path: PathBuf| WorktreeInfo { path, branch: None };
+        let a = worktree(PathBuf::from("/gitviber-test/a"));
+        // Drawn without parking: a read started by the draw is still pending.
+        let shown_with = |list: Vec<WorktreeInfo>, cx: &mut VisualTestContext| {
+            panel.update(cx, |p, cx| p.set_worktrees(list, cx));
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            panel.read_with(cx, |p, _| {
+                (
+                    p.outside.contains_key(&gid),
+                    p.outside_reads.contains_key(&gid),
+                )
+            })
+        };
+        assert_eq!(shown_with(vec![a.clone()], cx), (true, true));
+        cx.run_until_parked();
+        assert_eq!(shown_with(vec![a.clone()], cx), (true, false), "read once");
+        assert_eq!(shown_with(vec![a.clone(), worktree(b)], cx), (false, false));
+        assert_eq!(shown_with(vec![a], cx), (true, true), "read again");
         panel.update(cx, |p, cx| p.close_all(cx));
         cx.update(|window, _| window.remove_window());
         cx.run_until_parked();

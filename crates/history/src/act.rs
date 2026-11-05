@@ -542,7 +542,7 @@ fn reset(
         let hard = mode == git::ResetMode::Hard;
         let mut lines = vec![format!("Move {target} to {}?", c.short)];
         if hard {
-            lines.push("Uncommitted changes to tracked files are discarded, and commits after this one leave the branch. This cannot be undone from GitViber.".into());
+            lines.push("Commits after this one leave the branch. Your uncommitted changes are kept in Stashes.".into());
         }
         if drops {
             lines.push(PUSHED_WARNING.into());

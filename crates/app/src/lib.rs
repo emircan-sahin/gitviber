@@ -108,7 +108,9 @@ fn install_bridges(cx: &mut App) {
 
 /// Show History: the History panel, narrowed to that file (or folder, `file` false).
 pub(crate) fn show_history(path: &str, file: bool, window: &mut gpui_kit::Window, cx: &mut App) {
-    let Some(ws) = Workspace::for_window(window, cx) else {
+    // Mid-switch the path is the last worktree's.
+    let Some(ws) = Workspace::for_window(window, cx).filter(|ws| !ws.read(cx).project_loading(cx))
+    else {
         return;
     };
     ws.update(cx, |ws, cx| ws.show_panel(gitviber_history::PANEL, cx));

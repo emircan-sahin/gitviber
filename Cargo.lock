@@ -2407,6 +2407,7 @@ dependencies = [
  "gitviber-markdown",
  "gitviber-refs",
  "gitviber-review",
+ "gitviber-terminal",
  "gitviber-ui",
  "gpui-kit",
  "gpui-pre",

@@ -64,6 +64,8 @@ pub enum DiffEvent {
     OpenFile(String),
     /// Lines were staged, unstaged, discarded, stashed or reverted.
     LinesChanged,
+    /// Lines of `path` were discarded, as journal entry `entry` (⌘Z's), when one was recorded.
+    Discarded { path: String, entry: Option<u64> },
     /// The edited new side was saved.
     Saved(String),
     /// Something to tell the user: a failed stage, a copied patch.
@@ -1400,7 +1402,8 @@ impl DiffView {
                     use gitviber_core::api;
                     match (action, compare) {
                         (LineAction::Stash, _) => {
-                            api::stash::stash_lines(&core, String::new(), request).map(|_| vec![])
+                            api::stash::stash_lines(&core, String::new(), request)
+                                .map(|_| (vec![], None))
                         }
                         (LineAction::Revert, Compare::Commit { sha }) => api::patch::revert_lines(
                             &core,
@@ -1411,14 +1414,17 @@ impl DiffView {
                                 removed: request.removed,
                                 added: request.added,
                             },
-                        ),
-                        _ => api::changes::change_lines(&core, request).map(|_| vec![]),
+                        )
+                        .map(|conflicts| (conflicts, None)),
+                        _ => {
+                            api::changes::change_lines(&core, request).map(|entry| (vec![], entry))
+                        }
                     }
                 })
                 .await;
             this.update(cx, |this, cx| {
                 match result {
-                    Ok(conflicts) => {
+                    Ok((conflicts, entry)) => {
                         if !conflicts.is_empty() {
                             this.notice(
                                 NoticeLevel::Info,
@@ -1437,6 +1443,13 @@ impl DiffView {
                                 Some("Name it in Stashes."),
                                 cx,
                             );
+                        }
+                        // One click took the lines: the host says so, with Undo.
+                        if action == LineAction::Discard {
+                            cx.emit(DiffEvent::Discarded {
+                                path: path.clone(),
+                                entry,
+                            });
                         }
                         cx.emit(DiffEvent::LinesChanged);
                     }

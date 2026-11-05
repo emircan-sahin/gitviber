@@ -5,7 +5,7 @@
 use crate::conflict::ConflictView;
 use crate::panel::{self, ChangesPanel};
 use crate::store;
-use crate::toasts::git_error;
+use crate::toasts::{git_error, with_undo};
 use gitviber_core::api;
 use gitviber_core::git::FileChange;
 use gitviber_diff::{
@@ -433,6 +433,12 @@ impl ChangeTab {
                     NoticeLevel::Info => Toast::info(detail).title(n.title.clone()),
                 };
                 self.toast(toast, cx);
+            }
+            DiffEvent::Discarded { path, entry } => {
+                let done = Toast::success("The old version is in the Trash.")
+                    .title(format!("Discarded lines of {path}"));
+                let repo = crate::core(cx).repo().ok();
+                self.toast(with_undo(done, *entry, repo, self.workspace.clone()), cx);
             }
             DiffEvent::LinesChanged | DiffEvent::Saved(_) => self.refresh_project(cx),
             DiffEvent::Edited => self.keep_edit_soon(cx),

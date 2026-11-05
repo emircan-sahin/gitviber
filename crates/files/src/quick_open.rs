@@ -41,6 +41,8 @@ impl Global for QuickOpenFiles {}
 /// Where a project's list stands, for the palette when it has no files to show.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QuickOpenStatus {
+    /// The repo is still opening: nothing is read until it's open, and only then is it asked.
+    Opening,
     /// Being read; there's no list yet.
     Listing,
     Listed,
@@ -123,9 +125,15 @@ fn files(ctx: &PanelContext, cx: &mut App) -> Arc<Candidates> {
     let Some(project) = &ctx.project else {
         return Arc::default();
     };
+    // Mid-switch `root` is still the last worktree while core may list the next one: a list
+    // read now could be kept under the wrong root.
     let (root, revision, open) = {
         let p = project.read(cx);
-        (p.root().to_path_buf(), p.revision(), p.is_open())
+        (
+            p.root().to_path_buf(),
+            p.revision(),
+            p.is_open() && !p.is_loading(),
+        )
     };
     if !open {
         return Arc::default();
@@ -147,6 +155,13 @@ fn files(ctx: &PanelContext, cx: &mut App) -> Arc<Candidates> {
 
 /// Where `ctx`'s project's list stands.
 pub fn status(ctx: &PanelContext, cx: &App) -> QuickOpenStatus {
+    if ctx
+        .project
+        .as_ref()
+        .is_some_and(|p| p.read(cx).is_loading())
+    {
+        return QuickOpenStatus::Opening;
+    }
     let root = ctx.project.as_ref().map(|p| p.read(cx).root());
     let listing = root.and_then(|root| {
         cx.try_global::<QuickOpenFiles>()

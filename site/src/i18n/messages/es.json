@@ -72,7 +72,7 @@
       },
       {
         "title": "Salta entre ellos.",
-        "text": "Cada worktree conserva sus propias terminales y su propio progreso de revisión, así que no se pierde nada al cambiar. Cuando un agente te está esperando, su worktree muestra un punto."
+        "text": "Tus terminales se quedan donde están cuando cambias, y cada worktree conserva su propio progreso de revisión, así que no se pierde nada. Cuando un agente te está esperando, su worktree muestra un punto."
       },
       {
         "title": "Empieza desde donde quieras.",

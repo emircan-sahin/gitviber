@@ -19,6 +19,7 @@ use gitviber_ui::workspace::{
     Panel, PanelContext, PanelHandle, Project, ProjectEvent, Toast, Workspace, WorkspaceEvent,
 };
 use gpui_kit::component::Sizable as _;
+use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::{
@@ -113,6 +114,8 @@ pub struct ExplorerPanel {
     root: PathBuf,
     core: Arc<Core>,
     tree: LazyTree,
+    /// Why the repo's root couldn't be listed, shown in place of the files with Try Again.
+    root_failed: Option<SharedString>,
     rows: Vec<Row>,
     items: Vec<Item>,
     status: HashMap<SharedString, ChangeKind>,
@@ -145,6 +148,8 @@ pub struct ExplorerPanel {
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
     listings: HashMap<SharedString, Task<()>>,
+    /// The worktree's root isn't listed yet (a network volume takes seconds): the skeleton shows.
+    unlisted: bool,
     _status: Task<()>,
     _work: Task<()>,
     _subs: Vec<Subscription>,
@@ -169,15 +174,23 @@ impl ExplorerPanel {
             subs.push(cx.subscribe(
                 project,
                 |this, project: Entity<Project>, e: &ProjectEvent, cx| match e {
-                    ProjectEvent::RepoChanged(_) => this.refresh(cx),
+                    // Mid-switch core may list either worktree: `Switched` lists the next one.
+                    ProjectEvent::RepoChanged(_) if !project.read(cx).is_loading() => {
+                        this.refresh(cx)
+                    }
+                    ProjectEvent::RepoChanged(_) => {}
+                    ProjectEvent::Switching => this.switching(cx),
                     ProjectEvent::Opened | ProjectEvent::Switched { .. } => {
                         let revision = project.read(cx).revision();
                         this.root = project.read(cx).root().to_path_buf();
                         this.tree = LazyTree::new();
+                        this.unlisted = true;
                         this.rebuild(cx);
                         this.refresh(cx);
                         crate::quick_open::warm(&this.root, revision, cx);
                     }
+                    // A failed switch stays on its worktree: listed again.
+                    ProjectEvent::Failed(_) if project.read(cx).is_open() => this.refresh(cx),
                     ProjectEvent::Failed(_) => {}
                 },
             ));
@@ -199,6 +212,7 @@ impl ExplorerPanel {
             root,
             core: backend::core(cx),
             tree: LazyTree::new(),
+            root_failed: None,
             rows: Vec::new(),
             items: Vec::new(),
             status: HashMap::new(),
@@ -218,6 +232,7 @@ impl ExplorerPanel {
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
             listings: HashMap::new(),
+            unlisted: false,
             _status: Task::ready(()),
             _work: Task::ready(()),
             _subs: subs,
@@ -227,6 +242,7 @@ impl ExplorerPanel {
         // fails with "No repository is open".
         if let Some(project) = ctx.project.as_ref().filter(|p| p.read(cx).is_open()) {
             let revision = project.read(cx).revision();
+            panel.unlisted = true;
             panel.refresh(cx);
             crate::quick_open::warm(&panel.root, revision, cx);
         }
@@ -290,17 +306,43 @@ impl ExplorerPanel {
                 .await;
             _ = this.update(cx, |this, cx| {
                 this.listings.remove(&path);
+                if path.is_empty() {
+                    this.unlisted = false;
+                }
                 let listed = listed.map(|v| v.into_iter().map(Node::from).collect());
-                match this.tree.listed(&path, id, listed) {
+                let listed = this.tree.listed(&path, id, listed);
+                if path.is_empty()
+                    && matches!(listed, Listed::Changed | Listed::Same)
+                    && this.root_failed.take().is_some()
+                {
+                    cx.notify();
+                }
+                match listed {
                     Listed::Changed | Listed::Closed => this.rebuild(cx),
                     Listed::RootFailed(e) => {
-                        this.toast(Toast::error(e).title("Could not list repository"), cx)
+                        this.root_failed = Some(e.into());
+                        this.rebuild(cx);
                     }
                     Listed::Same | Listed::Stale => {}
                 }
             });
         });
         self.listings.insert(key, task);
+    }
+
+    /// A worktree switch started: the tree is the last worktree's, and so are listings on their
+    /// way. The skeleton shows till the next one's root is listed.
+    fn switching(&mut self, cx: &mut Context<Self>) {
+        self.listings.clear();
+        self._status = Task::ready(());
+        self.tree = LazyTree::new();
+        self.unlisted = true;
+        if let Some(f) = &mut self.filter {
+            f.files = None;
+            f._load = Task::ready(());
+        }
+        self.rebuild(cx);
+        cx.notify();
     }
 
     fn rebuild(&mut self, cx: &mut Context<Self>) {
@@ -371,6 +413,16 @@ impl ExplorerPanel {
     }
 
     #[cfg(test)]
+    pub(crate) fn root_failed(&self) -> Option<&str> {
+        self.root_failed.as_deref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shows_empty_for_test(&self) -> bool {
+        self.shows_empty()
+    }
+
+    #[cfg(test)]
     pub(crate) fn create_for_test(
         &mut self,
         parent: &str,
@@ -405,6 +457,22 @@ impl ExplorerPanel {
             .expect("a row");
         self.start_editing(Editing::Rename { node }, window, cx);
         self.finish_editing(Some(name.to_string()), window, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn trash_for_test(
+        &mut self,
+        path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let node = self
+            .rows
+            .iter()
+            .find(|r| r.node.path.as_ref() == path)
+            .map(|r| r.node.clone())
+            .expect("a row");
+        self.delete(vec![node], window, cx);
     }
 
     /// Opens the filter (⌘F here) and focuses it.
@@ -512,6 +580,14 @@ impl ExplorerPanel {
 
     fn filtering(&self) -> bool {
         self.filter.as_ref().is_some_and(|f| !f.needle.is_empty())
+    }
+
+    /// The repo's root listed with nothing in it, and no new entry being named there.
+    fn shows_empty(&self) -> bool {
+        self.root_failed.is_none()
+            && !self.filtering()
+            && self.items.is_empty()
+            && self.tree.children("").is_some_and(|c| c.is_empty())
     }
 
     /// A row's menu from the keyboard, under the row.
@@ -989,10 +1065,13 @@ impl ExplorerPanel {
                 }
             )
         };
+        // Their tabs close without asking: what's typed in them is lost, said here.
+        let paths: Vec<&str> = top.iter().map(|e| e.path.as_ref()).collect();
+        let detail = unsaved_lost(&crate::unsaved_in(&self.workspace, &paths, cx));
         let answer = window.prompt(
             PromptLevel::Warning,
             &message,
-            None,
+            detail.as_deref(),
             &["Move to Trash", "Cancel"],
             cx,
         );
@@ -1175,22 +1254,21 @@ impl ExplorerPanel {
                 .await;
             _ = this.update(cx, |this, cx| match done {
                 Ok(entry) => {
-                    let mut toast =
-                        Toast::success(format!("Discarded {what}")).title(if paths.len() > 1 {
-                            "The old versions are in the Trash."
-                        } else {
-                            "The old version is in the Trash."
-                        });
+                    let mut toast = discarded(&what, paths.len() > 1);
                     if let Some(id) = entry {
-                        toast.action = Some(gitviber_ui::workspace::ToastAction {
-                            label: "Undo".into(),
-                            run: Rc::new(move |_, cx| {
-                                let core = undo_core.clone();
-                                cx.background_spawn(async move {
-                                    _ = gitviber_core::api::journal::undo(&core, Some(id));
-                                })
-                                .detach();
-                            }),
+                        let ws = this.workspace.clone();
+                        toast = toast.action("Undo", move |_, cx| {
+                            let (core, ws, what) = (undo_core.clone(), ws.clone(), what.clone());
+                            cx.spawn(async move |cx| {
+                                let undone = cx
+                                    .background_spawn(async move {
+                                        gitviber_core::api::journal::undo(&core, Some(id))
+                                    })
+                                    .await;
+                                let toast = restored(&what, undone.map(|_| ()));
+                                _ = ws.update(cx, |ws, cx| ws.toast(toast, cx));
+                            })
+                            .detach();
                         });
                     }
                     this.toast(toast, cx);
@@ -1698,6 +1776,36 @@ const REVEAL_LABEL: &str = if cfg!(target_os = "macos") {
     "Show in Folder"
 };
 
+/// Discard's toast: what went, and where its old version is.
+pub(crate) fn discarded(what: &str, many: bool) -> Toast {
+    Toast::success(if many {
+        "The old versions are in the Trash."
+    } else {
+        "The old version is in the Trash."
+    })
+    .title(format!("Discarded {what}"))
+}
+
+/// The Trash's confirm detail for files with unsaved edits: the first few, then a count, so a
+/// big folder doesn't make a wall of names.
+pub(crate) fn unsaved_lost(paths: &[String]) -> Option<String> {
+    const SHOWN: usize = 3;
+    let names = match paths.len() {
+        0 => return None,
+        n if n <= SHOWN => paths.join(", "),
+        n => format!("{} and {} more", paths[..SHOWN].join(", "), n - SHOWN),
+    };
+    Some(format!("Unsaved edits in {names} are lost."))
+}
+
+/// What Undo of a discard reports: the file is back, or git's words why not.
+pub(crate) fn restored(what: &str, undone: Result<(), String>) -> Toast {
+    match undone {
+        Ok(()) => Toast::success(format!("Restored {what}")),
+        Err(e) => Toast::error(e).title(format!("Could not restore {what}")),
+    }
+}
+
 impl Render for ExplorerPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _ = window;
@@ -1804,10 +1912,49 @@ impl Render for ExplorerPanel {
                     )
                 },
             )
-            // The root's first listing (a network volume takes seconds).
-            .when(count == 0 && !self.listings.is_empty(), |d| {
-                d.child(PanelSkeleton::new())
+            .when_some(
+                self.root_failed.clone().filter(|_| !self.filtering()),
+                |d, reason| {
+                    d.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap_2()
+                            .px_4()
+                            .py_6()
+                            .text_center()
+                            .text_size(px(12.))
+                            .child(
+                                div()
+                                    .text_color(t.foreground)
+                                    .child("Could not list the files"),
+                            )
+                            .child(div().text_color(t.subtle).child(reason))
+                            .child(
+                                Button::new("explorer-retry")
+                                    .small()
+                                    .label("Try Again")
+                                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                            ),
+                    )
+                },
+            )
+            .when(self.shows_empty(), |d| {
+                d.child(
+                    div()
+                        .px_4()
+                        .py_6()
+                        .text_center()
+                        .text_size(px(12.))
+                        .text_color(t.subtle)
+                        .child("This folder is empty"),
+                )
             })
+            .when(
+                count == 0 && self.unlisted && self.root_failed.is_none(),
+                |d| d.child(PanelSkeleton::new()),
+            )
             .child(
                 uniform_list(
                     "explorer-rows",

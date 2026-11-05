@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use gitviber_ui::keymap::{requests, view};
+use gitviber_ui::keymap::{git, requests, view};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{Sizable as _, WindowExt as _};
@@ -71,6 +71,10 @@ impl Note {
     pub fn error(title: impl Into<SharedString>) -> Self {
         Self::new(Kind::Error, title)
     }
+    /// Why an action didn't run, in one sentence; at most one button, the one that fixes it.
+    pub fn not_run(verb: &str, reason: impl Into<SharedString>) -> Self {
+        Self::info(format!("{verb} not run")).detail(reason)
+    }
     pub fn detail(mut self, detail: impl Into<SharedString>) -> Self {
         self.detail = Some(detail.into());
         self
@@ -98,20 +102,17 @@ impl Note {
         .title(self.title);
         let note = match self.action {
             None => note,
-            // An action needs time to reach for: kept until dismissed, as errors are.
-            Some(a) => note
-                .action(move |_, _, cx| {
-                    let run = a.run.clone();
-                    Button::new("toast-action")
-                        .small()
-                        .primary()
-                        .label(a.label.clone())
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            run(window, cx);
-                            this.dismiss(window, cx);
-                        }))
-                })
-                .autohide(self.kind != Kind::Error),
+            Some(a) => note.action(move |_, _, cx| {
+                let run = a.run.clone();
+                Button::new("toast-action")
+                    .small()
+                    .primary()
+                    .label(a.label.clone())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        run(window, cx);
+                        this.dismiss(window, cx);
+                    }))
+            }),
         };
         let note = match self.also {
             None => note,
@@ -133,12 +134,10 @@ impl Note {
                     .into_any_element()
             }),
         };
-        // Errors stay until dismissed: they carry hook, GPG or push output that takes a while to read.
-        let note = if self.kind == Kind::Error {
-            note.autohide(false)
-        } else {
-            note
-        };
+        // Errors stay until dismissed: they carry git's output, which takes a while to read, and
+        // their button (Retry, Remove lock) is the way forward. The rest go, buttons and all: an
+        // Undo is on ⌘Z too, and a "not run" fix is in the top bar.
+        let note = note.autohide(self.kind != Kind::Error);
         window.push_notification(note, cx);
     }
 
@@ -181,6 +180,9 @@ fn always(fix: GitFix, target: Option<&str>) -> Option<Action> {
                 .detach();
             }))
         }
+        GitFix::Protected => Some(Action::new("New branch…", |window, cx| {
+            window.dispatch_action(Box::new(git::NewBranch), cx)
+        })),
         GitFix::Secret => {
             let url = target?.to_string();
             Some(Action::new("Open on GitHub", move |_, cx| {
@@ -209,13 +211,12 @@ pub fn git_failed(title: impl Into<SharedString>, message: &str, fixes: &Fixes) 
         Some(c) => (Some(c), always),
         None => (always, None),
     };
+    let said = match help.explanation {
+        "" => help.title.to_string(),
+        why => format!("{}\n{why}", help.title),
+    };
     Note::error(title)
-        .detail(format!(
-            "{}\n{}\n\n{}",
-            help.title,
-            help.explanation,
-            message.trim()
-        ))
+        .detail(format!("{said}\n\n{}", message.trim()))
         .action(action)
         .also(also)
 }

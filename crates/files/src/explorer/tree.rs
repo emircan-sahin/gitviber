@@ -150,7 +150,11 @@ impl LazyTree {
                 self.children.insert(path.clone(), nodes);
                 Listed::Changed
             }
-            Err(e) if path.is_empty() => Listed::RootFailed(e),
+            Err(e) if path.is_empty() => {
+                // Its old rows can't be reached now; it stays open so the tree comes back.
+                self.children.insert(path.clone(), Vec::new());
+                Listed::RootFailed(e)
+            }
             Err(_) => {
                 self.expanded.remove(path);
                 self.children.remove(path);
@@ -454,6 +458,7 @@ mod tests {
             Listed::RootFailed(_)
         ));
         assert!(t.is_open(""));
+        assert!(t.rows().is_empty(), "the old rows go under the error");
     }
 
     #[test]

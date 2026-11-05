@@ -473,3 +473,42 @@ fn case_only_rename_reaches_the_index() {
     let listed = run(&r, &["ls-files", "--", "card.tsx"]).unwrap();
     assert_eq!(String::from_utf8_lossy(&listed), "card.tsx\n");
 }
+
+/// "Commit everything" stages only into an empty index, and what it staged is unstaged in its
+/// own worktree after another was opened.
+#[test]
+fn commit_everything_stages_into_an_empty_index_and_unstages_where_it_staged() {
+    use crate::api::changes::{stage_all, unstage_in, STAGED_MEANWHILE};
+    let sb = Sandbox::new("stage-all");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let wt = sb.path("wt");
+    run(&r, &["worktree", "add", "-q", wt.to_str().unwrap()]).unwrap();
+    let core = crate::Core::new(std::sync::Arc::new(|_| {}));
+    *core.repo.lock().unwrap() = Some(r.clone());
+    // An agent staged version one, then wrote version two.
+    fs::write(r.join("a.txt"), "one\n").unwrap();
+    run(&r, &["add", "a.txt"]).unwrap();
+    fs::write(r.join("a.txt"), "two\n").unwrap();
+    assert_eq!(
+        stage_all(&core, vec!["a.txt".into()]).unwrap_err(),
+        STAGED_MEANWHILE
+    );
+    assert_eq!(run_text(&r, &["show", ":a.txt"]).unwrap(), "one\n");
+
+    run(&r, &["restore", "--staged", "a.txt"]).unwrap();
+    stage_all(&core, vec!["a.txt".into()]).unwrap();
+    fs::write(wt.join("a.txt"), "w\n").unwrap();
+    run(&wt, &["add", "a.txt"]).unwrap();
+    *core.repo.lock().unwrap() = Some(wt.clone());
+    unstage_in(&core, &r, vec!["a.txt".into()]).unwrap();
+    assert_eq!(
+        run_text(&r, &["diff", "--cached", "--name-only"]).unwrap(),
+        ""
+    );
+    assert_eq!(
+        run_text(&wt, &["diff", "--cached", "--name-only"]).unwrap(),
+        "a.txt\n"
+    );
+}

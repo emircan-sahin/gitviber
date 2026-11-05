@@ -649,17 +649,24 @@ impl WorkspaceView {
         let header = self.side_header(slot, window, cx);
         let active = self.workspace.read(cx).active_panel(slot, cx);
         let explorer = active == Some(gitviber_files::explorer::PANEL_ID);
+        let project = self.workspace.read(cx).project().cloned();
         // The left side is git's: a plain folder gets `git init` there, and no panel reading git.
-        let folder = (slot == Slot::Left)
-            .then(|| self.workspace.read(cx).project().cloned())
-            .flatten()
-            .filter(|p| p.read(cx).is_folder());
+        let folder = project
+            .clone()
+            .filter(|p| slot == Slot::Left && p.read(cx).is_folder());
+        // One git couldn't open has nothing for either side to read: what git said, once.
+        let failed = project.as_ref().and_then(|p| match p.read(cx).state() {
+            gitviber_ui::workspace::RepoState::Failed(e) => {
+                Some(failed_state(p.read(cx).name(), e, cx))
+            }
+            _ => None,
+        });
         let panel = active
-            .filter(|_| folder.is_none())
+            .filter(|_| folder.is_none() && failed.is_none())
             .and_then(|id| Workspace::ensure_panel(&self.workspace, id, window, cx));
         // Its panel is built once the repo is open; till then it shows nothing of the last one.
         let waiting =
-            panel.is_none() && active.is_some() && self.workspace.read(cx).project_loading();
+            panel.is_none() && active.is_some() && self.workspace.read(cx).project_loading(cx);
         reachable(panel.as_ref().and_then(|p| p.focus_handle(cx)));
         let t = cx.app_theme().clone();
         let focus = self.workspace.read(cx).slot_focus(slot).clone();
@@ -758,6 +765,7 @@ impl WorkspaceView {
                     .children(panel.map(|p| cached(p.view())))
                     .when(waiting, |d| d.child(PanelSkeleton::new()))
                     .children(folder.map(|p| gitviber_refs::folder::empty_state(&p, cx)))
+                    .children(failed)
                     .when(explorer, |d| d.child(self.explorer_buttons(cx))),
             )
             .child(handle)
@@ -868,6 +876,40 @@ impl WorkspaceView {
 /// rendered every panel and the open tab again, twice a second.
 fn cached(view: AnyView) -> impl IntoElement {
     view.cached(StyleRefinement::default().size_full())
+}
+
+/// A side of a repo git couldn't open (gone, unmounted, refused): what git said.
+fn failed_state(name: &str, error: &str, cx: &App) -> AnyElement {
+    let t = cx.app_theme();
+    div()
+        .debug_selector(|| "failed-open".into())
+        .size_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap_3()
+        .p_4()
+        .text_center()
+        .child(
+            gpui_kit::component::Icon::new(gpui_kit::assets::IconName::TriangleAlert)
+                .large()
+                .text_color(t.subtle),
+        )
+        .child(
+            div()
+                .font_weight(t.semibold())
+                .text_size(gpui_kit::rems(0.8125))
+                .child(format!("Couldn't open {name}")),
+        )
+        .child(
+            div()
+                .max_w(px(240.))
+                .text_size(gpui_kit::rems(0.75))
+                .text_color(t.muted_foreground)
+                .child(error.to_string()),
+        )
+        .into_any_element()
 }
 
 /// Marks the part the keys go to: a thin accent along its top while focus is inside.
@@ -2374,6 +2416,28 @@ mod tests {
             draw(cx);
             assert!(cx.update(|_, cx| p.read(cx).is_repo()));
             changes_shown(cx);
+        }
+
+        /// A repo git can't open shows what git said on both sides, not a skeleton for ever.
+        #[gpui_kit::test]
+        fn a_failed_open_says_why_rather_than_waiting(cx: &mut TestAppContext) {
+            let gone = setup("failed-open", cx).join("gone");
+            cx.update(|cx| {
+                gitviber_ui::install_core(cx);
+                gitviber_changes::init(cx);
+            });
+            let cx = &mut launch(None, START, cx);
+            let ws = workspace(cx);
+            cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(gone, window, cx)));
+            draw(cx);
+            let failed = cx.update(|_, cx| {
+                let state = ws.read(cx).project().unwrap().read(cx).state().clone();
+                matches!(state, gitviber_ui::workspace::RepoState::Failed(_))
+            });
+            assert!(failed);
+            assert!(cx.debug_bounds("failed-open").is_some());
+            assert!(cx.debug_bounds("panel-skeleton").is_none());
+            assert!(ws.read_with(cx, |ws, _| ws.built_panel("changes").is_none()));
         }
 
         #[gpui_kit::test]

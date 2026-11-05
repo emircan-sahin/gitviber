@@ -222,6 +222,17 @@ pub struct CodeSource {
     pub root: Option<PathBuf>,
 }
 
+/// The file on disk against the typing, as the header shows it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OnDisk {
+    #[default]
+    Same,
+    /// Changed under unsaved typing: ⌘S asks before writing over it.
+    Changed,
+    /// Gone under unsaved typing (deleted, renamed away): ⌘S writes it back.
+    Deleted,
+}
+
 pub enum CodeEvent {
     Saved,
     DirtyChanged,
@@ -293,8 +304,8 @@ pub struct CodeView {
     base: u64,
     /// What a save is writing now, so its own change on disk isn't someone else's.
     saving: Option<u64>,
-    /// The file changed on disk under unsaved typing (the header says so).
-    disk_changed: bool,
+    /// What happened to the file on disk under unsaved typing (the header says so).
+    disk: OnDisk,
     /// The bracket at the caret and its match, in the editable view.
     brackets: Option<RangeDecorationCollection>,
     /// The caret and edit count they were found for.
@@ -656,7 +667,7 @@ impl CodeView {
             edits: 0,
             base,
             saving: None,
-            disk_changed: false,
+            disk: OnDisk::Same,
             brackets: None,
             brackets_at: (usize::MAX, 0),
             goto: None,
@@ -948,20 +959,21 @@ impl CodeView {
             now.len() == text.len() && *now == text.as_str()
         };
         if self.dirty && !same {
-            let changed = hash != self.base && self.saving != Some(hash);
-            if changed != self.disk_changed {
-                self.disk_changed = changed;
-                cx.emit(CodeEvent::DirtyChanged);
-            }
+            let disk = if hash != self.base && self.saving != Some(hash) {
+                OnDisk::Changed
+            } else {
+                OnDisk::Same
+            };
+            self.set_on_disk(disk, cx);
             self.bars_soon(cx);
             return;
         }
         self.base = hash;
         self.bars = Arc::new(bars);
-        if self.dirty || self.disk_changed {
+        if self.dirty || self.disk != OnDisk::Same {
             // What's typed is what's on disk now.
             self.dirty = false;
-            self.disk_changed = false;
+            self.disk = OnDisk::Same;
             cx.emit(CodeEvent::DirtyChanged);
         }
         // The same as shown can still be another step: 4 spaces a level shown as 2 widened.
@@ -979,16 +991,40 @@ impl CodeView {
         cx.notify();
     }
 
-    /// The file changed on disk under unsaved typing.
-    pub fn changed_on_disk(&self) -> bool {
-        self.disk_changed
+    /// What happened to the file on disk under unsaved typing.
+    pub fn on_disk(&self) -> OnDisk {
+        self.disk
+    }
+
+    /// Sets how the file on disk stands against the typing; the header follows.
+    pub(crate) fn set_on_disk(&mut self, disk: OnDisk, cx: &mut Context<Self>) {
+        if disk != self.disk {
+            self.disk = disk;
+            cx.emit(CodeEvent::DirtyChanged);
+        }
+    }
+
+    /// The file was renamed: a save writes the new name, and its language follows the name.
+    pub(crate) fn moved_to(&mut self, path: String, cx: &mut Context<Self>) {
+        let text = self.state.read(cx).text().clone();
+        self.lang = crate::language::language_with(&path, || Some(text.to_string().into()));
+        let language = if text.len() > MAX_HIGHLIGHT_BYTES {
+            "text"
+        } else {
+            self.lang
+        };
+        self.state
+            .update(cx, |s, cx| s.set_highlighter(language, cx));
+        self.source.path = path;
+        self.load_blame(cx);
+        cx.notify();
     }
 
     /// Drops the typing, so the file as read next shows (the header's Reload).
     pub(crate) fn discard_typing(&mut self, cx: &mut Context<Self>) {
-        if self.dirty || self.disk_changed {
+        if self.dirty || self.disk != OnDisk::Same {
             self.dirty = false;
-            self.disk_changed = false;
+            self.disk = OnDisk::Same;
             cx.emit(CodeEvent::DirtyChanged);
         }
     }
@@ -1085,7 +1121,7 @@ impl CodeView {
                 match result {
                     Ok(()) => {
                         this.base = written;
-                        this.disk_changed = false;
+                        this.disk = OnDisk::Same;
                         if this.edits == at {
                             this.dirty = false;
                         }

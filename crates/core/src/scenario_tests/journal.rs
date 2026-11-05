@@ -266,8 +266,11 @@ fn discard_files(j: &Journal, r: &Path, paths: &[String]) {
     let list = paths.to_vec();
     let write = move |r: &Path| discard(r, &list).map(|_| vec![]);
     let label = crate::journal::files_label("Discard", paths);
-    j.replace(r, label, "discarded", paths, &Mutex::new(()), write)
+    let (_, entry) = j
+        .replace_entry(r, label, "discarded", paths, &Mutex::new(()), write)
         .unwrap();
+    // The id a toast's Undo is given is the entry this recorded.
+    assert_eq!(entry, j.last(r));
 }
 
 /// Discard puts the old versions in the Trash (a temporary folder under test), and undo

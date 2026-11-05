@@ -8,8 +8,8 @@ use crate::dialogs::{self, Ask, Choice};
 use crate::model::conflicts::{Unsure, resolve_question, unsure};
 use crate::model::list::{
     ChangesView, Item, Kind, Lists, Mtimes, NESTED_EXPLAINED, file_sig, files, folder_key,
-    items_of, kept_by_restore, left_out, range_of, stageable, sum_lines, toggled, unstage_paths,
-    untracked_folder, viewed_key,
+    folder_targets, items_of, kept_by_restore, left_out, range_of, stageable, sum_lines, toggled,
+    unstage_paths, untracked, untracked_folder, viewed_key,
 };
 use crate::model::text::{describe_stash, ignore_pattern};
 use crate::model::tree::folders_of;
@@ -20,7 +20,9 @@ use gitviber_core::git::{Commit, ExternalTools, FileChange, HeadMessage, Side as
 use gitviber_core::network::CANCELLED;
 use gitviber_diff::{Compare, DiffSource};
 use gitviber_history::BisectBar;
+use gitviber_refs::errors::GitFix;
 use gitviber_refs::net::NetActivity;
+use gitviber_refs::toast::Action as ToastAction;
 use gitviber_ui::actions::{git, review};
 use gitviber_ui::keymap::editor;
 use gitviber_ui::memory::Live;
@@ -271,6 +273,8 @@ struct StashInfo {
     sha: String,
     index: usize,
     author: String,
+    /// As git worded it, for putting it back after a drop.
+    message: String,
     text: String,
     branch: Option<String>,
     timestamp: i64,
@@ -399,6 +403,7 @@ impl ChangesPanel {
                         this.epoch += 1;
                         this.start(cx);
                     }
+                    ProjectEvent::Switching => this.switching(cx),
                     ProjectEvent::Switched { .. } => {
                         this.tools = None;
                         this.epoch += 1;
@@ -410,6 +415,8 @@ impl ChangesPanel {
                         });
                         this.read(cx);
                     }
+                    // A failed switch stays on its worktree: read again.
+                    ProjectEvent::Failed(_) if this.repo_open(cx) => this.read(cx),
                     ProjectEvent::Failed(e) => {
                         this.error = Some(e.clone());
                         cx.notify();
@@ -519,15 +526,43 @@ impl ChangesPanel {
     }
 
     /// Whether git can read the repo yet: until the project opens it says "No repository is
-    /// open", and a plain folder has none. Only the app's core opens a project; without one (a
-    /// test), or without a project, the core the panel reads is open already.
+    /// open", and a plain folder has none; mid-switch core may read either worktree. Only the
+    /// app's core opens a project; without one (a test), or without a project, the core the
+    /// panel reads is open already.
     fn repo_open(&self, cx: &App) -> bool {
         !gitviber_ui::has_core(cx)
-            || self
-                .ctx
-                .project
-                .as_ref()
-                .is_none_or(|p| p.read(cx).is_repo())
+            || self.ctx.project.as_ref().is_none_or(|p| {
+                let p = p.read(cx);
+                p.is_repo() && !p.is_loading()
+            })
+    }
+
+    /// A worktree switch started: what was read is the last worktree's, and so is a read on its
+    /// way. The skeleton shows till the next one's read lands; filter, sections and the commit
+    /// draft stay, but the box has nothing to commit, nor a HEAD to amend, until then.
+    fn switching(&mut self, cx: &mut Context<Self>) {
+        self.loaded = false;
+        self.error = None;
+        self.reading = false;
+        self.again = false;
+        self._read = Task::ready(());
+        self._head = Task::ready(());
+        self._review = Task::ready(());
+        self.operation = None;
+        self.sync_bisect(cx);
+        self.lists = Lists::default();
+        self.branch = None;
+        self.head = None;
+        self.pushed = false;
+        self.stashes.clear();
+        self.submodules.clear();
+        if let Some(r) = self.review.as_mut() {
+            r.base = None;
+            r.files.clear();
+            r.error = None;
+        }
+        self.rebuild(cx);
+        self.commit_facts(cx);
     }
 
     fn workspace(&self) -> Option<Entity<Workspace>> {
@@ -670,6 +705,7 @@ impl ChangesPanel {
                                     sha: s.sha,
                                     index: s.index,
                                     author: s.author,
+                                    message: s.message,
                                     text,
                                     branch,
                                     timestamp: s.timestamp,
@@ -737,6 +773,7 @@ impl ChangesPanel {
             root: self.root.clone(),
             main,
             branch: self.branch.clone(),
+            detached: self.branch.is_none() && self.head.is_some() && self.operation.is_none(),
             head: self.head.clone(),
             lists: self.lists.clone(),
             prepared: self.prepared.clone(),
@@ -1040,6 +1077,29 @@ impl ChangesPanel {
             .filter(|(k, _)| *k == kind.name())
             .filter_map(|(_, path)| lists.list(kind).iter().find(|f| f.path == path).cloned())
             .collect()
+    }
+
+    /// The files S and ⌘⌫ act on: the keys' row (a folder: every file in it), else the open
+    /// tab's. A stash or review row has none, so the keys never reach a file out of sight.
+    fn key_targets(&self, cx: &App) -> Option<(Kind, Vec<Arc<FileChange>>)> {
+        match self.cursor_ix(cx).and_then(|ix| self.rows.get(ix)) {
+            Some(Row::Item(Item::File { change, .. })) => {
+                Some((change.kind, self.targets(change.kind, &change.key())))
+            }
+            Some(Row::Item(Item::Folder { kind, files, .. })) => {
+                Some((*kind, folder_targets(files)))
+            }
+            Some(_) => None,
+            None => {
+                let key = self.open_key.as_deref()?;
+                let kind = match key.split_once("::")?.0 {
+                    "unstaged" => Kind::Unstaged,
+                    "staged" => Kind::Staged,
+                    _ => return None,
+                };
+                Some((kind, self.targets(kind, key)))
+            }
+        }
     }
 
     fn file_keys(&self) -> Vec<String> {
@@ -1482,34 +1542,19 @@ impl ChangesPanel {
 
     fn stash_dialog(&mut self, paths: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         let some = !paths.is_empty();
-        let untracked_count = self
-            .lists
-            .unstaged
-            .iter()
-            .filter(|f| f.status == "?")
-            .count();
-        let untracked = Rc::new(Cell::new(false));
+        let untracked_text = untracked(&self.lists.unstaged);
+        // On, as Stash and Switch does: "leaves the working tree clean" then holds.
+        let untracked = Rc::new(Cell::new(untracked_text.is_some()));
         let staged_only = Rc::new(Cell::new(false));
         let mut choices = vec![];
         if !some {
             choices.push(Choice {
                 label: format!(
                     "Include {}",
-                    if untracked_count > 0 {
-                        format!(
-                            "{untracked_count} untracked {}",
-                            if untracked_count == 1 {
-                                "file"
-                            } else {
-                                "files"
-                            }
-                        )
-                    } else {
-                        "untracked files".into()
-                    }
+                    untracked_text.as_deref().unwrap_or("untracked files")
                 )
                 .into(),
-                enabled: untracked_count > 0,
+                enabled: untracked_text.is_some(),
                 checked: untracked.clone(),
             });
             choices.push(Choice {
@@ -1543,12 +1588,25 @@ impl ChangesPanel {
                     .iter()
                     .any(|f| f.path == *p && f.status == "?")
             });
+        let takes_untracked = if some {
+            some_untracked
+        } else {
+            untracked_text.is_some()
+        };
         dialogs::ask_text(
             window,
             cx,
             Ask {
                 title: title.into(),
-                description: format!("{description} Apply or pop them later from Stashes.").into(),
+                description: format!(
+                    "{description} Apply or pop them later from Stashes.{}",
+                    if takes_untracked {
+                        " Stashed untracked files are off the disk until then."
+                    } else {
+                        ""
+                    }
+                )
+                .into(),
                 placeholder: "Message (optional)",
                 initial: String::new(),
                 ok_label: "Stash",
@@ -1668,27 +1726,44 @@ impl ChangesPanel {
         cx: &mut Context<Self>,
     ) {
         let weak = cx.entity().downgrade();
-        let short = sha[..sha.len().min(10)].to_string();
-        dialogs::confirm(
-            window,
-            cx,
-            "Drop stash",
-            format!("Drop \"{text}\"? Its changes are thrown away; GitViber can't undo this."),
-            "Drop",
-            move |_, cx| {
-                weak.update(cx, |this, cx| {
-                    this.run(
-                        "Drop failed",
-                        Some(Toast::success(format!(
-                            "Stash dropped. To get it back: git stash apply {short}"
-                        ))),
-                        move |core| api::stash::stash_drop(core, sha),
-                        cx,
-                    )
-                })
-                .ok();
-            },
-        );
+        let Some(message) = self
+            .stashes
+            .iter()
+            .find(|s| s.sha == sha)
+            .map(|s| s.message.clone())
+        else {
+            return;
+        };
+        let repo = crate::core(cx).repo().ok();
+        let question = format!("Drop \"{text}\"? Its changes go with it.");
+        dialogs::confirm(window, cx, "Drop stash", question, "Drop", move |_, cx| {
+            let (undo, keep) = (weak.clone(), sha.clone());
+            // Its commit is still there: storing it again brings the stash back, on top.
+            let done = Toast::success(text)
+                .title("Stash dropped")
+                .action("Undo", move |_, cx| {
+                    let (sha, message) = (keep.clone(), message.clone());
+                    undo.update(cx, |this, cx| {
+                        if crate::core(cx).repo().ok() != repo {
+                            let note = Toast::info("It was for the worktree open before this one.");
+                            return this.toast(note.title("Undo not run"), cx);
+                        }
+                        let done = Toast::success("Stash restored");
+                        let store = move |core: &_| api::stash::stash_store(core, sha, message);
+                        this.run("Undo failed", Some(done), store, cx)
+                    })
+                    .ok();
+                });
+            weak.update(cx, |this, cx| {
+                this.run(
+                    "Drop failed",
+                    Some(done),
+                    move |core| api::stash::stash_drop(core, sha),
+                    cx,
+                )
+            })
+            .ok();
+        });
     }
 
     fn rename_stash(
@@ -1800,59 +1875,6 @@ impl ChangesPanel {
     }
 
     fn operation(&mut self, which: &'static str, window: &mut Window, cx: &mut Context<Self>) {
-        let kind = self
-            .operation
-            .as_ref()
-            .map(|o| o.kind.clone())
-            .unwrap_or_default();
-        let go = move |this: &mut Self, cx: &mut Context<Self>| {
-            let core = crate::core(cx);
-            let repo = core.repo().ok();
-            this.busy = true;
-            let kind = kind.clone();
-            this._action = cx.spawn(async move |this, cx| {
-                // Finished, the journal's entry is the whole merge or rebase: Undo takes it back.
-                let result = cx
-                    .background_spawn(async move {
-                        tracked(&core, |core| match which {
-                            "continue" => api::sync::op_continue(core),
-                            "skip" => api::sync::rebase_skip(core),
-                            _ => api::sync::op_abort(core).map(|_| false),
-                        })
-                    })
-                    .await;
-                this.update(cx, |this, cx| {
-                    this.busy = false;
-                    match result {
-                        Ok((true, _)) => this.toast(
-                            Toast::info("Resolve them to continue.")
-                                .title("Stopped on new conflicts"),
-                            cx,
-                        ),
-                        Ok((false, entry)) if which != "abort" => {
-                            let done = Toast::success(format!(
-                                "{}{} finished",
-                                kind[..1.min(kind.len())].to_uppercase(),
-                                &kind[1.min(kind.len())..]
-                            ));
-                            let ws = this.ctx.workspace.clone();
-                            this.toast(with_undo(done, entry, repo, ws), cx)
-                        }
-                        Ok((false, _)) => {}
-                        Err(e) => this.toast(
-                            git_error(
-                                format!("{} failed", which[..1].to_uppercase() + &which[1..]),
-                                &e,
-                                &vec![],
-                            ),
-                            cx,
-                        ),
-                    }
-                    this.refresh_project(cx);
-                })
-                .ok();
-            });
-        };
         if which == "abort" {
             let weak = cx.entity().downgrade();
             let kind = self
@@ -1867,12 +1889,89 @@ impl ChangesPanel {
                 format!("Abort the {kind}? Your branch goes back to how it was before it started."),
                 "Abort",
                 move |_, cx| {
-                    weak.update(cx, |this, cx| go(this, cx)).ok();
+                    weak.update(cx, |this, cx| this.run_operation(which, false, cx))
+                        .ok();
                 },
             );
         } else {
-            go(self, cx);
+            self.run_operation(which, false, cx);
         }
+    }
+
+    /// `no_verify`: a merge's commit without the hooks, from the toast of one they stopped.
+    fn run_operation(&mut self, which: &'static str, no_verify: bool, cx: &mut Context<Self>) {
+        let kind = self
+            .operation
+            .as_ref()
+            .map(|o| o.kind.clone())
+            .unwrap_or_default();
+        let core = crate::core(cx);
+        let repo = core.repo().ok();
+        self.busy = true;
+        self._action = cx.spawn(async move |this, cx| {
+            // Finished, the journal's entry is the whole merge or rebase: Undo takes it back.
+            let result = cx
+                .background_spawn(async move {
+                    tracked(&core, |core| match which {
+                        "continue" => api::sync::op_continue(core, no_verify),
+                        "skip" => api::sync::rebase_skip(core),
+                        _ => api::sync::op_abort(core).map(|_| false),
+                    })
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.busy = false;
+                match result {
+                    Ok((true, _)) => this.toast(
+                        Toast::info("Resolve them to continue.").title("Stopped on new conflicts"),
+                        cx,
+                    ),
+                    Ok((false, entry)) if which != "abort" => {
+                        let done = Toast::success(format!(
+                            "{}{} finished",
+                            kind[..1.min(kind.len())].to_uppercase(),
+                            &kind[1.min(kind.len())..]
+                        ));
+                        let ws = this.ctx.workspace.clone();
+                        this.toast(with_undo(done, entry, repo, ws), cx)
+                    }
+                    Ok((false, _)) => {}
+                    Err(e) => {
+                        // Only a merge's commit takes --no-verify; the toast outlives this
+                        // merge, so its button checks it's still the one stopped.
+                        let mut fixes = vec![];
+                        if which == "continue" && kind == "merge" {
+                            let (weak, root) = (cx.weak_entity(), repo.clone());
+                            let without =
+                                ToastAction::new("Continue without hooks", move |_, cx| {
+                                    weak.update(cx, |this, cx| {
+                                        let here = crate::core(cx).repo().ok() == root;
+                                        let merging = this
+                                            .operation
+                                            .as_ref()
+                                            .is_some_and(|o| o.kind == "merge");
+                                        if here && merging {
+                                            this.run_operation("continue", true, cx);
+                                        } else {
+                                            this.toast(
+                                                Toast::info("The merge it was for has ended.")
+                                                    .title("Continue without hooks not run"),
+                                                cx,
+                                            );
+                                        }
+                                    })
+                                    .ok();
+                                });
+                            fixes.push((GitFix::Hooks, without));
+                        }
+                        let title = format!("{} failed", which[..1].to_uppercase() + &which[1..]);
+                        this.toast(git_error(title, &e, &fixes), cx)
+                    }
+                }
+                this.refresh_project(cx);
+            })
+            .ok();
+        });
     }
 
     /// Apply Patch from Clipboard: what it would do, then Apply. The working tree only.
@@ -2251,11 +2350,7 @@ impl ChangesPanel {
                 files: inside,
             }) => {
                 let key = folder_key(kind, &path);
-                let rows: Vec<Arc<FileChange>> = inside
-                    .iter()
-                    .filter(|f| f.nested.is_none())
-                    .cloned()
-                    .collect();
+                let rows = folder_targets(&inside);
                 base()
                     .pl(px(6. + depth as f32 * 12.))
                     .cursor_pointer()
@@ -3774,32 +3869,17 @@ impl Render for ChangesPanel {
                 };
                 this.mark_viewed(sels, on, cx);
             }))
-            .on_action(cx.listener(|this, _: &git::ToggleStage, _, cx| {
-                let Some(key) = this.open_key.clone() else {
-                    return;
-                };
-                match key.split_once("::").map(|x| x.0) {
-                    Some("unstaged") => {
-                        let rows = this.targets(Kind::Unstaged, &key);
-                        this.stage(rows, cx);
-                    }
-                    Some("staged") => {
-                        let rows = this.targets(Kind::Staged, &key);
-                        this.unstage_files(rows, cx);
-                    }
+            .on_action(cx.listener(
+                |this, _: &git::ToggleStage, _, cx| match this.key_targets(cx) {
+                    Some((Kind::Unstaged, rows)) => this.stage(rows, cx),
+                    Some((Kind::Staged, rows)) => this.unstage_files(rows, cx),
                     _ => {}
-                }
-            }))
+                },
+            ))
             .on_action(cx.listener(|this, _: &git::Discard, window, cx| {
-                let Some(key) = this
-                    .open_key
-                    .clone()
-                    .filter(|k| k.starts_with("unstaged::"))
-                else {
-                    return;
-                };
-                let rows = this.targets(Kind::Unstaged, &key);
-                this.discard(rows, window, cx);
+                if let Some((Kind::Unstaged, rows)) = this.key_targets(cx) {
+                    this.discard(rows, window, cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &git::SelectAllChanges, _, cx| {
                 let keys = this.file_keys();
@@ -3883,8 +3963,8 @@ mod tests {
         });
     }
 
-    /// A window with a workspace and the panel in it on `dir`, the status read. No Project: the
-    /// test reads the repo again itself after each action.
+    /// A window with a workspace and the panel in it on `dir`, the status read, under the window
+    /// root dialogs need. No Project: the test reads the repo again itself after each action.
     fn open<'a>(
         cx: &'a mut TestAppContext,
         dir: &Path,
@@ -3892,10 +3972,17 @@ mod tests {
         let core = cx.update(|cx| crate::core(cx));
         gitviber_core::api::repo::open_repo(&core, dir.to_string_lossy().into_owned()).unwrap();
         let ws = cx.update(|cx| cx.new(Workspace::new));
-        let (host, cx) = cx.add_window_view(|_, _| Host {
-            panel: None,
-            center: None,
+        let mut host = None;
+        let handle = cx.add_window(|window, cx| {
+            let h = cx.new(|_| Host {
+                panel: None,
+                center: None,
+            });
+            host = Some(h.clone());
+            gpui_kit::base::Root::new(h, window, cx)
         });
+        let cx = VisualTestContext::from_window(*handle, cx).into_mut();
+        let host = host.unwrap();
         cx.update(|window, cx| Workspace::register_window(&ws, window, cx));
         cx.update(|window, cx| {
             let ctx = ws.update(cx, |ws, cx| ws.context(cx));
@@ -3990,8 +4077,9 @@ mod tests {
     fn cmd_enter_commits_the_message_as_written(cx: &mut TestAppContext) {
         let dir = repo("cmd-enter");
         setup(cx);
-        let (_ws, host, cx) = open(cx, &dir);
-        let commit = panel(&host, cx).read_with(cx, |p, _| p.commit.clone());
+        let (ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        let commit = p.read_with(cx, |p, _| p.commit.clone());
         let write = |summary: &'static str, cx: &mut VisualTestContext| {
             cx.update(|window, cx| {
                 commit.update(cx, |b, cx| {
@@ -4009,11 +4097,49 @@ mod tests {
             "First\nSecond"
         );
         assert_eq!(git(&dir, &["rev-list", "--count", "HEAD"]).trim(), "1");
+        // The summary is asked for in place, with the cursor in it, not in a toast.
+        assert!(commit.read_with(cx, |b, _| b.ask_summary));
+        assert!(cx.update(|window, cx| commit.read(cx).message_focused(window, cx)));
+        assert!(ws.update(cx, |ws, _| ws.take_toasts()).is_empty());
         write("Add things", cx);
         assert_eq!(
             git(&dir, &["log", "-1", "--format=%B"]).trim_end(),
             "Add things\n\nFirst\nSecond"
         );
+        assert!(!commit.read_with(cx, |b, _| b.ask_summary));
+        // Any other reason it can't run is said in a toast.
+        p.update(cx, |p, cx| p.read(cx));
+        cx.run_until_parked();
+        ws.update(cx, |ws, _| ws.take_toasts());
+        write("Again", cx);
+        let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+        let not_run = toasts
+            .iter()
+            .find(|t| t.title.as_deref() == Some("Commit not run"))
+            .expect("a toast with the reason");
+        assert_eq!(not_run.message.as_ref(), "Nothing to commit.");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The hint asked for one worktree's summary; another's empty draft isn't asked yet.
+    #[gpui_kit::test]
+    fn the_summary_hint_stays_with_its_worktree(cx: &mut TestAppContext) {
+        let dir = repo("ask-summary");
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let commit = panel(&host, cx).read_with(cx, |p, _| p.commit.clone());
+        cx.update(|window, cx| commit.update(cx, |b, cx| b.commit(None, window, cx)));
+        assert!(commit.read_with(cx, |b, _| b.ask_summary));
+        cx.update(|window, cx| {
+            commit.update(cx, |b, cx| {
+                let facts = RepoFacts {
+                    root: "/made/up/other".into(),
+                    ..b.facts().clone()
+                };
+                b.set_facts(facts, window, cx);
+            })
+        });
+        assert!(!commit.read_with(cx, |b, _| b.ask_summary));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4980,6 +5106,8 @@ mod tests {
         });
         cx.run_until_parked();
         assert_eq!(git(&dir, &["rev-list", "--count", "HEAD"]).trim(), "1");
+        // "Commit all" staged everything itself: the failure leaves the index empty again.
+        assert_eq!(git(&dir, &["diff", "--cached", "--name-only"]), "");
         // The top bar's activity ended with it.
         assert!(!cx.update(|_, cx| NetActivity::global(cx).read(cx).is_running()));
         let toasts = ws.update(cx, |ws, _| ws.take_toasts());
@@ -4997,6 +5125,151 @@ mod tests {
             "Add things"
         );
         assert_eq!(git(&dir, &["rev-list", "--count", "HEAD"]).trim(), "2");
+        assert_eq!(
+            git(&dir, &["show", "--name-only", "--format=", "HEAD"]),
+            "a.txt\nb.txt\nc.txt\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An agent staged part of a file since the list was read: "Commit all" stops before it
+    /// stages, so a failure can't unstage the agent's version.
+    #[gpui_kit::test]
+    fn commit_all_leaves_what_was_staged_meanwhile(cx: &mut TestAppContext) {
+        let dir = repo("staged-meanwhile");
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        std::fs::write(dir.join("a.txt"), "agent's first\n").unwrap();
+        git(&dir, &["add", "a.txt"]);
+        std::fs::write(dir.join("a.txt"), "agent's second\n").unwrap();
+        let commit = panel(&host, cx).read_with(cx, |p, _| p.commit.clone());
+        cx.update(|window, cx| {
+            commit.update(cx, |b, cx| {
+                b.write_message("Add things", "", window, cx);
+                b.commit(None, window, cx);
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(git(&dir, &["rev-list", "--count", "HEAD"]).trim(), "1");
+        assert_eq!(git(&dir, &["show", ":a.txt"]), "agent's first\n");
+        assert_eq!(git(&dir, &["diff", "--cached", "--name-only"]), "a.txt\n");
+        let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+        assert!(
+            toasts
+                .iter()
+                .any(|t| t.message.contains("staged since the list was read")),
+            "{:?}",
+            toasts
+                .iter()
+                .map(|t| t.message.to_string())
+                .collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_detached_head_is_said_above_the_commit_button(cx: &mut TestAppContext) {
+        let dir = repo("detached");
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        let commit = p.read_with(cx, |p, _| p.commit.clone());
+        let detached = |cx: &mut VisualTestContext| {
+            p.update(cx, |p, cx| p.read(cx));
+            cx.run_until_parked();
+            commit.read_with(cx, |b, _| b.facts().detached)
+        };
+        assert!(!detached(cx));
+        git(&dir, &["checkout", "-q", "--detach"]);
+        assert!(detached(cx));
+        // A bisect moves HEAD off the branch too, and brings it back: no warning then.
+        let first = git(&dir, &["rev-parse", "HEAD"]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "second"]);
+        git(&dir, &["bisect", "start", "HEAD", first.trim()]);
+        assert!(!detached(cx));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn stash_changes_takes_the_untracked_files_too(cx: &mut TestAppContext) {
+        let dir = repo("stash-all");
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        cx.update(|window, cx| p.update(cx, |p, cx| p.stash_dialog(vec![], window, cx)));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(git(&dir, &["status", "--porcelain"]), "");
+        assert!(git(&dir, &["show", "--name-only", "--format=", "stash@{0}^3"]).contains("c.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_dropped_stash_comes_back_with_undo(cx: &mut TestAppContext) {
+        let dir = repo("stash-drop");
+        git(&dir, &["stash", "push", "-q", "-m", "saved", "--", "b.txt"]);
+        let sha = git(&dir, &["rev-parse", "stash@{0}"]).trim().to_string();
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        cx.update(|window, cx| {
+            p.update(cx, |p, cx| {
+                p.drop_stash(sha.clone(), "saved".into(), window, cx)
+            })
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(git(&dir, &["stash", "list"]), "");
+        let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+        let dropped = toasts
+            .iter()
+            .find(|t| t.title.as_deref() == Some("Stash dropped"))
+            .expect("a toast for the drop");
+        let undo = dropped.action.clone().expect("Undo");
+        assert_eq!(undo.label, "Undo");
+        cx.update(|window, cx| (undo.run)(window, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            git(&dir, &["stash", "list", "--format=%H %gs"]).trim(),
+            format!("{sha} On main: saved")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_merge_a_hook_stops_continues_without_hooks(cx: &mut TestAppContext) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = conflicted("merge-hook", "ours\n", "theirs\n");
+        std::fs::write(dir.join("a.txt"), "both\n").unwrap();
+        git(&dir, &["add", "a.txt"]);
+        // Silent, as the commit's test explains.
+        let hook = dir.join(".git/hooks/commit-msg");
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        cx.update(|window, cx| p.update(cx, |p, cx| p.operation("continue", window, cx)));
+        cx.run_until_parked();
+        assert!(dir.join(".git/MERGE_HEAD").exists());
+        let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+        let failed = toasts
+            .iter()
+            .find(|t| t.title.as_deref() == Some("Continue failed"))
+            .expect("a failure toast");
+        let action = failed.action.clone().expect("a way out");
+        assert_eq!(action.label, "Continue without hooks");
+        p.update(cx, |p, cx| p.read(cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| (action.run)(window, cx));
+        cx.run_until_parked();
+        assert!(!dir.join(".git/MERGE_HEAD").exists());
+        assert_eq!(
+            git(&dir, &["rev-list", "--count", "--merges", "HEAD"]).trim(),
+            "1"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5071,6 +5344,63 @@ mod tests {
         assert!(p.read_with(cx, |p, _| p.expanded_stash.is_none()));
         // PgUp from the bottom goes up a page, never past the first row.
         assert_ne!(key("pageup", cx), "stash:0");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui_kit::test]
+    fn s_and_discard_act_on_the_keys_row_not_the_open_tab(cx: &mut TestAppContext) {
+        let dir = repo("keys-act");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/x.txt"), "x\n").unwrap();
+        std::fs::write(dir.join("src/y.txt"), "y\n").unwrap();
+        setup(cx);
+        let (_ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        p.update(cx, |p, cx| {
+            p.set_view(
+                ChangesView {
+                    tree: true,
+                    recent: false,
+                },
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let a = p.read(cx).lists.unstaged[0].clone();
+            p.update(cx, |p, cx| {
+                p.open(selection_of(Kind::Unstaged, a), true, window, cx)
+            });
+            let focus = p.read(cx).focus.clone();
+            focus.focus(window, cx)
+        });
+        cx.run_until_parked();
+        let targets = |cx: &mut VisualTestContext| {
+            p.read_with(cx, |p, cx| {
+                p.key_targets(cx).map(|(k, rows)| (k, paths(&rows)))
+            })
+        };
+        // No cursor yet: the open tab's file.
+        assert_eq!(targets(cx), Some((Kind::Unstaged, vec!["a.txt".into()])));
+        // The keys onto the folder: S stages every file in it, and the open a.txt stays.
+        p.update(cx, |p, _| p.cursor = Some("folder:unstaged:src".into()));
+        assert_eq!(
+            targets(cx),
+            Some((Kind::Unstaged, vec!["src/x.txt".into(), "src/y.txt".into()]))
+        );
+        cx.dispatch_action(git::ToggleStage);
+        cx.run_until_parked();
+        let staged = git(&dir, &["diff", "--cached", "--name-only"]);
+        assert_eq!(
+            staged.lines().collect::<Vec<_>>(),
+            ["src/x.txt", "src/y.txt"]
+        );
+        // A stash row has no files for the keys, so nothing out of sight is touched.
+        git(&dir, &["stash", "push", "-q", "-m", "saved", "--", "b.txt"]);
+        p.update(cx, |p, cx| p.read(cx));
+        cx.run_until_parked();
+        p.update(cx, |p, _| p.cursor = Some("stash:0".into()));
+        assert_eq!(targets(cx), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5194,6 +5524,7 @@ mod tests {
             then: Some(crate::commit::Then::Push),
             skipped: 0,
             amended: false,
+            staged: vec![],
         };
         cx.update(|window, cx| {
             commit.update(cx, |b, cx| b.committed(Ok(Some(7)), started(), window, cx))
@@ -5410,6 +5741,60 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[gpui_kit::test]
+    fn discarded_lines_say_so_and_come_back_with_undo(cx: &mut TestAppContext) {
+        use gitviber_diff::{LineAction, LineRange, Side};
+        let dir = repo("discard-lines");
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(dir.clone(), window, cx)));
+        cx.run_until_parked();
+        let p = panel(&host, cx);
+        let sel = cx.update(|_, cx| {
+            let a = p.read(cx).lists.unstaged[0].clone();
+            selection_of(Kind::Unstaged, a)
+        });
+        let tab = cx
+            .update(|window, cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.open(sel, false, window, cx);
+                    ws.active_view(window, cx)
+                })
+            })
+            .and_then(|v| v.downcast::<ChangeTab>().ok())
+            .expect("a diff tab");
+        cx.run_until_parked();
+        let diff = cx.update(|_, cx| tab.read(cx).diff().cloned().expect("a diff"));
+        // One file of this throwaway repo goes to the Trash.
+        diff.update(cx, |v, cx| {
+            v.select_lines(
+                LineRange {
+                    side: Side::New,
+                    start: 2,
+                    end: 2,
+                },
+                cx,
+            );
+            v.line_action(LineAction::Discard, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one\n");
+        let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+        let done = toasts
+            .iter()
+            .find(|t| t.title.as_deref() == Some("Discarded lines of a.txt"))
+            .expect("a toast for the discard");
+        let undo = done.action.clone().expect("Undo");
+        assert_eq!(undo.label, "Undo");
+        cx.update(|window, cx| (undo.run)(window, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "one\ntwo\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A worktree switch brings back that worktree's branch review (or none), and leaves the
     /// one it left saved with it.
     #[gpui_kit::test]
@@ -5442,8 +5827,12 @@ mod tests {
         let project = ws.read_with(cx, |ws, _| ws.project().cloned().unwrap());
         let switch = |from: &Path, to: &Path, cx: &mut VisualTestContext| {
             let (from, to) = (from.to_path_buf(), to.to_path_buf());
+            // The last worktree's lists go as the switch starts; the next one's are read.
+            project.update(cx, |_, cx| cx.emit(ProjectEvent::Switching));
+            assert!(!p.read_with(cx, |p, _| p.loaded));
             project.update(cx, |_, cx| cx.emit(ProjectEvent::Switched { from, to }));
             cx.run_until_parked();
+            assert!(p.read_with(cx, |p, _| p.loaded));
         };
         let reviewed = |cx: &mut VisualTestContext| {
             p.read_with(cx, |p, _| p.review.as_ref().map(|r| r.reference.clone()))
@@ -5462,6 +5851,72 @@ mod tests {
         );
         switch(&a, &b, cx);
         assert_eq!(reviewed(cx).as_deref(), Some("refs/heads/later"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Mid-switch the box holds nothing of the last worktree's: no files, no branch, no HEAD to
+    /// amend, so neither Commit nor Amend runs until the next worktree is read, or this one
+    /// again after a switch that failed.
+    #[gpui_kit::test]
+    fn the_commit_box_commits_nothing_mid_switch(cx: &mut TestAppContext) {
+        let dir = repo("commit-switch");
+        git(&dir, &["add", "a.txt"]);
+        setup(cx);
+        let ws = cx.update(|cx| cx.new(Workspace::new));
+        let (host, cx) = cx.add_window_view(|_, _| Host {
+            panel: None,
+            center: None,
+        });
+        let core = cx.update(|_, cx| crate::core(cx));
+        api::repo::open_repo(&core, dir.to_string_lossy().into_owned()).unwrap();
+        cx.update(|window, cx| {
+            Workspace::register_window(&ws, window, cx);
+            ws.update(cx, |ws, cx| ws.open_project(dir.clone(), window, cx));
+            let ctx = ws.update(cx, |ws, cx| ws.context(cx));
+            let panel = cx.new(|cx| ChangesPanel::new(&ctx, window, cx));
+            host.update(cx, |h, cx| {
+                h.panel = Some(panel);
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+        let p = panel(&host, cx);
+        let commit = p.read_with(cx, |p, _| p.commit.clone());
+        let project = ws.read_with(cx, |ws, _| ws.project().cloned().unwrap());
+        let facts = |cx: &mut VisualTestContext| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            commit.read_with(cx, |b, _| {
+                let f = b.facts();
+                (f.lists.staged.len(), f.branch.clone(), f.head.is_some())
+            })
+        };
+        assert_eq!(facts(cx), (1, Some("main".into()), true));
+        cx.update(|window, cx| commit.update(cx, |b, cx| b.toggle_amend(true, window, cx)));
+        let head = git(&dir, &["rev-parse", "HEAD"]);
+
+        project.update(cx, |_, cx| cx.emit(ProjectEvent::Switching));
+        assert_eq!(facts(cx), (0, None, false));
+        cx.update(|window, cx| commit.update(cx, |b, cx| b.commit(None, window, cx)));
+        assert!(!commit.read_with(cx, |b, _| b.committing()));
+        cx.run_until_parked();
+        assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head, "nothing amended");
+
+        project.update(cx, |_, cx| {
+            cx.emit(ProjectEvent::Switched {
+                from: dir.clone(),
+                to: dir.clone(),
+            })
+        });
+        assert_eq!(facts(cx), (1, Some("main".into()), true));
+
+        project.update(cx, |_, cx| cx.emit(ProjectEvent::Switching));
+        assert_eq!(facts(cx), (0, None, false));
+        project.update(cx, |_, cx| {
+            cx.emit(ProjectEvent::Failed("no worktree".into()))
+        });
+        assert_eq!(facts(cx), (1, Some("main".into()), true));
+        assert!(p.read_with(cx, |p, _| p.loaded));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

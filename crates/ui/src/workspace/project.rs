@@ -29,6 +29,9 @@ pub enum RepoState {
 pub enum ProjectEvent {
     /// The repo opened; `root` is its worktree's top level.
     Opened,
+    /// A worktree switch started: what views read so far is the last worktree's, and core may
+    /// read either one until `Switched` (or `Failed`, back on the last one).
+    Switching,
     /// Another worktree of it is open now.
     Switched { from: PathBuf, to: PathBuf },
     /// The working tree or git's state changed on disk: refresh what you show.
@@ -159,6 +162,10 @@ impl Project {
     pub fn switch_worktree(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         let from = self.root.clone();
         self.open(root, Some(from), cx);
+        // Without core (a test) nothing opens it.
+        if self.loading {
+            cx.emit(ProjectEvent::Switching);
+        }
         cx.notify();
     }
 

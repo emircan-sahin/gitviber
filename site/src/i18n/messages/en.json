@@ -72,7 +72,7 @@
       },
       {
         "title": "Hop between them.",
-        "text": "Each worktree keeps its own terminals and its own review progress, so nothing gets lost when you switch. When an agent waits for you, its worktree gets a dot."
+        "text": "Your terminals stay put when you switch, and each worktree keeps its own review progress, so nothing gets lost. When an agent waits for you, its worktree gets a dot."
       },
       {
         "title": "Start from anything.",

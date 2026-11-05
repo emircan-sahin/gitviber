@@ -43,15 +43,12 @@ pub(super) fn move_to<T>(items: &mut Vec<T>, from: usize, to: usize) -> bool {
 }
 
 impl TerminalPanel {
-    /// The tab `gid` moved to place `to` among the open set's; it stays open if it was.
+    /// The tab `gid` moved to place `to`; it stays open if it was.
     pub(super) fn move_group_to(&mut self, gid: u64, to: usize, cx: &mut Context<Self>) {
-        let Some(set) = self.sets.get_mut(&self.root) else {
+        let Some(from) = self.tabs.groups.iter().position(|g| g.id == gid) else {
             return;
         };
-        let Some(from) = set.groups.iter().position(|g| g.id == gid) else {
-            return;
-        };
-        if move_to(&mut set.groups, from, to) {
+        if move_to(&mut self.tabs.groups, from, to) {
             self.save_soon(cx);
             cx.notify();
         }
@@ -59,10 +56,7 @@ impl TerminalPanel {
 
     /// The tab `gid` a place left (-1) or right (1); none past either end.
     pub(super) fn nudge_group(&mut self, gid: u64, by: isize, cx: &mut Context<Self>) {
-        let Some(at) = self
-            .set()
-            .and_then(|s| s.groups.iter().position(|g| g.id == gid))
-        else {
+        let Some(at) = self.tabs.groups.iter().position(|g| g.id == gid) else {
             return;
         };
         if let Some(to) = at.checked_add_signed(by) {
@@ -72,7 +66,7 @@ impl TerminalPanel {
 
     /// The open tab a place left (-1) or right (1).
     pub(super) fn move_group(&mut self, by: isize, cx: &mut Context<Self>) {
-        if let Some(gid) = self.set().and_then(|s| s.active) {
+        if let Some(gid) = self.tabs.active {
             self.nudge_group(gid, by, cx);
         }
     }

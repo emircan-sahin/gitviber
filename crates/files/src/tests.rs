@@ -12,6 +12,7 @@ use crate::code::{CodeSource, CodeView};
 use crate::media::{MediaKind, MediaView};
 use crate::text::{Bar, BarKind};
 
+mod edits;
 mod oldbugs;
 
 struct Host(Option<AnyView>);
@@ -336,7 +337,7 @@ fn explorer_lists_creates_and_renames_and_quick_open_lists_files(cx: &mut TestAp
 }
 
 /// At launch the explorer is built while the repo is still opening: it lists once it's open,
-/// with no "No repository is open" toast, and a root that can't be listed still says so.
+/// with no "No repository is open" toast, and a root that can't be listed says so in the panel.
 #[gpui_kit::test]
 fn explorer_waits_for_the_repo_to_open_then_lists(cx: &mut TestAppContext) {
     setup(cx);
@@ -367,14 +368,21 @@ fn explorer_waits_for_the_repo_to_open_then_lists(cx: &mut TestAppContext) {
             .collect()
     };
     assert!(titles(cx).is_empty());
+    // A real failure shows in the panel, and Try Again lists once the folder is back.
     std::fs::rename(&repo, repo.with_extension("moved")).unwrap();
     cx.update(|_, cx| panel.update(cx, |p, cx| p.refresh(cx)));
     cx.run_until_parked();
+    assert!(cx.update(|_, cx| panel.read(cx).root_failed().is_some()));
     assert!(
-        titles(cx).contains(&"Could not list repository".to_string()),
-        "a real failure still shows"
+        cx.update(|_, cx| panel.read(cx).row_paths()).is_empty(),
+        "no stale rows under the error"
     );
-    _ = std::fs::remove_dir_all(repo.with_extension("moved"));
+    std::fs::rename(repo.with_extension("moved"), &repo).unwrap();
+    cx.update(|_, cx| panel.update(cx, |p, cx| p.refresh(cx)));
+    cx.run_until_parked();
+    assert!(cx.update(|_, cx| panel.read(cx).root_failed().is_none()));
+    assert_eq!(cx.update(|_, cx| panel.read(cx).row_paths()), vec!["src"]);
+    _ = std::fs::remove_dir_all(&repo);
 }
 
 /// ⌘P's files and how they stand, as the palette asks for them.

@@ -308,11 +308,13 @@ impl CommitList {
         });
         let sub = cx.subscribe(
             &repo,
-            |this: &mut Self, _, event: &gitviber_refs::RepoEvent, cx| {
-                if let gitviber_refs::RepoEvent::Changed = event {
+            |this: &mut Self, _, event: &gitviber_refs::RepoEvent, cx| match event {
+                gitviber_refs::RepoEvent::Changed => {
                     this.remotes = remotes_of(&this.repo, cx);
                     this.repo_changed(cx);
                 }
+                gitviber_refs::RepoEvent::Switching => this.switching(cx),
+                gitviber_refs::RepoEvent::Acted => {}
             },
         );
         // The active tab marks its file's row.
@@ -438,6 +440,11 @@ impl CommitList {
         }
         self.source = source;
         self.options = options;
+        self.forget();
+        self.reload(cx);
+    }
+
+    fn forget(&mut self) {
         self.commits.clear();
         self.rows.clear();
         self.line = FirstParentLine::default();
@@ -446,7 +453,24 @@ impl CommitList {
         self.loaded = false;
         self.state.reset(0);
         self.items.clear();
-        self.reload(cx);
+    }
+
+    /// A worktree switch started: the list is the last worktree's, and so is a read on its way.
+    /// The skeleton shows till the next one's `Changed` reads it again, as it is (a search too).
+    fn switching(&mut self, cx: &mut Context<Self>) {
+        // A list of fixed commits is the same in every worktree.
+        if matches!(self.source, Source::Between { .. }) {
+            return;
+        }
+        self.forget();
+        self.seq += 1;
+        self.reading = None;
+        self.paging = None;
+        self.again = false;
+        self.has_more = false;
+        self.error = None;
+        self.cursor = None;
+        cx.notify();
     }
 
     /// HEAD or the refs may have moved: read again what's loaded.

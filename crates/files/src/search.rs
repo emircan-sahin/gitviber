@@ -12,7 +12,7 @@ use gitviber_markdown::FindQuery;
 use gitviber_ui::ActiveAppTheme as _;
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{FileIcon, Toggle as _};
-use gitviber_ui::workspace::{Panel, PanelContext, Workspace};
+use gitviber_ui::workspace::{Panel, PanelContext, ProjectEvent, Workspace};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Enter, Input, InputEvent, InputState};
@@ -86,6 +86,18 @@ impl SearchPanel {
                     if matches!(e, InputEvent::Change) {
                         this.schedule(DEBOUNCE, cx)
                     }
+                }),
+            );
+        }
+        // The query stays through a worktree switch; its results are the next worktree's.
+        if let Some(project) = &ctx.project {
+            subs.push(
+                cx.subscribe(project, |this, _, e: &ProjectEvent, cx| match e {
+                    ProjectEvent::Switching => this.switching(cx),
+                    ProjectEvent::Switched { .. } | ProjectEvent::Failed(_) => {
+                        this.schedule(Duration::ZERO, cx)
+                    }
+                    ProjectEvent::Opened | ProjectEvent::RepoChanged(_) => {}
                 }),
             );
         }
@@ -201,6 +213,20 @@ impl SearchPanel {
                 cx.notify();
             });
         });
+    }
+
+    /// A worktree switch started: the results are the last worktree's, and core may search
+    /// either one till `Switched` runs the query again.
+    fn switching(&mut self, cx: &mut Context<Self>) {
+        self.stop_running();
+        self._search = Task::ready(());
+        self.found = None;
+        self.error = None;
+        self.pending = !self.input.read(cx).value().is_empty();
+        self.picked = None;
+        self.cursor = None;
+        self.rebuild();
+        cx.notify();
     }
 
     fn rebuild(&mut self) {

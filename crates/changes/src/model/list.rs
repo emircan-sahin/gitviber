@@ -3,6 +3,7 @@
 
 use super::tree::{TreeRow, path_tree, tree_order};
 use gitviber_core::git::{FileChange, RepoStatus};
+use gitviber_refs::names::thousands;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -114,6 +115,15 @@ impl Item {
             Item::Folder { kind, path, .. } => format!("folder:{}", folder_key(*kind, path)),
         }
     }
+}
+
+/// The files a folder row's buttons and keys act on: all in it but nested repositories.
+pub fn folder_targets(files: &[Arc<FileChange>]) -> Vec<Arc<FileChange>> {
+    files
+        .iter()
+        .filter(|f| f.nested.is_none())
+        .cloned()
+        .collect()
 }
 
 pub fn folder_key(kind: Kind, path: &str) -> String {
@@ -304,6 +314,33 @@ pub fn files(n: usize) -> String {
     format!("{n} {}", if n == 1 { "file" } else { "files" })
 }
 
+/// What a full stash's untracked choice takes: "48,213 untracked files", "1 untracked folder".
+/// In showUntrackedFiles=normal a new folder is one entry; nested repositories stay on disk.
+pub fn untracked(list: &[Arc<FileChange>]) -> Option<String> {
+    let (mut files, mut folders) = (0, 0);
+    for f in list
+        .iter()
+        .filter(|f| f.status == "?" && f.nested.is_none())
+    {
+        match f.untracked_folder() {
+            true => folders += 1,
+            false => files += 1,
+        }
+    }
+    let count =
+        |n: usize, word: &str| format!("{} {word}{}", thousands(n), if n == 1 { "" } else { "s" });
+    match (files, folders) {
+        (0, 0) => None,
+        (n, 0) => Some(count(n, "untracked file")),
+        (0, m) => Some(count(m, "untracked folder")),
+        (n, m) => Some(format!(
+            "{} and {}",
+            count(n, "untracked file"),
+            count(m, "folder")
+        )),
+    }
+}
+
 pub fn left_out(n: usize) -> String {
     format!(
         "Left out {n} nested {}",
@@ -425,6 +462,25 @@ pub fn range_of(list: &[String], from: &str, to: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn untracked_counts_folders_apart_and_groups_digits() {
+        let entry = |path: &str| {
+            let mut f = (*file(path)).clone();
+            f.status = "?".into();
+            Arc::new(f)
+        };
+        let many: Vec<_> = (0..48_213)
+            .map(|i| entry(&format!("gen/{i}.txt")))
+            .collect();
+        assert_eq!(untracked(&many).unwrap(), "48,213 untracked files");
+        assert_eq!(untracked(&[entry("build/")]).unwrap(), "1 untracked folder");
+        assert_eq!(
+            untracked(&[entry("a.txt"), entry("b/"), entry("c/")]).unwrap(),
+            "1 untracked file and 2 folders"
+        );
+        assert_eq!(untracked(&[file("a.txt")]), None);
+    }
 
     fn file(path: &str) -> Arc<FileChange> {
         Arc::new(FileChange {

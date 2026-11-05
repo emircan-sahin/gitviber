@@ -1,11 +1,15 @@
 //! Which GitHub repositories this repo's remotes are, and what the account may do there.
 
 use super::{call, pages, string, Method, Session, JSON};
-use crate::git;
 use crate::network::Net;
+use crate::{git, process};
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::Path;
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -16,17 +20,95 @@ pub struct RepoRef {
 
 /// owner/name from the origin remote, for github.com in https, ssh or scp-like form.
 pub fn parse_remote(url: &str) -> Option<RepoRef> {
-    let rest = url
-        .strip_prefix("https://github.com/")
-        .or_else(|| url.strip_prefix("http://github.com/"))
-        .or_else(|| url.strip_prefix("git@github.com:"))
-        .or_else(|| url.strip_prefix("ssh://git@github.com/"))?;
-    let rest = rest.trim_end_matches('/').trim_end_matches(".git");
+    let (host, path) = host_and_path(url)?;
+    host.eq_ignore_ascii_case("github.com")
+        .then(|| repo_path(path))
+        .flatten()
+}
+
+/// A remote URL's host and repository path; a user (`git@`, `octo@` in https) is dropped.
+fn host_and_path(url: &str) -> Option<(&str, &str)> {
+    let url = url.trim();
+    let scheme = ["https://", "http://", "ssh://"]
+        .iter()
+        .find_map(|s| url.strip_prefix(s));
+    let (host, path) = match scheme {
+        Some(rest) => rest.split_once('/')?,
+        // scp-like: [user@]host:owner/name
+        None => url.split_once(':').filter(|(_, p)| !p.starts_with('/'))?,
+    };
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    let host = match scheme {
+        Some(_) => host.split(':').next().unwrap_or(host),
+        None => host,
+    };
+    (!host.is_empty() && !host.contains(['/', ' ', ':'])).then_some((host, path))
+}
+
+fn repo_path(path: &str) -> Option<RepoRef> {
+    let rest = path.trim_end_matches('/').trim_end_matches(".git");
     let (owner, name) = rest.split_once('/')?;
     (!owner.is_empty() && !name.is_empty() && !name.contains('/')).then(|| RepoRef {
         owner: owner.into(),
         name: name.into(),
     })
+}
+
+/// `parse_remote`, and an ssh remote whose host is an ~/.ssh/config alias for github.com
+/// (`git@gh-work:o/r`, one per account). Requests still go only to api.github.com.
+pub fn github_remote(url: &str) -> Option<RepoRef> {
+    parse_remote(url).or_else(|| {
+        let ssh = !url.trim().starts_with("http");
+        let (host, path) = host_and_path(url).filter(|_| ssh)?;
+        ssh_hostname(host)?
+            .eq_ignore_ascii_case("github.com")
+            .then(|| repo_path(path))
+            .flatten()
+    })
+}
+
+/// The host ssh connects to for `alias`, from `ssh -G`; asked once per alias a session, since
+/// every GitHub call reads origin.
+fn ssh_hostname(alias: &str) -> Option<String> {
+    type Seen = HashMap<String, Arc<OnceLock<Option<String>>>>;
+    static SEEN: Mutex<Option<Seen>> = Mutex::new(None);
+    // A host named like an option would be read as one.
+    if alias.is_empty()
+        || alias.starts_with('-')
+        || !alias
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+    {
+        return None;
+    }
+    let seen = SEEN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_default()
+        .entry(alias.to_string())
+        .or_default()
+        .clone();
+    // A screen's parallel first calls wait for one `ssh -G`; another alias's needn't.
+    seen.get_or_init(|| {
+        let mut cmd = Command::new(process::resolve("ssh"));
+        cmd.args(["-G", "--", alias])
+            .env("PATH", process::search_path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        process::exec(cmd, "ssh -G", &[], None, Some(Duration::from_secs(5)))
+            .ok()
+            .and_then(|out| hostname_of(&String::from_utf8_lossy(&out)))
+    })
+    .clone()
+}
+
+/// The `hostname` line of `ssh -G`'s output.
+fn hostname_of(config: &str) -> Option<String> {
+    config
+        .lines()
+        .find_map(|l| l.strip_prefix("hostname "))
+        .map(|h| h.trim().to_string())
 }
 
 impl RepoRef {
@@ -47,7 +129,7 @@ impl RepoRef {
 
 pub(super) fn repo_ref(repo: &Path) -> Result<RepoRef, String> {
     let url = git::remote_url(repo, "origin").ok_or("This repository has no 'origin' remote.")?;
-    parse_remote(&url)
+    github_remote(&url)
         .ok_or_else(|| "The 'origin' remote is not a github.com repository.".to_string())
 }
 
@@ -251,7 +333,7 @@ pub fn remotes(repo: &Path) -> Vec<Remote> {
         .into_iter()
         .map(|(name, url)| Remote {
             name,
-            repo: url.and_then(|u| parse_remote(&u)).map(|r| r.full()),
+            repo: url.and_then(|u| github_remote(&u)).map(|r| r.full()),
         })
         .collect()
 }
@@ -350,6 +432,11 @@ mod tests {
             "git@github.com:a/b.git",
             "ssh://git@github.com/a/b",
             "https://github.com/a/b/",
+            "https://octo-one@github.com/a/b.git",
+            "https://octo-one:secret@github.com/a/b",
+            "ssh://git@github.com:22/a/b.git",
+            "github.com:a/b.git",
+            "  git@GitHub.com:a/b.git\n",
         ] {
             let r = parse_remote(url).unwrap_or_else(|| panic!("{url}"));
             assert_eq!((r.owner.as_str(), r.name.as_str()), ("a", "b"));
@@ -367,9 +454,29 @@ mod tests {
             "https://github.com.example.org/a/b",
             "https://example.org/github.com/a/b",
             "ssh://git@example.org/github.com/a/b",
+            "https://github.com@example.org/a/b",
+            "/srv/github.com:a/b",
+            "file:///github.com/a/b",
             "",
         ] {
             assert!(parse_remote(url).is_none(), "{url}");
         }
+    }
+
+    #[test]
+    fn ssh_g_output_names_the_real_host() {
+        let out = "user git\nhostname github.com\nport 22\nidentityfile ~/.ssh/work\n";
+        assert_eq!(hostname_of(out).as_deref(), Some("github.com"));
+        assert_eq!(hostname_of("user git\n"), None);
+    }
+
+    /// Never handed to ssh: an option in disguise, or something that isn't a host name.
+    #[test]
+    fn odd_aliases_are_not_asked_of_ssh() {
+        for alias in ["-oProxyCommand=x", "a b", "gh;work", ""] {
+            assert_eq!(ssh_hostname(alias), None, "{alias}");
+        }
+        // https remotes are never aliases.
+        assert!(github_remote("https://gh-work/a/b").is_none());
     }
 }

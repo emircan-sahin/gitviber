@@ -50,6 +50,15 @@ pub fn stash_drop(core: &Core, sha: String) -> Res<()> {
     core.in_repo(move |r| git::stash_drop(r, &sha))
 }
 
+/// Puts a dropped stash back, on top of the list: its commit outlives the drop until git prunes
+/// it. `message` as git worded it ("On main: …").
+pub fn stash_store(core: &Core, sha: String, message: String) -> Res<()> {
+    core.in_repo(move |r| {
+        git::validate_rev(&sha)?;
+        git::run(r, &["stash", "store", "-m", &message, &sha]).map(|_| ())
+    })
+}
+
 /// Stashes the lines of an unstaged diff a request picks; the file's old version goes to the
 /// Trash, so Undo puts it back (the stash stays: drop it from Stashes).
 pub fn stash_lines(core: &Core, message: String, mut request: lines::Request) -> Res<()> {

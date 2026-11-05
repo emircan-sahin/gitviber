@@ -149,12 +149,21 @@ fn set_badge(n: usize) {
 #[cfg(not(target_os = "macos"))]
 fn set_badge(_: usize) {}
 
+/// The worktrees every window's open repo has: a pane of one window may run in a worktree nested
+/// in another's.
+fn all_known_worktrees(live: &[WeakEntity<TerminalPanel>], cx: &App) -> Vec<PathBuf> {
+    live.iter()
+        .filter_map(|p| p.upgrade())
+        .flat_map(|p| p.read(cx).known_worktrees(cx))
+        .collect()
+}
+
 /// A worktree's look, for its chip: the most urgent of its panes' (any window's).
 pub fn agents_in(dir: &Path, cx: &App) -> Option<gitviber_ui::widgets::Look> {
     let live = cx.try_global::<LivePanels>()?;
+    let worktrees = all_known_worktrees(&live.0, cx);
     let look = agent::most_urgent(live.0.iter().filter_map(|p| p.upgrade()).flat_map(|p| {
         let p = p.read(cx);
-        let worktrees = p.known_worktrees(cx);
         p.panes
             .values()
             .filter(|s| agent::in_worktree(s.view.read(cx).cwd(), dir, &worktrees))
@@ -193,9 +202,10 @@ pub(crate) fn ui_look(l: Look) -> gitviber_ui::widgets::Look {
 /// focused pane first. What text handed to it (a review's Ask Agent) does: `agent::handoff_to`.
 pub fn worktree_agent(worktree: &Path, cx: &App) -> Option<PaneAgent> {
     let live = cx.try_global::<LivePanels>()?;
+    let worktrees = all_known_worktrees(&live.0, cx);
     live.0.iter().filter_map(|p| p.upgrade()).find_map(|p| {
         let p = p.read(cx);
-        let id = p.agent_pane(worktree, cx)?;
+        let id = p.agent_pane(worktree, &worktrees, cx)?;
         p.panes.get(&id)?.agent.clone()
     })
 }
@@ -238,8 +248,9 @@ pub fn paste_to_agent(worktree: &Path, text: &str, window: &mut Window, cx: &mut
     let Some(live) = cx.try_global::<LivePanels>() else {
         return false;
     };
+    let worktrees = all_known_worktrees(&live.0, cx);
     let Some((panel, id)) = live.0.iter().filter_map(|p| p.upgrade()).find_map(|p| {
-        let id = p.read(cx).agent_pane(worktree, cx)?;
+        let id = p.read(cx).agent_pane(worktree, &worktrees, cx)?;
         Some((p, id))
     }) else {
         return false;
@@ -260,70 +271,57 @@ impl TerminalPanel {
     /// The panel's part of the agents list.
     pub(crate) fn agent_list(&self, cx: &App) -> Vec<AgentEntry> {
         let mut out = vec![];
-        for set in self.sets.values() {
-            for g in &set.groups {
-                let order = layout::pane_order(&g.layout);
-                let tab_cwd = self
-                    .panes
-                    .get(&g.panes[0])
-                    .map(|s| s.view.read(cx).cwd().to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                for (i, id) in order.iter().enumerate() {
-                    let Some(slot) = self.panes.get(id) else {
-                        continue;
-                    };
-                    let Some(a) = &slot.agent else { continue };
-                    out.push(AgentEntry {
-                        pane: *id,
-                        name: a.name.clone(),
-                        state: agent::shown_state(a.state),
-                        unseen: slot.rang,
-                        cwd: slot.view.read(cx).cwd().to_string_lossy().into_owned(),
-                        since: slot.since,
-                        tab: g.id,
-                        at: i + 1,
-                        of: order.len(),
-                        pane_name: slot.name.clone(),
-                        tab_name: g.name.clone(),
-                        tab_cwd: tab_cwd.clone(),
-                    });
-                }
+        for g in &self.tabs.groups {
+            let order = layout::pane_order(&g.layout);
+            let tab_cwd = self
+                .panes
+                .get(&g.panes[0])
+                .map(|s| s.view.read(cx).cwd().to_string_lossy().into_owned())
+                .unwrap_or_default();
+            for (i, id) in order.iter().enumerate() {
+                let Some(slot) = self.panes.get(id) else {
+                    continue;
+                };
+                let Some(a) = &slot.agent else { continue };
+                out.push(AgentEntry {
+                    pane: *id,
+                    name: a.name.clone(),
+                    state: agent::shown_state(a.state),
+                    unseen: slot.rang,
+                    cwd: slot.view.read(cx).cwd().to_string_lossy().into_owned(),
+                    since: slot.since,
+                    tab: g.id,
+                    at: i + 1,
+                    of: order.len(),
+                    pane_name: slot.name.clone(),
+                    tab_name: g.name.clone(),
+                    tab_cwd: tab_cwd.clone(),
+                });
             }
         }
         out
     }
 
-    /// The pane an agent runs in, in `worktree`'s set: the open tab's first, each tab's focused one
-    /// first.
-    fn agent_pane(&self, worktree: &Path, cx: &App) -> Option<PaneId> {
-        let worktrees = self.known_worktrees(cx);
-        // Every tab set: an agent's pane may have opened from another worktree's view.
-        let mut groups: Vec<(&Group, bool)> = self
-            .sets
-            .iter()
-            .flat_map(|(root, set)| {
-                set.groups
-                    .iter()
-                    .map(move |g| (g, root == worktree && Some(g.id) == set.active))
-            })
-            .collect();
-        groups.sort_by_key(|(_, open)| !open);
-        groups.into_iter().find_map(|(g, _)| {
+    /// The pane an agent runs in, in `worktree` (`worktrees` the ones known): the open tab's
+    /// first, each tab's focused one first.
+    fn agent_pane(&self, worktree: &Path, worktrees: &[PathBuf], cx: &App) -> Option<PaneId> {
+        let mut groups: Vec<&Group> = self.tabs.groups.iter().collect();
+        groups.sort_by_key(|g| Some(g.id) != self.tabs.active);
+        groups.into_iter().find_map(|g| {
             std::iter::once(g.focused)
                 .chain(g.panes.iter().copied())
                 .find(|id| {
                     self.panes.get(id).is_some_and(|s| {
                         s.agent.is_some()
-                            && agent::in_worktree(s.view.read(cx).cwd(), worktree, &worktrees)
+                            && agent::in_worktree(s.view.read(cx).cwd(), worktree, worktrees)
                     })
                 })
         })
     }
 
-    /// The worktrees this panel knows of: the repo's, and the ones whose tabs it holds.
+    /// The worktrees this panel knows of: its open repo's.
     pub(super) fn known_worktrees(&self, cx: &App) -> Vec<PathBuf> {
         let mut out: Vec<PathBuf> = self.worktrees.iter().map(|w| w.path.clone()).collect();
-        out.extend(self.sets.keys().cloned());
         if let Some(repo) = self
             .workspace()
             .and_then(|ws| ws.read(cx).project().cloned())
@@ -480,9 +478,9 @@ impl TerminalPanel {
         let program = pane.title().map(String::from);
         let cwd = pane.cwd().to_path_buf();
         let tab = self
-            .sets
-            .values()
-            .flat_map(|s| &s.groups)
+            .tabs
+            .groups
+            .iter()
             .find(|g| g.panes.contains(&id))
             .and_then(|g| g.name.clone());
         let reports = slot.agent.as_ref().is_some_and(|a| a.state.is_some());
@@ -790,25 +788,12 @@ impl TerminalPanel {
     }
 
     /// A pane in view with the keys (a notification's, or one picked in the Agents menu): its
-    /// worktree, its tab, the panel open.
+    /// tab, the panel open. The project stays: the tab shows whatever is open.
     pub(crate) fn reveal_pane(&mut self, id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(root) = self
-            .sets
-            .iter()
-            .find(|(_, s)| s.groups.iter().any(|g| g.panes.contains(&id)))
-            .map(|(r, _)| r.clone())
-        else {
+        if !self.panes.contains_key(&id) {
             return;
-        };
-        window.activate_window();
-        if root != self.root
-            && let Some(project) = self
-                .workspace()
-                .and_then(|ws| ws.read(cx).project().cloned())
-        {
-            project.update(cx, |p, cx| p.switch_worktree(root.clone(), cx));
-            self.set_worktree(root, window, cx);
         }
+        window.activate_window();
         if let Some(ws) = self.workspace() {
             ws.update(cx, |ws, cx| ws.set_open(Slot::Bottom, true, cx));
         }

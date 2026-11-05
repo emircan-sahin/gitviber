@@ -3,9 +3,10 @@
 
 use std::collections::{HashMap, HashSet};
 
+use gitviber_core::github::TLS_FAILED;
 use gitviber_markdown::{Callouts, MarkdownBase, MarkdownView};
 use gitviber_ui::widgets::{now_unix, relative_time};
-use gitviber_ui::workspace::Toast;
+use gitviber_ui::workspace::{Slot, Toast, ToastRun, Workspace};
 use gitviber_ui::{ActiveAppTheme as _, AppTheme};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::text::{TextView, TextViewStyle};
@@ -21,7 +22,10 @@ use gpui_kit::{
 };
 
 use crate::logic::text::{attachment_id, error_markdown, github_markdown};
-use crate::model::{CiState, IssueItem, LabelItem, PullState, unix};
+use crate::model::{
+    CiState, IssueItem, LabelItem, PullState, is_expired, is_not_connected, unix,
+    unreachable_detail,
+};
 
 pub fn theme(cx: &App) -> AppTheme {
     cx.app_theme().clone()
@@ -214,8 +218,126 @@ pub fn error_text(id: impl Into<ElementId>, error: &str, color: Hsla, cx: &App) 
         .selectable(true)
 }
 
-/// A PR's or an issue's page whose first read failed (offline, GitHub down): what went wrong,
-/// and Retry.
+/// Why a GitHub call failed, as the user can act on it: from `github_failure`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GithubFailure {
+    pub kind: FailureKind,
+    /// What to tell the user, never core's internal strings.
+    pub message: String,
+    /// The transport's own words, for Details.
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailureKind {
+    /// No GitHub login found: "Sign in…".
+    SignedOut,
+    /// GitHub refused the login found (expired or revoked): "Sign in…".
+    Expired,
+    /// GitHub couldn't be reached: "Retry".
+    Offline,
+    /// GitHub's own answer (a 404, a rate limit, a 422), in its words.
+    Other,
+}
+
+/// P4, for every failed GitHub call: `github_failure(&e).toast("Merge failed", retry)` for an
+/// action; `load_failed`, `refresh_error` and `list_error` for a page or list call it already.
+pub fn github_failure(error: &str) -> GithubFailure {
+    let (kind, message, detail) = if is_expired(error) {
+        (
+            FailureKind::Expired,
+            "GitHub rejected your login (expired or revoked). Sign in again.".to_string(),
+            None,
+        )
+    } else if is_not_connected(error) {
+        (
+            FailureKind::SignedOut,
+            "You're signed out of GitHub.".to_string(),
+            None,
+        )
+    } else if let Some(detail) = unreachable_detail(error) {
+        (
+            FailureKind::Offline,
+            gitviber_core::github::UNREACHABLE.to_string(),
+            Some(detail.to_string()).filter(|d| !d.is_empty()),
+        )
+    } else if let Some(detail) = error.strip_prefix(TLS_FAILED) {
+        // Retrying won't help: a proxy or a certificate is in the way, which the words name.
+        (
+            FailureKind::Other,
+            TLS_FAILED.to_string(),
+            Some(detail.trim_start_matches('\n').to_string()).filter(|d| !d.is_empty()),
+        )
+    } else {
+        (FailureKind::Other, error.to_string(), None)
+    };
+    GithubFailure {
+        kind,
+        message,
+        detail,
+    }
+}
+
+impl GithubFailure {
+    /// Signed out or expired: what fixes it is signing in, not trying again.
+    pub fn needs_sign_in(&self) -> bool {
+        matches!(self.kind, FailureKind::SignedOut | FailureKind::Expired)
+    }
+
+    /// An error toast titled `title`, with the button that fixes it: "Sign in…" when signed out
+    /// or expired, else `retry` as "Retry" when GitHub couldn't be reached.
+    pub fn toast(&self, title: impl Into<SharedString>, retry: Option<ToastRun>) -> Toast {
+        let toast = Toast::error(self.message.clone()).title(title);
+        let toast = match &self.detail {
+            Some(d) => toast.detail(d.clone()),
+            None => toast,
+        };
+        match retry {
+            _ if self.needs_sign_in() => toast.action("Sign in…", sign_in),
+            Some(retry) if self.kind == FailureKind::Offline => {
+                toast.action("Retry", move |window, cx| retry(window, cx))
+            }
+            _ => toast,
+        }
+    }
+}
+
+/// Shows the PRs panel, whose sign-in screen finds a login, and reads the account again so the
+/// screen shows even when the account was read before the login went.
+pub fn sign_in(window: &mut Window, cx: &mut App) {
+    crate::account::load(cx, true);
+    if let Some(ws) = Workspace::for_window(window, cx) {
+        ws.update(cx, |ws, cx| {
+            ws.show_panel("pulls", cx);
+            ws.focus_slot(Slot::Left, window, cx);
+        });
+    }
+}
+
+/// The button that fixes `failure` on a page or list: "Sign in…", else `retry` as "Retry".
+fn fix_button(
+    id: impl Into<ElementId>,
+    failure: &GithubFailure,
+    loading: bool,
+    retry: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Button {
+    let button = Button::new(id).small();
+    if failure.needs_sign_in() {
+        return button
+            .icon(IconName::LogIn)
+            .label("Sign in…")
+            .on_click(|_, window, cx| sign_in(window, cx));
+    }
+    button
+        .icon(IconName::RefreshCw)
+        .label("Retry")
+        .loading(loading)
+        .disabled(loading)
+        .on_click(retry)
+}
+
+/// A PR's or an issue's page whose first read failed (offline, GitHub down, signed out): what
+/// went wrong, and the button that fixes it.
 pub fn load_failed(
     what: &'static str,
     error: &str,
@@ -224,6 +346,7 @@ pub fn load_failed(
     t: &AppTheme,
     cx: &App,
 ) -> Div {
+    let failure = github_failure(error);
     div().size_full().px(px(24.)).pt(px(48.)).child(
         div()
             .mx_auto()
@@ -240,22 +363,52 @@ pub fn load_failed(
                     .font_weight(t.semibold())
                     .child(format!("Couldn't load the {what}")),
             )
-            .child(error_text("load-error", error, t.muted_foreground, cx))
+            .child(error_text(
+                "load-error",
+                &failure.message,
+                t.muted_foreground,
+                cx,
+            ))
+            .when_some(failure.detail.clone(), |d, detail| {
+                d.child(div().text_size(rems(0.69)).child(error_text(
+                    "load-detail",
+                    &detail,
+                    t.subtle,
+                    cx,
+                )))
+            })
             .child(
                 div()
                     .mt(px(4.))
                     .debug_selector(|| "load-retry".into())
-                    .child(
-                        Button::new("retry")
-                            .small()
-                            .icon(IconName::RefreshCw)
-                            .label("Retry")
-                            .loading(loading)
-                            .disabled(loading)
-                            .on_click(retry),
-                    ),
+                    .child(fix_button("retry", &failure, loading, retry)),
             ),
     )
+}
+
+/// A page's failed refresh, noted under the data it still shows (a rate limit, say); signed
+/// out or expired, with "Sign in…".
+pub fn refresh_error(error: &str, t: &AppTheme, cx: &App) -> Div {
+    let failure = github_failure(error);
+    div()
+        .mt(px(8.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .text_size(rems(0.75))
+        .debug_selector(|| "refresh-error".into())
+        .child(error_text(
+            "refresh-error",
+            &format!("Couldn't refresh: {}", failure.message),
+            t.removed,
+            cx,
+        ))
+        .when(failure.needs_sign_in(), |d| {
+            d.child(
+                text_button("refresh-sign-in", "Sign in…", t)
+                    .on_click(|_, window, cx| sign_in(window, cx)),
+            )
+        })
 }
 
 /// An empty list's words; `roomy`: the whole panel, so it sits lower.
@@ -270,31 +423,50 @@ pub fn empty_note(text: impl Into<SharedString>, roomy: bool, t: &AppTheme) -> D
         .child(text.into())
 }
 
-/// A failed load. With a list on screen, a note above it, not a blank panel.
+/// A failed load, with the button that fixes it. With a list on screen, a note above it, not a
+/// blank panel. `id` is a pair, so the text and the button get ids of their own.
 pub fn list_error(
-    id: impl Into<ElementId>,
+    id: (&'static str, usize),
     error: &str,
     loaded: bool,
+    loading: bool,
+    retry: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     t: &AppTheme,
     cx: &App,
 ) -> Div {
+    let failure = github_failure(error);
+    let text = |color| {
+        let detail = failure.detail.as_ref().map(|d| format!("\n{d}"));
+        let words = format!("{}{}", failure.message, detail.unwrap_or_default());
+        error_text(id, &words, color, cx)
+    };
+    let button = fix_button(("list-fix", id.1), &failure, loading, retry).xsmall();
     if loaded {
         div()
             .mx(px(8.))
             .mb(px(4.))
             .px(px(8.))
             .py(px(6.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
             .rounded(px(3.))
             .bg(t.removed.opacity(0.1))
             .text_size(rems(0.72))
-            .child(error_text(id, error, t.removed, cx))
+            .child(div().flex_1().min_w_0().child(text(t.removed)))
+            .child(button)
     } else {
         div()
             .px(px(16.))
             .py(px(24.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(8.))
             .text_center()
             .text_size(rems(0.75))
-            .child(error_text(id, error, t.muted_foreground, cx))
+            .child(text(t.muted_foreground))
+            .child(button)
     }
 }
 
@@ -446,6 +618,50 @@ pub fn signed_in_as(login: &str, source: &str, t: &AppTheme) -> Div {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gitviber_core::github::{EXPIRED, NOT_CONNECTED, UNREACHABLE};
+
+    #[test]
+    fn failures_say_what_fixes_them_never_core_strings() {
+        let out = github_failure(NOT_CONNECTED);
+        assert_eq!(out.kind, FailureKind::SignedOut);
+        assert_eq!(out.message, "You're signed out of GitHub.");
+        assert!(out.needs_sign_in());
+
+        let expired = github_failure(EXPIRED);
+        assert_eq!(expired.kind, FailureKind::Expired);
+        assert!(expired.needs_sign_in());
+        assert!(expired.message.contains("expired or revoked"));
+        for f in [&out, &expired] {
+            assert!(!f.message.contains("github:"), "{}", f.message);
+        }
+
+        let offline = github_failure(&format!("{UNREACHABLE}\nio: Network is unreachable"));
+        assert_eq!(offline.kind, FailureKind::Offline);
+        assert_eq!(
+            offline.message,
+            "Can't reach GitHub. Check your connection."
+        );
+        assert_eq!(
+            offline.detail.as_deref(),
+            Some("io: Network is unreachable")
+        );
+        assert!(!offline.needs_sign_in());
+
+        let tls = github_failure(&format!(
+            "{TLS_FAILED}\nio: invalid peer certificate: UnknownIssuer"
+        ));
+        assert_eq!(tls.kind, FailureKind::Other);
+        assert_eq!(tls.message, TLS_FAILED);
+        assert_eq!(
+            tls.detail.as_deref(),
+            Some("io: invalid peer certificate: UnknownIssuer")
+        );
+
+        let other = github_failure("GitHub 422: Validation Failed");
+        assert_eq!(other.kind, FailureKind::Other);
+        assert_eq!(other.message, "GitHub 422: Validation Failed");
+        assert_eq!(other.detail, None);
+    }
 
     #[test]
     fn attachments_are_asked_once_and_their_first_link_kept() {

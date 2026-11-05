@@ -31,8 +31,8 @@ use crate::logic::issue_work::issue_branch_name;
 use crate::model::{Account, IssueItem, LabelItem, Target, repo_of};
 use crate::requests::{GithubRequest, request};
 use crate::ui::common::{
-    Attachments, Blocks, ago, copy, error_text, issue_icon, issue_pill, label_chip, load_failed,
-    open_url, section, section_part, theme,
+    Attachments, Blocks, ago, copy, github_failure, issue_icon, issue_pill, label_chip,
+    load_failed, open_url, refresh_error, section, section_part, theme,
 };
 use crate::ui::dialogs::confirm;
 use crate::ui::labels::LabelPicker;
@@ -403,12 +403,11 @@ impl IssueView {
                         this.load(cx);
                     }
                     Err(e) => {
-                        let e = if wrote.commented {
-                            format!("{e} (the comment was posted)")
-                        } else {
-                            e
-                        };
-                        this.toast(Toast::error(e).title(format!("{busy} failed")), cx);
+                        let mut failure = github_failure(&e);
+                        if wrote.commented {
+                            failure.message.push_str(" (the comment was posted)");
+                        }
+                        this.toast(failure.toast(format!("{busy} failed"), None), cx);
                         // What the comment said is on GitHub now; read it back.
                         if wrote.commented {
                             this.load(cx);
@@ -1023,20 +1022,7 @@ impl IssueView {
             // Cached data stays on screen; a failed refresh (a rate limit, say) is noted under it.
             .when_some(
                 self.detail_error.clone().filter(|_| !busy && d.is_some()),
-                |page, e| {
-                    page.child(
-                        div()
-                            .mt(px(8.))
-                            .text_size(rems(0.75))
-                            .debug_selector(|| "refresh-error".into())
-                            .child(error_text(
-                                "refresh-error",
-                                &format!("Couldn't refresh: {e}"),
-                                t.removed,
-                                cx,
-                            )),
-                    )
-                },
+                |page, e| page.child(refresh_error(&e, &t, cx)),
             );
         if self.editing.is_none() {
             let desc = match (self.body_view(), &d) {

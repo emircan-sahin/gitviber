@@ -72,6 +72,49 @@ pub fn commit(repo: &Path, message: &str, opts: &CommitOptions, net: &Net) -> Re
         args.extend(["-F", "-"]);
         Some(message.as_bytes())
     };
+    let stash = tip(repo, "refs/stash");
+    let head = tip(repo, "HEAD");
+    match run_commit(repo, &args, net, input) {
+        Ok(_) => Ok(()),
+        // Not a file's change: a hook's own git (lint-staged's stash) writes the reflogs too.
+        Err(f) if f.message == CANCELLED && made(repo, head.as_deref(), message, opts.amend) => {
+            Ok(())
+        }
+        Err(f) if f.message == CANCELLED && tip(repo, "refs/stash") != stash => {
+            Err(CANCELLED_STASHED.into())
+        }
+        Err(f) => Err(hooks_named(repo, f, opts.no_verify)),
+    }
+}
+
+/// Runs a `git commit`, the form's or a merge's, with what its hooks and signing need.
+pub(crate) fn run_commit(
+    repo: &Path,
+    args: &[&str],
+    net: &Net,
+    input: Option<&[u8]>,
+) -> Result<Vec<u8>, network::Failed> {
+    let mut cmd = command(repo, args);
+    // It has no paths, and hooks inherit its environment: lint-staged's `git stash --keep-index`
+    // restores the index with `:/`, which literal pathspecs turn into a file of that name.
+    cmd.env_remove("GIT_LITERAL_PATHSPECS");
+    // ssh-keygen asks for a key's passphrase through SSH_ASKPASS when it has no terminal.
+    let ssh_signing = super::config_value(repo, None, "gpg.format").as_deref() == Some("ssh");
+    network::run_local(cmd, "git commit", net, input, ssh_signing)
+}
+
+/// A failed `git commit`'s words, with HOOKS_HINT naming the hooks that ran when one of them
+/// may have stopped it.
+pub(crate) fn hooks_named(repo: &Path, f: network::Failed, no_verify: bool) -> String {
+    // A failing hook makes git exit 1 without a word; its own failures are 128 (a signature
+    // that failed, a merge in the way) or 1 with one of these. A cancel is None.
+    let own = f
+        .message
+        .lines()
+        .any(|l| OWN_REFUSALS.iter().any(|r| l.starts_with(r)));
+    if f.code != Some(1) || own {
+        return f.message;
+    }
     let paths = run_text(
         repo,
         &[
@@ -85,47 +128,17 @@ pub fn commit(repo: &Path, message: &str, opts: &CommitOptions, net: &Net) -> Re
         ],
     )
     .unwrap_or_default();
-    let paths: Vec<_> = paths.lines().map(|p| repo.join(p)).collect();
-    let mut cmd = command(repo, &args);
-    // It has no paths, and hooks inherit its environment: lint-staged's `git stash --keep-index`
-    // restores the index with `:/`, which literal pathspecs turn into a file of that name.
-    cmd.env_remove("GIT_LITERAL_PATHSPECS");
-    let stash = tip(repo, "refs/stash");
-    let head = tip(repo, "HEAD");
-    // ssh-keygen asks for a key's passphrase through SSH_ASKPASS when it has no terminal.
-    let ssh_signing = super::config_value(repo, None, "gpg.format").as_deref() == Some("ssh");
-    match network::run_local(cmd, "git commit", net, input, ssh_signing) {
-        Ok(_) => Ok(()),
-        // Not a file's change: a hook's own git (lint-staged's stash) writes the reflogs too.
-        Err(f) if f.message == CANCELLED && made(repo, head.as_deref(), message, opts.amend) => {
-            Ok(())
-        }
-        Err(f) if f.message == CANCELLED && tip(repo, "refs/stash") != stash => {
-            Err(CANCELLED_STASHED.into())
-        }
-        Err(f) => {
-            let hooks: Vec<_> = ["pre-commit", "prepare-commit-msg", "commit-msg"]
-                .into_iter()
-                .zip(&paths)
-                // `--no-verify` skips all but prepare-commit-msg.
-                .filter(|(name, p)| {
-                    (*name == "prepare-commit-msg" || !opts.no_verify) && is_hook(p)
-                })
-                .map(|(name, _)| name)
-                .collect();
-            // A failing hook makes git exit 1 without a word; its own failures are 128 (a
-            // signature that failed, a merge in the way) or 1 with one of these. A cancel is None.
-            let own = f
-                .message
-                .lines()
-                .any(|l| OWN_REFUSALS.iter().any(|r| l.starts_with(r)));
-            Err(if f.code != Some(1) || own || hooks.is_empty() {
-                f.message
-            } else {
-                format!("{}\n{HOOKS_HINT}{}.", f.message, hooks.join(", "))
-            })
-        }
+    let hooks: Vec<_> = ["pre-commit", "prepare-commit-msg", "commit-msg"]
+        .into_iter()
+        .zip(paths.lines().map(|p| repo.join(p)))
+        // `--no-verify` skips all but prepare-commit-msg.
+        .filter(|(name, p)| (*name == "prepare-commit-msg" || !no_verify) && is_hook(p))
+        .map(|(name, _)| name)
+        .collect();
+    if hooks.is_empty() {
+        return f.message;
     }
+    format!("{}\n{HOOKS_HINT}{}.", f.message, hooks.join(", "))
 }
 
 /// Whether a cancelled commit was made first (a post-commit hook was left). An agent committing

@@ -3,7 +3,8 @@
 //! at a line's start, so a hook's output quoting them doesn't match.
 
 /// Which way out fits: the caller that can take it supplies the buttons (a pull, a retry);
-/// identity, signing, the index lock and GitHub's page on a secret always fit.
+/// identity, signing, the index lock, GitHub's page on a secret and a new branch past a
+/// protected one always fit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GitFix {
     Diverged,
@@ -16,12 +17,14 @@ pub enum GitFix {
     IndexLock,
     SafeDirectory,
     Secret,
+    Unreachable,
+    Protected,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GitErrorHelp {
     pub title: &'static str,
-    /// What went wrong and what to do, in a sentence or two.
+    /// What went wrong and what to do, in a sentence or two; empty when the title says it all.
     pub explanation: &'static str,
     pub fix: Option<GitFix>,
     /// What the fix acts on, from git's words: the lock file to remove, the page GitHub linked.
@@ -105,6 +108,51 @@ fn secret(message: &str) -> Option<GitErrorHelp> {
     })
 }
 
+/// The network never got to the remote: offline, DNS, a timeout, a refused or dropped connection.
+fn unreachable(line: &str) -> bool {
+    // "fatal: unable to access '<url>': <why>"; only the why, not the URL.
+    if let Some(rest) = line.strip_prefix("fatal: unable to access '") {
+        let Some((_, why)) = rest.split_once("': ") else {
+            return false;
+        };
+        return [
+            "Could not resolve host",
+            "Could not resolve proxy",
+            "Failed to connect to",
+            "Couldn't connect to server",
+            "timed out",
+            "Network is unreachable",
+            "Connection refused",
+            "Connection reset",
+            "Recv failure",
+        ]
+        .iter()
+        .any(|p| why.contains(p));
+    }
+    [
+        "ssh: Could not resolve hostname ",
+        "ssh: connect to host ",
+        "kex_exchange_identification: ",
+        "fatal: unable to connect to ",
+    ]
+    .iter()
+    .any(|p| line.starts_with(p))
+}
+
+/// The remote takes this branch only through a pull request: GitHub's branch protection or
+/// rulesets, GitLab's protected branches.
+fn protected(line: &str) -> bool {
+    line.starts_with("remote: error: GH006: Protected branch update failed")
+        || line
+            .starts_with("remote: GitLab: You are not allowed to push code to protected branches")
+        || remote_line(line)
+            .is_some_and(|r| r.starts_with("- Changes must be made through a pull request"))
+        || line
+            .trim_start()
+            .strip_prefix("! [remote rejected] ")
+            .is_some_and(|r| r.ends_with("(protected branch hook declined)"))
+}
+
 fn index_lock(message: &str) -> Option<String> {
     message.lines().find_map(|l| {
         let rest = l.strip_prefix("fatal: Unable to create '")?;
@@ -163,11 +211,16 @@ pub fn explain_git_error(message: &str) -> Option<GitErrorHelp> {
         ));
     }
     // Unmerged files with nothing in progress: changes a rewrite, pull or stash pop brought back
-    // from the stash that conflicted. An undo's reset says the first.
+    // from the stash that conflicted. An undo's reset says the first, a hard reset's stash the
+    // last two (the worktree one for an intent-to-add file).
     if message.lines().any(reset_in_merge)
         || starts(
             message,
-            &["error: you need to resolve your current index first"],
+            &[
+                "error: you need to resolve your current index first",
+                "Cannot save the current index state",
+                "Cannot save the current worktree state",
+            ],
         )
     {
         return Some(help(
@@ -214,6 +267,13 @@ pub fn explain_git_error(message: &str) -> Option<GitErrorHelp> {
             None,
         ));
     }
+    if message.lines().any(unreachable) {
+        return Some(help(
+            "Can't reach the remote. Check your connection.",
+            "",
+            Some(Unreachable),
+        ));
+    }
     if message.lines().any(denied_publickey) {
         return Some(help(
             "The remote refused your SSH key",
@@ -233,6 +293,27 @@ pub fn explain_git_error(message: &str) -> Option<GitErrorHelp> {
     }
     if let Some(found) = secret(message) {
         return Some(found);
+    }
+    if message.lines().any(protected) {
+        let force = message
+            .lines()
+            .any(|l| l.starts_with("remote: error: Cannot force-push to this branch"));
+        return Some(help(
+            "This branch is protected on the remote",
+            if force {
+                "It doesn't take force pushes, so rewritten commits can't replace the ones it has. Put your commits on a new branch, publish it and open a pull request."
+            } else {
+                "It takes changes only through a pull request. Put your commits on a new branch, publish it and open a pull request."
+            },
+            Some(Protected),
+        ));
+    }
+    if starts(message, &["fatal: refusing to merge unrelated histories"]) {
+        return Some(help(
+            "Your branch and the remote share no history",
+            "They have no commit in common, as when a new repository meets a remote that was made with its own first commit. git won't join them on its own; if that is what you want, run `git pull --allow-unrelated-histories` in a terminal.",
+            None,
+        ));
     }
     // core retried once already. A killed agent's git leaves the lock behind for good.
     if let Some(lock) = index_lock(message) {
@@ -379,6 +460,20 @@ fatal: Authentication failed for 'https://github.com/owner/repo.git/'";
             fix("f1: needs merge\nerror: you need to resolve your current index first"),
             Some(GitFix::Conflicted)
         );
+        let not_kept =
+            "Your uncommitted changes couldn't be kept in Stashes, so nothing was reset.";
+        assert_eq!(
+            fix(&format!(
+                "{not_kept}\na: unmerged (0123456789abcdef0123456789abcdef01234567)\nCannot save the current index state"
+            )),
+            Some(GitFix::Conflicted)
+        );
+        assert_eq!(
+            fix(&format!(
+                "{not_kept}\nerror: Entry 'n' not uptodate. Cannot merge.\nCannot save the current worktree state"
+            )),
+            Some(GitFix::Conflicted)
+        );
     }
 
     #[test]
@@ -517,6 +612,77 @@ remote:        https://github.com/owner/repo/security/secret-scanning/unblock-se
         assert_eq!(
             (only.title, only.fix),
             ("The prepare-commit-msg hook stopped the commit", None)
+        );
+    }
+
+    #[test]
+    fn an_unreachable_remote_offers_a_retry_in_one_sentence() {
+        for m in [
+            "fatal: unable to access 'https://github.com/owner/repo.git/': Could not resolve host: github.com",
+            "fatal: unable to access 'https://example.com/r.git/': Failed to connect to example.com port 443 after 75003 ms: Couldn't connect to server",
+            "fatal: unable to access 'https://example.com/r.git/': Operation timed out after 300000 milliseconds with 0 out of 0 bytes received",
+            "ssh: Could not resolve hostname github.com: nodename nor servname provided, or not known\nfatal: Could not read from remote repository.",
+            "ssh: connect to host github.com port 22: Operation timed out\nfatal: Could not read from remote repository.",
+        ] {
+            let h = explain_git_error(m).unwrap_or_else(|| panic!("{m}"));
+            assert_eq!(
+                (h.title, h.explanation, h.fix),
+                (
+                    "Can't reach the remote. Check your connection.",
+                    "",
+                    Some(GitFix::Unreachable)
+                ),
+                "{m}"
+            );
+        }
+        assert_ne!(fix(BAD_TOKEN), Some(GitFix::Unreachable));
+        // The why decides, not words in the URL.
+        assert_eq!(
+            fix(
+                "fatal: unable to access 'https://example.com/Connection refused/r.git/': The requested URL returned error: 404"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_protected_branch_offers_a_new_branch() {
+        let gh006 = "remote: error: GH006: Protected branch update failed for refs/heads/main.
+remote: error: Changes must be made through a pull request.
+To github.com:owner/repo.git
+ ! [remote rejected] main -> main (protected branch hook declined)
+error: failed to push some refs to 'github.com:owner/repo.git'";
+        let ruleset = "remote: error: GH013: Repository rule violations found for refs/heads/main.
+remote: Review all repository rules at https://github.com/owner/repo/rules?ref=refs%2Fheads%2Fmain
+remote:
+remote: - Changes must be made through a pull request.
+remote:
+To github.com:owner/repo.git
+ ! [remote rejected] main -> main (push declined due to repository rule violations)";
+        let gitlab = "remote: GitLab: You are not allowed to push code to protected branches on this project.
+To gitlab.com:owner/repo.git
+ ! [remote rejected] main -> main (pre-receive hook declined)";
+        for m in [gh006, ruleset, gitlab] {
+            assert_eq!(fix(m), Some(GitFix::Protected), "{m}");
+        }
+        let protected = |m: &str| explain_git_error(m).unwrap().explanation;
+        assert!(protected(gh006).contains("only through a pull request"));
+        let force = "remote: error: GH006: Protected branch update failed for refs/heads/main.
+remote: error: Cannot force-push to this branch
+To github.com:owner/repo.git
+ ! [remote rejected] main -> main (protected branch hook declined)";
+        assert_eq!(fix(force), Some(GitFix::Protected));
+        assert!(protected(force).contains("doesn't take force pushes"));
+        // Push protection's own rule violation stays a secret.
+        assert_eq!(fix(PUSH_PROTECTION), Some(GitFix::Secret));
+    }
+
+    #[test]
+    fn unrelated_histories_are_explained_with_nothing_to_click() {
+        let h = explain_git_error("fatal: refusing to merge unrelated histories").unwrap();
+        assert_eq!(
+            (h.title, h.fix),
+            ("Your branch and the remote share no history", None)
         );
     }
 
