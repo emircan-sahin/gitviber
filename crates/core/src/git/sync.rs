@@ -231,6 +231,20 @@ pub fn pull(repo: &Path, mode: PullMode, autostash: bool, net: &Net) -> Result<b
     stoppable(repo, run_network(repo, &args, net))
 }
 
+/// Fast-forwards the current branch to `remote`'s `branch`, whatever it tracks: a fork's base
+/// brought up to date from the original.
+pub fn pull_from(repo: &Path, remote: &str, branch: &str, net: &Net) -> Result<(), String> {
+    ensure_idle(repo)?;
+    if !remotes(repo).iter().any(|r| r == remote) {
+        return Err(format!("no remote named {remote}"));
+    }
+    if branch.starts_with('-') || run(repo, &["check-ref-format", "--branch", branch]).is_err() {
+        return Err(format!("not a branch name: {branch}"));
+    }
+    let args = ["pull", "--no-edit", "--ff-only", remote, branch];
+    run_network(repo, &args, net).map(|_| ())
+}
+
 /// Every remote: a plain fetch takes only the current branch's (on a fork's dev tracking
 /// upstream/dev, upstream alone), leaving origin's branches stale.
 pub fn fetch(repo: &Path, net: &Net) -> Result<(), String> {

@@ -26,6 +26,22 @@ fn pull_modes_on_diverged_branches() {
     );
 }
 
+/// A fork's main tracks the fork: pulling from the original's remote fast-forwards it to the
+/// original's main all the same, and an unknown remote or an option is refused.
+#[test]
+fn pull_from_another_remote_fast_forwards() {
+    let sb = Sandbox::new("pull-from");
+    let c = sb.remote_with_clones(2);
+    let (original, fork) = (&c[0], &c[1]);
+    write_commit(original, "a.txt", "one\ntwo\nthree\nfour\n", "merged upstream");
+    let url = original.to_str().unwrap();
+    run(fork, &["remote", "add", "upstream", url]).unwrap();
+    pull_from(fork, "upstream", "main", &Net::default()).unwrap();
+    assert_eq!(log(fork, None, 0, 1).unwrap()[0].subject, "merged upstream");
+    assert!(pull_from(fork, "nowhere", "main", &Net::default()).is_err());
+    assert!(pull_from(fork, "upstream", "--all", &Net::default()).is_err());
+}
+
 /// Uncommitted changes to a file the pull touches: every mode refuses, in the words gitErrors.ts
 /// keys on, and autostash sets them aside and puts them back. Reapplied onto a conflict, they
 /// stop as conflicts and stay in the stash.
