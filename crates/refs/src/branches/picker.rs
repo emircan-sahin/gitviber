@@ -578,7 +578,7 @@ impl BranchPicker {
                 self.open_holder(&b, window, cx)
             }
             Row::Branch(b) if b.remote => ops::switch_remote(&state, b, window, cx),
-            Row::Branch(b) if !b.current => ops::switch_branch(&state, b.name, window, cx),
+            Row::Branch(b) if !b.current => ops::switch_branch(&state, b.name, None, window, cx),
             Row::Branch(_) => return,
         }
         self.close(cx);

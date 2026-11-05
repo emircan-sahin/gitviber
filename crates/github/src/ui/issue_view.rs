@@ -8,7 +8,6 @@ use gitviber_core::api;
 use gitviber_core::github::IssueDetail;
 use gitviber_markdown::MarkdownView;
 use gitviber_ui::actions::editor;
-use gitviber_ui::actions::github::PostComment;
 use gitviber_ui::keymap::scroll::{self, Step};
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{TabIcon, TabItem, Toast, Workspace};
@@ -16,7 +15,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Enter, Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, EntityId, FocusHandle, FontWeight,
@@ -30,6 +29,7 @@ use crate::logic::actions::issue_rights;
 use crate::logic::issue_work::issue_branch_name;
 use crate::model::{Account, IssueItem, LabelItem, Target, repo_of};
 use crate::requests::{GithubRequest, request};
+use crate::ui::comment_box::CommentBox;
 use crate::ui::common::{
     Attachments, Blocks, ago, copy, github_failure, issue_icon, issue_pill, label_chip,
     load_failed, open_url, refresh_error, section, section_part, theme,
@@ -71,18 +71,18 @@ impl CloseReason {
     }
 }
 
-/// A write's end, and whether the comment in the box went out on the way: a close that failed
-/// after its comment posted mustn't post it again on the retry.
+/// A write's end, and the box's comment if it went out on the way: a close that failed after
+/// its comment posted mustn't post it again on the retry.
 struct Wrote {
     result: Result<(), String>,
-    commented: bool,
+    commented: Option<String>,
 }
 
 impl From<Result<(), String>> for Wrote {
     fn from(result: Result<(), String>) -> Self {
         Wrote {
             result,
-            commented: false,
+            commented: None,
         }
     }
 }
@@ -105,8 +105,7 @@ pub struct IssueView {
     editing: Option<(Entity<InputState>, Entity<MarkdownInput>)>,
     /// Enter in the title being edited saves; replaced by the next edit.
     _editing: Option<Subscription>,
-    comment: Entity<MarkdownInput>,
-    comment_clear: bool,
+    comment: CommentBox,
     /// The labels being picked, shown in place of the issue's until they're saved.
     picking: Option<Vec<LabelItem>>,
     busy: Option<SharedString>,
@@ -116,9 +115,8 @@ pub struct IssueView {
     /// The page as a list: the issue, then each comment, then the box to write one, so a long
     /// thread draws only what's in view.
     page: ListState,
-    /// The first and last items': drawn out of view while focus is in them (an edit, the box).
+    /// The first item's: drawn out of view while focus is in it (an edit).
     head_focus: FocusHandle,
-    compose_focus: FocusHandle,
     find: PageFind,
     _detail: Task<()>,
     _action: Task<()>,
@@ -143,14 +141,8 @@ impl IssueView {
             .unwrap_or_default();
         let repo = repo_of(&url);
         let web = format!("https://github.com/{repo}");
-        let comment = cx.new(|cx| {
-            MarkdownInput::new(web.clone(), url.clone(), window, cx, |t| {
-                t.rows(4).placeholder("Leave a comment (markdown)")
-            })
-            .small()
-            .signed_by(Some(repo.clone()), number)
-        });
-        let input = comment.read(cx).input().clone();
+        let comment = CommentBox::new(&repo, &url, number, window, cx);
+        let input = comment.input.read(cx).input().clone();
         let subs = vec![
             // Text in the box keeps the tab: a preview would be replaced, a hidden tab released.
             cx.subscribe(&input, |this: &mut Self, c, ev: &InputEvent, cx| {
@@ -167,11 +159,11 @@ impl IssueView {
                 }
             }),
         ];
-        let (head_focus, compose_focus) = (cx.focus_handle(), cx.focus_handle());
+        let head_focus = cx.focus_handle();
         let page = ListState::new(0, ListAlignment::Top, PAGE_OVERDRAW);
         page.splice_focusable(
             0..0,
-            [Some(head_focus.clone()), Some(compose_focus.clone())],
+            [Some(head_focus.clone()), Some(comment.focus.clone())],
         );
         let mut view = IssueView {
             web,
@@ -189,7 +181,6 @@ impl IssueView {
             attachments: Attachments::default(),
             editing: None,
             comment,
-            comment_clear: false,
             picking: None,
             busy: None,
             wakes: Cache::wakes(cx),
@@ -197,7 +188,6 @@ impl IssueView {
             focus: cx.focus_handle(),
             page,
             head_focus,
-            compose_focus,
             find: PageFind::default(),
             _detail: Task::ready(()),
             _action: Task::ready(()),
@@ -392,8 +382,9 @@ impl IssueView {
             let wrote = cx.background_spawn(async move { run(&core) }).await;
             this.update(cx, |this, cx| {
                 this.busy = None;
-                if wrote.commented {
-                    this.comment_clear = true;
+                let commented = wrote.commented.is_some();
+                if let Some(text) = wrote.commented {
+                    this.comment.posted(text);
                 }
                 let ok = wrote.result.is_ok();
                 match wrote.result {
@@ -404,12 +395,12 @@ impl IssueView {
                     }
                     Err(e) => {
                         let mut failure = github_failure(&e);
-                        if wrote.commented {
+                        if commented {
                             failure.message.push_str(" (the comment was posted)");
                         }
                         this.toast(failure.toast(format!("{busy} failed"), None), cx);
                         // What the comment said is on GitHub now; read it back.
-                        if wrote.commented {
+                        if commented {
                             this.load(cx);
                         }
                     }
@@ -423,7 +414,7 @@ impl IssueView {
     }
 
     fn text(&self, cx: &App) -> String {
-        self.comment.read(cx).value(cx).trim().to_string()
+        self.comment.text(cx)
     }
 
     fn post(&mut self, cx: &mut Context<Self>) {
@@ -433,8 +424,8 @@ impl IssueView {
         }
         let (target, number) = (self.target.clone(), self.number);
         let run = move |core: &gitviber_core::Core| {
-            let result = api::github::issue_comment(core, target, number, text);
-            let commented = result.is_ok();
+            let result = api::github::issue_comment(core, target, number, text.clone());
+            let commented = result.is_ok().then_some(text);
             Wrote { result, commented }
         };
         self.act("Comment", "Comment added".into(), run, |_, _, _| {}, cx);
@@ -445,15 +436,17 @@ impl IssueView {
         let (target, number, text) = (self.target.clone(), self.number, self.text(cx));
         let done = format!("{} #{number}", if open { "Reopened" } else { "Closed" });
         let run = move |core: &gitviber_core::Core| {
-            let mut commented = false;
+            let mut commented = None;
             if !text.is_empty() {
-                if let Err(e) = api::github::issue_comment(core, target.clone(), number, text) {
+                if let Err(e) =
+                    api::github::issue_comment(core, target.clone(), number, text.clone())
+                {
                     return Wrote {
                         result: Err(e),
                         commented,
                     };
                 }
-                commented = true;
+                commented = Some(text);
             }
             let result =
                 api::github::issue_set_open(core, target, number, open, reason.as_str().into())
@@ -718,7 +711,7 @@ impl FindHost for IssueView {
                 parts.view(&v);
             }
         }
-        if let Some(v) = self.comment.read(cx).shown_preview() {
+        if let Some(v) = self.comment.input.read(cx).shown_preview() {
             parts.view(v);
         }
     }
@@ -738,6 +731,7 @@ impl FindHost for IssueView {
     fn show_view(&mut self, view: EntityId, cx: &mut Context<Self>) {
         let writing = self
             .comment
+            .input
             .read(cx)
             .shown_preview()
             .is_some_and(|v| v.entity_id() == view);
@@ -1044,43 +1038,10 @@ impl IssueView {
 
     /// The page's last item: the box to write a comment in.
     fn composer(&self, cx: &mut Context<Self>) -> AnyElement {
-        let t = theme(cx);
-        let busy = self.busy.is_some();
-        let text = self.text(cx);
-        let can_post = !text.is_empty() && !busy;
-        section("Add a comment", None, &t)
-            .track_focus(&self.compose_focus)
-            .child(
-                div()
-                    .p(px(8.))
-                    .key_context("IssueComment")
-                    .on_action(cx.listener(move |this, _: &PostComment, _, cx| {
-                        if can_post {
-                            this.post(cx);
-                        }
-                    }))
-                    // The box's own ⌘↵ wins over PostComment's binding and adds a newline:
-                    // taken before it sees it.
-                    .capture_action(cx.listener(move |this, e: &Enter, _, cx| {
-                        if e.secondary {
-                            cx.stop_propagation();
-                            if can_post {
-                                this.post(cx);
-                            }
-                        }
-                    }))
-                    .child(self.comment.clone())
-                    .child(
-                        div().mt(px(8.)).flex().justify_end().child(
-                            Button::new("post")
-                                .primary()
-                                .small()
-                                .label("Comment")
-                                .disabled(!can_post)
-                                .on_click(cx.listener(|this, _, _, cx| this.post(cx))),
-                        ),
-                    ),
-            )
+        let can_post = !self.text(cx).is_empty() && self.busy.is_none();
+        let posting = self.busy.as_deref() == Some("Comment");
+        self.comment
+            .render(can_post, posting, Self::post, cx)
             .into_any_element()
     }
 
@@ -1162,9 +1123,7 @@ impl Render for IssueView {
                 self.load(cx);
             }
         }
-        if std::mem::take(&mut self.comment_clear) {
-            self.comment.update(cx, |c, cx| c.set_value("", window, cx));
-        }
+        self.comment.sync(window, cx);
         self.sync_items();
         if self.text_stale {
             self.sync_text(window, cx);
@@ -1343,7 +1302,7 @@ mod tests {
     #[gpui_kit::test]
     fn the_box_takes_keys_while_the_thread_is_scrolled_away(cx: &mut TestAppContext) {
         let (view, cx) = open_long(300, cx);
-        let input = view.read_with(cx, |v, cx| v.comment.read(cx).input().clone());
+        let input = view.read_with(cx, |v, cx| v.comment.input.read(cx).input().clone());
         view.update(cx, |v, cx| {
             v.reveal_item(301);
             cx.notify();
@@ -1506,7 +1465,7 @@ mod tests {
             last && top > height && (top - max).abs() < 0.5,
             "{top} of {max}"
         );
-        let input = view.read_with(cx, |v, cx| v.comment.read(cx).input().clone());
+        let input = view.read_with(cx, |v, cx| v.comment.input.read(cx).input().clone());
         cx.update(|window, cx| input.update(cx, |i, cx| i.focus(window, cx)));
         cx.simulate_keystrokes("home pageup up");
         assert_eq!(scrolled(&view, 301, cx).0, top);

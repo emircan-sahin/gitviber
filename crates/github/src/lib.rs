@@ -26,6 +26,7 @@ use gpui_kit::App;
 pub use account::{branch_pull, current_account};
 pub use bridges::install_bridges;
 pub use requests::{GithubRequest, set_request_handler};
+pub use ui::common::{FailureKind, github_failure};
 pub use ui::{
     IssueView, IssuesPanel, PullFileView, PullView, PullsPanel, open_issue, open_pull,
     open_pull_file,

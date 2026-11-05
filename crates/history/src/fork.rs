@@ -200,13 +200,12 @@ impl OriginalPane {
                         .insert(this.fork.original.clone(), Instant::now());
                 }
                 if let Some(e) = fetch_failed {
-                    let _ = this.workspace.update(cx, |ws, cx| {
-                        ws.toast(
-                            gitviber_ui::workspace::Toast::error(e)
-                                .title("Could not fetch the original"),
-                            cx,
-                        )
-                    });
+                    let toast = gitviber_refs::toast::git_toast(
+                        "Could not fetch the original",
+                        &e,
+                        &Default::default(),
+                    );
+                    let _ = this.workspace.update(cx, |ws, cx| ws.toast(toast, cx));
                 }
                 match found {
                     Ok(remote) => {
@@ -263,9 +262,12 @@ impl OriginalPane {
                             .show(window, cx);
                         this.load(false, cx);
                     }
-                    Err(e) => Note::error("Could not add the remote")
-                        .detail(e)
-                        .show(window, cx),
+                    Err(e) => gitviber_refs::toast::git_failed(
+                        "Could not add the remote",
+                        &e,
+                        &Default::default(),
+                    )
+                    .show(window, cx),
                 }
                 cx.notify();
             });

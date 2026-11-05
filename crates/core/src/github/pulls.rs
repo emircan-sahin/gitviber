@@ -4,7 +4,7 @@ use super::checks::read_checks;
 use super::search::{self, Kind};
 use super::{
     all_pages, call, fetch_remote, graphql, is_sha, list_state, pages, repo_ref, string, target,
-    CommitChecks, ListFilter, Method, Session, StateCounts, JSON, MAX_PAGES,
+    CommitChecks, ListFilter, Method, RepoRef, Session, StateCounts, JSON, MAX_PAGES,
 };
 use crate::git;
 use crate::network::Net;
@@ -182,6 +182,11 @@ pub struct PullDetail {
     pub closed_by: Option<String>,
     /// Who merged it, if merged: often not its author.
     pub merged_by: Option<String>,
+    /// Its GraphQL id, which marking it ready takes.
+    pub node_id: String,
+    /// When it's blocked, whether GitHub lets the viewer merge past that (an admin, a ruleset's
+    /// bypass list); None when GitHub didn't say.
+    pub can_bypass: Option<bool>,
 }
 
 pub fn detail(
@@ -248,6 +253,12 @@ pub fn detail(
         });
     }
     comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    let mergeable_state = string(&v["mergeable_state"]);
+    let can_bypass = if mergeable_state == "blocked" {
+        can_bypass(session, repo, &r, number)
+    } else {
+        None
+    };
 
     Ok(PullDetail {
         closed_by,
@@ -258,11 +269,30 @@ pub fn detail(
         changed_files: v["changed_files"].as_u64().unwrap_or_default(),
         commits: v["commits"].as_u64().unwrap_or_default(),
         mergeable: v["mergeable"].as_bool(),
-        mergeable_state: string(&v["mergeable_state"]),
+        mergeable_state,
         ci,
         comments,
+        node_id: string(&v["node_id"]),
+        can_bypass,
         pull,
     })
+}
+
+/// Whether the viewer may merge a blocked PR now; REST doesn't say, and the repo's admin bit
+/// misses a ruleset's bypass list. None when GitHub didn't answer.
+fn can_bypass(session: &Session, repo: &Path, r: &RepoRef, number: u64) -> Option<bool> {
+    let v = graphql(
+        session,
+        repo,
+        "query($owner: String!, $name: String!, $number: Int!) {
+            repository(owner: $owner, name: $name) {
+                pullRequest(number: $number) { viewerCanMergeAsAdmin }
+            }
+        }",
+        json!({ "owner": r.owner, "name": r.name, "number": number }),
+    )
+    .ok()?;
+    v["repository"]["pullRequest"]["viewerCanMergeAsAdmin"].as_bool()
 }
 
 #[derive(Serialize)]
@@ -393,6 +423,27 @@ pub fn set_open(
     Ok(pull_from(&v))
 }
 
+/// What marks a draft ready: only GraphQL can, by the PR's node id as its detail read it.
+fn ready_variables(id: &str) -> Result<Value, String> {
+    if id.is_empty() {
+        return Err("GitHub didn't say which pull request this is.".into());
+    }
+    Ok(json!({ "id": id }))
+}
+
+/// Takes a draft out of draft; GitHub then asks its reviewers.
+pub fn ready_for_review(session: &Session, repo: &Path, id: &str) -> Result<(), String> {
+    graphql(
+        session,
+        repo,
+        "mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) {
+            pullRequest { isDraft }
+        } }",
+        ready_variables(id)?,
+    )
+    .map(|_| ())
+}
+
 /// The review's body. With `commit`, the head the user reviewed: an approval then stays on
 /// that commit rather than on one pushed while they read.
 fn review_body(event: &str, body: &str, commit: Option<&str>) -> Value {
@@ -430,7 +481,7 @@ pub fn review(
 
 /// A comment on a line of a PR's diff. `line` is where it sits now, on its `side` (LEFT, the
 /// old file; RIGHT, the new one); none when the diff moved on past it (outdated).
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewComment {
     pub id: u64,
@@ -438,6 +489,8 @@ pub struct ReviewComment {
     pub reply_to: Option<u64>,
     pub path: String,
     pub line: Option<u64>,
+    /// Where it was put, kept once it's outdated.
+    pub original_line: Option<u64>,
     pub side: String,
     pub author: String,
     pub body: String,
@@ -451,6 +504,7 @@ fn review_comment(c: &Value) -> ReviewComment {
         reply_to: c["in_reply_to_id"].as_u64(),
         path: string(&c["path"]),
         line: c["line"].as_u64(),
+        original_line: c["original_line"].as_u64(),
         side: c["side"].as_str().unwrap_or("RIGHT").to_string(),
         author: string(&c["user"]["login"]),
         body: string(&c["body"]),
@@ -538,6 +592,15 @@ mod tests {
             merge_body("octopus", Some("main")),
             json!({ "merge_method": "merge" })
         );
+    }
+
+    #[test]
+    fn ready_for_review_names_the_pull_request_by_its_node_id() {
+        assert_eq!(
+            ready_variables("PR_kwFake7"),
+            Ok(json!({ "id": "PR_kwFake7" }))
+        );
+        assert!(ready_variables("").is_err());
     }
 
     #[test]

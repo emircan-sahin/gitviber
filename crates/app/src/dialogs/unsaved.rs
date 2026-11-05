@@ -33,8 +33,19 @@ pub fn install(cx: &mut App) {
 }
 
 /// What the ask says, and whether it offers Save: only when every tab can save what it has (a
-/// comment's draft can't), or Save would quietly drop some.
-pub fn wording(names: &[SharedString], savable: bool) -> (String, bool) {
+/// comment's draft can't), or Save would quietly drop some. `savable`: how many can.
+pub fn wording(names: &[SharedString], savable: usize) -> (String, bool) {
+    // Nothing to save, only comments not posted: "save" would read oddly.
+    if savable == 0 {
+        let what = match names {
+            [one] => format!("{one} has a comment you haven't posted. Don't Save drops it."),
+            many => format!(
+                "{} tabs have comments you haven't posted. Don't Save drops them.",
+                many.len()
+            ),
+        };
+        return (what, false);
+    }
     let what = match names {
         [one] => format!("Do you want to save the changes you made to {one}?"),
         many => format!(
@@ -42,7 +53,7 @@ pub fn wording(names: &[SharedString], savable: bool) -> (String, bool) {
             many.len()
         ),
     };
-    if savable {
+    if savable == names.len() {
         (what, true)
     } else {
         let why = match names {
@@ -79,7 +90,7 @@ fn ask_now(keys: Vec<SharedString>, ws: WeakEntity<Workspace>, then: Then, cx: &
         return then(true, cx);
     }
     let names: Vec<SharedString> = handles.iter().map(|(_, n, _)| n.clone()).collect();
-    let savable = handles.iter().all(|(_, _, h)| h.can_save(cx));
+    let savable = handles.iter().filter(|(_, _, h)| h.can_save(cx)).count();
     let (message, offer_save) = wording(&names, savable);
     // The workspace's own window: the ask is about its tabs.
     let own = cx.windows().into_iter().find(|h| {
@@ -430,16 +441,23 @@ mod tests {
     fn the_ask_names_one_tab_or_counts_them_and_offers_save_only_when_it_can() {
         let one = [SharedString::from("main.rs")];
         assert_eq!(
-            wording(&one, true),
+            wording(&one, 1),
             (
                 "Do you want to save the changes you made to main.rs?".into(),
                 true
             )
         );
         let two = [SharedString::from("a"), SharedString::from("b")];
-        let (text, save) = wording(&two, false);
+        let (text, save) = wording(&two, 1);
         assert!(text.starts_with("Do you want to save the changes you made to 2 tabs?"));
         assert!(text.ends_with("Don't Save drops them all."));
+        assert!(!save);
+        // Only a comment not posted: no saving to ask about.
+        let (text, save) = wording(&[SharedString::from("#7 Fix")], 0);
+        assert_eq!(
+            text,
+            "#7 Fix has a comment you haven't posted. Don't Save drops it."
+        );
         assert!(!save);
     }
 }

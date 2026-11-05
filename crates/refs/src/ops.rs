@@ -2,6 +2,9 @@
 //! merging, rebasing and deleting branches; removing worktrees and moving the main one back;
 //! undo and redo. Each asks first where the old app did, then runs through `RepoState::run`.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use futures::channel::oneshot;
 use gitviber_core::network::CANCELLED;
 use gitviber_core::{Core, Res, api, git};
@@ -160,6 +163,41 @@ pub fn pull(
         state,
         action,
         move |core, op| api::sync::pull(core, mode, Some(autostash), op.id.clone(), op.progress()),
+        window,
+        cx,
+    );
+}
+
+/// Fast-forwards the current branch to `remote`'s `branch`, whatever it tracks.
+pub fn pull_from(
+    state: &Entity<RepoState>,
+    remote: String,
+    branch: String,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let (r, b) = (remote.clone(), branch.clone());
+    let action = GitAction::new("Pull")
+        .net()
+        .done(format!("Pulled {remote}/{branch}"))
+        .fix(
+            GitFix::Unreachable,
+            retry(state, "Retry", move |s, w, cx| {
+                pull_from(s, r.clone(), b.clone(), w, cx)
+            }),
+        );
+    go(
+        state,
+        action,
+        move |core, op| {
+            plain(api::sync::pull_from(
+                core,
+                remote,
+                branch,
+                op.id.clone(),
+                op.progress(),
+            ))
+        },
         window,
         cx,
     );
@@ -732,11 +770,19 @@ pub fn unless_left_behind(
     .detach();
 }
 
-pub fn switch_branch(state: &Entity<RepoState>, name: String, window: &mut Window, cx: &mut App) {
+/// `then` runs once it switched, after a Stash and Switch too.
+pub fn switch_branch(
+    state: &Entity<RepoState>,
+    name: String,
+    then: Option<Then>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let weak = state.downgrade();
+    let then = Rc::new(Cell::new(then));
     unless_left_behind(state, "Switch", window, cx, move |window, cx| {
         with(&weak, window, cx, |s, w, cx| {
-            switch_now(s, name, None, w, cx)
+            switch_now(s, name, None, then, w, cx)
         })
     });
 }
@@ -746,6 +792,7 @@ fn switch_now(
     state: &Entity<RepoState>,
     name: String,
     left: Option<String>,
+    then: Rc<Cell<Option<Then>>>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -757,18 +804,18 @@ fn switch_now(
         cx,
         move |restore, window, cx| {
             with(&weak, window, cx, |s, w, cx| {
-                let again = name.clone();
+                let (again, retried) = (name.clone(), then.clone());
                 // .net(): a Git LFS repository downloads the branch's files first.
                 let mut action = GitAction::new("Switch branch")
                     .net()
                     .done(switched(s, &name, cx))
                     .on_error(switching(s, name.clone(), move |s, left, w, cx| {
-                        switch_now(s, again.clone(), Some(left), w, cx)
+                        switch_now(s, again.clone(), Some(left), retried.clone(), w, cx)
                     }));
                 if let Some(d) = in_stashes(left.as_deref(), restore.is_some()) {
                     action = action.detail(d);
                 }
-                go(
+                let switched = run(
                     s,
                     action.also(restore),
                     move |core, op| {
@@ -783,6 +830,11 @@ fn switch_now(
                     w,
                     cx,
                 );
+                after_yes(switched, w, cx, move |w, cx| {
+                    if let Some(then) = then.take() {
+                        then(w, cx)
+                    }
+                });
             })
         },
     );
@@ -1373,7 +1425,7 @@ pub fn prune_holder(
         w,
         Some(Box::new(move |win, cx| {
             with(&weak, win, cx, |s, win, cx| {
-                switch_branch(s, branch, win, cx)
+                switch_branch(s, branch, None, win, cx)
             })
         })),
         window,

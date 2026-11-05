@@ -43,6 +43,19 @@ pub fn pull(
     })
 }
 
+pub fn pull_from(
+    core: &Core,
+    remote: String,
+    branch: String,
+    op: String,
+    progress: impl Fn(network::Progress) + Send + Sync + 'static,
+) -> Res<()> {
+    let net = core.watch_network(op, progress);
+    core.journaled(Action::new("Pull", Mode::Keep), move |r| {
+        git::pull_from(r, &remote, &branch, &net)
+    })
+}
+
 pub fn merge(
     core: &Core,
     name: String,

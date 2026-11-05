@@ -813,6 +813,34 @@ mod tests {
         assert_eq!(state.read_with(cx, |s, _| s.root().clone()), next);
     }
 
+    /// What follows a branch switch (a pull, say) runs once it went through, not when it failed.
+    #[gpui_kit::test]
+    fn what_follows_a_switch_runs_once_it_went_through(cx: &mut TestAppContext) {
+        let repo = scratch("switch-then");
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        git(&repo, &["branch", "side"]);
+        let (_ws, state, cx) = setup_in(repo, cx);
+        let ran = std::rc::Rc::new(std::cell::Cell::new(0));
+        let switch = |to: &str, cx: &mut VisualTestContext| {
+            let ran = ran.clone();
+            let then: crate::ops::Then = Box::new(move |_, _| ran.set(ran.get() + 1));
+            cx.update(|window, cx| {
+                crate::ops::switch_branch(&state, to.into(), Some(then), window, cx)
+            });
+            cx.run_until_parked();
+        };
+        switch("no-such-branch", cx);
+        assert_eq!(ran.get(), 0);
+        switch("side", cx);
+        assert_eq!(ran.get(), 1);
+        assert_eq!(
+            state
+                .read_with(cx, |s, _| s.branch().map(str::to_string))
+                .as_deref(),
+            Some("side")
+        );
+    }
+
     /// A switch git couldn't open stays on its worktree: the branch, gone as it started, is
     /// read again.
     #[gpui_kit::test]

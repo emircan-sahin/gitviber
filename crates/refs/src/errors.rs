@@ -19,6 +19,8 @@ pub enum GitFix {
     Secret,
     Unreachable,
     Protected,
+    /// A GitHub call core made on the way (a fork's sync, a PR's worktree) had no usable login.
+    SignIn,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -180,6 +182,9 @@ pub fn secret_commits(message: &str) -> Vec<String> {
 /// What a failed git command's output means, for the failures that have a known way out; None for the rest.
 pub fn explain_git_error(message: &str) -> Option<GitErrorHelp> {
     use GitFix::*;
+    if let Some(words) = gitviber_core::github::login_words(message) {
+        return Some(help(words, "", Some(SignIn)));
+    }
     if starts(message, &["fatal: Not possible to fast-forward"]) {
         return Some(help(
             "Your branch and the remote have diverged",
