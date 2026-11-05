@@ -4549,7 +4549,7 @@ mod tests {
         cx.run_until_parked();
         assert!(dir.join("a.txt").exists(), "a digit alone writes nothing");
         assert_eq!(git(&dir, &["status", "--porcelain"]).trim(), "UD a.txt");
-        cx.simulate_keystrokes("cmd-enter");
+        cx.simulate_keystrokes("secondary-enter");
         cx.run_until_parked();
         assert!(
             !dir.join("a.txt").exists(),
@@ -6118,7 +6118,7 @@ mod tests {
         // Block 1 takes the incoming side; the cursor goes on to block 2.
         cx.simulate_keystrokes("2");
         // Not every block has a choice: nothing written, the toast says why.
-        cx.simulate_keystrokes("cmd-enter");
+        cx.simulate_keystrokes("secondary-enter");
         cx.run_until_parked();
         assert_eq!(
             last_toast(&ws, cx).as_deref(),
@@ -6131,7 +6131,7 @@ mod tests {
         cx.dispatch_action(PrevChange);
         cx.simulate_keystrokes("1");
         cx.dispatch_action(NextChange);
-        cx.simulate_keystrokes("3 cmd-enter");
+        cx.simulate_keystrokes("3 secondary-enter");
         cx.run_until_parked();
         assert_eq!(
             std::fs::read_to_string(dir.join("a.txt")).unwrap(),
@@ -6170,7 +6170,7 @@ mod tests {
         cx.simulate_keystrokes("escape 2");
         // ⌘↵ in the box: block 2 is the text typed.
         act(TestAct::Open(1, "mine".into()), cx);
-        cx.simulate_keystrokes("cmd-enter");
+        cx.simulate_keystrokes("secondary-enter");
         // Block 1's side is replaced; block 2's typed text isn't, the toast says so.
         use gitviber_ui::actions::diff::{NextChange, PrevChange};
         cx.dispatch_action(PrevChange);
@@ -6179,7 +6179,7 @@ mod tests {
         cx.simulate_keystrokes("3");
         cx.run_until_parked();
         assert_eq!(last_toast(&ws, cx).as_deref(), Some("Conflict 2 kept"));
-        cx.simulate_keystrokes("cmd-enter");
+        cx.simulate_keystrokes("secondary-enter");
         cx.run_until_parked();
         assert_eq!(
             std::fs::read_to_string(dir.join("a.txt")).unwrap(),
@@ -6200,14 +6200,14 @@ mod tests {
             view.read(cx).focus_handle(cx).focus(window, cx);
             view.update(cx, |v, cx| v.act_for_test(TestAct::Preview, window, cx));
         });
-        cx.simulate_keystrokes("1 cmd-enter");
+        cx.simulate_keystrokes("1 secondary-enter");
         cx.run_until_parked();
         assert_eq!(
             last_message(&ws, cx).as_deref(),
             Some("2 blocks have no choice yet.")
         );
         // Out of Preview now, the keys choose.
-        cx.simulate_keystrokes("1 1 cmd-enter");
+        cx.simulate_keystrokes("1 1 secondary-enter");
         cx.run_until_parked();
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), OURS);
         let _ = std::fs::remove_dir_all(&dir);
