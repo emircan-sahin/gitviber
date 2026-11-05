@@ -814,11 +814,14 @@ impl Palette {
 
     fn empty_text(&self, cx: &App) -> SharedString {
         if self.query.starts_with('>') {
+            // With no project open, no focus change brings a command in: a project does.
+            let needs = if self.root.is_none() {
+                "an open project"
+            } else {
+                "a file or panel in focus"
+            };
             return match &self.unavailable_hit {
-                Some(label) => {
-                    format!("'{label}' isn't available here: it needs a file or panel in focus")
-                        .into()
-                }
+                Some(label) => format!("'{label}' isn't available here: it needs {needs}").into(),
                 None => "No matching commands".into(),
             };
         }
@@ -1355,6 +1358,18 @@ mod tests {
             gitviber_ui::init(cx);
             gitviber_refs::topbar::register(cx);
         });
+        // The picker hands the project to the app's open (open_repo::open_saved, tested there).
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let record = opened.clone();
+        cx.update(|cx| {
+            gitviber_ui::workspace::set_saved_project_hooks(
+                cx,
+                gitviber_ui::workspace::SavedProjectHooks {
+                    open: Rc::new(move |p, _| record.borrow_mut().push(PathBuf::from(p))),
+                    locate: Rc::new(|_, _| {}),
+                },
+            )
+        });
         let mut host = None;
         let (_, cx) = cx.add_window_view(|window, cx| {
             let ws = cx.new(Workspace::new);
@@ -1435,12 +1450,7 @@ mod tests {
         switch(cx);
         cx.simulate_keystrokes("down enter");
         draw(cx);
-        let root = cx.update(|_, cx| {
-            ws.read(cx)
-                .project()
-                .map(|p| p.read(cx).root().to_path_buf())
-        });
-        assert_eq!(root.as_deref(), Some(projects[1].as_path()));
+        assert_eq!(*opened.borrow(), [projects[1].clone()]);
         _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1525,28 +1535,36 @@ mod tests {
         _ = std::fs::remove_dir_all(&repo);
     }
 
-    /// A query only commands that don't apply here match names one, rather than saying there's
-    /// no such command.
+    /// A query only commands that don't apply here match names one, and what it needs: an open
+    /// project first, then focus.
     #[gpui_kit::test]
     fn a_command_that_needs_focus_elsewhere_is_named(cx: &mut TestAppContext) {
         let (host, cx) = window("unavailable", cx);
         let ws = cx.update(|_, cx| host.read(cx).ws.clone());
-        let palette = cx
-            .update(|window, cx| Palette::show(Mode::Commands, &ws, window, cx))
-            .unwrap();
-        cx.run_until_parked();
-        cx.simulate_input("toggle blame");
-        cx.run_until_parked();
-        assert!(labels(&palette, cx).is_empty());
-        let shown = cx.update(|_, cx| palette.read(cx).empty_text(cx));
+        let shown = |query: &str, cx: &mut VisualTestContext| {
+            let palette = cx
+                .update(|window, cx| Palette::show(Mode::Commands, &ws, window, cx))
+                .unwrap();
+            cx.run_until_parked();
+            cx.simulate_input(query);
+            cx.run_until_parked();
+            assert!(labels(&palette, cx).is_empty());
+            let text = cx.update(|_, cx| palette.read(cx).empty_text(cx));
+            cx.update(|window, cx| window.close_all_dialogs(cx));
+            cx.run_until_parked();
+            text
+        };
         assert_eq!(
-            shown.as_ref(),
+            shown("toggle blame", cx).as_ref(),
+            "'Toggle Blame' isn't available here: it needs an open project"
+        );
+        let repo = open_repo("unavailable", &host, cx);
+        assert_eq!(
+            shown("toggle blame", cx).as_ref(),
             "'Toggle Blame' isn't available here: it needs a file or panel in focus"
         );
-        cx.simulate_input("qqqzzz");
-        cx.run_until_parked();
-        let shown = cx.update(|_, cx| palette.read(cx).empty_text(cx));
-        assert_eq!(shown.as_ref(), "No matching commands");
+        assert_eq!(shown("qqqzzz", cx).as_ref(), "No matching commands");
+        _ = std::fs::remove_dir_all(&repo);
     }
 
     /// New Terminal in Project lists each project by its folder's name over where it is, and
