@@ -2,19 +2,19 @@
 //! Branch. On a window's root while its origin is on GitHub; each says why when it can't run,
 //! in the words of the PRs panel's New button.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
+use gitviber_core::api;
 use gitviber_core::git::RepoStatus;
 use gitviber_ui::actions::github;
 use gitviber_ui::workspace::{Toast, Workspace};
-use gpui_kit::{App, Entity, InteractiveElement, Subscription, Window};
+use gpui_kit::{Action, App, Entity, Global, InteractiveElement, Subscription, Window};
 
-use crate::cache::Cache;
+use crate::cache::{Cache, MIN_AGE};
 use crate::model::{Access, PullItem, PullState, repo_of};
 use crate::ui::common::github_failure;
 use crate::ui::dialogs::CreatePullDialog;
-use crate::ui::pulls_panel::{BranchStatus, branch_lists, create_blocked, load_branch_lists};
+use crate::ui::pulls_panel::{
+    BranchStatus, PAGE, branch_lists, create_blocked, create_target, load_branch_lists,
+};
 
 /// Create Pull Request… and Open Pull Request for This Branch on a window's root, there only
 /// while `status` says origin is on GitHub: the palette offers what something listens for.
@@ -45,6 +45,13 @@ impl Cmd {
             Cmd::Open => "Open pull request not run",
         }
     }
+
+    fn action(self) -> Box<dyn Action> {
+        match self {
+            Cmd::Create => Box::new(github::CreatePull),
+            Cmd::Open => Box::new(github::OpenBranchPull),
+        }
+    }
 }
 
 /// What a command does with what the cache holds.
@@ -52,8 +59,6 @@ impl Cmd {
 enum Next {
     /// The account or the branch's PR lists are still on their way.
     Wait,
-    /// Waited for a window or a repository that's gone.
-    Done,
     /// Reading them failed: GitHub's error, signed out included.
     Failed(String),
     /// Why it can't run, and what fixes it.
@@ -72,13 +77,22 @@ enum Fix {
     Create,
 }
 
+/// The command waiting for what it reads: one at a time, so pressing again doesn't stack a
+/// second dialog or toast.
+#[derive(Default)]
+struct Pending(Option<Subscription>);
+
+impl Global for Pending {}
+
 /// The account and the lists the branch badges read are asked for as a project opens; a
-/// command pressed before they're in runs once they are, unless another repository's views
-/// took the cache meanwhile.
+/// command pressed before they're in is pressed again once they are, unless another
+/// repository's views took the cache meanwhile.
 fn run(cmd: Cmd, status: BranchStatus, window: &mut Window, cx: &mut App) {
     let Some(ws) = Workspace::for_window(window, cx) else {
         return;
     };
+    // A press replaces the one waiting.
+    drop(cx.default_global::<Pending>().0.take());
     crate::account::load(cx, false);
     load_branch_lists(cx);
     let next = next(cmd, &status, cx);
@@ -90,51 +104,72 @@ fn run(cmd: Cmd, status: BranchStatus, window: &mut Window, cx: &mut App) {
         ws.downgrade(),
         Cache::generation(cx),
     );
-    // The subscription holds itself until it's done.
-    let held: Rc<RefCell<Option<Subscription>>> = Rc::default();
-    let sub = held.clone();
-    *held.borrow_mut() = Some(cx.observe_global::<Cache>(move |cx| {
-        let next = match ws.upgrade() {
-            Some(_) if Cache::generation(cx) == generation => self::next(cmd, &status, cx),
-            _ => Next::Done,
-        };
-        if next == Next::Wait {
+    let waiting = cx.observe_global::<Cache>(move |cx| {
+        let next = (Cache::generation(cx) == generation).then(|| self::next(cmd, &status, cx));
+        if next == Some(Next::Wait) {
             return;
         }
-        sub.borrow_mut().take();
-        if let Some(ws) = ws.upgrade() {
-            handle
-                .update(cx, |_, window, cx| act(cmd, next, &ws, window, cx))
-                .ok();
-        }
-    }));
+        drop(cx.default_global::<Pending>().0.take());
+        let (Some(next), Some(ws)) = (next, ws.upgrade()) else {
+            return;
+        };
+        handle
+            .update(cx, |_, window, cx| match next {
+                // Told as is: pressed again, a failed account read would retry and wait again.
+                Next::Failed(_) => act(cmd, next, &ws, window, cx),
+                // Pressed again, so it runs for the branch checked out by now.
+                _ => window.dispatch_action(cmd.action(), cx),
+            })
+            .ok();
+    });
+    cx.default_global::<Pending>().0 = Some(waiting);
 }
 
-fn next(cmd: Cmd, status: &BranchStatus, cx: &App) -> Next {
+fn next(cmd: Cmd, status: &BranchStatus, cx: &mut App) -> Next {
     let read = crate::account::current_account(cx);
-    // An account read before is used through a refresh's failure, unless the login went.
-    if let Some(e) = read
+    // An account read before is used through a refresh's failure, unless the login went; a
+    // failure whose retry is on its way waits for that.
+    let failed = read
         .error
         .as_deref()
-        .filter(|e| read.data.is_none() || github_failure(e).needs_sign_in())
-    {
-        return Next::Failed(e.to_string());
-    }
-    let Some(account) = read.data else {
-        return Next::Wait;
+        .filter(|e| read.data.is_none() || github_failure(e).needs_sign_in());
+    let account = match (failed, read.data) {
+        (None, Some(account)) => account,
+        (Some(e), _) if !read.loading => return Next::Failed(e.to_string()),
+        _ => return Next::Wait,
     };
-    for (.., key) in branch_lists(cx) {
+    // Each list's repository (None: origin), and whether it filled its page.
+    let mut full: Vec<(Option<String>, bool)> = vec![];
+    for (repo, _, key) in branch_lists(cx) {
         let list = Cache::read::<Vec<PullItem>>(cx, &key);
         match (list.data, list.error) {
-            (Some(_), _) => {}
-            (None, Some(e)) => return Next::Failed(e),
-            (None, None) => return Next::Wait,
+            (Some(rows), _) => full.push((repo, rows.len() >= PAGE)),
+            (None, Some(e)) if !list.loading => return Next::Failed(e),
+            (None, _) => return Next::Wait,
         }
     }
     let origin = account.origin.clone();
-    let open = origin
+    let parent = account.parent.as_ref();
+    let mut open = origin
         .as_ref()
-        .and_then(|o| open_pull(status, o, account.parent.as_ref(), cx));
+        .and_then(|o| open_pull(status, o, parent, cx));
+    if open.is_none()
+        && status.follows.is_none()
+        && let (Some(o), Some(branch)) = (&origin, &status.branch)
+    {
+        // A repository whose every list filled its page may hold the branch's PR past it.
+        let mut repos: Vec<Option<String>> = full.iter().map(|(r, _)| r.clone()).collect();
+        repos.dedup();
+        repos.retain(|r| full.iter().filter(|(l, _)| l == r).all(|(_, f)| *f));
+        for repo in repos {
+            let read = read_head(repo, format!("{}:{branch}", o.owner), cx);
+            match (read.data, read.error) {
+                (Some(rows), _) => open = open.or_else(|| rows.first().cloned()),
+                (None, Some(e)) if !read.loading => return Next::Failed(e),
+                (None, _) => return Next::Wait,
+            }
+        }
+    }
     let blocked = create_blocked(
         status,
         open.as_ref().map(|p| p.number),
@@ -150,20 +185,36 @@ fn next(cmd: Cmd, status: &BranchStatus, cx: &App) -> Next {
             };
             Next::NotRun(why, blocked.is_none().then_some(Fix::Create))
         }
-        // Not blocked means a branch and origin's access.
         (Cmd::Create, open) => match (blocked, origin) {
+            (Some(why), _) => Next::NotRun(format!("{why}."), open.map(|p| Fix::Open(Box::new(p)))),
             (None, Some(origin)) => Next::Create {
-                // A fork's pull requests go to its original.
-                target: account.parent.clone().unwrap_or_else(|| origin.clone()),
+                target: create_target(&origin, parent, None, cx),
                 origin,
                 status: status.clone(),
             },
-            (why, _) => Next::NotRun(
-                format!("{}.", why.unwrap_or_default()),
-                open.map(|p| Fix::Open(Box::new(p))),
-            ),
+            (None, None) => unreachable!("create_blocked says origin's access is missing"),
         },
     }
+}
+
+/// The open PRs from `head` (owner:branch) into `repo` (None: origin), asked of GitHub. Kept
+/// apart from the "pulls:" lists: nothing reads it again as they change, so a badge or a
+/// pull request's view would take its rows for current.
+fn read_head(
+    repo: Option<String>,
+    head: String,
+    cx: &mut App,
+) -> crate::cache::Read<Vec<PullItem>> {
+    let key = head_key(repo.as_deref(), &head);
+    Cache::load_held(cx, &key, MIN_AGE, move |core| {
+        api::github::pr_open_from(core, repo.clone(), head.clone())
+            .map(|ps| ps.iter().map(PullItem::from).collect::<Vec<_>>())
+    });
+    Cache::read(cx, &key)
+}
+
+fn head_key(repo: Option<&str>, head: &str) -> String {
+    format!("head-pulls:{}:{head}", repo.unwrap_or("origin"))
 }
 
 /// The branch's open PR in the lists read: a checked-out one by its number, in origin or the
@@ -194,7 +245,7 @@ fn open_pull(
 
 fn act(cmd: Cmd, next: Next, ws: &Entity<Workspace>, window: &mut Window, cx: &mut App) {
     let toast = match next {
-        Next::Wait | Next::Done => return,
+        Next::Wait => return,
         Next::Create {
             target,
             origin,
@@ -480,5 +531,167 @@ mod tests {
             toasts[0].action.as_ref().map(|a| a.label.as_ref()),
             Some("Create Pull Request…")
         );
+    }
+
+    fn toasts(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<Toast> {
+        cx.update(|_, cx| ws.update(cx, |ws, _| ws.take_toasts()))
+    }
+
+    /// A window with Open pressed and the lists on their way: `other`'s PR is all they hold.
+    /// Nothing lands till the test parks.
+    fn waiting(cx: &mut TestAppContext) -> (Entity<Workspace>, &mut VisualTestContext) {
+        setup(cx);
+        let (ws, cx) = window(Some(github("fix")), cx);
+        cx.update(|_, cx| read_account(account(None), cx));
+        cx.run_until_parked();
+        let mut other = pull(7);
+        other.head_ref = "other".into();
+        cx.update(|window, cx| {
+            read_lists(vec![other], cx);
+            window.dispatch_action(Box::new(github::OpenBranchPull), cx);
+        });
+        assert!(toasts(&ws, cx).is_empty());
+        (ws, cx)
+    }
+
+    #[gpui_kit::test]
+    fn pressing_again_while_it_waits_runs_it_once(cx: &mut TestAppContext) {
+        let (ws, cx) = waiting(cx);
+        cx.update(|window, cx| {
+            window.dispatch_action(Box::new(github::OpenBranchPull), cx);
+            window.dispatch_action(Box::new(github::OpenBranchPull), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(toasts(&ws, cx).len(), 1);
+    }
+
+    /// Another repository's views took the cache: nothing comes up.
+    #[gpui_kit::test]
+    fn a_waiting_command_ends_with_its_repository(cx: &mut TestAppContext) {
+        let (ws, cx) = waiting(cx);
+        cx.update(|_, cx| {
+            Cache::set_origin(cx, Some("https://github.com/o/a".into()));
+            Cache::set_origin(cx, Some("https://github.com/o/b".into()));
+        });
+        cx.run_until_parked();
+        assert!(toasts(&ws, cx).is_empty());
+    }
+
+    #[gpui_kit::test]
+    fn a_waiting_command_ends_with_its_window(cx: &mut TestAppContext) {
+        let (ws, cx) = waiting(cx);
+        cx.update(|window, _| window.remove_window());
+        let app: &mut TestAppContext = cx;
+        app.run_until_parked();
+        assert!(
+            app.update(|cx| ws.update(cx, |ws, _| ws.take_toasts()))
+                .is_empty()
+        );
+    }
+
+    /// The branch switched while it waited: it runs for the one checked out then.
+    #[gpui_kit::test]
+    fn a_waiting_command_reads_the_branch_when_it_runs(cx: &mut TestAppContext) {
+        let (ws, cx) = waiting(cx);
+        cx.update(|window, cx| {
+            let root = window.root::<Root>().flatten().unwrap();
+            root.update(cx, |root, cx| {
+                root.status = Some(github("next"));
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+        let toasts = toasts(&ws, cx);
+        assert_eq!(toasts.len(), 1);
+        assert_eq!(
+            toasts[0].message.as_ref(),
+            "There's no open pull request for next."
+        );
+    }
+
+    /// A failure whose retry is on its way isn't told: the command waits for the retry.
+    #[gpui_kit::test]
+    fn an_old_failure_waits_for_its_retry(cx: &mut TestAppContext) {
+        setup(cx);
+        let next = |cx: &mut TestAppContext| cx.update(|cx| next(Cmd::Open, &on("fix"), cx));
+        cx.update(|cx| read_account(Err("offline".into()), cx));
+        cx.run_until_parked();
+        assert_eq!(next(cx), Next::Failed("offline".into()));
+        cx.update(|cx| read_account(account(None), cx));
+        assert_eq!(next(cx), Next::Wait);
+        cx.run_until_parked();
+        // The same for a list.
+        cx.update(|cx| {
+            for (i, (.., key)) in branch_lists(cx).into_iter().enumerate() {
+                let answer: Result<Vec<PullItem>, String> = if i == 0 {
+                    Err("offline".to_string())
+                } else {
+                    Ok(vec![])
+                };
+                Cache::load(cx, &key, MIN_AGE, move |_| answer.clone());
+            }
+        });
+        cx.run_until_parked();
+        assert_eq!(next(cx), Next::Failed("offline".into()));
+        cx.update(|cx| read_lists(vec![], cx));
+        assert_eq!(next(cx), Next::Wait);
+        cx.run_until_parked();
+        assert!(matches!(next(cx), Next::NotRun(..)));
+    }
+
+    /// A busy repository's first page may leave the branch's PR out: GitHub is asked for it.
+    #[gpui_kit::test]
+    fn past_a_full_page_github_is_asked_for_the_branchs_pull_request(cx: &mut TestAppContext) {
+        setup(cx);
+        cx.update(|cx| read_account(account(None), cx));
+        cx.run_until_parked();
+        let page: Vec<PullItem> = (1..=PAGE as u64)
+            .map(|n| PullItem {
+                head_ref: format!("b{n}"),
+                ..pull(n)
+            })
+            .collect();
+        cx.update(|cx| read_lists(page, cx));
+        let head = head_key(None, "o:fix");
+        cx.update(|cx| Cache::load(cx, &head, MIN_AGE, |_| Ok(vec![pull(4242)])));
+        cx.run_until_parked();
+        let next = |cmd, cx: &mut TestAppContext| cx.update(|cx| next(cmd, &on("fix"), cx));
+        assert_eq!(next(Cmd::Open, cx), Next::Open(pull(4242)));
+        assert_eq!(
+            next(Cmd::Create, cx),
+            Next::NotRun(
+                "#4242 already open for this branch.".into(),
+                Some(Fix::Open(Box::new(pull(4242))))
+            )
+        );
+        // A page with room left holds every open one: nothing is asked.
+        cx.update(|cx| {
+            Cache::refetch_all(cx);
+            read_account(account(None), cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| read_lists(vec![], cx));
+        cx.run_until_parked();
+        assert!(matches!(next(Cmd::Open, cx), Next::NotRun(..)));
+        assert!(!cx.update(|cx| Cache::read::<Vec<PullItem>>(cx, &head).loading));
+    }
+
+    /// New on the fork's own pane makes it the palette's target too.
+    #[gpui_kit::test]
+    fn create_goes_where_new_last_went(cx: &mut TestAppContext) {
+        setup(cx);
+        cx.update(|cx| read_account(account(Some(access("up"))), cx));
+        cx.run_until_parked();
+        cx.update(|cx| read_lists(vec![], cx));
+        cx.run_until_parked();
+        let target =
+            |cx: &mut TestAppContext| match cx.update(|cx| next(Cmd::Create, &on("fix"), cx)) {
+                Next::Create { target, .. } => target,
+                other => panic!("{other:?}"),
+            };
+        cx.update(|cx| create_target(&access("o"), Some(&access("up")), Some(false), cx));
+        assert_eq!(target(cx), access("o"));
+        cx.update(|cx| create_target(&access("o"), Some(&access("up")), Some(true), cx));
+        assert_eq!(target(cx), access("up"));
     }
 }

@@ -1,6 +1,7 @@
 //! Pull requests: listing, details, files, creating, merging, reviews and line comments.
 
 use super::checks::read_checks;
+use super::issues::query_value;
 use super::search::{self, Kind};
 use super::{
     all_pages, call, fetch_remote, graphql, is_sha, list_state, pages, repo_ref, string, target,
@@ -79,6 +80,23 @@ pub fn list(
         pages.clamp(1, MAX_PAGES),
     )?;
     Ok(list.iter().map(pull_from).collect())
+}
+
+/// The open pull requests from `head` ("owner:branch"), in one request: a busy repository's
+/// first page of `list` can leave a branch's out.
+pub fn open_from(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    head: &str,
+) -> Result<Vec<Pull>, String> {
+    let r = target(session, repo, to)?;
+    let list = self::pages(session, repo, &r.api(&open_from_path(head)), JSON, None, 1)?;
+    Ok(list.iter().map(pull_from).collect())
+}
+
+fn open_from_path(head: &str) -> String {
+    format!("/pulls?state=open&head={}", query_value(head))
 }
 
 /// How many pull requests are open and closed, narrowed as the list is: the list holds only
@@ -576,6 +594,14 @@ mod tests {
     use super::*;
 
     const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn a_head_is_asked_for_encoded() {
+        assert_eq!(
+            open_from_path("o:fix/a#1"),
+            "/pulls?state=open&head=o%3Afix%2Fa%231"
+        );
+    }
 
     #[test]
     fn a_merge_is_pinned_to_the_head_seen() {
