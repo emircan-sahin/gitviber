@@ -89,6 +89,7 @@ gpui_kit::assets::icon_assets!(
         ListTree,
         Lock,
         LockOpen,
+        LogIn,
         Maximize2,
         MessageCircleReply,
         MessageSquare,
