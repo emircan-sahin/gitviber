@@ -29,13 +29,13 @@ use crate::logic::actions::issue_rights;
 use crate::logic::issue_work::issue_branch_name;
 use crate::model::{Account, IssueItem, LabelItem, Target, repo_of};
 use crate::requests::{GithubRequest, request};
+use crate::ui::comment_box::CommentBox;
 use crate::ui::common::{
     Attachments, Blocks, ago, copy, github_failure, issue_icon, issue_pill, label_chip,
     load_failed, open_url, refresh_error, section, section_part, theme,
 };
 use crate::ui::dialogs::confirm;
 use crate::ui::labels::LabelPicker;
-use crate::ui::comment_box::CommentBox;
 use crate::ui::markdown_input::MarkdownInput;
 use crate::ui::page_find::{FindHost, Key, PageFind, Parts};
 

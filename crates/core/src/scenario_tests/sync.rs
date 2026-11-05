@@ -33,7 +33,12 @@ fn pull_from_another_remote_fast_forwards() {
     let sb = Sandbox::new("pull-from");
     let c = sb.remote_with_clones(2);
     let (original, fork) = (&c[0], &c[1]);
-    write_commit(original, "a.txt", "one\ntwo\nthree\nfour\n", "merged upstream");
+    write_commit(
+        original,
+        "a.txt",
+        "one\ntwo\nthree\nfour\n",
+        "merged upstream",
+    );
     let url = original.to_str().unwrap();
     run(fork, &["remote", "add", "upstream", url]).unwrap();
     pull_from(fork, "upstream", "main", &Net::default()).unwrap();

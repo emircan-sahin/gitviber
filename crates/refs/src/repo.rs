@@ -833,7 +833,12 @@ mod tests {
         assert_eq!(ran.get(), 0);
         switch("side", cx);
         assert_eq!(ran.get(), 1);
-        assert_eq!(state.read_with(cx, |s, _| s.branch().map(str::to_string)).as_deref(), Some("side"));
+        assert_eq!(
+            state
+                .read_with(cx, |s, _| s.branch().map(str::to_string))
+                .as_deref(),
+            Some("side")
+        );
     }
 
     /// A switch git couldn't open stays on its worktree: the branch, gone as it started, is
