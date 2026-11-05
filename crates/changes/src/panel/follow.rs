@@ -68,36 +68,47 @@ impl ChangesPanel {
     /// place in the list. After the last one it follows the file into Staged (`follow_git`).
     pub(crate) fn resolved(&mut self, path: &str, cx: &mut Context<Self>) {
         let Some(ws) = self.workspace() else { return };
-        let tab = ws
-            .read(cx)
-            .tabs()
-            .tabs()
-            .iter()
-            .find_map(|t| match t.item.selection() {
-                Some(Selection::Conflict { file }) if file.path == path => Some(t.key.clone()),
-                _ => None,
-            });
-        let Some(tab) = tab else { return };
-        let key = |f: &Arc<FileChange>| selection_key(&selection_of(Kind::Conflict, f.clone()));
+        // Its tab, as a conflict or, moved by a read that landed first, staged.
+        let Some((_, file)) = relocate(&self.lists, Kind::Conflict, path) else {
+            return;
+        };
+        let tabs =
+            [Kind::Conflict, Kind::Staged].map(|k| selection_key(&selection_of(k, file.clone())));
         // As drawn; the ones a folded folder or the filter hides after, as listed.
         let shown = self.file_keys();
         let mut files: Vec<&Arc<FileChange>> = self.lists.conflicted.iter().collect();
         files.sort_by_key(|f| {
-            let k = key(f);
+            let k = selection_key(&selection_of(Kind::Conflict, (*f).clone()));
             shown.iter().position(|s| *s == k).unwrap_or(usize::MAX)
         });
-        let keys: Vec<String> = files.iter().map(|f| key(f)).collect();
-        // A read that landed first took it out of the list already.
-        let next = row_in_place(&keys, |k| k != tab.as_ref(), &tab)
-            .or_else(|| keys.iter().find(|k| k.as_str() != tab.as_ref()).cloned());
-        let Some(at) = next.and_then(|n| keys.iter().position(|k| *k == n)) else {
+        // The next one, else the one before; out of the list already (that read), the first.
+        let next = match files.iter().position(|f| f.path == path) {
+            Some(at) => files
+                .get(at + 1)
+                .or_else(|| at.checked_sub(1).and_then(|i| files.get(i))),
+            None => files.first(),
+        };
+        let Some(to) = next.map(|f| selection_of(Kind::Conflict, (*f).clone())) else {
             return;
         };
-        let to = selection_of(Kind::Conflict, files[at].clone());
-        if self.open_key.as_deref() == Some(tab.as_ref()) {
+        if self.open_key.as_ref().is_some_and(|k| tabs.contains(k)) {
             self.open_key = Some(selection_key(&to));
         }
-        self.retarget_later(&ws, vec![(tab, Some(to))], cx);
+        // The tab is looked up when the move runs: a read's move into Staged (`follow_git`),
+        // asked for before this one, runs first.
+        let (handle, ws) = (self.window, ws.downgrade());
+        cx.defer(move |cx| {
+            handle
+                .update(cx, |_, window, cx| {
+                    ws.update(cx, |ws, cx| {
+                        if let Some(tab) = tabs.iter().find(|k| ws.tabs().get(k).is_some()) {
+                            ws.retarget_tab(tab, to, window, cx);
+                        }
+                    })
+                    .ok();
+                })
+                .ok();
+        });
     }
 
     pub(super) fn is_leaving(&self, key: &str) -> bool {
