@@ -188,7 +188,7 @@ pub(crate) fn load_branch_lists(cx: &mut App) {
 pub(crate) fn branch_lists_stale(cx: &App) -> bool {
     branch_lists(cx)
         .iter()
-        .any(|(.., key)| Cache::is_stale(cx, &key, MIN_AGE))
+        .any(|(.., key)| Cache::is_stale(cx, key, MIN_AGE))
 }
 
 /// `load_branch_lists`'s lists: (repository, None for origin; filter; cache key).

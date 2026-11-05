@@ -68,7 +68,7 @@ enum Next {
 
 #[derive(Debug, PartialEq)]
 enum Fix {
-    Open(PullItem),
+    Open(Box<PullItem>),
     Create,
 }
 
@@ -158,7 +158,10 @@ fn next(cmd: Cmd, status: &BranchStatus, cx: &App) -> Next {
                 origin,
                 status: status.clone(),
             },
-            (why, _) => Next::NotRun(format!("{}.", why.unwrap_or_default()), open.map(Fix::Open)),
+            (why, _) => Next::NotRun(
+                format!("{}.", why.unwrap_or_default()),
+                open.map(|p| Fix::Open(Box::new(p))),
+            ),
         },
     }
 }
@@ -220,7 +223,7 @@ fn act(cmd: Cmd, next: Next, ws: &Entity<Workspace>, window: &mut Window, cx: &m
                 Some(Fix::Open(p)) => {
                     let weak = ws.downgrade();
                     toast.action(format!("Open #{}", p.number), move |window, cx| {
-                        crate::ui::open_pull(&weak, p.clone(), false, window, cx)
+                        crate::ui::open_pull(&weak, (*p).clone(), false, window, cx)
                     })
                 }
             }
@@ -370,7 +373,7 @@ mod tests {
             next(Cmd::Create, on("fix"), cx),
             Next::NotRun(
                 "#42 already open for this branch.".into(),
-                Some(Fix::Open(pull(42)))
+                Some(Fix::Open(Box::new(pull(42))))
             )
         );
         // A checked-out PR by its number.
