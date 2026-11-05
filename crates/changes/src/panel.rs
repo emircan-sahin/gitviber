@@ -51,10 +51,12 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
+mod commands;
 mod follow;
 mod keys;
 mod menu;
 
+pub(crate) use commands::Act;
 use follow::Leaving;
 use keys::{Move, RowKey};
 
@@ -303,6 +305,8 @@ pub struct ChangesPanel {
     window: AnyWindowHandle,
     focus: FocusHandle,
     loaded: bool,
+    /// Commands from outside the panel waiting for its first read (`once_read`).
+    after_read: Vec<commands::Act>,
     error: Option<String>,
     root: String,
     branch: Option<String>,
@@ -436,6 +440,7 @@ impl ChangesPanel {
             window: window.window_handle(),
             focus: cx.focus_handle(),
             loaded: false,
+            after_read: Vec::new(),
             error: None,
             root: String::new(),
             branch: None,
@@ -542,6 +547,7 @@ impl ChangesPanel {
     /// draft stay, but the box has nothing to commit, nor a HEAD to amend, until then.
     fn switching(&mut self, cx: &mut Context<Self>) {
         self.loaded = false;
+        self.after_read.clear();
         self.error = None;
         self.reading = false;
         self.again = false;
@@ -722,9 +728,11 @@ impl ChangesPanel {
                         if epoch == this.epoch {
                             this.follow_git(cx);
                         }
+                        this.run_after_read(cx);
                     }
                     Err(e) => {
                         this.error = Some(e);
+                        this.after_read.clear();
                         cx.notify();
                     }
                 }
@@ -2612,7 +2620,7 @@ impl ChangesPanel {
                 ));
             }
             Section::Stashes => {
-                if self.lists.total() > 0 && self.operation.is_none() {
+                if self.stash_blocked().is_none() {
                     buttons.push(
                         small("stash", "Stash…".into()).on_click(
                             cx.listener(|this, _, w, cx| this.stash_dialog(vec![], w, cx)),
@@ -3400,7 +3408,7 @@ impl ChangesPanel {
                                 .primary()
                                 .flex_1()
                                 .label("Continue")
-                                .disabled(self.busy || left > 0)
+                                .disabled(self.operation_blocked("continue").is_some())
                                 .on_click(
                                     cx.listener(|this, _, w, cx| this.operation("continue", w, cx)),
                                 ),
@@ -3410,7 +3418,7 @@ impl ChangesPanel {
                                 Button::new("op-skip")
                                     .small()
                                     .label("Skip commit")
-                                    .disabled(self.busy)
+                                    .disabled(self.operation_blocked("skip").is_some())
                                     .on_click(
                                         cx.listener(|this, _, w, cx| this.operation("skip", w, cx)),
                                     ),
@@ -3421,7 +3429,7 @@ impl ChangesPanel {
                                 .small()
                                 .danger()
                                 .label("Abort")
-                                .disabled(self.busy)
+                                .disabled(self.operation_blocked("abort").is_some())
                                 .on_click(
                                     cx.listener(|this, _, w, cx| this.operation("abort", w, cx)),
                                 ),
@@ -6020,6 +6028,171 @@ mod tests {
         assert_eq!(color((1, Version::Ours, 0), 0, cx), string);
         assert_eq!(color((1, Version::Theirs, 0), 0, cx), string);
         assert_eq!(color((1, Version::Base, 0), 0, cx), string);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A repo mid-merge with a.txt and b.txt conflicted, two blocks each.
+    fn two_conflicted(name: &str) -> PathBuf {
+        let dir = gitviber_ui::test_support::temp_dir(&format!("changes-{name}"));
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["config", "user.name", "Test"]);
+        git(&dir, &["config", "user.email", "test@example.com"]);
+        let base = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n";
+        let write = |text: &str| {
+            for f in ["a.txt", "b.txt"] {
+                std::fs::write(dir.join(f), text).unwrap();
+            }
+        };
+        write(base);
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-q", "-m", "base"]);
+        git(&dir, &["checkout", "-q", "-b", "other"]);
+        write(THEIRS);
+        git(&dir, &["commit", "-q", "-am", "theirs"]);
+        git(&dir, &["checkout", "-q", "main"]);
+        write(OURS);
+        git(&dir, &["commit", "-q", "-am", "ours"]);
+        let _ = Command::new("git")
+            .args(["-c", "merge.conflictStyle=merge", "merge", "-q", "other"])
+            .current_dir(&dir)
+            .output();
+        dir.canonicalize().unwrap()
+    }
+
+    /// The workspace's own panel on `dir`, opened as a project, drawn in the host.
+    fn project_panel(
+        dir: &Path,
+        ws: &Entity<Workspace>,
+        host: &Entity<Host>,
+        cx: &mut VisualTestContext,
+    ) -> Entity<ChangesPanel> {
+        let dir = dir.to_path_buf();
+        cx.update(|window, cx| ws.update(cx, |ws, cx| ws.open_project(dir, window, cx)));
+        cx.run_until_parked();
+        let panel = cx.update(|window, cx| {
+            let panel = Workspace::ensure_panel(ws, "changes", window, cx)
+                .and_then(|p| p.view().downcast::<ChangesPanel>().ok())
+                .expect("the panel is built");
+            host.update(cx, |h, cx| {
+                h.panel = Some(panel.clone());
+                cx.notify();
+            });
+            panel
+        });
+        cx.run_until_parked();
+        panel
+    }
+
+    fn active_tab(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Option<String> {
+        ws.read_with(cx, |ws, _| ws.tabs().active().map(|t| t.key.to_string()))
+    }
+
+    fn last_toast(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Option<String> {
+        cx.update(|_, cx| ws.update(cx, |ws, _| ws.take_toasts()))
+            .pop()
+            .and_then(|t| t.title.map(|t| t.to_string()))
+    }
+
+    /// The keys choose block by block, ⌘↵ marks the file resolved once every block has a choice,
+    /// and the tab goes on to the next conflicted file.
+    #[gpui_kit::test]
+    fn the_conflict_editor_resolves_by_keys_and_moves_on(cx: &mut TestAppContext) {
+        let dir = two_conflicted("conflict-keys");
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let p = project_panel(&dir, &ws, &host, cx);
+        let first = p.read_with(cx, |p, _| p.lists.conflicted[0].clone());
+        assert_eq!(first.path, "a.txt");
+        cx.update(|window, cx| {
+            p.update(cx, |p, cx| {
+                p.open(selection_of(Kind::Conflict, first), false, window, cx)
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(active_tab(&ws, cx).as_deref(), Some("conflict::a.txt"));
+        // The editor as the tab draws it, beside the panel.
+        let view = conflict_view(&host, "UU", cx);
+        cx.update(|window, cx| view.read(cx).focus_handle(cx).focus(window, cx));
+        cx.run_until_parked();
+        // Block 1 takes the incoming side; the cursor goes on to block 2.
+        cx.simulate_keystrokes("2");
+        // Not every block has a choice: nothing written, the toast says why.
+        cx.simulate_keystrokes("cmd-enter");
+        cx.run_until_parked();
+        assert_eq!(
+            last_toast(&ws, cx).as_deref(),
+            Some("Mark resolved not run")
+        );
+        // Back to block 1 and on again: ⇧F7 and F7 move the cursor.
+        cx.dispatch_action(gitviber_ui::actions::diff::PrevChange);
+        cx.dispatch_action(gitviber_ui::actions::diff::NextChange);
+        cx.simulate_keystrokes("3 cmd-enter");
+        cx.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "a\nB2\nc\nd\ne\nf\ng\nh\nI1\nI2\nj\n"
+        );
+        assert_eq!(
+            active_tab(&ws, cx).as_deref(),
+            Some("conflict::b.txt"),
+            "the tab moved on to the next conflict"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// After the last conflict the tab stays with its file (Staged, once read).
+    #[gpui_kit::test]
+    fn the_last_resolved_conflict_moves_nowhere(cx: &mut TestAppContext) {
+        let dir = two_conflicted("conflict-last");
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let p = project_panel(&dir, &ws, &host, cx);
+        git(&dir, &["add", "a.txt"]);
+        p.update(cx, |p, cx| p.read(cx));
+        cx.run_until_parked();
+        let only = p.read_with(cx, |p, _| p.lists.conflicted.clone());
+        assert_eq!(paths(&only), ["b.txt"]);
+        cx.update(|window, cx| {
+            p.update(cx, |p, cx| {
+                p.open(
+                    selection_of(Kind::Conflict, only[0].clone()),
+                    false,
+                    window,
+                    cx,
+                )
+            })
+        });
+        cx.run_until_parked();
+        p.update(cx, |p, cx| p.resolved("b.txt", cx));
+        cx.run_until_parked();
+        assert_eq!(active_tab(&ws, cx).as_deref(), Some("conflict::b.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Continue, Skip, Stash and Pop from the palette say why they can't run, as their buttons
+    /// are off or hidden then.
+    #[gpui_kit::test]
+    fn the_merge_and_stash_commands_say_why_not(cx: &mut TestAppContext) {
+        let dir = two_conflicted("conflict-commands");
+        setup(cx);
+        let (ws, host, cx) = open(cx, &dir);
+        let p = panel(&host, cx);
+        let run = |act: commands::Act, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| p.update(cx, |p, cx| p.once_read(act, window, cx)));
+            cx.run_until_parked();
+        };
+        run(|p, w, cx| p.operation_command("continue", w, cx), cx);
+        assert_eq!(last_toast(&ws, cx).as_deref(), Some("Continue not run"));
+        run(|p, w, cx| p.operation_command("skip", w, cx), cx);
+        assert_eq!(last_toast(&ws, cx).as_deref(), Some("Skip not run"));
+        run(|p, w, cx| p.stash_command(w, cx), cx);
+        assert_eq!(last_toast(&ws, cx).as_deref(), Some("Stash not run"));
+        run(|p, w, cx| p.pop_latest_stash(w, cx), cx);
+        assert_eq!(last_toast(&ws, cx).as_deref(), Some("Pop not run"));
+        // Abort asks first.
+        run(|p, w, cx| p.operation_command("abort", w, cx), cx);
+        use gpui_kit::component::WindowExt as _;
+        assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

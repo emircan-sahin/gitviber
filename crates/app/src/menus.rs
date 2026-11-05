@@ -214,6 +214,10 @@ pub fn build(cx: &App) -> Vec<Menu> {
         item(git::Pull, "Pull"),
         item(git::Push, "Push"),
         sep(),
+        // Enabled while a merge, rebase, cherry-pick or revert waits (the window's root).
+        item(git::Continue, "Continue Merge or Rebase"),
+        item(git::Abort, "Abort Merge or Rebase"),
+        sep(),
         item(git::Undo, "Undo Git Action"),
         item(git::Redo, "Redo Git Action"),
     ]);
@@ -436,6 +440,27 @@ mod tests {
             "",
             "and in the code editor"
         );
+    }
+
+    #[gpui_kit::test]
+    fn the_git_menu_has_continue_and_abort(cx: &mut TestAppContext) {
+        gitviber_ui::test_support::config_dir("menu-git");
+        let menus = cx.update(|cx| {
+            gitviber_ui::init(cx);
+            build(cx)
+        });
+        let git_menu = menus.iter().find(|m| m.name.as_ref() == "Git").unwrap();
+        let names: Vec<&str> = git_menu
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                MenuItem::Action { action, .. } => Some(action.name()),
+                _ => None,
+            })
+            .collect();
+        for action in [git::Continue.name(), git::Abort.name()] {
+            assert!(names.contains(&action), "{action}");
+        }
     }
 
     #[test]

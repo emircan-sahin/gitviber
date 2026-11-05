@@ -935,12 +935,13 @@ impl Render for WorkspaceView {
             self.focus.focus(window, cx);
         }
         let ctx = self.context(cx);
+        let repo = ctx.project.as_ref().and_then(|p| {
+            gitviber_refs::RepoState::existing(p, cx).and_then(|s| s.read(cx).status.clone())
+        });
         let title = ctx.project.as_ref().map_or_else(
             || window_title(None, None, None),
             |p| {
-                let status = gitviber_refs::RepoState::existing(p, cx)
-                    .and_then(|s| s.read(cx).status.clone());
-                let status = status.as_deref();
+                let status = repo.as_deref();
                 window_title(
                     Some(p.read(cx).root()),
                     status.and_then(|s| s.branch.as_deref()),
@@ -1144,6 +1145,10 @@ impl Render for WorkspaceView {
             }))
             .when(ws_has_project, |d| {
                 self.panel_actions(self.tab_actions(d, cx), cx)
+            })
+            .map(|d| {
+                let op = repo.as_deref().and_then(|s| s.operation.as_ref());
+                gitviber_changes::operation_actions(d, op)
             })
             .child(top)
             .child(body)

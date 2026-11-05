@@ -343,10 +343,16 @@ impl CommitBox {
             .count()
     }
 
+    pub(crate) fn amending(&self) -> bool {
+        self.amend.is_some()
+    }
+
     pub(crate) fn toggle_amend(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.drop_suggestion(cx);
         if on {
             let Some(head) = self.facts.head.clone() else {
+                let why = Toast::info("There's no commit to amend yet.").title("Amend not run");
+                self.toast(why, cx);
                 return;
             };
             let aside = self.draft(cx);
