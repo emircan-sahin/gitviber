@@ -258,8 +258,9 @@ pub fn pr_set_open(
     core.with_github(move |gh, r| github::set_open(gh, r, target.as_deref(), number, open))
 }
 
-pub fn pr_ready(core: &Core, target: Option<String>, number: u64) -> Res<()> {
-    core.with_github(move |gh, r| github::ready_for_review(gh, r, target.as_deref(), number))
+/// `id`: the PR's node id, from its detail.
+pub fn pr_ready(core: &Core, id: String) -> Res<()> {
+    core.with_github(move |gh, r| github::ready_for_review(gh, r, &id))
 }
 
 /// `commit`: the head reviewed, which the review stays on.

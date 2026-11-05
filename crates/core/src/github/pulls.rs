@@ -4,7 +4,7 @@ use super::checks::read_checks;
 use super::search::{self, Kind};
 use super::{
     all_pages, call, fetch_remote, graphql, is_sha, list_state, pages, repo_ref, string, target,
-    CommitChecks, ListFilter, Method, Session, StateCounts, JSON, MAX_PAGES,
+    CommitChecks, ListFilter, Method, RepoRef, Session, StateCounts, JSON, MAX_PAGES,
 };
 use crate::git;
 use crate::network::Net;
@@ -182,6 +182,11 @@ pub struct PullDetail {
     pub closed_by: Option<String>,
     /// Who merged it, if merged: often not its author.
     pub merged_by: Option<String>,
+    /// Its GraphQL id, which marking it ready takes.
+    pub node_id: String,
+    /// When it's blocked, whether GitHub lets the viewer merge past that (an admin, a ruleset's
+    /// bypass list); None when GitHub didn't say.
+    pub can_bypass: Option<bool>,
 }
 
 pub fn detail(
@@ -248,6 +253,12 @@ pub fn detail(
         });
     }
     comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    let mergeable_state = string(&v["mergeable_state"]);
+    let can_bypass = if mergeable_state == "blocked" {
+        can_bypass(session, repo, &r, number)
+    } else {
+        None
+    };
 
     Ok(PullDetail {
         closed_by,
@@ -258,11 +269,30 @@ pub fn detail(
         changed_files: v["changed_files"].as_u64().unwrap_or_default(),
         commits: v["commits"].as_u64().unwrap_or_default(),
         mergeable: v["mergeable"].as_bool(),
-        mergeable_state: string(&v["mergeable_state"]),
+        mergeable_state,
         ci,
         comments,
+        node_id: string(&v["node_id"]),
+        can_bypass,
         pull,
     })
+}
+
+/// Whether the viewer may merge a blocked PR now; REST doesn't say, and the repo's admin bit
+/// misses a ruleset's bypass list. None when GitHub didn't answer.
+fn can_bypass(session: &Session, repo: &Path, r: &RepoRef, number: u64) -> Option<bool> {
+    let v = graphql(
+        session,
+        repo,
+        "query($owner: String!, $name: String!, $number: Int!) {
+            repository(owner: $owner, name: $name) {
+                pullRequest(number: $number) { viewerCanMergeAsAdmin }
+            }
+        }",
+        json!({ "owner": r.owner, "name": r.name, "number": number }),
+    )
+    .ok()?;
+    v["repository"]["pullRequest"]["viewerCanMergeAsAdmin"].as_bool()
 }
 
 #[derive(Serialize)]
@@ -393,35 +423,23 @@ pub fn set_open(
     Ok(pull_from(&v))
 }
 
-/// What marks a draft ready, from the PR as REST reads it: only GraphQL can, by its node id.
-fn ready_variables(pull: &Value) -> Result<Value, String> {
-    let id = pull["node_id"]
-        .as_str()
-        .ok_or("GitHub didn't say which pull request this is.")?;
+/// What marks a draft ready: only GraphQL can, by the PR's node id as its detail read it.
+fn ready_variables(id: &str) -> Result<Value, String> {
+    if id.is_empty() {
+        return Err("GitHub didn't say which pull request this is.".into());
+    }
     Ok(json!({ "id": id }))
 }
 
 /// Takes a draft out of draft; GitHub then asks its reviewers.
-pub fn ready_for_review(
-    session: &Session,
-    repo: &Path,
-    to: Option<&str>,
-    number: u64,
-) -> Result<(), String> {
-    let r = target(session, repo, to)?;
-    let pull = call(
-        session,
-        repo,
-        Method::Get,
-        &r.api(&format!("/pulls/{number}")),
-    )?;
+pub fn ready_for_review(session: &Session, repo: &Path, id: &str) -> Result<(), String> {
     graphql(
         session,
         repo,
         "mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) {
             pullRequest { isDraft }
         } }",
-        ready_variables(&pull)?,
+        ready_variables(id)?,
     )
     .map(|_| ())
 }
@@ -579,10 +597,10 @@ mod tests {
     #[test]
     fn ready_for_review_names_the_pull_request_by_its_node_id() {
         assert_eq!(
-            ready_variables(&json!({ "number": 7, "node_id": "PR_kwFake7" })),
+            ready_variables("PR_kwFake7"),
             Ok(json!({ "id": "PR_kwFake7" }))
         );
-        assert!(ready_variables(&json!({ "number": 7 })).is_err());
+        assert!(ready_variables("").is_err());
     }
 
     #[test]

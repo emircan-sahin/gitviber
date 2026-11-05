@@ -533,6 +533,8 @@ mod tests {
             comments: vec![],
             closed_by: None,
             merged_by: None,
+            node_id: "PR_kwFake42".into(),
+            can_bypass: None,
         };
         let v = serde_json::to_value(&d).unwrap();
         let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
@@ -545,6 +547,7 @@ mod tests {
                 "baseRef",
                 "baseSha",
                 "body",
+                "canBypass",
                 "changedFiles",
                 "checks",
                 "checksError",
@@ -560,6 +563,7 @@ mod tests {
                 "mergeable",
                 "mergeableState",
                 "mergedBy",
+                "nodeId",
                 "number",
                 "state",
                 "title",
