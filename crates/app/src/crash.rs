@@ -101,11 +101,12 @@ pub fn install(cx: &mut App) {
     .detach();
 }
 
-/// The logs, and a bug report with the setup filled in: what the user does next.
+/// The logs, and a bug report with the setup filled in: extras, so the unclean-quit warning
+/// still goes by itself (an error stays all the same).
 fn with_help(toast: Toast) -> Toast {
     toast
-        .action("Show Logs", |_, cx| cx.dispatch_action(&help::ShowLogs))
-        .action("Report a Bug", |_, cx| cx.dispatch_action(&help::ReportBug))
+        .extra("Show Logs", |_, cx| cx.dispatch_action(&help::ShowLogs))
+        .extra("Report a Bug", |_, cx| cx.dispatch_action(&help::ReportBug))
 }
 
 /// Written at once, so a crash later in the launch is caught. The sync that makes a power cut
@@ -193,7 +194,8 @@ mod tests {
         assert_eq!(toasts(window, cx), 0);
     }
 
-    /// The toasts offer the logs and a bug report as buttons, and stay until closed.
+    /// The toasts offer the logs and a bug report as buttons; the error stays until closed, the
+    /// unclean-quit warning goes by itself.
     #[gpui_kit::test]
     fn the_toasts_offer_the_logs_and_a_bug_report(cx: &mut TestAppContext) {
         let ran = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -205,6 +207,7 @@ mod tests {
         });
         let toast = with_help(Toast::error("index out of bounds (src/a.rs:3)"));
         assert!(!toast.autohides());
+        assert!(with_help(Toast::warning("didn't quit cleanly")).autohides());
         assert!(!toast.message.contains("Help →"));
         let buttons: Vec<_> = toast.action.iter().chain(&toast.more).cloned().collect();
         let labels: Vec<_> = buttons.iter().map(|b| b.label.as_ref()).collect();

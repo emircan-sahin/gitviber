@@ -3,8 +3,9 @@
 //!
 //! When one goes by itself: Info, Success and Warning after a few seconds, the countdown paused
 //! while the pointer is on it or the window is in the background. An error stays until closed,
-//! and so does a toast whose button is the only way forward (Sign in, Locate…, Retry). An Undo
-//! toast (`Toast::undo`) goes like any success: the change is done, Undo is a second chance.
+//! and so does a toast whose button is the only way forward (Sign in, Locate…, Retry). One whose
+//! buttons are all optional goes like any success: Undo (`Toast::undo`) is a second chance, Show
+//! Logs (`Toast::extra`) a way to learn more.
 
 use std::rc::Rc;
 
@@ -40,8 +41,8 @@ pub struct Toast {
     pub detail: Option<SharedString>,
     /// Run once it goes, by a button or its close button; not when the window goes with it.
     pub closed: Option<ToastClosed>,
-    /// It has an Undo, and goes by itself all the same.
-    pub undo: bool,
+    /// How many of its buttons are optional (Undo, an extra): with only those, it goes by itself.
+    pub optional: usize,
 }
 
 /// `Toast::on_close`'s hook.
@@ -82,7 +83,7 @@ impl Toast {
             more: Vec::new(),
             detail: None,
             closed: None,
-            undo: false,
+            optional: 0,
         }
     }
     pub fn info(message: impl Into<SharedString>) -> Self {
@@ -131,19 +132,38 @@ impl Toast {
         self
     }
 
-    /// The one Undo of a success toast ("Discarded a.rs"), as its first button. Unlike other
-    /// buttons it doesn't keep the toast up. `run` says how the undo went: a success toast
-    /// ("Restored a.rs"), or an error toast with git's own words.
+    /// The one Undo of a success toast ("Discarded a.rs"), as its first button wherever it's
+    /// added. Optional: it doesn't keep the toast up. `run` says how the undo went: a success
+    /// toast ("Restored a.rs"), or an error toast with git's own words.
     pub fn undo(mut self, run: impl Fn(&mut Window, &mut App) + 'static) -> Self {
-        self = self.action("Undo", run);
-        self.undo = true;
+        let undo = ToastAction {
+            label: "Undo".into(),
+            run: Rc::new(run),
+        };
+        if let Some(first) = self.action.replace(undo) {
+            self.more.insert(0, first);
+        }
+        self.optional += 1;
+        self
+    }
+
+    /// A button that's no way forward, only a way to learn more (Show Logs): it doesn't keep the
+    /// toast up.
+    pub fn extra(
+        mut self,
+        label: impl Into<SharedString>,
+        run: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self = self.action(label, run);
+        self.optional += 1;
         self
     }
 
     /// Whether it goes by itself: not an error (hook, GPG or push output takes a while to read),
-    /// nor one whose buttons are the way forward.
+    /// nor one with a button that's the way forward.
     pub fn autohides(&self) -> bool {
-        self.kind != ToastKind::Error && (self.action.is_none() || self.undo)
+        let buttons = usize::from(self.action.is_some()) + self.more.len();
+        self.kind != ToastKind::Error && buttons == self.optional
     }
 
     /// Shows it in `window` now.
@@ -287,16 +307,22 @@ pub fn selectable_text(id: impl Into<ElementId>, text: &str, color: Hsla, cx: &A
 fn pre_html(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 16);
     out.push_str("<pre>\n");
+    escape_html(text, &mut out);
+    out.push_str("</pre>");
+    out
+}
+
+/// `text` onto `out` with what HTML would read as markup escaped, attribute quotes too.
+pub fn escape_html(text: &str, out: &mut String) {
     for c in text.chars() {
         match c {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
             c => out.push(c),
         }
     }
-    out.push_str("</pre>");
-    out
 }
 
 #[cfg(test)]
@@ -327,6 +353,33 @@ mod tests {
                 .autohides()
         );
         assert!(!Toast::error("Undo failed").undo(|_, _| {}).autohides());
+        assert!(
+            Toast::warning("Didn't quit cleanly")
+                .extra("Show Logs", |_, _| {})
+                .autohides()
+        );
+    }
+
+    /// Undo goes first however it's added, and a way forward beside it keeps the toast up.
+    #[test]
+    fn undo_is_first_and_a_way_forward_beside_it_stays() {
+        let labels = |t: &Toast| -> Vec<SharedString> {
+            t.action
+                .iter()
+                .chain(&t.more)
+                .map(|a| a.label.clone())
+                .collect()
+        };
+        let after = Toast::warning("Signed out")
+            .action("Sign in", |_, _| {})
+            .undo(|_, _| {});
+        let before = Toast::warning("Signed out")
+            .undo(|_, _| {})
+            .action("Sign in", |_, _| {});
+        for t in [&after, &before] {
+            assert_eq!(labels(t), ["Undo", "Sign in"]);
+            assert!(!t.autohides());
+        }
     }
 
     struct Host;
