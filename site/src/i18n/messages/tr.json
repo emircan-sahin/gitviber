@@ -72,7 +72,7 @@
       },
       {
         "title": "Birinden diğerine atla.",
-        "text": "Her worktree'nin kendi terminalleri ve kendi inceleme ilerlemesi var, geçiş yaptığında hiçbir şey kaybolmaz. Bir ajan seni beklediğinde worktree'sinin yanında bir nokta belirir."
+        "text": "Geçiş yaptığında terminallerin olduğu yerde kalır, her worktree de kendi inceleme ilerlemesini korur, böylece hiçbir şey kaybolmaz. Bir ajan seni beklediğinde worktree'sinin yanında bir nokta belirir."
       },
       {
         "title": "İstediğin yerden başla.",

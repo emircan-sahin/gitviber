@@ -72,7 +72,7 @@
       },
       {
         "title": "Pule de um para outro.",
-        "text": "Cada worktree guarda seus próprios terminais e seu próprio progresso de revisão, então nada se perde quando você troca. Quando um agente está esperando por você, o worktree dele ganha um ponto."
+        "text": "Seus terminais ficam onde estão quando você troca, e cada worktree guarda seu próprio progresso de revisão, então nada se perde. Quando um agente está esperando por você, o worktree dele ganha um ponto."
       },
       {
         "title": "Comece de onde quiser.",

@@ -72,7 +72,7 @@
       },
       {
         "title": "Spring zwischen ihnen hin und her.",
-        "text": "Jeder Worktree behält seine eigenen Terminals und seinen eigenen Review-Fortschritt, beim Wechseln geht also nichts verloren. Wartet ein Agent auf dich, bekommt sein Worktree einen Punkt."
+        "text": "Deine Terminals bleiben beim Wechseln, wo sie sind, und jeder Worktree behält seinen eigenen Review-Fortschritt, so geht nichts verloren. Wartet ein Agent auf dich, bekommt sein Worktree einen Punkt."
       },
       {
         "title": "Fang an, wo du willst.",
