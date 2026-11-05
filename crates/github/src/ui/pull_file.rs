@@ -10,7 +10,6 @@ use gitviber_core::api;
 use gitviber_core::git::FileChange;
 use gitviber_core::github::ReviewComment;
 use gitviber_diff::{Compare, DiffEvent, DiffSource, DiffView, LinePos, LineRange, Side};
-use gitviber_ui::actions::github::PostComment;
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{
     PullRange, Selection, TabIcon, TabItem, Toast, Workspace, selection_key,
@@ -18,7 +17,7 @@ use gitviber_ui::workspace::{
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Enter, Escape, InputEvent};
+use gpui_kit::component::input::{Escape, InputEvent};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
@@ -30,17 +29,13 @@ use gpui_kit::{
 use crate::cache::{Cache, Wakes};
 use crate::model::{Target, repo_of};
 use crate::ui::common::{Attachments, Blocks, ago, error_text, text_button, theme};
+use crate::ui::comment_box::{POST_KEY, posts_on_key};
 use crate::ui::markdown_input::MarkdownInput;
 
 /// Comments are kept fresh a minute at a time while the file or its PR shows.
 pub(crate) const AGE: Duration = Duration::from_secs(60);
 /// Drafts kept aside for other threads and lines, the latest.
 const DRAFTS: usize = 16;
-pub(crate) const POST_KEY: &str = if cfg!(target_os = "macos") {
-    "⌘↵"
-} else {
-    "Ctrl+Enter"
-};
 
 /// Where a comment box is: a new comment on lines, or a reply in a thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -431,16 +426,8 @@ impl PullFileView {
     fn composer(&self, label: String, cx: &mut Context<Self>) -> AnyElement {
         let t = theme(cx);
         let empty = self.composer.read(cx).value(cx).trim().is_empty();
-        div()
-            .key_context("IssueComment")
-            .on_action(cx.listener(|this, _: &PostComment, _, cx| this.post(cx)))
-            // Taken before the box sees them: its own ⌘↵ would put a newline in the comment.
-            .capture_action(cx.listener(|this, e: &Enter, _, cx| {
-                if e.secondary {
-                    cx.stop_propagation();
-                    this.post(cx);
-                }
-            }))
+        posts_on_key(div(), Self::post, cx)
+            // Taken before the box sees it, as ⌘↵ is.
             .capture_action(cx.listener(|this, _: &Escape, window, cx| {
                 cx.stop_propagation();
                 this.close(window, cx);

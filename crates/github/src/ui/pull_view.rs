@@ -15,7 +15,6 @@ use gitviber_refs::repo::plain;
 use gitviber_refs::{GitAction, RepoState, ops};
 use gitviber_ui::AppTheme;
 use gitviber_ui::actions::editor;
-use gitviber_ui::actions::github::PostComment;
 use gitviber_ui::keymap::scroll::{self, Step};
 use gitviber_ui::memory::Live;
 use gitviber_ui::widgets::{Ends, FileIcon, LineCounts, PathLabel, StatusLetter, list_step};
@@ -23,7 +22,7 @@ use gitviber_ui::workspace::{PullRange, TabIcon, TabItem, Toast, Workspace};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Enter, InputEvent};
+use gpui_kit::component::input::InputEvent;
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::{
@@ -55,7 +54,8 @@ use crate::ui::common::{
 use crate::ui::dialogs::{ReviewDialog, confirm};
 use crate::ui::markdown_input::MarkdownInput;
 use crate::ui::page_find::{FindHost, Key, Marks, PageFind, Parts};
-use crate::ui::pull_file::{AGE as COMMENTS_AGE, POST_KEY, comments_key, load_comments};
+use crate::ui::comment_box::CommentBox;
+use crate::ui::pull_file::{AGE as COMMENTS_AGE, comments_key, load_comments};
 
 /// The files only change with the two commits: rarely worth reading again.
 const FILES_AGE: Duration = Duration::from_secs(600);
@@ -135,9 +135,7 @@ pub struct PullView {
     /// The review box's: text in it keeps the tab. Replaced with the box.
     _review: Option<Subscription>,
     /// The box at the end of the conversation, for a reply that isn't a review.
-    comment: Entity<MarkdownInput>,
-    /// It empties at the next frame, which has the window it takes.
-    comment_clear: bool,
+    comment: CommentBox,
     review_pick: Option<ReviewEvent>,
     /// Goes up when a review lands; the dialog closes on it.
     reviews_done: u64,
@@ -210,26 +208,16 @@ impl PullView {
                 }
             }),
         ];
-        let comment = cx.new(|cx| {
-            MarkdownInput::new(
-                format!("https://github.com/{repo}"),
-                url.clone(),
-                window,
-                cx,
-                |t| {
-                    t.rows(4)
-                        .placeholder(format!("Leave a comment (markdown; {POST_KEY} to post)"))
-                },
-            )
-            .small()
-            .signed_by(Some(repo.clone()), number)
-        });
+        let comment = CommentBox::new(&repo, &url, number, window, cx);
         let commits_focus = cx.focus_handle();
         let page = ListState::new(0, ListAlignment::Top, PAGE_OVERDRAW);
-        // The commits list's keys work while it's scrolled out of the page.
-        page.splice_focusable(0..0, [Some(commits_focus.clone())]);
+        // The commits list's keys, and the box's, work while it's scrolled out of the page.
+        page.splice_focusable(
+            0..0,
+            [Some(commits_focus.clone()), Some(comment.focus.clone())],
+        );
         // Text in the comment box keeps the tab, as the review's does.
-        let input = comment.read(cx).input().clone();
+        let input = comment.input.read(cx).input().clone();
         subs.push(
             cx.subscribe(&input, |this: &mut Self, _, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Change) {
@@ -273,7 +261,6 @@ impl PullView {
             review: None,
             _review: None,
             comment,
-            comment_clear: false,
             review_pick: None,
             reviews_done: 0,
             polls: 0,
@@ -522,17 +509,14 @@ impl PullView {
         }
     }
 
-    /// The head, one item per comment, and once read, the box to add one: comments come and go
-    /// before the box, which keeps its measured height.
+    /// One item per comment, between the head and the box: the list follows the comments read.
     fn sync_items(&self) {
+        let want = 2 + self.detail.as_ref().map_or(0, |d| d.comments.len());
         let have = self.page.item_count();
-        let want = self.detail.as_ref().map_or(1, |d| d.comments.len() + 2);
-        let at = if have > 1 { have - 1 } else { have };
         if want > have {
-            self.page.splice(at..at, want - have);
+            self.page.splice(have - 1..have - 1, want - have);
         } else if want < have {
-            let from = if want > 1 { want - 1 } else { want };
-            self.page.splice(from..from + (have - want), 0);
+            self.page.splice(want - 1..have - 1, 0);
         }
     }
 
@@ -1121,7 +1105,7 @@ impl PullView {
     }
 
     fn comment_text(&self, cx: &App) -> String {
-        self.comment.read(cx).value(cx).trim().to_string()
+        self.comment.text(cx)
     }
 
     /// A reply in the conversation (a PR is an issue to GitHub); Review stays for verdicts.
@@ -1130,12 +1114,12 @@ impl PullView {
         if text.is_empty() {
             return;
         }
-        let (target, number) = (self.target.clone(), self.number);
+        let (target, number, sent) = (self.target.clone(), self.number, text.clone());
         self.act(
             "Comment",
             Toast::success("Comment added"),
-            move |core| done(api::github::issue_comment(core, target, number, text)),
-            |this, _| this.comment_clear = true,
+            move |core| done(api::github::issue_comment(core, target, number, sent)),
+            move |this, _| this.comment.posted(text),
             cx,
         );
     }
@@ -2585,45 +2569,11 @@ impl PullView {
 
     /// The page's last item: the box to reply in.
     fn composer(&self, cx: &mut Context<Self>) -> AnyElement {
-        let t = theme(cx);
         let can_post = !self.comment_text(cx).is_empty() && self.busy.is_none();
-        section("Add a comment", None, &t)
+        let posting = self.busy.as_deref() == Some("Comment");
+        self.comment
+            .render(can_post, posting, Self::post_comment, cx)
             .mt(px(16.))
-            .child(
-                div()
-                    .p(px(8.))
-                    .key_context("IssueComment")
-                    .on_action(cx.listener(move |this, _: &PostComment, _, cx| {
-                        if can_post {
-                            this.post_comment(cx);
-                        }
-                    }))
-                    // The box's own ⌘↵ wins over PostComment's binding and adds a newline:
-                    // taken before it sees it.
-                    .capture_action(cx.listener(move |this, e: &Enter, _, cx| {
-                        if e.secondary {
-                            cx.stop_propagation();
-                            if can_post {
-                                this.post_comment(cx);
-                            }
-                        }
-                    }))
-                    .child(self.comment.clone())
-                    .child(
-                        div().mt(px(8.)).flex().justify_end().child(
-                            Button::new("post-comment")
-                                .primary()
-                                .small()
-                                .label(if self.busy.as_deref() == Some("Comment") {
-                                    "Posting…"
-                                } else {
-                                    "Comment"
-                                })
-                                .disabled(!can_post)
-                                .on_click(cx.listener(|this, _, _, cx| this.post_comment(cx))),
-                        ),
-                    ),
-            )
             .into_any_element()
     }
 
@@ -3061,7 +3011,7 @@ impl PullView {
     fn page_item(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let comments = self.detail.as_ref().map_or(0, |d| d.comments.len());
         // The list is mid-layout: its own count can't be read here.
-        let last = ix == self.detail.as_ref().map_or(0, |_| comments + 1);
+        let last = ix == comments + 1;
         let item = match (ix, self.detail.clone()) {
             (0, _) => self.head(window, cx),
             (n, Some(d)) if n <= comments => self.comment(&d, n - 1, cx),
@@ -3102,9 +3052,7 @@ impl Render for PullView {
             }
         }
         self.sync_items();
-        if std::mem::take(&mut self.comment_clear) {
-            self.comment.update(cx, |c, cx| c.set_value("", window, cx));
-        }
+        self.comment.sync(window, cx);
         if self.text_stale {
             self.sync_text(window, cx);
         }
@@ -3741,38 +3689,54 @@ mod tests {
     fn the_conversation_ends_with_a_comment_box_that_keeps_a_refused_comment(
         cx: &mut TestAppContext,
     ) {
-        let (view, cx) = open_page(cx);
-        view.update(cx, |v, cx| {
-            fill(v);
-            cx.notify();
-        });
-        draw(cx);
-        // The head, the review, then the box.
-        assert_eq!(view.read_with(cx, |v, _| v.page.item_count()), 3);
+        let (view, cx) = open_long(40, cx);
+        // The head, the comments, then the box.
+        assert_eq!(view.read_with(cx, |v, _| v.page.item_count()), 42);
         let text = "Thanks, fixed in the next push";
+        view.read_with(cx, |v, _| v.reveal_item(41));
+        draw(cx);
+        draw(cx);
         view.update_in(cx, |v, window, cx| {
-            v.comment.update(cx, |c, cx| {
+            v.comment.input.update(cx, |c, cx| {
                 c.set_value(text, window, cx);
                 c.focus(window, cx);
             })
         });
         assert!(view.read_with(cx, |v, cx| v.is_dirty(cx)));
-        view.read_with(cx, |v, _| v.reveal_item(2));
+        // Scrolled back to the top, away from the box: its keys still reach it.
+        view.update(cx, |v, cx| {
+            v.page.scroll_to(gpui_kit::ListOffset::default());
+            cx.notify();
+        });
         draw(cx);
-        draw(cx);
-        // ⌘↵ in the box posts it.
+        assert!(view.read_with(cx, |v, _| {
+            let view = v.page.viewport_bounds();
+            !v.page.bounds_for_item(41).is_some_and(|b| b.intersects(&view))
+        }));
+        cx.simulate_input("!");
         let at = view.read_with(cx, |v, _| v.detail_at);
-        cx.dispatch_action(PostComment);
+        cx.simulate_keystrokes("cmd-enter");
         cx.run_until_parked();
-        // Refused (there's no repository here): said, the page read again, the text kept.
+        // Refused (there's no repository here): said, the page read again, the text kept whole.
+        // Typed where set_value left the cursor, at the start.
+        let text = format!("!{text}");
         view.read_with(cx, |v, cx| {
             assert!(v.busy.is_none());
             assert!(v.detail_at > at, "never posted");
             assert_eq!(v.comment_text(cx), text);
         });
-        // Posted: the box empties at the next frame.
+        // Posted while more was typed: what was posted goes at the next frame, the rest stays.
+        view.update_in(cx, |v, window, cx| {
+            v.comment
+                .input
+                .update(cx, |c, cx| c.set_value(&format!("{text}\n\nAlso"), window, cx));
+            v.comment.posted(text.clone());
+            cx.notify();
+        });
+        draw(cx);
+        assert_eq!(view.read_with(cx, |v, cx| v.comment_text(cx)), "Also");
         view.update(cx, |v, cx| {
-            v.comment_clear = true;
+            v.comment.posted("Also".into());
             cx.notify();
         });
         draw(cx);

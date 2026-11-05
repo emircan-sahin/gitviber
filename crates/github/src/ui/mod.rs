@@ -1,6 +1,7 @@
 //! The views: the PRs and Issues panels, a PR's, a PR file's and an issue's tab, their dialogs.
 
 pub(crate) mod common;
+mod comment_box;
 mod connect;
 mod dialogs;
 mod issue_view;
