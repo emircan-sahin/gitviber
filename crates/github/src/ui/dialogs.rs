@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use gitviber_core::api;
 use gitviber_core::github::Pull;
+use gitviber_refs::toast::{Fixes, git_failed};
 use gitviber_review::model::agent::is_unknown_option;
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::{Toast, Workspace};
@@ -28,7 +29,7 @@ use crate::logic::issue_work::with_closing;
 use crate::logic::suggest::{PULL_PROMPT, command_line, parse_suggestion, program_of};
 use crate::model::{Access, IssueItem, PullItem, Target};
 use crate::store::Store;
-use crate::ui::common::theme;
+use crate::ui::common::{github_failure, theme};
 use crate::ui::markdown_input::MarkdownInput;
 use crate::ui::pull_view::PullView;
 use crate::ui::pulls_panel::BranchStatus;
@@ -270,6 +271,12 @@ pub struct CreatePullDialog {
     _suggest: Task<()>,
     _subs: Vec<Subscription>,
     _live: Live,
+}
+
+/// Why a pull request wasn't made: the branch's push failed (git's words), or anything else.
+enum NotMade {
+    Push(String),
+    Other(String),
 }
 
 impl CreatePullDialog {
@@ -619,25 +626,27 @@ impl CreatePullDialog {
         );
         let (ws, me) = (self.ws.clone(), cx.weak_entity());
         let push_core = core.clone();
-        let branch = head.clone();
+        let (branch, pushing) = (head.clone(), head.clone());
         window
             .spawn(cx, async move |cx| {
                 let pushed = cx
                     .background_spawn(async move {
                         let core = push_core;
-                        let now = read_status(&core)?;
+                        let now = read_status(&core).map_err(NotMade::Other)?;
                         if now.branch.as_deref() != Some(branch.as_str()) {
-                            return Err(format!("{branch} isn't checked out any more."));
+                            return Err(NotMade::Other(format!(
+                                "{branch} isn't checked out any more."
+                            )));
                         }
                         if let Some(remote) = now.push_elsewhere {
-                            return Err(format!(
+                            return Err(NotMade::Other(format!(
                                 "{branch} pushes to {remote}, but a pull request needs it on origin."
-                            ));
+                            )));
                         }
                         // GitHub can only open a PR from a branch it has: publish or push the latest first.
                         if now.needs_push() {
                             api::sync::push(&core, None, None, None, "pr-create-push".into(), |_| {})
-                                .map_err(|e| format!("Pushing {branch} failed: {e}"))?;
+                                .map_err(NotMade::Push)?;
                         }
                         Ok(())
                     })
@@ -653,6 +662,7 @@ impl CreatePullDialog {
                         .ok();
                         cx.background_spawn(async move {
                             api::github::pr_create(&core, target, title, body, head, base, draft, edits)
+                                .map_err(NotMade::Other)
                         })
                         .await
                     }
@@ -678,9 +688,13 @@ impl CreatePullDialog {
                                 cx,
                             );
                         }
-                        Err(e) => toast_in(
+                        Err(NotMade::Push(e)) => {
+                            git_failed(format!("Pushing {pushing} failed"), &e, &Fixes::new())
+                                .show(window, cx)
+                        }
+                        Err(NotMade::Other(e)) => toast_in(
                             &ws,
-                            Toast::error(e).title("Could not create pull request"),
+                            github_failure(&e).toast("Could not create pull request", None),
                             cx,
                         ),
                     }
@@ -690,9 +704,7 @@ impl CreatePullDialog {
             .detach();
         cx.notify();
     }
-}
 
-impl CreatePullDialog {
     /// "No commits between main and fix": GitHub would refuse it, after the push.
     fn empty(&self) -> Option<String> {
         (self.commits == Some(0))
@@ -914,9 +926,11 @@ impl CreateIssueDialog {
                             }
                             crate::ui::open_issue(&ws, IssueItem::from(&i), false, window, cx);
                         }
-                        Err(e) => {
-                            toast_in(&ws, Toast::error(e).title("Could not create issue"), cx)
-                        }
+                        Err(e) => toast_in(
+                            &ws,
+                            github_failure(&e).toast("Could not create issue", None),
+                            cx,
+                        ),
                     }
                 })
                 .ok();

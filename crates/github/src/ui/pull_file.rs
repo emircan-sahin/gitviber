@@ -11,9 +11,7 @@ use gitviber_core::git::FileChange;
 use gitviber_core::github::ReviewComment;
 use gitviber_diff::{Compare, DiffEvent, DiffSource, DiffView, LinePos, LineRange, Side};
 use gitviber_ui::memory::Live;
-use gitviber_ui::workspace::{
-    PullRange, Selection, TabIcon, TabItem, Toast, Workspace, selection_key,
-};
+use gitviber_ui::workspace::{PullRange, Selection, TabIcon, TabItem, Workspace, selection_key};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -28,8 +26,8 @@ use gpui_kit::{
 
 use crate::cache::{Cache, Wakes};
 use crate::model::{Target, repo_of};
-use crate::ui::common::{Attachments, Blocks, ago, error_text, text_button, theme};
 use crate::ui::comment_box::{POST_KEY, posts_on_key};
+use crate::ui::common::{Attachments, Blocks, ago, error_text, github_failure, text_button, theme};
 use crate::ui::markdown_input::MarkdownInput;
 
 /// Comments are kept fresh a minute at a time while the file or its PR shows.
@@ -409,11 +407,8 @@ impl PullFileView {
                         this.load(true, cx);
                     }
                     Err(e) => {
-                        this.ws
-                            .update(cx, |ws, cx| {
-                                ws.toast(Toast::error(e).title("Could not comment"), cx)
-                            })
-                            .ok();
+                        let toast = github_failure(&e).toast("Could not comment", None);
+                        this.ws.update(cx, |ws, cx| ws.toast(toast, cx)).ok();
                     }
                 }
                 cx.notify();
@@ -717,7 +712,10 @@ impl PullFileView {
                             .text_size(rems(0.72))
                             .child(error_text(
                                 "comments-error",
-                                &format!("Couldn't load the comments: {e}"),
+                                &format!(
+                                    "Couldn't load the comments: {}",
+                                    github_failure(&e).words()
+                                ),
                                 t.removed,
                                 cx,
                             )),

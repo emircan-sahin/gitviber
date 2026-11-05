@@ -760,7 +760,11 @@ async fn run_inner(
                 return Err(Done::Stopped);
             };
             cx.update(|cx| Guides::fetched(cx, kind, &id));
-            files.map_err(Done::Failed)?
+            // No usable GitHub login: said in words, not core's marker.
+            files.map_err(|e| {
+                let words = gitviber_core::github::login_words(&e).map(str::to_string);
+                Done::Failed(words.unwrap_or(e))
+            })?
         }
     };
     let (prompt, schema) = match kind {

@@ -5,6 +5,7 @@
 use std::rc::Rc;
 
 use gitviber_ui::keymap::{git, requests, view};
+use gitviber_ui::workspace::Toast;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{Sizable as _, WindowExt as _};
@@ -183,6 +184,9 @@ fn always(fix: GitFix, target: Option<&str>) -> Option<Action> {
         GitFix::Protected => Some(Action::new("New branch…", |window, cx| {
             window.dispatch_action(Box::new(git::NewBranch), cx)
         })),
+        GitFix::SignIn => Some(Action::new("Sign in…", |window, cx| {
+            window.dispatch_action(Box::new(view::Pulls), cx)
+        })),
         GitFix::Secret => {
             let url = target?.to_string();
             Some(Action::new("Open on GitHub", move |_, cx| {
@@ -215,10 +219,29 @@ pub fn git_failed(title: impl Into<SharedString>, message: &str, fixes: &Fixes) 
         "" => help.title.to_string(),
         why => format!("{}\n{why}", help.title),
     };
-    Note::error(title)
-        .detail(format!("{said}\n\n{}", message.trim()))
-        .action(action)
-        .also(also)
+    // A login core couldn't use has no words of git's, only core's own marker.
+    let detail = match help.fix {
+        Some(GitFix::SignIn) => said,
+        _ => format!("{said}\n\n{}", message.trim()),
+    };
+    Note::error(title).detail(detail).action(action).also(also)
+}
+
+/// `git_failed` as a workspace toast: what a failure git's words name means, with git's words
+/// under Details; the rest shows them as they are.
+pub fn git_toast(title: impl Into<SharedString>, e: &str, fixes: &Fixes) -> Toast {
+    let title = title.into();
+    let toast = match explain_git_error(e) {
+        Some(help) if help.fix == Some(GitFix::SignIn) => Toast::error(help.title),
+        Some(help) => Toast::error(format!("{}. {}", help.title, help.explanation))
+            .detail(e.trim().to_string()),
+        None => Toast::error(e.trim().to_string()),
+    }
+    .title(title.clone());
+    match git_failed(title, e, fixes).action {
+        Some(a) => toast.action(a.label, move |window, cx| (a.run)(window, cx)),
+        None => toast,
+    }
 }
 
 #[cfg(test)]
@@ -252,5 +275,51 @@ remote:        https://github.com/owner/repo/security/secret-scanning/unblock-se
         // An earlier commit has it too: GitHub's page alone.
         let note = git_failed("Push failed", REFUSED, &Fixes::new());
         assert_eq!(labels(&note), (Some("Open on GitHub".into()), None));
+    }
+
+    #[test]
+    fn a_held_index_lock_is_explained_with_a_way_out() {
+        let e = "fatal: Unable to create '/tmp/r/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository.";
+        let t = git_toast("Stage failed", e, &Fixes::new());
+        assert_eq!(t.title.as_deref(), Some("Stage failed"));
+        assert!(
+            t.message
+                .starts_with("Another git command holds the index lock."),
+            "{}",
+            t.message
+        );
+        assert_eq!(t.detail.as_deref(), Some(e));
+        assert_eq!(t.action.map(|a| a.label), Some("Remove lock".into()));
+        // What git doesn't explain shows as it said it.
+        let t = git_toast(
+            "Stage failed",
+            "fatal: pathspec 'x' did not match any files\n",
+            &Fixes::new(),
+        );
+        assert_eq!(
+            t.message.as_ref(),
+            "fatal: pathspec 'x' did not match any files"
+        );
+        assert!(t.action.is_none() && t.detail.is_none());
+    }
+
+    /// A GitHub call with no usable login says so in words, never core's marker, and offers
+    /// to sign in.
+    #[test]
+    fn a_login_core_couldnt_use_says_sign_in() {
+        let t = git_toast(
+            "Sync fork failed",
+            gitviber_core::github::EXPIRED,
+            &Fixes::new(),
+        );
+        assert!(t.message.contains("expired or revoked"), "{}", t.message);
+        assert!(t.detail.is_none());
+        assert_eq!(t.action.map(|a| a.label), Some("Sign in…".into()));
+        let note = git_failed(
+            "Sync fork failed",
+            gitviber_core::github::NOT_CONNECTED,
+            &Fixes::new(),
+        );
+        assert_eq!(note.detail.as_deref(), Some("You're signed out of GitHub."));
     }
 }

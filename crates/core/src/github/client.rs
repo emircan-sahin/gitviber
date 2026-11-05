@@ -328,6 +328,15 @@ impl Etags {
 pub const NOT_CONNECTED: &str = "github:not-connected";
 /// A login was found, and GitHub refused it (expired or revoked): signing in again fixes it.
 pub const EXPIRED: &str = "github:expired";
+/// What NOT_CONNECTED and EXPIRED say to the user; None for any other error.
+pub fn login_words(err: &str) -> Option<&'static str> {
+    match err {
+        NOT_CONNECTED => Some("You're signed out of GitHub."),
+        EXPIRED => Some("GitHub rejected your login (expired or revoked). Sign in again."),
+        _ => None,
+    }
+}
+
 /// The first line of an error when GitHub couldn't be reached; the transport's words follow.
 pub const UNREACHABLE: &str = "Can't reach GitHub. Check your connection.";
 /// The first line when the network works but the secure connection failed, mostly a certificate

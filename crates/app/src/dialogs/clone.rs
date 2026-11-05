@@ -9,6 +9,7 @@ use futures::StreamExt as _;
 use futures::channel::mpsc;
 use gitviber_core::api;
 use gitviber_core::network::{CANCELLED, Progress};
+use gitviber_github::FailureKind;
 use gitviber_ui::actions::file;
 use gitviber_ui::memory::Live;
 use gitviber_ui::workspace::Toast;
@@ -77,6 +78,9 @@ pub struct CloneDialog {
     named: bool,
     parent: Option<String>,
     repos: Option<Vec<OwnRepo>>,
+    /// Why the account's repositories couldn't be listed (an expired login, no network); not
+    /// said when there's no login at all.
+    repos_error: Option<SharedString>,
     /// The clone running: core's id for Cancel.
     op: Option<String>,
     progress: Option<Progress>,
@@ -203,6 +207,7 @@ impl CloneDialog {
             named: false,
             parent,
             repos: None,
+            repos_error: None,
             op: None,
             progress: None,
             error: None,
@@ -223,20 +228,27 @@ impl CloneDialog {
         }
         let core = gitviber_ui::core(cx);
         let listed = cx.background_spawn(async move {
-            api::github::gh_own_repos(&core)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|r| OwnRepo {
-                    full_name: r.full_name,
-                    description: r.description,
-                    private: r.private,
-                })
-                .collect::<Vec<_>>()
+            api::github::gh_own_repos(&core).map(|repos| {
+                repos
+                    .into_iter()
+                    .map(|r| OwnRepo {
+                        full_name: r.full_name,
+                        description: r.description,
+                        private: r.private,
+                    })
+                    .collect::<Vec<_>>()
+            })
         });
         self._repos = Some(cx.spawn(async move |this, cx| {
-            let repos = listed.await;
+            let listed = listed.await;
             let _ = this.update(cx, |this, cx| {
-                this.repos = Some(repos);
+                match listed {
+                    Ok(repos) => this.repos = Some(repos),
+                    Err(e) => {
+                        this.repos_error = repos_note(&e);
+                        this.repos = Some(vec![]);
+                    }
+                }
                 cx.notify();
             });
         }));
@@ -355,6 +367,13 @@ fn notify_if_away(title: String, body: String, cx: &mut App) {
     gitviber_ui::notify_if_away(|s| s.notify_git, title, body, None, cx);
 }
 
+/// Why the account's repositories aren't listed; nothing without a login, where none is right.
+fn repos_note(e: &str) -> Option<SharedString> {
+    let failure = gitviber_github::github_failure(e);
+    (failure.kind != FailureKind::SignedOut)
+        .then(|| format!("Your repositories can't be listed: {}", failure.message).into())
+}
+
 impl Render for CloneDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.app_theme().clone();
@@ -389,6 +408,14 @@ impl Render for CloneDialog {
                     .child("A URL git can clone, or owner/name for a GitHub repository."),
             )
             .child(Input::new(&self.url).disabled(busy))
+            .when_some(self.repos_error.clone(), |d, e| {
+                d.child(
+                    div()
+                        .text_size(rems(0.71875))
+                        .text_color(t.muted_foreground)
+                        .child(e),
+                )
+            })
             .when(!matches.is_empty(), |d| {
                 d.child(
                     div()
@@ -528,6 +555,18 @@ impl Render for CloneDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An expired login says so instead of passing for an empty list; no login says nothing.
+    #[test]
+    fn a_list_that_failed_says_why_unless_signed_out() {
+        use gitviber_core::github::{EXPIRED, NOT_CONNECTED};
+        let note = repos_note(EXPIRED).expect("said");
+        assert!(
+            note.contains("expired or revoked") && !note.contains("github:"),
+            "{note}"
+        );
+        assert_eq!(repos_note(NOT_CONNECTED), None);
+    }
 
     #[test]
     fn shorthand_is_github_and_folders_are_named_as_git_names_them() {

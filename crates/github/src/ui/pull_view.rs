@@ -11,6 +11,7 @@ use gitviber_core::api;
 use gitviber_core::git::FileChange;
 use gitviber_core::github::{Annotation, CheckFailure, PullDetail, PullFiles, ReviewComment};
 use gitviber_markdown::MarkdownView;
+use gitviber_refs::toast::{Fixes, git_toast};
 use gitviber_refs::{RepoState, ops};
 use gitviber_ui::AppTheme;
 use gitviber_ui::actions::editor;
@@ -46,14 +47,14 @@ use crate::logic::pull_commits::{
 use crate::model::{Account, Check, CiState, PullItem, PullState, Target, repo_of};
 use crate::requests::{GithubRequest, PullSource, request};
 use crate::store::Store;
+use crate::ui::comment_box::CommentBox;
 use crate::ui::common::{
-    Attachments, Blocks, ago, ci_badge, copy, error_text, load_failed, open_url, pull_icon,
-    pull_pill, section, section_part, text_button, theme,
+    Attachments, Blocks, ago, ci_badge, copy, error_text, github_failure, load_failed, open_url,
+    pull_icon, pull_pill, refresh_error, section, section_part, text_button, theme,
 };
 use crate::ui::dialogs::{ReviewDialog, confirm};
 use crate::ui::markdown_input::MarkdownInput;
 use crate::ui::page_find::{FindHost, Key, Marks, PageFind, Parts};
-use crate::ui::comment_box::CommentBox;
 use crate::ui::pull_file::{AGE as COMMENTS_AGE, comments_key, load_comments};
 
 /// The files only change with the two commits: rarely worth reading again.
@@ -490,7 +491,7 @@ impl PullView {
     /// Cached data stays on screen; a failed refresh (a rate limit, say) is noted beside it.
     fn refresh_error(&self) -> Option<String> {
         let e = self.detail_error.as_ref()?;
-        (self.busy.is_none() && self.detail.is_some()).then(|| format!("Couldn't refresh: {e}"))
+        (self.busy.is_none() && self.detail.is_some()).then(|| e.clone())
     }
 
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -781,10 +782,13 @@ impl PullView {
     }
 
     /// Runs a write in the background under `busy`; when it's through, says `done` (or that it
-    /// stopped on conflicts), reads the PR again and runs `after`.
+    /// stopped on conflicts), reads the PR again and runs `after`. `on_github`: a write GitHub
+    /// may refuse for what changed there, read again after a failure too; else a local git one.
+    #[allow(clippy::too_many_arguments)]
     fn act(
         &mut self,
         busy: &'static str,
+        on_github: bool,
         done: Toast,
         run: impl FnOnce(&gitviber_core::Core) -> Wrote + Send + 'static,
         after: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
@@ -811,10 +815,15 @@ impl PullView {
                         this.load(cx);
                         after(this, cx);
                     }
-                    Err(e) => {
-                        this.toast(Toast::error(e).title(format!("{busy} failed")), cx);
+                    Err(e) if on_github => {
+                        let failure = github_failure(&e);
+                        this.toast(failure.toast(format!("{busy} failed"), None), cx);
                         // Refused for what changed on GitHub (blocked, a new head): show that.
                         this.load(cx);
+                    }
+                    Err(e) => {
+                        let toast = git_toast(format!("{busy} failed"), &e, &Fixes::new());
+                        this.toast(toast, cx);
                     }
                 }
                 cx.notify();
@@ -851,6 +860,7 @@ impl PullView {
         // A checkout moves HEAD; the repo watcher refreshes the rest of the window.
         self.act(
             "Checkout",
+            false,
             Toast::success(message),
             move |core| {
                 done(api::github::pr_checkout(
@@ -900,6 +910,7 @@ impl PullView {
                     let sha = Some(head_sha);
                     this.act(
                         "Merge",
+                        true,
                         merged,
                         move |core| {
                             done(api::github::pr_merge(
@@ -926,6 +937,7 @@ impl PullView {
             let target = target.clone();
             this.act(
                 if open { "Reopen" } else { "Close" },
+                true,
                 Toast::success(format!("{verb} #{number}")),
                 move |core| done(api::github::pr_set_open(core, target, number, open)),
                 |_, _| {},
@@ -955,6 +967,7 @@ impl PullView {
         let number = self.number;
         self.act(
             "Ready for review",
+            true,
             Toast::success(format!("#{number} is ready for review")),
             move |core| done(api::github::pr_ready(core, id)),
             |_, _| {},
@@ -997,6 +1010,7 @@ impl PullView {
                             format!("Merged {} into {}; review and push", p.base_ref, p.head_ref);
                         this.act(
                             "Merge",
+                            false,
                             Toast::success(message),
                             move |core| {
                                 let number = p.number;
@@ -1096,6 +1110,7 @@ impl PullView {
         let commit = self.detail.as_ref().map(|d| d.pull.head_sha.clone());
         self.act(
             "Review",
+            true,
             Toast::success(event.done()),
             move |core| {
                 done(api::github::pr_review(
@@ -1131,6 +1146,7 @@ impl PullView {
         let (target, number, sent) = (self.target.clone(), self.number, text.clone());
         self.act(
             "Comment",
+            true,
             Toast::success("Comment added"),
             move |core| done(api::github::issue_comment(core, target, number, sent)),
             move |this, _| this.comment.posted(text),
@@ -1251,7 +1267,11 @@ fn switch_to_base(base: String, repo: String, window: &mut Window, cx: &mut App)
         let remotes = api::github::gh_remotes(&core).ok()?;
         remotes
             .into_iter()
-            .find(|r| r.repo.as_deref().is_some_and(|r| r.eq_ignore_ascii_case(&has)))
+            .find(|r| {
+                r.repo
+                    .as_deref()
+                    .is_some_and(|r| r.eq_ignore_ascii_case(&has))
+            })
             .map(|r| r.name)
     });
     let handle = window.window_handle();
@@ -1268,11 +1288,9 @@ fn switch_to_base(base: String, repo: String, window: &mut Window, cx: &mut App)
                         }
                     }),
                     None => Box::new(move |window, cx| {
-                        Toast::info(format!(
-                            "No remote here points at {repo}, where it merged."
-                        ))
-                        .title(format!("{pulled} wasn't pulled"))
-                        .show(window, cx)
+                        Toast::info(format!("No remote here points at {repo}, where it merged."))
+                            .title(format!("{pulled} wasn't pulled"))
+                            .show(window, cx)
                     }),
                 };
                 ops::switch_branch(&state, base, Some(then), window, cx);
@@ -1321,7 +1339,10 @@ pub(crate) fn checkout_worktree(source: PullSource, window: &mut Window, cx: &mu
                     );
                     ws.switch_worktree(path.into(), cx);
                 }
-                Err(e) => ws.toast(Toast::error(e).title("Could not make the worktree"), cx),
+                Err(e) => ws.toast(
+                    github_failure(&e).toast("Could not make the worktree", None),
+                    cx,
+                ),
             });
         });
     })
@@ -1505,19 +1526,25 @@ fn merge_off(d: &PullDetail) -> bool {
 }
 
 fn checks_error(e: &str) -> String {
-    format!("Could not load all checks: {e}")
+    format!("Could not load all checks: {}", github_failure(e).words())
 }
 
 fn failure_error(e: &str) -> String {
-    format!("Could not read the check: {e}")
+    format!("Could not read the check: {}", github_failure(e).words())
 }
 
 fn annotations_error(e: &str) -> String {
-    format!("Could not read the annotations: {e}")
+    format!(
+        "Could not read the annotations: {}",
+        github_failure(e).words()
+    )
 }
 
 fn log_error(e: &str) -> String {
-    format!("Could not read the job's log: {e}")
+    format!(
+        "Could not read the job's log: {}",
+        github_failure(e).words()
+    )
 }
 
 fn no_output(f: &CheckFailure) -> bool {
@@ -2357,6 +2384,7 @@ impl PullView {
                                 .update(cx, |this, cx| {
                                     this.act(
                                         "Cherry-pick",
+                                        false,
                                         Toast::success(format!(
                                             "Cherry-picked {}",
                                             &sha[..sha.len().min(7)]
@@ -2504,8 +2532,14 @@ impl PullView {
             &self.files_error
         };
         Some(match error {
-            Some(e) if narrowed => (format!("Could not load the commits' files: {e}"), true),
-            Some(e) => (format!("Could not load the PR's files: {e}"), true),
+            Some(e) if narrowed => {
+                let e = github_failure(e).words();
+                (format!("Could not load the commits' files: {e}"), true)
+            }
+            Some(e) => {
+                let e = github_failure(e).words();
+                (format!("Could not load the PR's files: {e}"), true)
+            }
             None if narrowed => ("Loading…".into(), false),
             None => ("Fetching the PR's commits…".into(), false),
         })
@@ -2998,13 +3032,7 @@ impl PullView {
             .child(actions)
             // Cached data stays on screen; a failed refresh (a rate limit, say) is noted under it.
             .when_some(self.refresh_error(), |page, e| {
-                page.child(
-                    div()
-                        .mt(px(8.))
-                        .text_size(rems(0.75))
-                        .debug_selector(|| "refresh-error".into())
-                        .child(error_text("refresh-error", &e, t.removed, cx)),
-                )
+                page.child(refresh_error(&e, &t, cx))
             });
         if let Some(d) = &d {
             if open {
@@ -3649,6 +3677,7 @@ mod tests {
         view.update(cx, |v, cx| {
             v.act(
                 "Merge",
+                true,
                 Toast::success("Merged #1"),
                 |_| Err("GitHub 405: Required status check is failing.".into()),
                 |_, _| {},
@@ -3660,6 +3689,34 @@ mod tests {
             assert!(v.busy.is_none());
             assert!(v.detail_at > at, "the page wasn't read again");
         });
+        // A local one (a checkout git refused) has nothing new on GitHub to read.
+        let at = view.read_with(cx, |v, _| v.detail_at);
+        let expired = gitviber_core::github::EXPIRED;
+        for on_github in [false, true] {
+            view.update(cx, |v, cx| {
+                let run = move |_: &gitviber_core::Core| Err(expired.to_string());
+                v.act(
+                    "Checkout",
+                    on_github,
+                    Toast::success("x"),
+                    run,
+                    |_, _| {},
+                    cx,
+                )
+            });
+            cx.run_until_parked();
+            let read = view.read_with(cx, |v, _| v.detail_at) > at;
+            assert_eq!(read, on_github);
+        }
+        let ws = view.read_with(cx, |v, _| v.ws.upgrade()).expect("open");
+        let toasts = ws.update(cx, |ws, _| ws.take_toasts());
+        // An expired login reads as one either way, never as core's marker.
+        let said: Vec<_> = toasts.iter().map(|t| t.message.to_string()).collect();
+        assert_eq!(said.len(), 3, "{said:?}");
+        assert!(
+            said[1..].iter().all(|m| m.contains("expired or revoked")),
+            "{said:?}"
+        );
     }
 
     #[test]
@@ -3768,7 +3825,9 @@ mod tests {
         draw(cx);
         assert!(view.read_with(cx, |v, _| {
             let view = v.page.viewport_bounds();
-            !v.page.bounds_for_item(41).is_some_and(|b| b.intersects(&view))
+            !v.page
+                .bounds_for_item(41)
+                .is_some_and(|b| b.intersects(&view))
         }));
         cx.simulate_input("!");
         let at = view.read_with(cx, |v, _| v.detail_at);
@@ -3784,9 +3843,9 @@ mod tests {
         });
         // Posted while more was typed: what was posted goes at the next frame, the rest stays.
         view.update_in(cx, |v, window, cx| {
-            v.comment
-                .input
-                .update(cx, |c, cx| c.set_value(&format!("{text}\n\nAlso"), window, cx));
+            v.comment.input.update(cx, |c, cx| {
+                c.set_value(&format!("{text}\n\nAlso"), window, cx)
+            });
             v.comment.posted(text.clone());
             cx.notify();
         });

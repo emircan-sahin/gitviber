@@ -23,8 +23,7 @@ use gpui_kit::{
 
 use crate::logic::text::{attachment_id, error_markdown, github_markdown};
 use crate::model::{
-    CiState, IssueItem, LabelItem, PullState, is_expired, is_not_connected, unix,
-    unreachable_detail,
+    CiState, IssueItem, LabelItem, PullState, is_expired, unix, unreachable_detail,
 };
 
 pub fn theme(cx: &App) -> AppTheme {
@@ -243,18 +242,13 @@ pub enum FailureKind {
 /// P4, for every failed GitHub call: `github_failure(&e).toast("Merge failed", retry)` for an
 /// action; `load_failed`, `refresh_error` and `list_error` for a page or list call it already.
 pub fn github_failure(error: &str) -> GithubFailure {
-    let (kind, message, detail) = if is_expired(error) {
-        (
-            FailureKind::Expired,
-            "GitHub rejected your login (expired or revoked). Sign in again.".to_string(),
-            None,
-        )
-    } else if is_not_connected(error) {
-        (
-            FailureKind::SignedOut,
-            "You're signed out of GitHub.".to_string(),
-            None,
-        )
+    let (kind, message, detail) = if let Some(words) = gitviber_core::github::login_words(error) {
+        let kind = if is_expired(error) {
+            FailureKind::Expired
+        } else {
+            FailureKind::SignedOut
+        };
+        (kind, words.to_string(), None)
     } else if let Some(detail) = unreachable_detail(error) {
         (
             FailureKind::Offline,
@@ -279,6 +273,14 @@ pub fn github_failure(error: &str) -> GithubFailure {
 }
 
 impl GithubFailure {
+    /// What it says, with the transport's words under it.
+    pub fn words(&self) -> String {
+        match &self.detail {
+            Some(d) => format!("{}\n{d}", self.message),
+            None => self.message.clone(),
+        }
+    }
+
     /// Signed out or expired: what fixes it is signing in, not trying again.
     pub fn needs_sign_in(&self) -> bool {
         matches!(self.kind, FailureKind::SignedOut | FailureKind::Expired)
@@ -397,12 +399,13 @@ pub fn refresh_error(error: &str, t: &AppTheme, cx: &App) -> Div {
         .gap(px(8.))
         .text_size(rems(0.75))
         .debug_selector(|| "refresh-error".into())
-        .child(error_text(
+        // Wraps onto lines of its own: a SAML or rate-limit message runs long.
+        .child(div().flex_1().min_w_0().child(error_text(
             "refresh-error",
             &format!("Couldn't refresh: {}", failure.message),
             t.removed,
             cx,
-        ))
+        )))
         .when(failure.needs_sign_in(), |d| {
             d.child(
                 text_button("refresh-sign-in", "Sign in…", t)
@@ -435,11 +438,7 @@ pub fn list_error(
     cx: &App,
 ) -> Div {
     let failure = github_failure(error);
-    let text = |color| {
-        let detail = failure.detail.as_ref().map(|d| format!("\n{d}"));
-        let words = format!("{}{}", failure.message, detail.unwrap_or_default());
-        error_text(id, &words, color, cx)
-    };
+    let text = |color| error_text(id, &failure.words(), color, cx);
     let button = fix_button(("list-fix", id.1), &failure, loading, retry).xsmall();
     if loaded {
         div()
