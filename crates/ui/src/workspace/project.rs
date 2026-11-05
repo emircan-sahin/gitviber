@@ -258,13 +258,16 @@ impl Project {
 
 // MARK: The saved projects
 
+/// What `SavedProjectHooks` does with a saved project, by its path.
+pub type SavedProjectHook = Rc<dyn Fn(&str, &mut App)>;
+
 /// The app's ways with a saved project. `open` looks at its folder off the UI thread first, and
 /// a gone one gets `not_found`; `locate` asks where a moved one is now, puts it in the old one's
 /// place in the list and opens it.
 #[derive(Clone)]
 pub struct SavedProjectHooks {
-    pub open: Rc<dyn Fn(&str, &mut App)>,
-    pub locate: Rc<dyn Fn(&str, &mut App)>,
+    pub open: SavedProjectHook,
+    pub locate: SavedProjectHook,
 }
 
 impl Global for SavedProjectHooks {}
@@ -305,28 +308,52 @@ pub fn not_found(root: &str) -> Toast {
 /// Takes `root` off the saved projects, with its pin, folder and color; the toast it gives back
 /// has the Undo.
 pub fn forget_project(root: &str, cx: &mut App) -> Toast {
-    let saved = UiState::get(cx).saved_projects();
-    UiState::update(cx, |s| s.forget_project(root));
+    let saved = removed(cx, |s| s.forget_project(root));
     restorable(
         format!("Removed {} from the list", project_name(root)),
         saved,
     )
 }
 
-/// Clear Menu: every saved project but the pinned, the filed and `open` (the open project's
-/// main folder) goes. The toast it gives back has the Undo; None when nothing went.
-pub fn clear_recent_projects(open: Option<&str>, cx: &mut App) -> Option<Toast> {
-    let saved = UiState::get(cx).saved_projects();
-    let before = UiState::get(cx).recent_projects.len();
-    UiState::update(cx, |s| s.clear_recent_projects(open));
-    let cleared = before - UiState::get(cx).recent_projects.len();
+/// Clear Menu: every saved project but the pinned, the filed and those open in any window
+/// goes. The toast it gives back has the Undo; None when nothing went.
+pub fn clear_recent_projects(cx: &mut App) -> Option<Toast> {
+    let open = open_projects(cx);
+    let saved = removed(cx, |s| s.clear_recent_projects(&open));
+    let cleared = saved.gone.len();
     let what = if cleared == 1 { "project" } else { "projects" };
     (cleared > 0).then(|| restorable(format!("Cleared {cleared} {what} from the list"), saved))
 }
 
+/// Every window's open project, by its main folder.
+fn open_projects(cx: &App) -> Vec<String> {
+    let Some(windows) = cx.try_global::<super::Windows>() else {
+        return Vec::new();
+    };
+    windows
+        .0
+        .values()
+        .filter_map(|ws| {
+            let ws = ws.upgrade()?;
+            let project = ws.read(cx).project()?.read(cx);
+            Some(project.main_worktree()?.to_string_lossy().into_owned())
+        })
+        .collect()
+}
+
+fn removed(cx: &mut App, remove: impl FnOnce(&mut UiState)) -> SavedProjects {
+    let mut saved = None;
+    UiState::update(cx, |s| saved = Some(s.remove_projects(remove)));
+    saved.expect("update runs its closure")
+}
+
 fn restorable(message: String, saved: SavedProjects) -> Toast {
-    Toast::success(message).undo(move |_, cx| {
-        let saved = saved.clone();
-        UiState::update(cx, |s| s.restore_projects(saved));
+    Toast::success(message).undo(move |window, cx| {
+        let (saved, mut back) = (saved.clone(), 0);
+        UiState::update(cx, |s| back = s.restore_projects(saved));
+        if back > 0 {
+            let what = if back == 1 { "project" } else { "projects" };
+            Toast::success(format!("Restored {back} {what}")).show(window, cx);
+        }
     })
 }

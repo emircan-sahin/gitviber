@@ -44,7 +44,9 @@ pub use selection::{
     page_label, register_opener, selection_key, selection_path,
 };
 pub use tabs::{ClosedTab, Opened, TabEntry, TabGroup, Tabs};
-pub use toast::{Toast, ToastAction, ToastClosed, ToastKind, ToastRun, selectable_text};
+pub use toast::{
+    Toast, ToastAction, ToastClosed, ToastKind, ToastRun, escape_html, selectable_text,
+};
 pub use viewed::ViewedMarks;
 
 use crate::memory::Live;
@@ -1226,6 +1228,8 @@ impl Workspace {
         let center = self.center_focus.clone();
         self._focus_watch.extend([
             cx.on_focus_in(&center, window, |ws, _, _| ws.center_had_focus = true),
+            // WorkspaceView's render calls it too and, running first, normally acts; this covers
+            // a frame where that view doesn't render. Both are needed.
             cx.on_focus_lost(window, |ws, window, cx| {
                 ws.refocus_lost(window, cx);
             }),
@@ -1916,8 +1920,12 @@ mod tests {
     /// removal can be undone.
     #[gpui_kit::test]
     fn a_moved_project_offers_locate_and_a_removal_that_can_be_undone(cx: &mut TestAppContext) {
-        setup(cx);
-        let (_, cx) = cx.add_window_view(|_, cx| Host(cx.new(Workspace::new)));
+        crate::test_support::config_dir("workspace-test-moved");
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let host = cx.new(|cx| Host(cx.new(Workspace::new)));
+            gpui_kit::base::Root::new(gpui_kit::AnyView::from(host), window, cx)
+        });
         let moved_key = "/tmp/gitviber-ws-moved-away".to_string();
         cx.update(|_, cx| UiState::update(cx, |s| s.add_recent_project(&moved_key)));
         let toast = not_found(&moved_key);
@@ -1942,6 +1950,11 @@ mod tests {
         assert!(undo.autohides());
         cx.update(|window, cx| (undo.action.unwrap().run)(window, cx));
         assert!(listed(cx));
+        let said = cx.update(|window, cx| {
+            use gpui_kit::component::WindowExt as _;
+            window.notifications(cx).len()
+        });
+        assert_eq!(said, 1, "Restored 1 project");
     }
 
     /// A folder outside any repository opens as a plain project and is listed; `git init` (here,

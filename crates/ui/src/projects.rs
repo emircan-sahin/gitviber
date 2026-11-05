@@ -264,6 +264,21 @@ impl ProjectOrg {
         self.colors.remove(path);
     }
 
+    /// `path`, forgotten, back as `saved` had it: its pin, folder, manual place and color. A
+    /// folder deleted since leaves it ungrouped.
+    pub fn restore(&mut self, path: &str, saved: &ProjectOrg) {
+        put_back(&mut self.manual, path, &saved.manual);
+        put_back(&mut self.pinned, path, &saved.pinned);
+        for was in &saved.folders {
+            if let Some(f) = self.folders.iter_mut().find(|f| f.id == was.id) {
+                put_back(&mut f.projects, path, &was.projects);
+            }
+        }
+        if let Some(color) = saved.colors.get(path) {
+            self.colors.insert(path.to_string(), color.clone());
+        }
+    }
+
     /// A folder found elsewhere keeps its place, pin and color. Found where another entry
     /// already is, the two merge: the arranged one's arrangement wins, `old`'s on a tie.
     pub fn relocate(&mut self, old: &str, new: &str) {
@@ -386,6 +401,18 @@ impl ProjectOrg {
         }));
         lines
     }
+}
+
+/// `path` back into `list` if `was` had it: just above the first of its old successors still
+/// there, so what came in meanwhile keeps its place.
+pub(crate) fn put_back(list: &mut Vec<String>, path: &str, was: &[String]) {
+    let Some(at) = was.iter().position(|p| p == path) else {
+        return;
+    };
+    let next = was[at + 1..]
+        .iter()
+        .find_map(|n| list.iter().position(|p| p == n));
+    list.insert(next.unwrap_or(list.len()), path.to_string());
 }
 
 fn auto_swatches() -> impl Iterator<Item = &'static Swatch> {

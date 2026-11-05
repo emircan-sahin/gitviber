@@ -857,6 +857,7 @@ impl Render for WorkspaceView {
             toast.show(window, cx);
         }
         // A closed tab's view took focus with it: the tab shown now gets it, else the window.
+        // Before the workspace's focus-lost listener, which covers frames this doesn't render.
         if window.focused(cx).is_none()
             && !self
                 .workspace
@@ -1037,12 +1038,8 @@ impl Render for WorkspaceView {
             })
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::open_recent))
-            .on_action(cx.listener(|this, _: &ClearRecent, window, cx| {
-                let open = this.workspace.read(cx).project().and_then(|p| {
-                    let main = p.read(cx).main_worktree()?;
-                    Some(main.to_string_lossy().into_owned())
-                });
-                if let Some(cleared) = clear_recent_projects(open.as_deref(), cx) {
+            .on_action(cx.listener(|_, _: &ClearRecent, window, cx| {
+                if let Some(cleared) = clear_recent_projects(cx) {
                     cleared.show(window, cx);
                 }
             }))

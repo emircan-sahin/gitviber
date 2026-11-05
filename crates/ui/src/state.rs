@@ -11,7 +11,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
-use crate::projects::ProjectOrg;
+use crate::projects::{ProjectOrg, put_back};
 use crate::store;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -119,11 +119,13 @@ pub struct UiState {
     pub keymap_preset_told: bool,
 }
 
-/// `UiState::saved_projects`, for `restore_projects`.
+/// `UiState::remove_projects`, for `restore_projects`.
 #[derive(Clone, Debug)]
 pub struct SavedProjects {
     recent: Vec<String>,
     org: ProjectOrg,
+    /// What the removal took: an Undo brings back these, not others removed since.
+    pub gone: Vec<String>,
 }
 
 const RECENT_PROJECTS: usize = 20;
@@ -142,7 +144,12 @@ impl UiState {
     pub fn add_recent_project(&mut self, root: &str) {
         self.recent_projects.retain(|p| p != root);
         self.recent_projects.insert(0, root.to_string());
-        // Only loose projects fall off the end: a pinned or filed one stays until removed.
+        self.cap_recent_projects();
+        self.project_org.assign_colors(&self.recent_projects);
+    }
+
+    /// Only loose projects fall off the end: a pinned or filed one stays until removed.
+    fn cap_recent_projects(&mut self) {
         while self.recent_projects.len() > RECENT_PROJECTS {
             let Some(at) = self
                 .recent_projects
@@ -155,7 +162,6 @@ impl UiState {
             let gone = self.recent_projects.remove(at);
             self.project_org.forget(&gone);
         }
-        self.project_org.assign_colors(&self.recent_projects);
     }
 
     /// Off the list, with its pin, folder and color.
@@ -177,36 +183,46 @@ impl UiState {
     }
 
     /// Clear Recent: the projects the user pinned or put in a folder stay, and `open`, the open
-    /// project's main folder.
-    pub fn clear_recent_projects(&mut self, open: Option<&str>) {
+    /// projects' main folders.
+    pub fn clear_recent_projects(&mut self, open: &[String]) {
         let (keep, gone): (Vec<String>, Vec<String>) = std::mem::take(&mut self.recent_projects)
             .into_iter()
-            .partition(|p| self.project_org.organized(p) || Some(p.as_str()) == open);
+            .partition(|p| self.project_org.organized(p) || open.contains(p));
         for p in &gone {
             self.project_org.forget(p);
         }
         self.recent_projects = keep;
     }
 
-    /// The saved projects and their arrangement as they are now, for an Undo.
-    pub fn saved_projects(&self) -> SavedProjects {
-        SavedProjects {
-            recent: self.recent_projects.clone(),
-            org: self.project_org.clone(),
-        }
-    }
-
-    /// Puts the saved projects back as `saved` had them; one opened since stays on top.
-    pub fn restore_projects(&mut self, saved: SavedProjects) {
-        let since: Vec<String> = self
-            .recent_projects
+    /// Runs `remove` and keeps what it took off the list, as it was, for an Undo.
+    pub fn remove_projects(&mut self, remove: impl FnOnce(&mut Self)) -> SavedProjects {
+        let (recent, org) = (self.recent_projects.clone(), self.project_org.clone());
+        remove(self);
+        let gone = recent
             .iter()
-            .filter(|p| !saved.recent.contains(p))
+            .filter(|p| !self.recent_projects.contains(p))
             .cloned()
             .collect();
-        self.recent_projects = since.into_iter().chain(saved.recent).collect();
-        self.project_org = saved.org;
+        SavedProjects { recent, org, gone }
+    }
+
+    /// Puts back what `saved` took that the list lacks now, each where it was, with its pin,
+    /// folder and color; what changed meanwhile stays. How many came back.
+    pub fn restore_projects(&mut self, saved: SavedProjects) -> usize {
+        let gone: Vec<&String> = saved
+            .recent
+            .iter()
+            .filter(|p| saved.gone.contains(p) && !self.recent_projects.contains(p))
+            .collect();
+        for p in &gone {
+            put_back(&mut self.recent_projects, p, &saved.recent);
+            self.project_org.restore(p, &saved.org);
+        }
+        self.cap_recent_projects();
         self.project_org.assign_colors(&self.recent_projects);
+        gone.iter()
+            .filter(|p| self.recent_projects.contains(p))
+            .count()
     }
 
     pub fn add_recent_command(&mut self, id: &str) {
@@ -392,7 +408,7 @@ mod tests {
         // Located where it already was: it stays in the list.
         s.relocate_project("/q/pinned", "/q/pinned");
         assert!(s.recent_projects.contains(&"/q/pinned".to_string()));
-        s.clear_recent_projects(None);
+        s.clear_recent_projects(&[]);
         assert_eq!(s.recent_projects, ["/p/filed", "/q/pinned"]);
         s.forget_project("/q/pinned");
         assert_eq!(s.recent_projects, ["/p/filed"]);
@@ -406,21 +422,28 @@ mod tests {
             s.add_recent_project(p);
         }
         s.project_org.set_color("/p/b", Some("red"));
+        s.project_org.toggle_pin("/p/c");
         let before = s.clone();
-        let saved = s.saved_projects();
-        s.clear_recent_projects(Some("/p/b"));
-        assert_eq!(s.recent_projects, ["/p/b"]);
-        s.forget_project("/p/b");
-        assert!(s.recent_projects.is_empty());
-        // Opened meanwhile: it stays, on top.
+        let cleared = s.remove_projects(|s| s.clear_recent_projects(&["/p/b".into()]));
+        assert_eq!(s.recent_projects, ["/p/b", "/p/c"]);
+        assert_eq!(cleared.gone, ["/p/a"]);
+        let forgot = s.remove_projects(|s| s.forget_project("/p/b"));
+        // Opened and pinned meanwhile: it stays, and so does the pin.
         s.add_recent_project("/p/new");
-        s.restore_projects(saved);
+        s.project_org.toggle_pin("/p/new");
+        // The clear's Undo brings back only what the clear took.
+        assert_eq!(s.restore_projects(cleared.clone()), 1);
+        assert_eq!(s.recent_projects, ["/p/new", "/p/a", "/p/c"]);
+        assert_eq!(s.restore_projects(forgot), 1);
         assert_eq!(s.recent_projects, ["/p/new", "/p/a", "/p/b", "/p/c"]);
+        assert_eq!(s.project_org.pinned, ["/p/c", "/p/new"]);
         assert_eq!(
             s.project_org.colors.get("/p/b"),
             before.project_org.colors.get("/p/b")
         );
         assert!(s.project_org.colors.contains_key("/p/new"));
+        // A second Undo finds nothing to bring back.
+        assert_eq!(s.restore_projects(cleared), 0);
     }
 
     #[test]
