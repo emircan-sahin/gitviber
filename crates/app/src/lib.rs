@@ -92,6 +92,7 @@ pub fn init(cx: &mut App) {
     help::install(cx);
     live_updates::install(cx);
     dialogs::install(cx);
+    projects::install(cx);
     quit::install(cx);
     native_updater::install(cx);
     gitviber_ui::open_in::refresh(cx);

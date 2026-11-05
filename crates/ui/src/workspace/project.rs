@@ -4,12 +4,18 @@
 //! fetch their own, following the events.
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use gitviber_core::{Event, watch};
-use gpui_kit::{AppContext as _, Context, EventEmitter, SharedString, Subscription, Task};
+use gpui_kit::{
+    App, AppContext as _, Context, EventEmitter, Global, SharedString, Subscription, Task,
+};
 
+use super::Toast;
 use crate::backend::{self, CoreEvents, has_core};
 use crate::memory::Live;
+use crate::projects::{home_dir, home_relative, project_name};
+use crate::state::{SavedProjects, UiState};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RepoState {
@@ -268,4 +274,106 @@ impl Project {
         cx.emit(ProjectEvent::RepoChanged(change));
         cx.notify();
     }
+}
+
+// MARK: The saved projects
+
+/// What `SavedProjectHooks` does with a saved project, by its path.
+pub type SavedProjectHook = Rc<dyn Fn(&str, &mut App)>;
+
+/// The app's ways with a saved project. `open` looks at its folder off the UI thread first, and
+/// a gone one gets `not_found`; `locate` asks where a moved one is now, puts it in the old one's
+/// place in the list and opens it.
+#[derive(Clone)]
+pub struct SavedProjectHooks {
+    pub open: SavedProjectHook,
+    pub locate: SavedProjectHook,
+}
+
+impl Global for SavedProjectHooks {}
+
+pub fn set_saved_project_hooks(cx: &mut App, hooks: SavedProjectHooks) {
+    cx.set_global(hooks);
+}
+
+/// Opens a saved project in the main window, as Open Recent does. Nothing without the app.
+pub fn open_saved_project(root: &str, cx: &mut App) {
+    if let Some(open) = cx.try_global::<SavedProjectHooks>().map(|h| h.open.clone()) {
+        open(root, cx);
+    }
+}
+
+/// A saved project whose folder isn't where it was, however it was asked for: the picker, Open
+/// Recent, a launch. It stays until closed, as its buttons are the way on.
+pub fn not_found(root: &str) -> Toast {
+    let at = home_relative(root, home_dir().as_deref());
+    let (locate, forget) = (root.to_string(), root.to_string());
+    Toast::warning(format!(
+        "Nothing is at {at} now: it was moved or renamed, or its drive isn't connected."
+    ))
+    .title(format!("{} wasn't found", project_name(root)))
+    .action("Locate…", move |_, cx| {
+        if let Some(locate_in) = cx
+            .try_global::<SavedProjectHooks>()
+            .map(|h| h.locate.clone())
+        {
+            locate_in(&locate, cx);
+        }
+    })
+    .action("Remove from List", move |window, cx| {
+        forget_project(&forget, cx).show(window, cx)
+    })
+}
+
+/// Takes `root` off the saved projects, with its pin, folder and color; the toast it gives back
+/// has the Undo.
+pub fn forget_project(root: &str, cx: &mut App) -> Toast {
+    let saved = removed(cx, |s| s.forget_project(root));
+    restorable(
+        format!("Removed {} from the list", project_name(root)),
+        saved,
+    )
+}
+
+/// Clear Menu: every saved project but the pinned, the filed and those open in any window
+/// goes. The toast it gives back has the Undo; None when nothing went.
+pub fn clear_recent_projects(cx: &mut App) -> Option<Toast> {
+    let open = open_projects(cx);
+    let saved = removed(cx, |s| s.clear_recent_projects(&open));
+    let cleared = saved.gone.len();
+    let what = if cleared == 1 { "project" } else { "projects" };
+    (cleared > 0).then(|| restorable(format!("Cleared {cleared} {what} from the list"), saved))
+}
+
+/// Every window's open project, by its main folder.
+fn open_projects(cx: &App) -> Vec<String> {
+    let Some(windows) = cx.try_global::<super::Windows>() else {
+        return Vec::new();
+    };
+    windows
+        .0
+        .values()
+        .filter_map(|ws| {
+            let ws = ws.upgrade()?;
+            let project = ws.read(cx).project()?.read(cx);
+            Some(project.main_worktree()?.to_string_lossy().into_owned())
+        })
+        .collect()
+}
+
+fn removed(cx: &mut App, remove: impl FnOnce(&mut UiState)) -> SavedProjects {
+    let mut saved = None;
+    UiState::update(cx, |s| saved = Some(s.remove_projects(remove)));
+    saved.expect("update runs its closure")
+}
+
+fn restorable(message: String, saved: SavedProjects) -> Toast {
+    Toast::success(message).undo(move |window, cx| {
+        let (saved, mut back) = (saved.clone(), 0);
+        UiState::update(cx, |s| back = s.restore_projects(saved));
+        if back > 0 {
+            let what = if back == 1 { "project" } else { "projects" };
+            Toast::success(format!("Restored {back} {what}")).show(window, cx);
+        }
+    })
 }

@@ -26,8 +26,8 @@ pub(super) fn project_menu(
             .disabled(current)
             .on_click({
                 let p = p.clone();
-                move |_, window, cx| {
-                    let _ = open.update(cx, |this, cx| this.open(p.clone(), window, cx));
+                move |_, _, cx| {
+                    let _ = open.update(cx, |this, cx| this.open(p.clone(), cx));
                 }
             }),
     )
@@ -125,6 +125,6 @@ pub(super) fn project_menu(
         PopupMenuItem::new("Remove from List")
             .icon(IconName::X)
             .disabled(current)
-            .on_click(move |_, _, cx| UiState::update(cx, |s| s.forget_project(&forget))),
+            .on_click(move |_, window, cx| forget_project(&forget, cx).show(window, cx)),
     )
 }

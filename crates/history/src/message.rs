@@ -2,6 +2,8 @@
 
 use std::ops::Range;
 
+use gitviber_ui::workspace::escape_html;
+
 fn word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
@@ -84,18 +86,6 @@ pub fn repo_of(commit_url: &str) -> Option<&str> {
     commit_url.split_once("/commit/").map(|(repo, _)| repo)
 }
 
-fn escape(text: &str, out: &mut String) {
-    for c in text.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            c => out.push(c),
-        }
-    }
-}
-
 /// A message body for a selectable text view: its lines and indents as written, refs linked
 /// when `repo` is known.
 pub fn body_html(body: &str, repo: Option<&str>) -> String {
@@ -105,15 +95,15 @@ pub fn body_html(body: &str, repo: Option<&str>) -> String {
     out.push_str("<pre>\n");
     let mut at = 0;
     for (range, href) in repo.map(|r| github_refs(body, r)).unwrap_or_default() {
-        escape(&body[at..range.start], &mut out);
+        escape_html(&body[at..range.start], &mut out);
         out.push_str("<a href=\"");
-        escape(&href, &mut out);
+        escape_html(&href, &mut out);
         out.push_str("\">");
-        escape(&body[range.clone()], &mut out);
+        escape_html(&body[range.clone()], &mut out);
         out.push_str("</a>");
         at = range.end;
     }
-    escape(&body[at..], &mut out);
+    escape_html(&body[at..], &mut out);
     out.push_str("</pre>");
     out
 }

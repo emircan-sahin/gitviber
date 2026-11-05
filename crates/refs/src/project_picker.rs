@@ -12,8 +12,8 @@ use gitviber_ui::projects::{
 use gitviber_ui::widgets::{
     DraggedProject, Ends, Keycaps, list_step, on_list_keys, project_tile, swatch_tile,
 };
-use gitviber_ui::workspace::PanelContext;
-use gitviber_ui::{ActiveAppTheme, Project, UiState, Workspace};
+use gitviber_ui::workspace::{PanelContext, forget_project, open_saved_project};
+use gitviber_ui::{ActiveAppTheme, Project, UiState};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -89,13 +89,13 @@ impl ProjectPicker {
             cx.subscribe_in(
                 &query,
                 window,
-                |this: &mut Self, _, e: &InputEvent, window, cx| match e {
+                |this: &mut Self, _, e: &InputEvent, _, cx| match e {
                     // A search starts on its first match.
                     InputEvent::Change => {
                         this.hot = this.lines(cx).iter().find_map(Hot::of);
                         cx.notify();
                     }
-                    InputEvent::PressEnter { .. } => this.choose(window, cx),
+                    InputEvent::PressEnter { .. } => this.choose(cx),
                     _ => {}
                 },
             ),
@@ -137,21 +137,18 @@ impl ProjectPicker {
         let _ = self.chip.update(cx, |c, cx| c.close(cx));
     }
 
-    fn open(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn open(&mut self, path: String, cx: &mut Context<Self>) {
         self.close(cx);
-        if path == self.main {
-            return;
-        }
-        if let Some(ws) = Workspace::for_window(window, cx) {
-            ws.update(cx, |ws, cx| ws.open_project(path.into(), window, cx));
+        if path != self.main {
+            open_saved_project(&path, cx);
         }
     }
 
     /// ↵: opens the project, or folds the folder.
-    fn choose(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn choose(&mut self, cx: &mut Context<Self>) {
         let lines = self.lines(cx);
         match self.hot_line(&lines).map(|i| &lines[i]) {
-            Some(Line::Project { path, .. }) => self.open(path.clone(), window, cx),
+            Some(Line::Project { path, .. }) => self.open(path.clone(), cx),
             Some(Line::Folder { id, .. }) => {
                 let id = *id;
                 arrange(cx, |o, _| o.toggle_folder(id));
@@ -215,7 +212,7 @@ impl ProjectPicker {
                 None
             }
             "enter" => {
-                self.choose(window, cx);
+                self.choose(cx);
                 None
             }
             _ => return,
@@ -491,7 +488,7 @@ impl ProjectPicker {
                     cx.notify();
                 }
             }))
-            .on_click(cx.listener(move |this, _, window, cx| this.open(click.clone(), window, cx)))
+            .on_click(cx.listener(move |this, _, _, cx| this.open(click.clone(), cx)))
             .on_drag(DraggedProject { path: path.clone() }, |d, _, _, cx| {
                 cx.new(|_| d.clone())
             })

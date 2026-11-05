@@ -13,7 +13,7 @@ use gitviber_ui::state::PanelSizes;
 use gitviber_ui::widgets::{CountBadge, PanelSkeleton, Pressable as _};
 use gitviber_ui::workspace::{
     ChangesOf, PanelContext, ProjectEvent, Registry, Selection, Slot, TabGroup, Toast, Workspace,
-    WorkspaceEvent,
+    WorkspaceEvent, clear_recent_projects,
 };
 use gitviber_ui::{ActiveAppTheme, Settings, UiState, theme, windows};
 use gpui_kit::component::InteractiveElementExt as _;
@@ -94,7 +94,6 @@ pub struct WorkspaceView {
     find_resent: Rc<Cell<Resent>>,
     /// Repaints the memory readout now and then, while it shows.
     _memory_tick: Option<Task<()>>,
-    _open_recent: Option<Task<()>>,
     _project: Option<Subscription>,
     /// Whether the open worktree is still there, while that's being looked at.
     _gone: Option<Task<()>>,
@@ -249,7 +248,6 @@ impl WorkspaceView {
             title: String::new(),
             find_resent: Rc::default(),
             _memory_tick: memory_tick,
-            _open_recent: None,
             _project: None,
             _gone: None,
             terminal_news: None,
@@ -307,7 +305,7 @@ impl WorkspaceView {
         };
         let candidates = fallback_order(&UiState::get(cx).recent_projects, &root, main.as_deref());
         let found = cx.background_spawn(async move {
-            if root.is_dir() {
+            if open_repo::missing(&root) != Some(Found::Gone) {
                 return None;
             }
             let next = candidates
@@ -436,34 +434,7 @@ impl WorkspaceView {
     }
 
     fn open_recent(&mut self, action: &OpenRecent, _: &mut Window, cx: &mut Context<Self>) {
-        let folder = PathBuf::from(action.path.as_ref());
-        let workspace = self.workspace.downgrade();
-        // Off the UI thread: a gone network mount can take seconds to say so.
-        self._open_recent = Some(cx.spawn(async move |_, cx| {
-            let at = folder.clone();
-            let found = cx
-                .background_spawn(async move { open_repo::look(&at) })
-                .await;
-            cx.update(|cx| {
-                if found != Found::Gone {
-                    return open_repo::act(found, Request::folder(folder), cx);
-                }
-                // It stays, pin, folder and color too: the drive may only be unplugged. The
-                // projects list shows it missing and offers Locate….
-                crate::projects::mark_stale(cx);
-                let path = folder.to_string_lossy().into_owned();
-                if let Some(workspace) = workspace.upgrade() {
-                    workspace.update(cx, |ws, cx| {
-                        ws.toast(
-                            Toast::warning(format!(
-                                "{path} is gone. Locate it from the projects list, or remove it there."
-                            )),
-                            cx,
-                        )
-                    });
-                }
-            });
-        }));
+        open_repo::open_saved(PathBuf::from(action.path.as_ref()), cx);
     }
 
     /// ⌃1–⌃4 in the classic preset, ⌃⇧G Changes in the VS Code one.
@@ -931,7 +902,13 @@ impl Render for WorkspaceView {
         for toast in self.workspace.update(cx, |ws, _| ws.take_toasts()) {
             toast.show(window, cx);
         }
-        if window.focused(cx).is_none() {
+        // A closed tab's view took focus with it: the tab shown now gets it, else the window.
+        // Before the workspace's focus-lost listener, which covers frames this doesn't render.
+        if window.focused(cx).is_none()
+            && !self
+                .workspace
+                .update(cx, |ws, cx| ws.refocus_lost(window, cx))
+        {
             self.focus.focus(window, cx);
         }
         let ctx = self.context(cx);
@@ -1107,8 +1084,10 @@ impl Render for WorkspaceView {
             })
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::open_recent))
-            .on_action(cx.listener(|_, _: &ClearRecent, _, cx| {
-                UiState::update(cx, |s| s.clear_recent_projects())
+            .on_action(cx.listener(|_, _: &ClearRecent, window, cx| {
+                if let Some(cleared) = clear_recent_projects(cx) {
+                    cleared.show(window, cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &repo::Refresh, _, cx| {
                 if let Some(project) = this.workspace.read(cx).project().cloned() {
@@ -2563,6 +2542,52 @@ mod tests {
             draw(cx);
             keys(cx, "shift-secondary-e");
             assert_eq!(focused(cx), Some(Part::Center));
+        }
+
+        /// ⌘W on the focused tab hands focus to the tab shown next, so the keys still reach it;
+        /// with none left, the center keeps it.
+        #[gpui_kit::test]
+        fn closing_the_focused_tab_leaves_focus_in_the_next(cx: &mut TestAppContext) {
+            let project = setup("close-focus", cx);
+            let cx = &mut launch(Some(project), START, cx);
+            // Focus events come only to the window in front.
+            cx.update(|window, _| window.activate_window());
+            let ws = workspace(cx);
+            cx.update(|window, cx| {
+                ws.update(cx, |ws, cx| {
+                    for key in ["a", "b"] {
+                        ws.open_tab(
+                            key,
+                            false,
+                            |_, cx| {
+                                cx.new(|cx| Tab {
+                                    focus: cx.focus_handle(),
+                                    finds: false,
+                                    found: Rc::default(),
+                                })
+                            },
+                            window,
+                            cx,
+                        );
+                    }
+                    ws.focus_center(window, cx);
+                })
+            });
+            draw(cx);
+            let in_tab = |cx: &mut VisualTestContext| {
+                cx.update(|window, cx| {
+                    let tab = ws.read(cx).tabs().active();
+                    let focus = tab.and_then(|t| t.item.focus_handle(cx));
+                    focus.is_some_and(|f| f.is_focused(window))
+                })
+            };
+            assert!(in_tab(cx));
+            keys(cx, "secondary-w");
+            assert_eq!(cx.update(|_, cx| ws.read(cx).tabs().len()), 1);
+            assert!(in_tab(cx), "the next tab has the keys");
+            keys(cx, "secondary-w");
+            let part = cx.update(|window, cx| ws.read(cx).focused_part(window, cx));
+            assert_eq!(part, Some(Part::Center));
         }
 
         /// Find in Files leaves Search as the right panel's tab; ⇧⌘E still goes to the explorer.

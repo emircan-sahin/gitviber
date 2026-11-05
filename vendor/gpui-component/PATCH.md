@@ -82,5 +82,11 @@ size table once beats setting a size at ~360 call sites.
   changed keybinding hint doesn't either. Quick open over 20k files (debug build, no window):
   opening 120 ms → 22 ms, a key 145-220 ms → 40-85 ms, the rest being matching.
 
+- Toasts in an inactive window (`notification.rs`): the autohide countdown pauses while the
+  window is inactive, as it does while hovered; upstream counted on, so a toast shown while the
+  user was in another app was gone when they came back. The clock rests meanwhile and the
+  window's activation restarts it, the time away not counted. Upstream's test
+  `inactive_window_does_not_pause_autohide` is now `inactive_window_pauses_autohide`.
+
 Untouched on purpose: icon sizes, tabs, toggles, lists' row padding, the switch's own sizes
 (28×16 at Small is the old app's).

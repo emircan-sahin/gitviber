@@ -6,12 +6,15 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use gitviber_core::api;
 use gitviber_ui::actions::{project as project_cmds, terminal as term_cmds};
 use gitviber_ui::projects::{DropOn, Place, home_dir, home_relative, project_name};
 use gitviber_ui::widgets::{DraggedProject, Ends, list_step, project_tile};
-use gitviber_ui::workspace::{Slot, Toast};
+use gitviber_ui::workspace::{
+    SavedProjectHooks, Slot, Toast, forget_project, set_saved_project_hooks,
+};
 use gitviber_ui::{ActiveAppTheme, UiState, Workspace};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -103,16 +106,28 @@ pub fn shown_order(list: &[String], gone: impl Fn(&str) -> bool) -> Vec<String> 
 }
 
 fn forget(path: &str, cx: &mut App) {
-    UiState::update(cx, |s| s.forget_project(path));
+    let removed = forget_project(path, cx);
+    toast(removed, cx);
+}
+
+/// How the ui crate's views (the refs picker, the not-found warning) open and locate a project.
+pub fn install(cx: &mut App) {
+    set_saved_project_hooks(
+        cx,
+        SavedProjectHooks {
+            open: Rc::new(open_project),
+            locate: Rc::new(locate),
+        },
+    );
 }
 
 fn toggle_pin(path: &str, cx: &mut App) {
     UiState::update(cx, |s| s.project_org.toggle_pin(path));
 }
 
-/// In the main window, once git says it's a repository (open_repo).
+/// In the main window, once git says what it is; a gone one says so (open_repo).
 fn open_project(path: &str, cx: &mut App) {
-    crate::open_repo::open(crate::open_repo::Request::folder(path), cx);
+    crate::open_repo::open_saved(PathBuf::from(path), cx);
 }
 
 /// A terminal in a project, the window staying where it is.
