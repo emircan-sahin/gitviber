@@ -135,7 +135,7 @@ pub fn issue_labels(
 
 /// Percent-encodes a query value: everything but unreserved ASCII (label names have spaces,
 /// colons, emoji).
-fn query_value(s: &str) -> String {
+pub(super) fn query_value(s: &str) -> String {
     s.bytes()
         .map(|b| {
             if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {

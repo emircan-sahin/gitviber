@@ -94,6 +94,10 @@ pub fn pr_list(
     core.with_github(move |gh, r| github::list(gh, r, target.as_deref(), &filter, pages, &narrow))
 }
 
+pub fn pr_open_from(core: &Core, target: Option<String>, head: String) -> Res<Vec<github::Pull>> {
+    core.with_github(move |gh, r| github::open_from(gh, r, target.as_deref(), &head))
+}
+
 pub fn pr_counts(
     core: &Core,
     target: Option<String>,
