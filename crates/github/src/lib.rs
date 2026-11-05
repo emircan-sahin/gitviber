@@ -29,7 +29,7 @@ pub use requests::{GithubRequest, set_request_handler};
 pub use ui::common::{FailureKind, github_failure};
 pub use ui::{
     IssueView, IssuesPanel, PullFileView, PullView, PullsPanel, open_issue, open_pull,
-    open_pull_file,
+    open_pull_file, pull_actions,
 };
 
 /// The app's one Core; the only place the crate reads it.

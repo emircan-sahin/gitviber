@@ -29,6 +29,7 @@ use crate::logic::issue_work::with_closing;
 use crate::logic::suggest::{PULL_PROMPT, command_line, parse_suggestion, program_of};
 use crate::model::{Access, IssueItem, PullItem, Target};
 use crate::store::Store;
+use crate::ui::comment_box::posts_on_key;
 use crate::ui::common::{github_failure, theme};
 use crate::ui::markdown_input::MarkdownInput;
 use crate::ui::pull_view::PullView;
@@ -86,8 +87,11 @@ pub struct ReviewDialog {
 }
 
 impl ReviewDialog {
+    /// From `pull`'s own update, which can't be read meanwhile: `done` is its reviews_done.
+    #[allow(clippy::too_many_arguments)]
     pub fn open(
         pull: Entity<PullView>,
+        done: u64,
         body: Entity<MarkdownInput>,
         pick: Option<ReviewEvent>,
         own: bool,
@@ -97,7 +101,6 @@ impl ReviewDialog {
     ) {
         let input = body.read(cx).input().clone();
         let view = cx.new(|cx| {
-            let done = pull.read(cx).reviews_done();
             let subs = vec![
                 cx.observe_in(&pull, window, move |_, pull, window, cx| {
                     if pull.read(cx).reviews_done() != done {
@@ -139,12 +142,33 @@ impl ReviewDialog {
     }
 }
 
+impl ReviewDialog {
+    fn busy(&self, cx: &App) -> bool {
+        self.pull.upgrade().is_some_and(|p| p.read(cx).is_busy())
+    }
+
+    /// Not while one is on its way, nor without the note GitHub requires unless approving.
+    fn ready(&self, cx: &App) -> bool {
+        !self.busy(cx)
+            && (!self.pick.needs_body() || !self.body.read(cx).value(cx).trim().is_empty())
+    }
+
+    fn submit(&mut self, cx: &mut Context<Self>) {
+        if !self.ready(cx) {
+            return;
+        }
+        let event = self.pick;
+        self.pull
+            .update(cx, |p, cx| p.submit_review(event, cx))
+            .ok();
+    }
+}
+
 impl Render for ReviewDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx);
-        let body = self.body.read(cx).value(cx).trim().to_string();
-        let busy = self.pull.upgrade().is_some_and(|p| p.read(cx).is_busy());
-        let ready = !busy && (!self.pick.needs_body() || !body.is_empty());
+        let busy = self.busy(cx);
+        let ready = self.ready(cx);
         let choices: Vec<AnyElement> = ReviewEvent::ALL
             .into_iter()
             .map(|e| {
@@ -201,7 +225,7 @@ impl Render for ReviewDialog {
                     .into_any_element()
             })
             .collect();
-        div()
+        posts_on_key(div(), Self::submit, cx)
             .flex()
             .flex_col()
             .gap(px(8.))
@@ -218,12 +242,7 @@ impl Render for ReviewDialog {
                             "Submit review"
                         })
                         .disabled(!ready)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            let event = this.pick;
-                            this.pull
-                                .update(cx, |p, cx| p.submit_review(event, cx))
-                                .ok();
-                        })),
+                        .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
                 ),
             )
     }

@@ -27,7 +27,7 @@ use crate::cache::{Cache, MIN_AGE, Wakes};
 use crate::ci::{self, CiWatch};
 use crate::logic::actions::pull_source;
 use crate::logic::narrow::{Filter, ListKind, Narrow, compact_count, empty_text};
-use crate::model::{Account, Counts, PullItem, PullState, Target, is_not_connected};
+use crate::model::{Access, Account, Counts, PullItem, PullState, Target, is_not_connected};
 use crate::requests::{GithubRequest, request};
 use crate::ui::common::{ago, ci_badge, empty_note, list_error, pull_icon, signed_in_as, theme};
 use crate::ui::connect::{ConnectView, gate_view};
@@ -43,7 +43,7 @@ const MAX_SEARCH_PAGES: usize = 10;
 const PAGE: usize = 100;
 
 /// What the branch status says that the panel needs.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct BranchStatus {
     pub branch: Option<String>,
     /// A checked-out PR (#7) whose branch is someone else's.
@@ -75,6 +75,34 @@ impl BranchStatus {
     /// A PR needs the branch on GitHub as it is: unpublished, or with commits since.
     pub(crate) fn needs_push(&self) -> bool {
         !self.pushed
+    }
+}
+
+/// Why no pull request can be made for the branch now, as New's tooltip says it: `open` is the
+/// branch's open PR, `origin` the account's access there, `reading` while the account is read.
+pub(crate) fn create_blocked(
+    status: &BranchStatus,
+    open: Option<u64>,
+    origin: Option<&Access>,
+    reading: bool,
+) -> Option<String> {
+    if let Some(f) = &status.follows {
+        Some(format!("This branch is pull request {f}"))
+    } else if let Some(n) = open {
+        Some(format!("#{n} already open for this branch"))
+    } else if status.branch.is_none() {
+        Some("Check out a branch first".into())
+    } else if origin.is_none() && reading {
+        Some("Reading your GitHub account…".into())
+    } else if let Some(o) = origin.filter(|o| !o.push) {
+        Some(format!(
+            "You can't push to {}. Fork it to open a pull request",
+            o.full_name()
+        ))
+    } else if origin.is_none() {
+        Some("Your GitHub account couldn't be read".into())
+    } else {
+        None
     }
 }
 
@@ -142,13 +170,7 @@ pub(crate) fn main_of(root: &std::path::Path) -> String {
 /// too. Under the panel's own keys, so each reuses the other's; an answer redraws the windows,
 /// as the pickers don't follow the cache.
 pub(crate) fn load_branch_lists(cx: &mut App) {
-    let upstream = crate::account::account(cx).and_then(|a| a.upstream());
-    let lists = [(None, Filter::Open), (None, Filter::All)]
-        .into_iter()
-        .chain(upstream.map(|u| (Some(u), Filter::All)));
-    for (target, filter) in lists {
-        let name = target.as_deref().unwrap_or("origin");
-        let key = PullsPanel::list_key(name, filter, &Narrow::default(), 1);
+    for (target, filter, key) in branch_lists(cx) {
         Cache::load_held(cx, &key, MIN_AGE, move |core| {
             api::github::pr_list(
                 core,
@@ -164,17 +186,23 @@ pub(crate) fn load_branch_lists(cx: &mut App) {
 
 /// Whether `load_branch_lists` would ask anything now: some list is older than `MIN_AGE`.
 pub(crate) fn branch_lists_stale(cx: &App) -> bool {
+    branch_lists(cx)
+        .iter()
+        .any(|(.., key)| Cache::is_stale(cx, &key, MIN_AGE))
+}
+
+/// `load_branch_lists`'s lists: (repository, None for origin; filter; cache key).
+pub(crate) fn branch_lists(cx: &App) -> Vec<(Option<String>, Filter, String)> {
     let upstream = crate::account::account(cx).and_then(|a| a.upstream());
-    [
-        ("origin".to_string(), Filter::Open),
-        ("origin".into(), Filter::All),
-    ]
-    .into_iter()
-    .chain(upstream.map(|u| (u, Filter::All)))
-    .any(|(name, filter)| {
-        let key = PullsPanel::list_key(&name, filter, &Narrow::default(), 1);
-        Cache::is_stale(cx, &key, MIN_AGE)
-    })
+    [(None, Filter::Open), (None, Filter::All)]
+        .into_iter()
+        .chain(upstream.map(|u| (Some(u), Filter::All)))
+        .map(|(target, filter)| {
+            let name = target.as_deref().unwrap_or("origin");
+            let key = PullsPanel::list_key(name, filter, &Narrow::default(), 1);
+            (target, filter, key)
+        })
+        .collect()
 }
 
 /// As a project's GitHub views first show: its account, and the cache for its repository.
@@ -998,27 +1026,13 @@ impl Render for PullsPanel {
         });
         // Why New is off, as its tooltip: never a disabled button that doesn't say.
         let origin = account.as_ref().and_then(|a| a.origin.as_ref());
-        let blocked: Option<SharedString> = if let Some(f) = &self.status.follows {
-            Some(format!("This branch is pull request {f}").into())
-        } else if let Some(p) = current {
-            Some(format!("#{} already open for this branch", p.number).into())
-        } else if self.status.branch.is_none() {
-            Some("Check out a branch first".into())
-        } else if origin.is_none() && acct.loading {
-            Some("Reading your GitHub account…".into())
-        } else if let Some(o) = origin.filter(|o| !o.push) {
-            Some(
-                format!(
-                    "You can't push to {}. Fork it to open a pull request",
-                    o.full_name()
-                )
-                .into(),
-            )
-        } else if origin.is_none() {
-            Some("Your GitHub account couldn't be read".into())
-        } else {
-            None
-        };
+        let blocked: Option<SharedString> = create_blocked(
+            &self.status,
+            current.map(|p| p.number),
+            origin,
+            acct.loading,
+        )
+        .map(Into::into);
         let can_create = blocked.is_none();
         let new_label = blocked.unwrap_or_else(|| "New pull request".into());
         let fork = upstream.is_some() && account.as_ref().is_some_and(|a| a.parent.is_some());

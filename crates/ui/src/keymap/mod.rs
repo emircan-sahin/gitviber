@@ -658,6 +658,9 @@ mod tests {
             "conflict.markResolved",
             "conflict.useEdit",
             "conflict.cancelEdit",
+            // The branch's pull request from the keyboard.
+            "github.createPull",
+            "github.openBranchPull",
         ];
         // Keys a focus command took over from the toggle that had them.
         const TAKEN_BY_FOCUS: &[(&str, &str)] = &[("terminal.toggle", "ctrl+`")];
