@@ -41,7 +41,7 @@ workbench: [ShowCommands, QuickOpen, OpenChange, OpenSettings, ShortcutOverlay],
     browser: [Open, FocusAddress, Reload, Back, Forward, Inspect, Pick, ToggleDevice, ClearData, Find, FindNext, FindPrev, ZoomIn, ZoomOut, ZoomReset, ToggleReader],
     explorer: [Rename, Delete],
     git: [SwitchBranch, NewBranch, CompareBranches, SwitchWorktree, NewWorktree, Fetch, Pull, Push, Sync, ApplyPatch, Undo, Redo, ToggleStage, Discard, Commit, RenameBranch, SelectAllChanges, CreateTag, SuggestMessage, Continue, Abort, Skip, Stash, PopStash, CommitAndPush, ToggleAmend],
-    conflict: [AcceptCurrent, AcceptIncoming, AcceptBoth, MarkResolved],
+    conflict: [AcceptCurrent, AcceptIncoming, AcceptBoth, MarkResolved, UseEdit, CancelEdit],
     worktree: [OpenTerminal, Merge, Rename, Remove],
     project: [Forget],
     github: [PostComment],
@@ -770,6 +770,18 @@ pub static COMMANDS: &[Command] = &[
         &["cmd+enter"],
     )
     .local(CONFLICT),
+    // The box a block is written in by hand: done with it, or back to the block's sides.
+    cmd::<conflict::UseEdit>("conflict.useEdit", "Use Edited Block", Git, &["cmd+enter"])
+        .local("ConflictEdit")
+        .over_text(),
+    cmd::<conflict::CancelEdit>(
+        "conflict.cancelEdit",
+        "Cancel Editing Block",
+        Git,
+        &["escape"],
+    )
+    .local("ConflictEdit")
+    .over_text(),
 ];
 
 /// The conflict editor, out of the box a block is written in by hand.

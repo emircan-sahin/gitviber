@@ -348,6 +348,7 @@ pub fn place_name(context: &'static str) -> &'static str {
         "ProjectList" => "the project list",
         "IssueComment" => "a comment box",
         commands::CONFLICT => "the conflict editor",
+        "ConflictEdit" => "a conflict block's edit box",
         other => other,
     }
 }
@@ -655,6 +656,8 @@ mod tests {
             "conflict.acceptIncoming",
             "conflict.acceptBoth",
             "conflict.markResolved",
+            "conflict.useEdit",
+            "conflict.cancelEdit",
         ];
         // Keys a focus command took over from the toggle that had them.
         const TAKEN_BY_FOCUS: &[(&str, &str)] = &[("terminal.toggle", "ctrl+`")];

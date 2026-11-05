@@ -229,9 +229,11 @@ impl Render for Shell {
                     .child(self.spot(At::Page, "BrowserPage page=p1")),
             )
             .child(
-                self.spot(At::Conflict, "ConflictView")
-                    .size_auto()
-                    .child(Textarea::new(&self.conflict_edit)),
+                self.spot(At::Conflict, "ConflictView").size_auto().child(
+                    div()
+                        .key_context("ConflictEdit")
+                        .child(Textarea::new(&self.conflict_edit)),
+                ),
             )
             .child(self.spot(At::Image, "ImageView"))
             .child(self.spot(At::Reading, "MarkdownView MarkdownReading"));
@@ -688,7 +690,8 @@ fn each_place_runs_its_own_keys(cx: &mut TestAppContext) {
 }
 
 /// The conflict editor's choices: digits and ⌘↵ there, F7 / ⇧F7 between its blocks. The box a
-/// block is written in by hand types the digits, and its ⌘↵ marks nothing resolved.
+/// block is written in by hand types the digits; its ⌘↵ uses the text, not marks the file
+/// resolved, and its Esc cancels it.
 #[gpui::test]
 fn the_conflict_editor_takes_its_keys_but_not_from_its_text_box(cx: &mut TestAppContext) {
     let (shell, log, cx) = setup(cx);
@@ -709,7 +712,9 @@ fn the_conflict_editor_takes_its_keys_but_not_from_its_text_box(cx: &mut TestApp
     assert!(press(cx, &shell, &log, At::ConflictEdit, "1 2 3").is_empty());
     assert_eq!(text(cx, &shell, At::ConflictEdit), "123");
     let ran = press(cx, &shell, &log, At::ConflictEdit, "cmd-enter");
-    assert!(!ran.iter().any(|c| c == "conflict.markResolved"), "{ran:?}");
+    assert_eq!(ran, ["conflict.useEdit"]);
+    let ran = press(cx, &shell, &log, At::ConflictEdit, "escape");
+    assert_eq!(ran, ["conflict.cancelEdit"]);
     // Elsewhere a digit is nobody's.
     assert!(press(cx, &shell, &log, At::Root, "1").is_empty());
     assert!(press(cx, &shell, &log, At::Diff, "1").is_empty());
