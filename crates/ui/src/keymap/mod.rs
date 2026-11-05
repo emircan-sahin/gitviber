@@ -347,6 +347,7 @@ pub fn place_name(context: &'static str) -> &'static str {
         "HistoryList" => "the history list",
         "ProjectList" => "the project list",
         "IssueComment" => "a comment box",
+        commands::CONFLICT => "the conflict editor",
         other => other,
     }
 }
@@ -641,6 +642,19 @@ mod tests {
             "browser.toggleReader",
             // ⌃` from Toggle Terminal (TAKEN_BY_FOCUS): a panel's focus key is its own command.
             "terminal.focus",
+            // The merge and rebase steps, stashing and the commit options from the keyboard.
+            "git.continue",
+            "git.abort",
+            "git.skip",
+            "git.stash",
+            "git.popStash",
+            "git.commitAndPush",
+            "git.toggleAmend",
+            // The conflict editor's choices.
+            "conflict.acceptCurrent",
+            "conflict.acceptIncoming",
+            "conflict.acceptBoth",
+            "conflict.markResolved",
         ];
         // Keys a focus command took over from the toggle that had them.
         const TAKEN_BY_FOCUS: &[(&str, &str)] = &[("terminal.toggle", "ctrl+`")];

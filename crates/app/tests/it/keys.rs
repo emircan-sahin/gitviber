@@ -46,6 +46,7 @@ enum At {
     Projects,
     /// A browser tab's page area: WebKit's view stands behind it.
     Page,
+    Conflict,
     // Text fields.
     Summary,
     Description,
@@ -57,9 +58,11 @@ enum At {
     FindBar,
     /// The command palette's query.
     Palette,
+    /// The box a conflict's block is written in by hand.
+    ConflictEdit,
 }
 
-const SPOTS: [(At, &str); 13] = [
+const SPOTS: [(At, &str); 14] = [
     (At::Pane, TERMINAL_CONTEXT),
     (At::Changes, "ChangesList"),
     (At::Diff, gitviber_diff::actions::CONTEXT),
@@ -73,6 +76,7 @@ const SPOTS: [(At, &str); 13] = [
     (At::Branches, "BranchPicker"),
     (At::Projects, "ProjectList"),
     (At::Page, "BrowserPage page=p1"),
+    (At::Conflict, "ConflictView"),
 ];
 
 struct Shell {
@@ -87,6 +91,7 @@ struct Shell {
     address: Entity<InputState>,
     find: Entity<InputState>,
     palette: Entity<InputState>,
+    conflict_edit: Entity<TextareaState>,
     /// The terminal's find bar: its ⌘G and ⇧⌘G step through matches only while it's open.
     find_open: bool,
 }
@@ -108,6 +113,7 @@ impl Shell {
             address: cx.new(|cx| InputState::new(window, cx)),
             find: cx.new(|cx| InputState::new(window, cx)),
             palette: cx.new(|cx| InputState::new(window, cx)),
+            conflict_edit: cx.new(|cx| TextareaState::new(window, cx)),
             find_open: false,
         }
     }
@@ -129,6 +135,7 @@ impl Shell {
             At::Address => self.address.focus_handle(cx),
             At::FindBar => self.find.focus_handle(cx),
             At::Palette => self.palette.focus_handle(cx),
+            At::ConflictEdit => self.conflict_edit.focus_handle(cx),
             spot => self
                 .spots
                 .iter()
@@ -146,6 +153,7 @@ impl Shell {
             At::Code => self.code.read(cx).value(),
             At::TagMessage => self.tag.read(cx).value(),
             At::Address => self.address.read(cx).value(),
+            At::ConflictEdit => self.conflict_edit.read(cx).value(),
             _ => panic!("{at:?} is no text field"),
         }
         .to_string()
@@ -219,6 +227,11 @@ impl Render for Shell {
                     .size_auto()
                     .child(Input::new(&self.address))
                     .child(self.spot(At::Page, "BrowserPage page=p1")),
+            )
+            .child(
+                self.spot(At::Conflict, "ConflictView")
+                    .size_auto()
+                    .child(Textarea::new(&self.conflict_edit)),
             )
             .child(self.spot(At::Image, "ImageView"))
             .child(self.spot(At::Reading, "MarkdownView MarkdownReading"));
@@ -672,6 +685,34 @@ fn each_place_runs_its_own_keys(cx: &mut TestAppContext) {
             ("delete", &["project.forget"]),
         ],
     );
+}
+
+/// The conflict editor's choices: digits and ⌘↵ there, F7 / ⇧F7 between its blocks. The box a
+/// block is written in by hand types the digits, and its ⌘↵ marks nothing resolved.
+#[gpui::test]
+fn the_conflict_editor_takes_its_keys_but_not_from_its_text_box(cx: &mut TestAppContext) {
+    let (shell, log, cx) = setup(cx);
+    expect(
+        cx,
+        &shell,
+        &log,
+        At::Conflict,
+        &[
+            ("1", &["conflict.acceptCurrent"]),
+            ("2", &["conflict.acceptIncoming"]),
+            ("3", &["conflict.acceptBoth"]),
+            ("cmd-enter", &["conflict.markResolved"]),
+            ("f7", &["diff.nextChange"]),
+            ("shift-f7", &["diff.prevChange"]),
+        ],
+    );
+    assert!(press(cx, &shell, &log, At::ConflictEdit, "1 2 3").is_empty());
+    assert_eq!(text(cx, &shell, At::ConflictEdit), "123");
+    let ran = press(cx, &shell, &log, At::ConflictEdit, "cmd-enter");
+    assert!(!ran.iter().any(|c| c == "conflict.markResolved"), "{ran:?}");
+    // Elsewhere a digit is nobody's.
+    assert!(press(cx, &shell, &log, At::Root, "1").is_empty());
+    assert!(press(cx, &shell, &log, At::Diff, "1").is_empty());
 }
 
 #[gpui::test]
