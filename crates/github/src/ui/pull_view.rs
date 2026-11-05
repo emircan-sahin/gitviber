@@ -400,6 +400,8 @@ impl PullView {
             &self.url,
             COMMENTS_AGE,
         );
+        // A young cache answer isn't asked again, so the cache doesn't tell: take it now.
+        self.sync_comments(cx);
         let shas = (d.pull.base_sha.clone(), d.pull.head_sha.clone());
         if self.files_for.as_ref() != Some(&shas)
             || self.files_at.is_some_and(|at| at.elapsed() > FILES_AGE)
@@ -3725,6 +3727,14 @@ mod tests {
             assert_eq!(v.comment_counts.get("src/f2.rs"), None);
         });
         draw(cx);
+        // A page reopened within the minute: the young answer isn't asked again, nor does the
+        // cache change, yet the page has it once its read lands.
+        view.update(cx, |v, cx| {
+            v.line_comments = None;
+            v.comment_counts = Arc::default();
+            v.detail_landed(Ok(detail("success")), cx);
+            assert_eq!(v.comment_counts.get("src/zeta.rs"), Some(&2));
+        });
     }
 
     #[gpui_kit::test]
