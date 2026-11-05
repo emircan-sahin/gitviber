@@ -2,6 +2,7 @@
 //! narrowed by the chips, with CI on each open one. Pages of 100 load as asked; the list draws
 //! only the rows on screen.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,10 +18,10 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
-    rems, uniform_list,
+    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Global,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
+    prelude::FluentBuilder as _, px, rems, uniform_list,
 };
 
 use crate::cache::{Cache, MIN_AGE, Wakes};
@@ -40,7 +41,7 @@ use crate::ui::rows::{ROW, RowKey, Rows, focus_page, row_key};
 /// github/client.rs reads at most this many pages; a search stops at GitHub's 1000 results.
 const MAX_PAGES: usize = 30;
 const MAX_SEARCH_PAGES: usize = 10;
-const PAGE: usize = 100;
+pub(crate) const PAGE: usize = 100;
 
 /// What the branch status says that the panel needs.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -104,6 +105,35 @@ pub(crate) fn create_blocked(
     } else {
         None
     }
+}
+
+/// Per fork (origin's name): whether New was last used on the original's pane.
+#[derive(Default)]
+struct ToOriginal(HashMap<String, bool>);
+
+impl Global for ToOriginal {}
+
+/// Where a pull request from the branch goes: origin, or for a fork the pane whose New was
+/// picked, `to_parent` (kept for the palette's Create, which takes the last one, else the
+/// original).
+pub(crate) fn create_target(
+    origin: &Access,
+    parent: Option<&Access>,
+    to_parent: Option<bool>,
+    cx: &mut App,
+) -> Access {
+    let Some(parent) = parent else {
+        return origin.clone();
+    };
+    let picked = cx.default_global::<ToOriginal>();
+    let to_parent = match to_parent {
+        Some(p) => {
+            picked.0.insert(origin.full_name(), p);
+            p
+        }
+        None => picked.0.get(&origin.full_name()).copied().unwrap_or(true),
+    };
+    if to_parent { parent } else { origin }.clone()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -478,16 +508,11 @@ impl PullsPanel {
         let Some(account) = self.account(cx) else {
             return;
         };
-        let target = if to_parent {
-            account.parent.clone()
-        } else {
-            account.origin.clone()
-        };
-        let (Some(target), Some(origin), Some(branch)) =
-            (target, account.origin.clone(), self.status.branch.clone())
+        let (Some(origin), Some(branch)) = (account.origin.clone(), self.status.branch.clone())
         else {
             return;
         };
+        let target = create_target(&origin, account.parent.as_ref(), Some(to_parent), cx);
         crate::ui::dialogs::CreatePullDialog::open(
             self.ctx.workspace.clone(),
             target,
